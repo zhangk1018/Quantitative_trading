@@ -1,0 +1,97 @@
+{
+  "StockResponse_Example": {
+    "stock_code": "000001.SZ",
+    "stock_name": "平安银行",
+    "listed_board": "主板",
+    "industry": "银行",
+    "sub_industry": "股份制银行",
+    "trade_date": "2026-05-29",
+    "pre_close": 10.50,
+    "open": 10.50,
+    "close": 10.93,
+    "high": 11.00,
+    "low": 10.45,
+    "volume": 1000000,
+    "amount": 10930000.00,
+    "change": 0.43,
+    "change_pct": 4.09,
+    "turnover_rate": 2.5,
+    "pe": 5.2,
+    "pb": 0.8,
+    "market_cap": 20000000.00,
+    "circ_mv": 18000000.00,
+    "ma5": 10.80,
+    "ma10": 10.70,
+    "ma20": 10.60,
+    "v_ma5": 950000,
+    "rsi_6": 65.5,
+    "macd": 0.15,
+    "boll_upper": 11.20,
+    "boll_mid": 10.80,
+    "boll_lower": 10.40,
+    "is_st": false,
+    "is_new": false,
+    "limit_up": false,
+    "limit_down": false
+  },
+  
+  "StocksRequest_Example": {
+    "filters": "pattern_bull_candle,pattern_hammer",
+    "listed_board": "主板",
+    "industry": "银行,地产",
+    "area": "北京,上海",
+    "sort_by": "change_pct",
+    "sort_asc": false,
+    "offset": 0,
+    "limit": 100,
+    "as_of_date": "2026-05-29"
+  },
+  
+  "ApiResponse_Success_Example": {
+    "code": 200,
+    "message": "success",
+    "data": [
+      {
+        "stock_code": "000001.SZ",
+        "stock_name": "平安银行",
+        "close": 10.93,
+        "change_pct": 4.09
+      }
+    ]
+  },
+  
+  "ApiResponse_Error_Example": {
+    "code": 400,
+    "message": "参数错误: invalid sort_by field 'invalid'",
+    "data": null
+  },
+  
+  "KLineResponse_Example": {
+    "stock_code": "000001.SZ",
+    "data": [
+      {
+        "trade_date": "2026-05-29",
+        "open": 10.50,
+        "high": 11.00,
+        "low": 10.45,
+        "close": 10.93,
+        "volume": 1000000,
+        "amount": 10930000.00
+      }
+    ],
+    "count": 1
+  },
+  
+  "SignalResponse_Example": {
+    "stock_code": "000001.SZ",
+    "signals": [
+      {
+        "trade_date": "2026-05-29",
+        "signal_type": "buy",
+        "price": 10.93,
+        "reason": "MACD金叉"
+      }
+    ],
+    "count": 1
+  }
+}

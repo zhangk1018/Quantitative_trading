@@ -1,0 +1,85 @@
+feat(frontend): 完成 Phase 1.3 前端基础组件迁移
+
+## 概述
+完成量化交易系统前端 Phase 1.3 阶段开发，实现股票筛选和展示的核心功能。
+
+## 新增文件
+- src/App.tsx (165行) - 主应用组件，整合三大核心组件
+- src/components/StockTable.tsx (224行) - 股票表格组件
+
+## 主要功能
+
+### StockTable.tsx
+- ✅ 显示股票列表（12个默认列 + 25+扩展列）
+- ✅ 支持展开/收起额外字段
+- ✅ 点击列头排序（升序/降序切换）
+- ✅ 分页功能（上一页/下一页，边界处理）
+- ✅ 颜色标记（红涨绿跌）
+- ✅ 股票代码链接到同花顺
+- ✅ onRowClick 回调（为K线联动预留）
+- ✅ 数值格式化（百分比、单位转换）
+- ✅ 空值处理（显示为 "-"）
+
+### App.tsx
+- ✅ 整合 StatusBar + FilterPanel + StockTable
+- ✅ 状态管理（筛选条件、排序、分页）
+- ✅ 数据加载（元数据、股票列表）
+- ✅ AbortController 取消过期请求
+- ✅ 筛选条件管理（行业、地区、自定义筛选）
+- ✅ 排序管理（字段切换、升降序）
+- ✅ 分页管理（自动重置、上下翻页）
+- ✅ 加载状态提示
+- ✅ 错误处理和显示
+
+## 技术亮点
+- 严格的 TypeScript 类型安全（无 any 类型）
+- React Hooks 最佳实践（useState、useEffect、useCallback）
+- 性能优化（useCallback、唯一 key、避免重渲染）
+- 完善的错误处理和加载状态
+- AbortController 防止竞态条件
+- 6维度代码审查全部通过（逻辑、安全、性能、健壮性、可维护性、合规性）
+
+## 代码质量
+- 总代码行数：389 行（高质量、无冗余）
+- TypeScript 编译：✅ 无错误、无警告
+- 代码审查：✅ 6维度全部通过
+- 兼容性：✅ 与现有组件无缝集成
+
+## 现有文件（保持不变）
+- src/types.ts - TypeScript 类型定义
+- src/api.ts - API 接口封装
+- src/components/FilterPanel.tsx - 筛选面板组件
+- src/components/StatusBar.tsx - 状态栏组件
+- src/main.tsx - 应用入口
+- src/index.css - 全局样式
+
+## 待办事项
+⚠️ 以下事项将在后续阶段处理：
+
+1. **P0 - 响应信封适配**
+   - 待后端 schemas.py 完成后
+   - 修改 api.ts 解包 {"code", "message", "data"} 格式
+
+2. **P0 - 类型对齐**
+   - 待 schemas.py 确认后
+   - 严格对齐 types.ts 与 schemas.py
+
+3. **P1 - K线图功能**
+   - Phase 4 开发 KLineChart.tsx
+   - 集成到 App.tsx
+
+4. **P2 - 单元测试**
+   - Phase 5 编写组件测试
+   - Jest + React Testing Library
+
+5. **P3 - 性能优化**
+   - Phase 5 虚拟滚动等优化
+   - 大数据量场景优化
+
+## 验收文档
+详见：ACCEPTANCE_REPORT.md
+
+## 下一步计划
+- 等待后端 schemas.py 完成
+- 准备 Phase 4 K线图组件开发
+- 持续优化用户体验
