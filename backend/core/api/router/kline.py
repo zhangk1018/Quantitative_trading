@@ -12,8 +12,8 @@ from core.api.dependencies import get_loader
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["K线数据接口"])
 
-# 股票代码校验正则
-STOCK_CODE_PATTERN = r'^(SH|SZ)?\d{6}$'
+# 股票代码校验正则 - 支持 000001.SZ、SH.000001、SZ.000001、000001 等多种格式
+STOCK_CODE_PATTERN = r'^(\d{6}\.(SH|SZ|BJ)|(SH|SZ)\d{6}|\d{6})$'
 # 有效K线周期
 VALID_KLINE_PERIODS = {'daily', 'weekly', 'monthly'}
 

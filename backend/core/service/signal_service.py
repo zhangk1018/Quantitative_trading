@@ -126,8 +126,8 @@ class SignalService:
             stock_name=stock_info.stock_name,
             listed_board=stock_info.listed_board,
             signal_type=signal_type or "all",
-            start_date=start_date or kline_response.start_date,
-            end_date=end_date or kline_response.end_date,
+            start_date=start_date,
+            end_date=end_date,
             count=len(signals),
             signals=signals,
         )
@@ -215,7 +215,7 @@ class SignalService:
         signals = []
         
         # 将K线数据转换为DataFrame
-        kline_items = kline_response.klines
+        kline_items = kline_response.data
         if not kline_items:
             return signals
         
@@ -292,89 +292,77 @@ class SignalService:
             # 金叉信号（买入）
             if curr_macd > curr_signal and prev_macd <= prev_signal:
                 signals.append(SignalItem(
-                    date=curr_row["date"],
+                    trade_date=curr_row["date"],
                     signal_type="macd_cross",
-                    signal="buy",
                     price=Decimal(str(curr_row["close"])),
-                    confidence=0.7,
-                    description=f"MACD金叉：{curr_macd:.2f} > {curr_signal:.2f}",
+                    reason=f"MACD金叉：{curr_macd:.2f} > {curr_signal:.2f}",
                 ))
-            
+
             # 死叉信号（卖出）
             elif curr_macd < curr_signal and prev_macd >= prev_signal:
                 signals.append(SignalItem(
-                    date=curr_row["date"],
+                    trade_date=curr_row["date"],
                     signal_type="macd_cross",
-                    signal="sell",
                     price=Decimal(str(curr_row["close"])),
-                    confidence=0.6,
-                    description=f"MACD死叉：{curr_macd:.2f} < {curr_signal:.2f}",
+                    reason=f"MACD死叉：{curr_macd:.2f} < {curr_signal:.2f}",
                 ))
-        
+
         return signals
-    
+
     def _generate_rsi_signals(self, df: pd.DataFrame) -> List[SignalItem]:
         """生成RSI超买超卖信号"""
         signals = []
-        
+
         for _, row in df.iterrows():
             rsi = row["rsi_6"]
-            
+
             # RSI超卖信号（买入）
             if rsi < 30:
                 signals.append(SignalItem(
-                    date=row["date"],
-                    signal_type="rsi_overbought",
-                    signal="buy",
+                    trade_date=row["date"],
+                    signal_type="rsi_oversold",
                     price=Decimal(str(row["close"])),
-                    confidence=0.6,
-                    description=f"RSI超卖：{rsi:.2f} < 30",
+                    reason=f"RSI超卖：{rsi:.2f} < 30",
                 ))
-            
+
             # RSI超买信号（卖出）
             elif rsi > 70:
                 signals.append(SignalItem(
-                    date=row["date"],
+                    trade_date=row["date"],
                     signal_type="rsi_overbought",
-                    signal="sell",
                     price=Decimal(str(row["close"])),
-                    confidence=0.6,
-                    description=f"RSI超买：{rsi:.2f} > 70",
+                    reason=f"RSI超买：{rsi:.2f} > 70",
                 ))
-        
+
         return signals
-    
+
     def _generate_bollinger_signals(self, df: pd.DataFrame) -> List[SignalItem]:
         """生成布林带突破信号"""
         signals = []
-        
+
         for _, row in df.iterrows():
             close = row["close"]
             boll_upper = row["boll_upper"]
             boll_lower = row["boll_lower"]
-            
+
             # 突破上轨（卖出信号）
             if close > boll_upper:
                 signals.append(SignalItem(
-                    date=row["date"],
+                    trade_date=row["date"],
                     signal_type="bollinger_breakout",
-                    signal="sell",
                     price=Decimal(str(close)),
-                    confidence=0.5,
-                    description=f"突破布林上轨：{close:.2f} > {boll_upper:.2f}",
+                    reason=f"突破布林上轨：{close:.2f} > {boll_upper:.2f}",
                 ))
-            
+
             # 突破下轨（买入信号）
             elif close < boll_lower:
                 signals.append(SignalItem(
-                    date=row["date"],
+                    trade_date=row["date"],
                     signal_type="bollinger_breakout",
-                    signal="buy",
                     price=Decimal(str(close)),
-                    confidence=0.5,
-                    description=f"突破布林下轨：{close:.2f} < {boll_lower:.2f}",
+                    reason=f"突破布林下轨：{close:.2f} < {boll_lower:.2f}",
                 ))
-        
+
         return signals
     
     def get_signal_types(self) -> List[Dict[str, Any]]:

@@ -11,10 +11,10 @@ from core.api.dependencies import get_loader
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["交易信号接口"])
 
-# 股票代码校验正则
-STOCK_CODE_PATTERN = r'^(SH|SZ)?\d{6}$'
-# 有效信号类型
-VALID_SIGNAL_TYPES = {'golden_cross', 'death_cross', 'all'}
+# 股票代码校验正则 - 支持 000001.SZ、SH.000001、SZ.000001、000001 等多种格式
+STOCK_CODE_PATTERN = r'^(\d{6}\.(SH|SZ|BJ)|(SH|SZ)\d{6}|\d{6})$'
+# 有效信号类型（与 signal_service.signal_config 对齐）
+VALID_SIGNAL_TYPES = {'macd_cross', 'rsi_oversold', 'rsi_overbought', 'bollinger_breakout', 'all'}
 
 
 def validate_stock_code(code: str) -> str:
@@ -70,7 +70,7 @@ SignalServiceDep = Depends(get_signal_service)
 @router.get("/{stock_code}", response_model=SignalResponse, summary="获取买卖信号")
 async def get_signals(
     stock_code: str = Path(..., description="股票代码，如 000001 或 SZ.000001"),
-    signal_type: Optional[str] = Query(None, description="信号类型，支持 golden_cross/death_cross/all（默认 all）"),
+    signal_type: Optional[str] = Query(None, description="信号类型，支持 macd_cross/rsi_oversold/rsi_overbought/bollinger_breakout/all（默认 all）"),
     start_date: Optional[str] = Query(None, description="开始日期，格式 YYYY-MM-DD"),
     end_date: Optional[str] = Query(None, description="结束日期，格式 YYYY-MM-DD"),
     limit: int = Query(100, ge=1, le=1000, description="返回数量限制（1-1000）"),

@@ -68,6 +68,7 @@ class ScreenerRequest(BaseModel):
     sort_order: str = Field(default="desc", description="排序方向")
     page: int = Field(default=1, ge=1, description="页码")
     page_size: int = Field(default=50, ge=1, le=200, description="每页数量")
+    as_of_date: Optional[str] = Field(None, description="数据截止日期（YYYYMMDD），防前视偏差")
 
 
 class ScreenerResponse(BaseModel):
@@ -386,22 +387,15 @@ class StockResponse(BaseModel):
     
     # --- 形态识别字段 ---
     pattern_hammer: bool = Field(False, description="锤子线")
-    pattern_inv_hammer: bool = Field(False, description="倒锤子线")
-    pattern_doji: bool = Field(False, description="十字星")
     pattern_bullish_engulfing: bool = Field(False, description="看涨吞没")
     pattern_bearish_engulfing: bool = Field(False, description="看跌吞没")
     pattern_morning_star: bool = Field(False, description="早晨之星")
     pattern_evening_star: bool = Field(False, description="黄昏之星")
-    pattern_shooting_star: bool = Field(False, description="射击之星")
-    pattern_hanging_man: bool = Field(False, description="上吊线")
-    pattern_spinning_top: bool = Field(False, description="纺锤线")
-    
+
     # --- 突破信号字段 ---
     break_high_20: bool = Field(False, description="突破20日高点")
     break_high_60: bool = Field(False, description="突破60日高点")
-    break_high_120: bool = Field(False, description="突破120日高点")
-    break_high_250: bool = Field(False, description="突破250日高点")
-    
+
     # --- 连续走势字段 ---
     consec_up_3: bool = Field(False, description="连涨3天")
     consec_up_5: bool = Field(False, description="连涨5天")

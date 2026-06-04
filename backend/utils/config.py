@@ -3,7 +3,11 @@
 import os
 import yaml
 import re
+import logging
 from typing import Dict, Any
+
+# 配置日志记录器
+logger = logging.getLogger(__name__)
 
 # 默认配置
 _DEFAULT_CONFIG = {

@@ -108,8 +108,20 @@ StockCodeDep = Annotated[str, Depends(validate_stock_code)]
 def validate_date_param(date_str: str) -> str:
     if not date_str:
         raise ValueError("日期参数不能为空")
+    
+    # 支持两种格式：YYYYMMDD 和 YYYY-MM-DD
+    import re
+    
+    # 尝试匹配 YYYY-MM-DD 格式
+    match = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', date_str)
+    if match:
+        # 转换为 YYYYMMDD 格式
+        return f"{match.group(1)}{match.group(2)}{match.group(3)}"
+    
+    # 验证 YYYYMMDD 格式
     if len(date_str) != 8 or not date_str.isdigit():
-        raise ValueError(f"无效的日期格式: {date_str}，应为 YYYYMMDD 格式")
+        raise ValueError(f"无效的日期格式: {date_str}，应为 YYYYMMDD 或 YYYY-MM-DD 格式")
+    
     return date_str
 
 

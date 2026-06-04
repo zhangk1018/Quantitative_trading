@@ -14,7 +14,7 @@ from typing import Dict, Any
 
 from core.api.models.schemas import StockResponse, ScreenerRequest, ApiResponse
 from core.service.screener_service import ScreenerService
-from core.api.dependencies import get_screener_service
+from core.api.dependencies import get_screener_service, DateDep
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["股票数据接口"])
@@ -30,6 +30,7 @@ def get_stocks(
     sort_asc: bool = Query(False, description="是否升序排列"),
     offset: int = Query(0, ge=0, description="分页偏移量"),
     limit: int = Query(100, ge=1, le=200, description="每页数量"),
+    as_of_date: str = DateDep,
     screener: ScreenerService = Depends(get_screener_service),
 ):
     try:
@@ -41,16 +42,17 @@ def get_stocks(
             filter_dict["industry"] = industry.split(",")
         if area:
             filter_dict["area"] = area.split(",")
-        
+
         page = offset // limit + 1 if limit > 0 else 1
         page_size = limit
-        
+
         request = ScreenerRequest(
             filters=filter_dict,
             sort_by=sort_by,
             sort_order="asc" if sort_asc else "desc",
             page=page,
             page_size=page_size,
+            as_of_date=as_of_date,
         )
         
         # 调用服务获取结果

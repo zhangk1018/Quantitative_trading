@@ -1,11 +1,11 @@
 /**
  * types.ts - TypeScript 类型定义（严格镜像 schemas.py）
  * 
- * 本文件由 schemas.py 自动生成，禁止手动修改字段定义。
- * 任何字段变更必须先修改 schemas.py，然后重新生成此文件。
- * 
- * 生成时间: 2026-05-31
- * 来源: src/api/models/schemas.py
+ * 本文件必须与 schemas.py 保持字段定义一致（手动同步）
+ * 任何字段变更必须先修改 schemas.py，然后同步修改此文件。
+ *
+ * 同步时间: 2026-06-04
+ * 来源: backend/core/api/models/schemas.py
  */
 
 // ============================================
@@ -82,14 +82,42 @@ export interface StockResponse {
   ma20?: number | null                  // 20日均线价
   v_ma5?: number | null                 // 5日均量（手）
   rsi_6?: number | null                 // RSI6（相对强弱指标）
+  rsi_12?: number | null                // RSI12（相对强弱指标）
+  rsi_24?: number | null                // RSI24（相对强弱指标）
   macd?: number | null                  // MACD值
   boll_upper?: number | null            // 布林带上轨
   boll_mid?: number | null              // 布林带中轨
   boll_lower?: number | null            // 布林带下轨
   vol_ratio_5?: number | null           // 5日量比
-  
+  kdj_k?: number | null                 // KDJ_K值
+  kdj_d?: number | null                 // KDJ_D值
+  kdj_j?: number | null                 // KDJ_J值
+  cci?: number | null                   // CCI指标
+  consec_up_days?: number | null        // 连涨天数
+
+  // --- 形态识别字段（前端用于筛选）---
+  pattern_hammer?: boolean | null
+  pattern_inv_hammer?: boolean | null
+  pattern_doji?: boolean | null
+  pattern_bullish_engulfing?: boolean | null
+  pattern_bearish_engulfing?: boolean | null
+  pattern_morning_star?: boolean | null
+  pattern_evening_star?: boolean | null
+  pattern_shooting_star?: boolean | null
+  pattern_hanging_man?: boolean | null
+  pattern_spinning_top?: boolean | null
+
+  // --- 突破信号字段 ---
+  break_high_20?: boolean | null        // 突破20日高点
+  break_high_60?: boolean | null        // 突破60日高点
+  break_high_120?: boolean | null       // 突破120日高点（FIX-006 状态：保留）
+  break_high_250?: boolean | null       // 突破250日高点（FIX-006 状态：保留）
+  consec_up_3?: boolean | null          // 连涨3天
+  consec_up_5?: boolean | null          // 连涨5天
+
   // --- 资金流向字段 ---
   net_mf_amount?: number | null         // 净流入（万元）
+  net_mf_vol?: number | null            // 净流入量（手）
   buy_sm_amount?: number | null         // 小单买入（万元）
   sell_sm_amount?: number | null        // 小单卖出（万元）
   buy_md_amount?: number | null         // 中单买入（万元）
@@ -98,11 +126,7 @@ export interface StockResponse {
   sell_lg_amount?: number | null       // 大单卖出（万元）
   buy_elg_amount?: number | null       // 特大单买入（万元）
   sell_elg_amount?: number | null      // 特大单卖出（万元）
-  
-  // --- 新高/连涨标记 ---
-  break_high_20?: boolean | null        // 20日新高
-  break_high_60?: boolean | null        // 60日新高
-  
+
   // --- 状态标记字段（保留但不在前端展示）---
   is_st?: boolean | null                // 是否ST股票
   is_new?: boolean | null               // 是否新股（上市<1年）

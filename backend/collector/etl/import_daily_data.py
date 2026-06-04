@@ -88,22 +88,22 @@ class DailyDataImporter(BaseDataImporter):
 
     def _process_kline_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """处理K线数据（子类可重写）"""
-        df['open'] = pd.to_numeric(df['open'], errors='coerce')
-        df['high'] = pd.to_numeric(df['high'], errors='coerce')
-        df['low'] = pd.to_numeric(df['low'], errors='coerce')
-        df['close'] = pd.to_numeric(df['close'], errors='coerce')
+        # 使用单次操作转换多个列，避免多次 DataFrame 复制
+        numeric_cols = ['open', 'high', 'low', 'close', 'amount']
+        df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
+        
+        # volume 列需要特殊处理（保留 NaN 以便后续过滤）
         df['volume'] = pd.to_numeric(df['volume'], errors='coerce').astype('Int64')
         df['volume'] = df['volume'].where(df['volume'].notna() & (df['volume'] != ''), None)
-        df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
-
+        
+        # 一次性过滤所有无效价格数据（避免多次 df = df[...] 创建副本）
         price_cols = ['open', 'high', 'low', 'close']
-        for col in price_cols:
-            df = df[df[col] > 0]
-
-        df = df[df['volume'].notna() & (df['volume'] > 0)]
+        mask = (df[price_cols] > 0).all(axis=1) & df['volume'].notna() & (df['volume'] > 0)
+        df = df[mask]
+        
         df['pct_change'] = df['close'].pct_change() * 100
         df = df.dropna(subset=['open', 'close'])
-
+        
         return df
 
     def full_import(self, codes: List[str], start_date: str = None, end_date: str = None):

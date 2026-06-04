@@ -1,14 +1,14 @@
 """
 loader.py — Data access layer for the stock screener backend.
 
-Loads `latest_quotes.parquet` into memory once at startup via `load()`.
-After `load()` is called, callers access data through three module globals:
-  - `df`           : the full pandas DataFrame (5484 rows)
-  - `trade_date`   : trading date string in YYYYMMDD format
-  - `field_counts` : dict of {column_name: hit_count} for binary 0/1 indicator columns
+Loads `latest_quotes.parquet` into memory once at startup via `DataLoader.load()`.
+After `load()` is called, callers access data through the `DataLoader` instance:
+  - `loader.df`           : the full pandas DataFrame
+  - `loader.trade_date`   : trading date string in YYYYMMDD format
+  - `loader.field_counts` : dict of {column_name: hit_count} for binary 0/1 indicator columns
 
-Call `_check_loaded()` before accessing these globals if you want an explicit
-RuntimeError instead of a silent None/empty-value failure.
+The module-level functions `get_df()`, `get_trade_date()`, `get_field_counts()` 
+are deprecated; use `DataLoader` instead.
 """
 
 import os
@@ -23,44 +23,21 @@ PARQUET_PATH = os.getenv(
     str(Path(__file__).parent.parent.parent.parent / "data" / "price" / "daily" / "latest_quotes.parquet"),
 )
 
-df: pd.DataFrame = None
-trade_date: str = ""
-field_counts: dict[str, int] = {}
+# 兼容旧代码：保留全局变量作为单例模式的默认实例
+_default_loader: "DataLoader" = None
 
 
-def _check_loaded() -> None:
-    """Raise RuntimeError if load() has not been called yet."""
-    if df is None:
-        raise RuntimeError(
-            "loader.load() has not been called yet. "
-            "Ensure load() is invoked at application startup."
-        )
+def _get_default_loader() -> "DataLoader":
+    """获取默认的 DataLoader 单例"""
+    global _default_loader
+    if _default_loader is None:
+        _default_loader = DataLoader()
+        _default_loader.load()
+    return _default_loader
 
-
-def load() -> None:
-    """Load parquet into memory. Called once at startup."""
-    global df, trade_date, field_counts
-
-    df = pd.read_parquet(PARQUET_PATH)
-    trade_date = str(df["trade_date"].iloc[0])
-
-    # Only count integer binary (0/1) columns with these prefixes.
-    # vol_ratio_5 is intentionally excluded — it is a continuous float ratio,
-    # not a binary flag, so the dtype guard below already excludes it.
-    binary_prefixes = ("pattern_", "break_high_", "consec_up_")
-    binary_cols = [
-        c for c in df.columns
-        if c.startswith(binary_prefixes) and df[c].dtype in ("int64", "int32", "int8", "bool")
-    ]
-    field_counts = {c: int(df[c].sum()) for c in binary_cols}
-
-
-# ============================================
-# DataLoader 包装类（为 FastAPI 依赖注入提供类型安全接口）
-# ============================================
 
 class DataLoader:
-    """数据加载器包装类"""
+    """数据加载器包装类 - 推荐使用此类进行数据访问"""
 
     def __init__(self):
         self._df = None
@@ -80,15 +57,57 @@ class DataLoader:
         return self._trade_date
 
     @property
-    def field_counts(self) -> dict[str, int]:
+    def field_counts(self) -> dict:
         if not self._field_counts:
             raise RuntimeError("字段计数未计算，请先调用 load()")
         return self._field_counts
 
     def load(self) -> "DataLoader":
         """加载数据，更新内部状态"""
-        load()
-        self._df = df
-        self._trade_date = trade_date
-        self._field_counts = field_counts
+        self._df = pd.read_parquet(PARQUET_PATH)
+        self._trade_date = str(self._df["trade_date"].iloc[0])
+
+        # Only count integer binary (0/1) columns with these prefixes.
+        # vol_ratio_5 is intentionally excluded — it is a continuous float ratio,
+        # not a binary flag, so the dtype guard below already excludes it.
+        binary_prefixes = ("pattern_", "break_high_", "consec_up_")
+        binary_cols = [
+            c for c in self._df.columns
+            if c.startswith(binary_prefixes) and self._df[c].dtype in ("int64", "int32", "int8", "bool")
+        ]
+        self._field_counts = {c: int(self._df[c].sum()) for c in binary_cols}
         return self
+
+
+# ============================================
+# 兼容旧 API（建议迁移到 DataLoader）
+# ============================================
+
+def get_df() -> pd.DataFrame:
+    """获取 DataFrame (已弃用，请使用 DataLoader.df)"""
+    return _get_default_loader().df
+
+
+def get_trade_date() -> str:
+    """获取交易日期 (已弃用，请使用 DataLoader.trade_date)"""
+    return _get_default_loader().trade_date
+
+
+def get_field_counts() -> dict:
+    """获取字段计数 (已弃用，请使用 DataLoader.field_counts)"""
+    return _get_default_loader().field_counts
+
+
+def _check_loaded() -> None:
+    """Raise RuntimeError if load() has not been called yet."""
+    loader = _get_default_loader()
+    if loader._df is None:
+        raise RuntimeError(
+            "loader.load() has not been called yet. "
+            "Ensure load() is invoked at application startup."
+        )
+
+
+def load() -> None:
+    """Load parquet into memory. Called once at startup. (已弃用，请使用 DataLoader.load)"""
+    _get_default_loader()

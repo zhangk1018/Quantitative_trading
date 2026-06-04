@@ -505,8 +505,11 @@ class DataService:
                 
                 for _, row in df.iterrows():
                     factors.append(factor)
-                    # 简单复权：假设每天的涨跌幅作为复权因子
-                    if row['close'] > 0 and not pd.isna(row['close']):
+                    # 前复权：使用前收盘价计算涨跌幅
+                    if row['close'] > 0 and not pd.isna(row['close']) and row['pre_close'] > 0 and not pd.isna(row['pre_close']):
+                        factor *= (1 + (row['close'] - row['pre_close']) / row['pre_close'])
+                    elif row['close'] > 0 and not pd.isna(row['close']):
+                        # 如果无前收盘价数据，使用当日涨跌幅作为近似
                         factor *= (1 + (row['close'] - row['open']) / row['open'])
                 
                 df['adjust_factor'] = factors[::-1]
@@ -519,7 +522,10 @@ class DataService:
                 
                 for _, row in df.iterrows():
                     factors.append(factor)
-                    if row['close'] > 0 and not pd.isna(row['close']):
+                    if row['close'] > 0 and not pd.isna(row['close']) and row['pre_close'] > 0 and not pd.isna(row['pre_close']):
+                        factor *= (1 + (row['close'] - row['pre_close']) / row['pre_close'])
+                    elif row['close'] > 0 and not pd.isna(row['close']):
+                        # 如果无前收盘价数据，使用当日涨跌幅作为近似
                         factor *= (1 + (row['close'] - row['open']) / row['open'])
                 
                 df['adjust_factor'] = factors
@@ -1005,7 +1011,7 @@ class DataService:
                 coverage_rate = 0
             
             # 获取最近更新时间
-            cursor = self.storage.conn.execute('SELECT MAX(last_update_time) FROM task_progress WHERE status = ?', ('completed',))
+            cursor = self.storage.conn.execute('SELECT MAX(last_update_time) FROM task_progress WHERE status = %s', ('completed',))
             last_update = cursor.fetchone()[0]
             
             return {
