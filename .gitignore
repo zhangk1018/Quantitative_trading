@@ -1,9 +1,9 @@
-# Environment
+# ========== Environment ==========
 .env
 .env.local
 .env.*.local
 
-# Python
+# ========== Python (Backend) ==========
 __pycache__/
 *.py[cod]
 *$py.class
@@ -29,26 +29,79 @@ wheels/
 venv/
 ENV/
 env/
+.venv/
 
-# IDE
+# Testing & Coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ========== Node.js (Frontend) ==========
+node_modules/
+dist/
+build/
+.vite/
+.cache/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.eslintcache
+.stylelintcache
+
+# ========== IDE / Editor ==========
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-
-# Logs
-logs/
-*.log
-
-# Database
-*.db
-*.sqlite3
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Project specific
+# ========== Trae IDE (internal config, do NOT publish) ==========
+.trae/
+
+# ========== Logs ==========
+logs/
+*.log
 backend/logs/
+
+# ========== Database ==========
+*.db
+*.sqlite3
+*.sqlite
+*.sql.bak
+*.dump
+
+# ========== Backups & Temp ==========
+*.bak
+*.tmp
+*.orig
+*.rej
 temp/
+tmp/
+backup/
+backups/
+
+# ========== Project Specific ==========
+# Team daily reports (internal only)
+docs/daily_report/
+
+# Frontend runtime artifacts
+frontend/.vite/
+frontend/dist/
+
+# Backend runtime artifacts
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/.mypy_cache/
+
+# Data processing temp
+data/temp/
+data/cache/
