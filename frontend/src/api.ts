@@ -81,7 +81,7 @@ export async function fetchStocks(
  * @param period K线周期（默认: daily）
  * @param startDate 开始日期（可选）
  * @param endDate 结束日期（可选）
- * @param limit 数据条数限制（默认: 100）
+ * @param limit 数据条数限制（默认: 120，与后端 kline 接口对齐 KLINE-120）
  * @param signal 可选的取消信号
  * @returns K线数据响应（请求被中止时返回 null）
  */
@@ -90,9 +90,9 @@ export async function fetchKline(
   period: string = 'daily',
   startDate?: string,
   endDate?: string,
-  limit: number = 100,
+  limit: number = 120,
   signal?: AbortSignal
-): Promise<KLineResponse | null> {
+): Promise<ApiResponse<KLineResponse> | null> {
   const params = new URLSearchParams()
   params.set('period', period)
   params.set('limit', String(limit))

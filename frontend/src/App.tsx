@@ -4,8 +4,6 @@ import type { MetaResponseData, StockResponse, ApiResponse, FilterGroup } from '
 import StatusBar from './components/StatusBar'
 import FilterPanel from './components/FilterPanel'
 import StockTable from './components/StockTable'
-import { KLineChart } from './components/KLineChart'
-import { useKLineData } from './hooks/useKLineData'
 import { useBatchKLine } from './hooks/useBatchKLine'
 import { PATTERN_KEYS, type PatternKey } from './utils/patternDetector'
 
@@ -67,16 +65,13 @@ export default function App() {
   /** 错误信息 */
   const [error, setError] = useState<string | null>(null)
 
-  // ========== K线图表状态 ==========
-  const [showKLine, setShowKLine] = useState(false)
-  const {
-    data: klineData,
-    loading: klineLoading,
-    error: klineError,
-    stockCode: klineStockCode,
-    fetchData: fetchKLineData,
-    clearData: clearKLineData
-  } = useKLineData()
+  // ========== K线图表 - 打开新标签页 ==========
+  const handleShowKLine = useCallback((stockCode: string, stockName?: string) => {
+    const params = new URLSearchParams()
+    params.set('kline', stockCode)
+    if (stockName) params.set('name', stockName)
+    window.open(`/?${params.toString()}`, '_blank')
+  }, [])
 
   // ========== 形态识别 - 批量 K线（含 localStorage 缓存） ==========
   const {
@@ -97,17 +92,6 @@ export default function App() {
     })
     return hits
   }, [patternResults])
-
-  // ========== 事件处理：显示/隐藏 K线图 ==========
-  const handleShowKLine = useCallback((stockCode: string) => {
-    setShowKLine(true)
-    fetchKLineData(stockCode)
-  }, [fetchKLineData])
-
-  const handleCloseKLine = useCallback(() => {
-    setShowKLine(false)
-    clearKLineData()
-  }, [clearKLineData])
 
   // ========== 筛选状态 ==========
   /** 激活的筛选条件数组（如：break_high_20, pattern_hammer 等） */
@@ -344,7 +328,7 @@ export default function App() {
 
   // ========== 正常状态渲染 ==========
   return (
-    <div className="flex flex-col h-screen bg-gray-900 text-gray-200">
+    <div className="flex flex-col h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-200">
       {/* 顶部状态栏 */}
       <StatusBar
         tradeDate={meta.trade_date}
@@ -390,43 +374,20 @@ export default function App() {
             </div>
           )}
           
-          {/* 股票表格或 K线图表 */}
-          {showKLine ? (
-            <div className="flex flex-col h-full p-4">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold text-white">K线分析</h2>
-                <button
-                  onClick={handleCloseKLine}
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white transition-colors"
-                >
-                  返回列表
-                </button>
-              </div>
-              <div className="bg-white rounded-lg p-4 flex-1 overflow-hidden">
-                <KLineChart
-                  data={klineData}
-                  loading={klineLoading}
-                  error={klineError}
-                  stockCode={klineStockCode}
-                  height={500}
-                />
-              </div>
-            </div>
-          ) : (
-            filteredStocks && (
-              <StockTable
-                rows={filteredStocks}
-                total={total}
-                offset={offset}
-                limit={LIMIT}
-                sortBy={sortBy}
-                sortAsc={sortAsc}
-                activeFilters={activeFilters}
-                onSort={handleSort}
-                onPageChange={setOffset}
-                onRowClick={handleShowKLine}
-              />
-            )
+          {/* 股票表格 */}
+          {filteredStocks && (
+            <StockTable
+              rows={filteredStocks}
+              total={total}
+              offset={offset}
+              limit={LIMIT}
+              sortBy={sortBy}
+              sortAsc={sortAsc}
+              activeFilters={activeFilters}
+              onSort={handleSort}
+              onPageChange={setOffset}
+              onRowClick={handleShowKLine}
+            />
           )}
         </main>
       </div>

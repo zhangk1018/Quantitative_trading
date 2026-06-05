@@ -26,7 +26,8 @@ T = TypeVar('T')
 ALLOWED_SORT_FIELDS = {
     'change_pct', 'close', 'volume', 'amount',
     'turnover_rate', 'pe', 'pb', 'market_cap',
-    'circ_mv', 'rsi_6', 'rsi_12', 'rsi_24',
+    'circ_mv', 'ma5', 'ma10', 'ma20',
+    'rsi_6', 'rsi_12', 'rsi_24',
     'macd', 'boll_upper', 'boll_mid', 'boll_lower',
     'high', 'low', 'open', 'pre_close', 'change',
     'kdj_k', 'kdj_d', 'kdj_j', 'cci',
@@ -34,7 +35,7 @@ ALLOWED_SORT_FIELDS = {
     'volume_ratio', 'vol_ratio_5',
     'net_mf_amount', 'net_mf_vol',
     'float_share', 'total_share',
-    'turnover_rate', 'turnover_rate_f',
+    'turnover_rate_f',
     'consec_up_days',
 }
 
@@ -573,7 +574,7 @@ class MetaResponse(BaseModel):
 # ============================================
 
 class KLineItem(BaseModel):
-    """单根K线数据"""
+    """单根K线数据（含技术指标）"""
     
     trade_date: date = Field(..., description="交易日期")
     open: Decimal = Field(..., description="开盘价", ge=0)
@@ -582,6 +583,16 @@ class KLineItem(BaseModel):
     close: Decimal = Field(..., description="收盘价", ge=0)
     volume: int = Field(..., description="成交量", ge=0)
     amount: Decimal = Field(..., description="成交额", ge=0)
+    
+    # 技术指标（信号生成需要）
+    ma5: Optional[Decimal] = Field(None, description="5日均线")
+    ma10: Optional[Decimal] = Field(None, description="10日均线")
+    ma20: Optional[Decimal] = Field(None, description="20日均线")
+    rsi_6: Optional[Decimal] = Field(None, description="RSI6")
+    macd: Optional[Decimal] = Field(None, description="MACD")
+    boll_upper: Optional[Decimal] = Field(None, description="布林上轨")
+    boll_mid: Optional[Decimal] = Field(None, description="布林中轨")
+    boll_lower: Optional[Decimal] = Field(None, description="布林下轨")
     
     class Config:
         from_attributes = True
@@ -615,5 +626,10 @@ class SignalResponse(BaseModel):
     """买卖信号响应模型"""
     
     stock_code: str = Field(..., description="股票代码")
+    stock_name: Optional[str] = Field(None, description="股票名称")
+    listed_board: Optional[str] = Field(None, description="上市板块")
+    signal_type: Optional[str] = Field(None, description="信号类型")
+    start_date: Optional[str] = Field(None, description="开始日期")
+    end_date: Optional[str] = Field(None, description="结束日期")
     signals: List[SignalItem] = Field(..., description="信号列表")
     count: int = Field(..., description="信号数量")

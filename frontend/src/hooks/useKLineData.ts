@@ -39,7 +39,7 @@ interface UseKLineDataReturn {
 export function useKLineData(
   options: UseKLineDataOptions = {}
 ): UseKLineDataReturn {
-  const { limit = 100, period = 'daily' } = options
+  const { limit = 120, period = 'daily' } = options
 
   const [data, setData] = useState<KLineItem[]>([])
   const [indicators, setIndicators] = useState<IndicatorSeries | null>(null)
@@ -89,7 +89,7 @@ export function useKLineData(
         // 如果缓存已有 limit 条，理论上增量只有几条；但为了保险仍用 limit
         const fetchLimit = cached ? Math.max(limit, 30) : limit
 
-        const response = await fetchKline(
+        const apiResponse = await fetchKline(
           code,
           period,
           startDate,
@@ -98,14 +98,29 @@ export function useKLineData(
           controller.signal
         )
 
-        if (!response) return // 已中止
+        if (!apiResponse) return // 已中止
+
+        console.log('useKLineData: API 响应:', apiResponse)
+
+        // 解析 ApiResponse 信封
+        const response = apiResponse?.data
+
+        if (!response) {
+          console.warn('useKLineData: API 响应中无 data')
+          if (!cached) {
+            setData([])
+            setIndicators(null)
+          }
+          return
+        }
+
+        console.log('useKLineData: K线数据:', response)
 
         // 拉到了才需要合并并显示 loading
         if (response.data && response.data.length > 0) {
           // 合并 + 写回缓存
           const merged = mergeAndCacheKLine(code, response.data)
-          // 如果本地无缓存而服务端又返回了 limit 条，merged.items.length 可能 > 100
-          // mergeAndCacheKLine 已 slice 到 KEEP_DAYS
+          console.log('useKLineData: 合并后数据:', merged)
           setData(merged.items)
           setIndicators(merged.indicators)
         } else if (!cached) {

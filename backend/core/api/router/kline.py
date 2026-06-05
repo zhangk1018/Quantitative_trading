@@ -1,67 +1,74 @@
 from fastapi import APIRouter, Path, Query, HTTPException, Depends
 import logging
 from typing import Optional
-from functools import lru_cache
-import re
 from datetime import datetime
 
 from core.api.models.schemas import KLineResponse
 from core.service.kline_service import KlineService
-from core.api.dependencies import get_loader
+from core.api.dependencies import get_loader, validate_stock_code_format, validate_date_range
+from collector.storage.postgresql_storage import PostgreSQLStorage
+from utils.config import config
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["K线数据接口"])
 
-# 股票代码校验正则 - 支持 000001.SZ、SH.000001、SZ.000001、000001 等多种格式
+# 股票代码校验正则 - 已迁移到 dependencies.py，复用公共常量
+# 见 dependencies.STOCK_CODE_PATTERN
+# 有效K线周期 - 已迁移到 dependencies.VALID_KLINE_PERIODS
+
+# 向后兼容别名（保留本模块的引用，避免破坏旧代码）
 STOCK_CODE_PATTERN = r'^(\d{6}\.(SH|SZ|BJ)|(SH|SZ)\d{6}|\d{6})$'
-# 有效K线周期
 VALID_KLINE_PERIODS = {'daily', 'weekly', 'monthly'}
 
 
 def validate_stock_code(code: str) -> str:
-    """校验并规范化股票代码"""
-    raw = code
-    code = code.strip().upper()
-    if not re.match(STOCK_CODE_PATTERN, code):
-        raise HTTPException(
-            status_code=400,
-            detail=f"股票代码格式错误: '{raw}'，应为6位数字或带 SH/SZ 前缀（如 000001 或 SZ.000001）"
-        )
-    return code
+    """校验并规范化股票代码（兼容函数，实际调用 dependencies.validate_stock_code_format）"""
+    return validate_stock_code_format(code)
 
 
 def validate_date(date_str: Optional[str], label: str = "日期") -> Optional[str]:
-    """校验日期格式 YYYY-MM-DD，返回规范化日期"""
+    """校验日期格式 YYYY-MM-DD 或 YYYYMMDD，返回规范化日期"""
     if not date_str:
         return None
     date_str = date_str.strip()
+    # 接受 YYYY-MM-DD 和 YYYYMMDD 两种格式
     try:
+        # 尝试 YYYY-MM-DD
         datetime.strptime(date_str, '%Y-%m-%d')
+        return date_str
+    except ValueError:
+        pass
+    try:
+        # 尝试 YYYYMMDD
+        datetime.strptime(date_str, '%Y%m%d')
         return date_str
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail=f"{label}格式错误: '{date_str}'，应为 YYYY-MM-DD（如 2026-06-01）"
+            detail=f"{label}格式错误: '{date_str}'，应为 YYYY-MM-DD 或 YYYYMMDD（如 2026-06-01 或 20260601）"
         )
 
 
-def validate_date_range(start: Optional[str], end: Optional[str]):
-    """校验日期范围：如果 start 和 end 均提供，必须 start <= end"""
-    if start and end and start > end:
-        raise HTTPException(
-            status_code=400,
-            detail=f"日期范围无效: start_date({start}) 不能晚于 end_date({end})"
-        )
+# validate_date_range 已迁移到 dependencies.py
 
 
 _kline_service: KlineService = None
 
 def get_kline_service() -> KlineService:
-    """获取 K线服务单例（同步）"""
+    """获取 K线服务（单例，注入 PostgreSQLStorage 读取真实数据）"""
     global _kline_service
     if _kline_service is None:
         loader = get_loader()
-        _kline_service = KlineService(loader)
+        db_config = config.get('database', {})
+        storage = PostgreSQLStorage({
+            'host': db_config.get('host', 'localhost'),
+            'port': db_config.get('port', 5432),
+            'database': db_config.get('database', 'quant_trading'),
+            'username': db_config.get('username', 'quant_user'),
+            'password': db_config.get('password', ''),
+        })
+        storage.connect()
+        _kline_service = KlineService(loader, storage)
     return _kline_service
 
 

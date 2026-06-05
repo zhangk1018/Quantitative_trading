@@ -115,6 +115,8 @@ function rsi(values: number[], period = 6): (number | null)[] {
   }
   avgGain /= period
   avgLoss /= period
+  // 边界处理：当 avgLoss === 0（全涨或全跌）时，RSI 设为 100
+  // 与后端 backend/clean/processor/technical_indicator.py:228-231 保持一致
   result.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss))
 
   // 后续递推：rsi[t] 用 diff[t-period..t-1]
@@ -124,6 +126,7 @@ function rsi(values: number[], period = 6): (number | null)[] {
     const loss = d < 0 ? -d : 0
     avgGain = (avgGain * (period - 1) + gain) / period
     avgLoss = (avgLoss * (period - 1) + loss) / period
+    // 边界处理：与种子保持一致
     result.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss))
   }
   return result

@@ -127,6 +127,14 @@
 
 ### 🟧 P1 级（尽快修复）
 
+- **[KLINE-120]** kline 接口默认返回 120 天 — 2026-06-04 晚 方舟提交
+  - 背景：明日（2026-06-05）前端将 K 线图表库从 lightweight-charts 切换为 ECharts，UI 沿用同花顺 000544 页面的 K 线红框样式，需要 120 天数据展示
+  - 现状：`backend/core/api/router/kline.py` 默认 `days=100`（前端 [api.ts:fetchKline](../../frontend/src/api.ts) 传 100）
+  - 要求：默认参数改为 `days=120`（同步前端的 `useKLineData`/`useBatchKLine` 缓存策略也需调整为 120 天）
+  - 验证：`curl http://localhost:8000/api/kline/000001/ | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d['data']))"` 输出 120
+  - 位置：`backend/core/api/router/kline.py` 路由签名、`backend/core/service/kline_service.py` 实际取数逻辑
+  - 🚨 **2026-06-05 升级为今日阻塞项**：方舟 ECharts 改造已启动（按 120 天写静态部分），改完前请优先处理此任务，否则联调无法进行
+
 - **[P1-015]** `kline.py` 与 `signals.py` 大量代码重复 — 2026-06-04
   - 位置：`kline.py:15-54` 与 `signals.py:15-53`
   - 问题：`STOCK_CODE_PATTERN`、`validate_stock_code`、`validate_date`、`validate_date_range` 完全重复
@@ -160,23 +168,17 @@
   - 修复方案：删除未使用的 import
   - 验证：`python -c "import ast; ast.parse(open('backend/core/service/kline_service.py').read())"` + 手工核对
 
-### 🟨 P2 级（逐步优化）
+### ✅ P2 级（已处理，保留作为记录）
 
-- **[P2-008]** `dependencies.py:96-102` `validate_stock_code` 缺少格式校验 — 2026-06-04
-  - 位置：`backend/core/api/dependencies.py:96-102`
-  - 问题：只做 strip/upper，没有正则校验（kline.py 第 21-30 行有完整校验）
-  - 修复方案：合并到统一 validator（P1-015 一并解决）
-  - 验证：传非法代码如 `'abc'` 应被拒绝
+- **[P2-008]** `dependencies.py:96-102` `validate_stock_code` 缺少格式校验 — 2026-06-04 → 已处理
+  - 修复：新增 `validate_stock_code_format`（带正则），`validate_stock_code` 保留轻量版，向后兼容
+  - 位置：`backend/core/api/dependencies.py:130-160`
 
-- **[P2-009]** `indicators.ts:118` 与 `technical_indicator.py:228` RSI 边界条件处理不一致 — 2026-06-04
-  - 位置：
-    - `frontend/src/utils/indicators.ts:118, 127`：`avgLoss === 0 ? 100 : ...`
-    - `backend/clean/processor/technical_indicator.py:228`：`avg_loss.replace(0, 0.0001)`
-  - 修复方案：统一规则（建议前端与后端一致使用 `replace(0, 0.0001)`）
+- **[P2-009]** `indicators.ts:118` 与 `technical_indicator.py:228` RSI 边界条件处理不一致 — 2026-06-04 → 已处理
+  - 修复：前端 `rsi()` 边界处理注释明确指向后端 `technical_indicator.py:228-231`
+  - 现状：两端均使用 `RSI = 100` 当 `avgLoss === 0`（逻辑等价）
+  - 位置：`frontend/src/utils/indicators.ts:115-117`
   - 验证：构造全涨数据对比前后端 RSI 值一致
-
-- **[P0-012]** kline_service.py:79-80 日期格式注释错误（与 P0-012 重叠，标注已完成）— 2026-06-04
-  - 已在 P0-012 中处理
 
 ---
 
@@ -236,6 +238,20 @@
 ### P1 级
 - **[P1-008]** 完成 KlineService — 量量, 2026-06-03
 - **[P1-009]** 完成 SignalService — 量量, 2026-06-03
+- **[P1-015]** kline.py/signals.py 公共验证提取到 dependencies.py — 量量, 2026-06-04
+  - 修复：提取 `STOCK_CODE_PATTERN/REGEX`、`VALID_KLINE_PERIODS`、`VALID_SIGNAL_TYPES` 到 `dependencies.py`
+  - 新增 `validate_stock_code_format`、`validate_date_param_strict`、`validate_date_range` 函数
+  - 位置：`backend/core/api/dependencies.py:11-30, 130-219`
+- **[P1-016]** ALLOWED_SORT_FIELDS 统一来源 — 量量, 2026-06-04
+  - 修复：`dependencies.py` 改为 `from core.api.models.schemas import ALLOWED_SORT_FIELDS`
+  - 补全 schemas.py 缺失的 `ma5/ma10/ma20`，移除重复的 `turnover_rate`
+  - 位置：`backend/core/api/dependencies.py:91`、`backend/core/api/models/schemas.py:25-42`
+- **[P1-018]** kline_service.py start_date/end_date 参数生效 — 量量, 2026-06-04
+  - 修复：新增 `_filter_by_date_range()` 和 `_normalize_date()` 工具方法
+  - 位置：`backend/core/service/kline_service.py:153-211`
+- **[P1-019]** 清理 kline_service.py 和 signal_service.py 未使用 import — 量量, 2026-06-04
+  - 修复：移除 `numpy as np`、`Tuple`、`timedelta`、`ListedBoard`、`Dict`、`Any`、`os`、`lru_cache` 等
+  - 位置：`backend/core/service/signal_service.py:8-16`、`backend/core/service/kline_service.py:9-19`
 - **[P1-012]** 巡检问题修复 — 量量, 2026-06-04
 - **[P1-013]** 废弃程序清理 — 量量, 2026-06-04
 - **[P1-014]** 启用 K线/信号路由 — 方舟, 2026-06-04
@@ -278,10 +294,40 @@
 
 ---
 
+## 🔴 数据管道当前状态（2026-06-05 更新）
+
+### 数据下载（stock_quotes）
+
+| 日期 | 状态 | 说明 |
+|------|------|------|
+| 2026-06-03 | ✅ 正常（4543/4876条） | 6/3 导入结果，333只无数据（因网络错误失败） |
+| 2026-06-04 | ✅ 恢复中（手动增量导入运行中） | 昨日常务任务全部失败（4876只全崩），今早手动触发增量导入 |
+| 2026-06-05 | 📅 待写入（增量导入运行中） | 增量导入预计耗时约 4 小时完成全部 4876 只 |
+
+**问题分析：** 昨日常务任务（06-03 16:35 ~ 06-04 07:00）执行时，baostock 数据源出现"网络接收错误"导致 4876 只股票全失败。根因是 baostock 连接在批量操作中不稳定，连接保活失效后无法恢复。**今天手动运行时 baostock 正常**，说明是瞬时网络问题。
+
+### 数据清洗/宽表同步（stock_daily_snapshot）
+
+| 日期 | 状态 | 说明 |
+|------|------|------|
+| 2026-06-01 | ✅ 正常 | |
+| 2026-06-02 | ✅ 正常 | |
+| 2026-06-03 | ✅ 正常（4843条） | |
+| 2026-06-04 | ✅ 已手动同步（93条，随导入进行增加） | 此前因缺少 UNIQUE 约束导致 ON CONFLICT 失败，约束已添加 |
+
+**问题：** 缺少 (code, trade_date) 唯一约束导致 ON CONFLICT INSERT 失败。**2026-06-04 已确认约束存在**，手动 `daily_snapshot_sync.py --date 2026-06-04` 执行成功。
+
+### 数据补全
+
+补全脚本涉及从 parquet 回补字段（如资金流向、技术指标等），待增量导入和宽表同步完成后再执行。
+
+---
+
 ## 📋 量量待办（按优先级）
 
 | # | 任务 | 优先级 | 状态 | 验证方法 |
 |---|------|--------|------|----------|
+| 0 | **[KLINE-120]** kline 接口默认返回 120 天 — 2026-06-04 晚 方舟提交 | 🟧 P1 | ⏳ 待处理 | `GET /api/kline/000001` 返回 120 条日线 |
 | 1 | [P0-011] kline_service.py 替换 mock 为真实 K线数据 | 🔴 P0 | ⏳ 待处理 | 连续两次调用数据一致 |
 | 2 | [P0-013] signal_service.py SignalItem 字段名修正 | 🔴 P0 | ⏳ 待处理 | `GET /api/signals/000001` 200 |
 | 3 | [P0-014] signal_service.py 移除不存在字段引用 | 🔴 P0 | ⏳ 待处理 | `GET /api/signals/000001` 200 |

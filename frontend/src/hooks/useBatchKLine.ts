@@ -138,7 +138,7 @@ export function useBatchKLine(): UseBatchKLineReturn {
               : undefined
             const fetchLimit = cached ? Math.max(limit, 30) : limit
 
-            const res = await fetchKline(
+            const apiRes = await fetchKline(
               code,
               'daily',
               startDate,
@@ -146,6 +146,8 @@ export function useBatchKLine(): UseBatchKLineReturn {
               fetchLimit,
               controller.signal
             )
+            const res = apiRes?.data
+            console.log('useBatchKLine:', code, 'API 响应:', apiRes)
             if (res?.data && res.data.length > 0) {
               // 写 klineCache（同时计算并缓存 indicators）
               const mergedK = mergeAndCacheKLine(code, res.data)

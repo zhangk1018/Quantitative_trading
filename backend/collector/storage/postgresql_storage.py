@@ -216,8 +216,16 @@ class PostgreSQLStorage(BaseStorage):
                    start_date: Optional[str] = None,
                    end_date: Optional[str] = None) -> pd.DataFrame:
         """获取行情数据"""
+        # cycle 字段映射: daily -> 1d, weekly -> 1w, monthly -> 1m
+        cycle_map = {'daily': '1d', '1d': '1d', 'day': '1d',
+                     'weekly': '1w', '1w': '1w', 'week': '1w',
+                     'monthly': '1m', '1m': '1m', 'month': '1m'}
+        cycle = cycle_map.get(cycle.lower(), cycle)
+        
+        # 使用 psycopg2 原生 execute + fetch 而非 pd.read_sql(params=...)
+        # 因为 pd.read_sql 带 params 参数在 psycopg2 下不兼容，返回空结果
         query = """
-            SELECT code, cycle, trade_date, open, high, low, close, volume, amount, adjust_type
+            SELECT code, cycle, trade_date, open, high, low, close, pre_close, volume, amount, adjust_type
             FROM stock_quotes
             WHERE code = %s AND cycle = %s
         """
@@ -233,8 +241,14 @@ class PostgreSQLStorage(BaseStorage):
         query += " ORDER BY trade_date"
 
         try:
-            df = pd.read_sql(query, self.conn, params=params)
-            return df
+            cursor = self.conn.cursor()
+            cursor.execute(query, params)
+            colnames = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+            cursor.close()
+            if not rows:
+                return pd.DataFrame()
+            return pd.DataFrame(rows, columns=colnames)
         except Exception as e:
             logger.error(f"❌ 获取行情数据失败: {str(e)}")
             return pd.DataFrame()

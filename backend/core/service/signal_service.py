@@ -5,15 +5,15 @@ signal_service.py - 买卖信号服务
 """
 
 import pandas as pd
-import numpy as np
-from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional
+from datetime import datetime
 from decimal import Decimal
 import time
 
 from collector.db.loader import DataLoader
+from collector.storage.postgresql_storage import PostgreSQLStorage
 from core.api.models.schemas import (
-    SignalResponse, SignalItem, StockResponse, ListedBoard
+    SignalResponse, SignalItem, StockResponse,
 )
 
 class SignalService:
@@ -24,10 +24,11 @@ class SignalService:
     CACHE_TTL = 300    # 5分钟过期
     TIMEOUT = 30       # 超时时间（秒）
     
-    def __init__(self, loader: DataLoader):
+    def __init__(self, loader: DataLoader, storage: PostgreSQLStorage = None):
         self.loader = loader
         self.df = loader.df
         self.trade_date = loader.trade_date
+        self._storage = storage
         
         # 缓存存储
         self._cache = {}  # {stock_code_signal_type: (expire_time, data)}
@@ -85,10 +86,8 @@ class SignalService:
         # 记录开始时间，用于超时检测
         start_time = time.time()
         
-        # 验证股票代码
+        # 验证股票代码（获取基本信息，允许找不到）
         stock_info = self._get_stock_info(stock_code)
-        if not stock_info:
-            return None
         
         # 检查超时
         if time.time() - start_time > self.TIMEOUT:
@@ -96,7 +95,7 @@ class SignalService:
         
         # 加载K线数据
         from core.service.kline_service import KlineService
-        kline_service = KlineService(self.loader)
+        kline_service = KlineService(self.loader, self._storage)
         
         kline_response = kline_service.get_kline_data(
             stock_code=stock_code,
@@ -123,8 +122,8 @@ class SignalService:
         # 构建完整响应并缓存
         full_response = SignalResponse(
             stock_code=stock_code,
-            stock_name=stock_info.stock_name,
-            listed_board=stock_info.listed_board,
+            stock_name=stock_info.stock_name if stock_info else None,
+            listed_board=stock_info.listed_board if stock_info else None,
             signal_type=signal_type or "all",
             start_date=start_date,
             end_date=end_date,
@@ -168,10 +167,15 @@ class SignalService:
         if start_date is None and end_date is None and limit >= response.count:
             return response
         
-        # 转换日期格式用于比较
+        # 转换日期格式用于比较（兼容 YYYY-MM-DD 和 YYYYMMDD）
         def str_to_date(date_str):
             if isinstance(date_str, str):
-                return datetime.strptime(date_str, "%Y%m%d").date()
+                for fmt in ("%Y-%m-%d", "%Y%m%d"):
+                    try:
+                        return datetime.strptime(date_str, fmt).date()
+                    except ValueError:
+                        continue
+                raise ValueError(f"无法解析日期: {date_str}")
             return date_str
         
         # 筛选信号
@@ -223,7 +227,7 @@ class SignalService:
         data = []
         for kline in kline_items:
             data.append({
-                "date": kline.date,
+                "date": kline.trade_date,
                 "open": float(kline.open) if kline.open else 0,
                 "high": float(kline.high) if kline.high else 0,
                 "low": float(kline.low) if kline.low else 0,

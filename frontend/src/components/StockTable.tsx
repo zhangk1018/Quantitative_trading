@@ -163,8 +163,8 @@ interface Props {
   onSort: (key: string) => void
   /** 分页变化回调函数 */
   onPageChange: (offset: number) => void
-  /** 行点击回调（为后续 K线联动预留） */
-  onRowClick?: (code: string) => void
+  /** 行点击回调 */
+  onRowClick?: (code: string, name: string) => void
 }
 
 /**
@@ -270,7 +270,7 @@ export default function StockTable({
               <tr
                 key={row.stock_code}
                 // 行点击事件（如果提供了回调）
-                onClick={() => onRowClick?.(row.stock_code)}
+                onClick={() => onRowClick?.(row.stock_code, row.stock_name)}
                 className={[
                   // 偶数行和奇数行背景色交替
                   i % 2 === 0 ? 'bg-gray-800/50 hover:bg-gray-700' : 'bg-gray-800 hover:bg-gray-700',

@@ -3,12 +3,12 @@
  *
  * 策略：
  * - LRU 缓存，最多 200 只股票（约 1.5-2MB，可控）
- * - 每只股票保留最近 100 个交易日的 K线 + 一次计算的指标
+ * - 每只股票保留最近 120 个交易日的 K线 + 一次计算的指标（KLINE-120）
  * - 增量更新：下次请求时只取 lastDate 之后的数据
  * - 持久化到 localStorage（页面刷新仍生效）
  *
  * 收益：
- * - 第一次看 K线：全量拉 100 天
+ * - 第一次看 K线：全量拉 120 天
  * - 同日再次查看：纯本地读取，0 网络请求
  * - 隔日查看：只拉 1-2 天增量 + 合并
  * - 形态识别批量：优先复用单股缓存
@@ -20,8 +20,8 @@ import { computeAllIndicators, type IndicatorSeries } from './indicators'
 const KLINE_STORAGE_KEY = 'quant.kline_cache.v1'
 /** 最多缓存的股票数量（LRU 上限） */
 const MAX_KLINE_ENTRIES = 200
-/** 每只股票保留的天数 */
-const KEEP_DAYS = 100
+/** 每只股票保留的天数（KLINE-120：与后端 kline 默认 120 天保持一致） */
+const KEEP_DAYS = 120
 
 /** 单只股票的缓存条目 */
 interface KLineEntry {

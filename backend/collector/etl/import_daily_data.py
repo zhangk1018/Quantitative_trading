@@ -26,21 +26,18 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import argparse
-import time
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import List
+import threading
 
+from collector.datasource.base import DataSourceManager, SwitchStrategy
+from collector.datasource.tushare import TushareDataSource
 from collector.datasource.baostock import BaostockDataSource
 from clean.processor.base_importer import BaseDataImporter
-from utils.config import config
 from utils.logger import setup_logger
 
 logger = setup_logger('daily_import')
-
-# 请求间隔配置（符合各数据源频率限制）
-# BaoStock: ≤20次/分钟，建议0.1秒以上/次
-REQUEST_INTERVAL = 0.2  # 请求间隔（秒），保守设置避免触发限流
 
 
 class DailyDataImporter(BaseDataImporter):
@@ -48,18 +45,31 @@ class DailyDataImporter(BaseDataImporter):
 
     def __init__(self):
         super().__init__()
-        self.datasource = BaostockDataSource()
+        # 使用 DataSourceManager：Tushare 主数据源，Baostock 备用
+        self.datasource_manager = DataSourceManager(
+            sources=[
+                {'source': TushareDataSource(), 'weight': 1, 'priority': 0},
+                {'source': BaostockDataSource(), 'weight': 1, 'priority': 1}
+            ],
+            strategy=SwitchStrategy.FAILOVER,
+            auto_recovery=True
+        )
+        self.datasource_manager.connect()
         self._interrupted = False
 
     def close(self):
-        """关闭连接（与 disconnect 等效）"""
+        """关闭连接"""
+        try:
+            self.datasource_manager.disconnect()
+        except Exception:
+            pass
         self.disconnect()
 
     def import_stock_data(self, code: str, start_date: str, end_date: str) -> int:
         """导入单只股票日线数据（超时由 baostock.py 内部控制）"""
         try:
             df = self.retry_on_network_error(
-                self.datasource.get_kline,
+                self.datasource_manager.get_kline,
                 code, cycle='daily', start_date=start_date, end_date=end_date,
                 max_retries=3, initial_delay=5, max_delay=30
             )
@@ -200,12 +210,191 @@ class DailyDataImporter(BaseDataImporter):
             progress = int((i / total_stocks) * 100)
             self.update_task_progress('running', progress, f"已完成 {i}/{total_stocks} 只股票")
 
-            # 使用配置的请求间隔，避免触发频率限制
-            time.sleep(REQUEST_INTERVAL)
-
         logger.info(f"全量导入完成: 成功 {success_count}, 失败 {fail_count}, 跳过 {skip_count}, 总记录 {total_records}")
         self.update_task_progress('completed', 100,
                                  f"全量导入完成: 成功 {success_count}, 失败 {fail_count}, 跳过 {skip_count}, 总记录 {total_records}")
+        
+        # ===== 任务总结日志 =====
+        logger.info("=" * 70)
+        logger.info(f"📊 【全量导入任务总结】")
+        logger.info(f"   • 任务状态: {'全部完成' if fail_count == 0 else f'部分完成(失败{fail_count}只)'}")
+        logger.info(f"   • 处理股票: {total_stocks} 只")
+        logger.info(f"   • 成功导入: {success_count} 只")
+        logger.info(f"   • 导入失败: {fail_count} 只")
+        logger.info(f"   • 跳过(已有数据): {skip_count} 只")
+        logger.info(f"   • 总记录数: {total_records:,} 条")
+        if fail_count > 0:
+            logger.warning(f"   ⚠️  警告: 有 {fail_count} 只股票导入失败，请检查网络或数据源状态")
+        logger.info(f"   • 数据覆盖: 从 {start_date if start_date else '上市日'} 到 {end_date if end_date else '最新'}")
+        logger.info("=" * 70)
+
+    def parallel_import(self, codes: List[str], start_date: str = None, end_date: str = None):
+        """SH/SZ 双线程并行导入：
+        - 沪市(6xxx) → TushareDataSource
+        - 深市(0xxx, 3xxx) → BaostockDataSource
+        两线程同时跑，互为备份。
+        """
+        # 按市场分拆
+        sh_codes = [c for c in codes if c.startswith('6')]
+        sz_codes = [c for c in codes if c.startswith(('0', '3'))]
+
+        logger.info(f"📦 并行导入启动: 沪市 {len(sh_codes)} 只 → Tushare, 深市 {len(sz_codes)} 只 → Baostock")
+
+        result = {'sh': {}, 'sz': {}}
+
+        def run_sh():
+            """沪市线程：Tushare 主数据源，Baostock 备用"""
+            mgr = DataSourceManager(
+                sources=[
+                    {'source': TushareDataSource(), 'weight': 1, 'priority': 0},
+                    {'source': BaostockDataSource(), 'weight': 1, 'priority': 1}
+                ],
+                strategy=SwitchStrategy.FAILOVER,
+                auto_recovery=True
+            )
+            mgr.connect()
+            try:
+                self._run_market('SH', sh_codes, mgr, start_date, end_date, result)
+            finally:
+                mgr.disconnect()
+
+        def run_sz():
+            """深市线程：Baostock 主数据源，Tushare 备用（互为备份）"""
+            mgr = DataSourceManager(
+                sources=[
+                    {'source': BaostockDataSource(), 'weight': 1, 'priority': 0},
+                    {'source': TushareDataSource(), 'weight': 1, 'priority': 1}
+                ],
+                strategy=SwitchStrategy.FAILOVER,
+                auto_recovery=True
+            )
+            mgr.connect()
+            try:
+                self._run_market('SZ', sz_codes, mgr, start_date, end_date, result)
+            finally:
+                mgr.disconnect()
+
+        t_sh = threading.Thread(target=run_sh, name='SH-Thread')
+        t_sz = threading.Thread(target=run_sz, name='SZ-Thread')
+
+        t_sh.start()
+        t_sz.start()
+
+        t_sh.join()
+        t_sz.join()
+
+        # 汇总结果
+        sh = result['sh']
+        sz = result['sz']
+        total_success = sh.get('success', 0) + sz.get('success', 0)
+        total_fail = sh.get('fail', 0) + sz.get('fail', 0)
+        total_skip = sh.get('skip', 0) + sz.get('skip', 0)
+        total_records = sh.get('records', 0) + sz.get('records', 0)
+
+        msg = f"并行导入完成: 沪市(SH→Tushare) 成功{sh.get('success',0)}/失败{sh.get('fail',0)}, 深市(SZ→Baostock) 成功{sz.get('success',0)}/失败{sz.get('fail',0)}, 总记录 {total_records}"
+        logger.info(msg)
+        self.update_task_progress('completed', 100, msg)
+        
+        # ===== 任务总结日志 =====
+        logger.info("=" * 70)
+        logger.info(f"📊 【并行导入任务总结】")
+        logger.info(f"   • 任务状态: {'全部完成' if total_fail == 0 else f'部分完成(失败{total_fail}只)'}")
+        logger.info(f"   • 处理股票: {len(codes)} 只")
+        logger.info(f"   • ├── 沪市(SH→Tushare): {len(sh_codes)} 只")
+        logger.info(f"   • │   ├── 成功: {sh.get('success', 0)} 只")
+        logger.info(f"   • │   └── 失败: {sh.get('fail', 0)} 只")
+        logger.info(f"   • └── 深市(SZ→Baostock): {len(sz_codes)} 只")
+        logger.info(f"   •     ├── 成功: {sz.get('success', 0)} 只")
+        logger.info(f"   •     └── 失败: {sz.get('fail', 0)} 只")
+        logger.info(f"   • 跳过(已有数据): {total_skip} 只")
+        logger.info(f"   • 总记录数: {total_records:,} 条")
+        if total_fail > 0:
+            logger.warning(f"   ⚠️  警告: 有 {total_fail} 只股票导入失败，请检查网络或数据源状态")
+        logger.info(f"   • 数据覆盖: 从 {start_date if start_date else '上市日'} 到 {end_date if end_date else '最新'}")
+        logger.info("=" * 70)
+        
+        return total_success, total_fail, total_skip, total_records
+
+    def _run_market(self, market: str, codes: List[str], mgr: DataSourceManager,
+                    start_date: str, end_date: str, result: dict):
+        """单市场导入（供并行线程调用）"""
+        success = fail = skip = records = 0
+        total = len(codes)
+
+        # 预查询已有数据的股票
+        last_date_cache = {}
+        if not start_date:
+            try:
+                last_date_cache = self.batch_get_last_trade_date(codes)
+            except Exception:
+                pass
+
+        for i, code in enumerate(codes, 1):
+            if getattr(self, '_interrupted', False):
+                break
+
+            if i % 100 == 0:
+                self._ensure_db_connected()
+
+            formatted = self._format_code(code)
+            if not formatted:
+                continue
+
+            last_date = last_date_cache.get(code)
+            if last_date:
+                skip += 1
+                if skip <= 3:
+                    logger.debug(f"[{market}] {code} 已有数据({last_date})，跳过")
+                continue
+
+            current_start = start_date
+            if not current_start:
+                with self.storage.conn.cursor() as cursor:
+                    cursor.execute("SELECT list_date FROM stock_basic WHERE code = %s", (formatted,))
+                    r = cursor.fetchone()
+                    current_start = r[0] if r else '2000-01-01'
+
+            try:
+                df = self.retry_on_network_error(
+                    mgr.get_kline, code, cycle='daily',
+                    start_date=current_start, end_date=end_date,
+                    max_retries=3, initial_delay=5, max_delay=30
+                )
+                if df is None or df.empty:
+                    fail += 1
+                    continue
+
+                df = self._process_kline_data(df)
+                if df is None or df.empty:
+                    fail += 1
+                    continue
+
+                df['code'] = formatted
+                df['cycle'] = '1d'
+                df['adjust_type'] = 'qfq'
+                df = df[['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close', 'volume', 'amount', 'adjust_type']]
+
+                cnt = self.storage.save_quotes(df)
+                if cnt > 0:
+                    success += 1
+                    records += cnt
+                else:
+                    fail += 1
+
+                if i % 200 == 0 or i == total:
+                    logger.info(f"[{market}] 进度 {i}/{total}")
+
+                progress = int((i / total) * 100)
+                self.update_task_progress('running', progress, f"[{market}] {i}/{total}")
+
+            except Exception as e:
+                logger.error(f"[{market}] {code} 失败: {e}")
+                fail += 1
+
+        result[market.lower()] = {
+            'success': success, 'fail': fail, 'skip': skip, 'records': records
+        }
+        logger.info(f"[{market}] 完成: 成功 {success}, 失败 {fail}, 跳过 {skip}, 记录 {records}")
 
     def incremental_import(self):
         """增量导入"""
@@ -257,12 +446,22 @@ class DailyDataImporter(BaseDataImporter):
             progress = int((i / total_stocks) * 100)
             self.update_task_progress('running', progress, f"增量导入 {i}/{total_stocks} 只股票")
 
-            # 使用配置的请求间隔，避免触发频率限制
-            time.sleep(REQUEST_INTERVAL)
-
         self.update_task_progress('completed', 100,
                                   f"增量导入完成: 成功 {success_count}, 失败 {fail_count}, 总记录 {total_records}")
         logger.info(f"增量导入完成: 成功 {success_count}, 失败 {fail_count}, 总记录 {total_records}")
+        
+        # ===== 任务总结日志 =====
+        logger.info("=" * 70)
+        logger.info(f"📊 【增量导入任务总结】")
+        logger.info(f"   • 任务状态: {'全部完成' if fail_count == 0 else f'部分完成(失败{fail_count}只)'}")
+        logger.info(f"   • 处理股票: {total_stocks} 只")
+        logger.info(f"   • 成功导入: {success_count} 只")
+        logger.info(f"   • 导入失败: {fail_count} 只")
+        logger.info(f"   • 总记录数: {total_records:,} 条")
+        if fail_count > 0:
+            logger.warning(f"   ⚠️  警告: 有 {fail_count} 只股票导入失败，请检查网络或数据源状态")
+        logger.info(f"   • 数据日期: {today}")
+        logger.info("=" * 70)
 
 
 def main():
@@ -271,6 +470,7 @@ def main():
     parser.add_argument('--start', type=str, help='开始日期（YYYY-MM-DD）')
     parser.add_argument('--end', type=str, help='结束日期（YYYY-MM-DD）')
     parser.add_argument('--incremental', action='store_true', help='增量导入模式')
+    parser.add_argument('--parallel', action='store_true', help='SH→Tushare、SZ→Baostock 双线程并行导入')
 
     args = parser.parse_args()
 
@@ -295,7 +495,10 @@ def main():
                 importer.create_task(task_name, {'mode': 'full'})
                 codes = importer.get_stock_list()
                 logger.info(f"开始全量导入: {len(codes)} 只股票")
-                importer.full_import(codes, args.start, args.end)
+                if args.parallel:
+                    importer.parallel_import(codes, args.start, args.end)
+                else:
+                    importer.full_import(codes, args.start, args.end)
     except (KeyboardInterrupt, SystemExit):
         if importer:
             importer._interrupted = True
