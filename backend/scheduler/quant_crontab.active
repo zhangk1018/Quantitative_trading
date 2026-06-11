@@ -1,0 +1,34 @@
+# ============================================
+# 量化交易定时任务 - Cron 版本
+# 更新时间: 2026-06-09 11:30
+# 更新内容: 宽表同步脚本切换为 sync_quotes_to_snapshot.py；
+#          修复 daily_snapshot_sync.py 已废弃（纯 SQL 版本，与 stock_indicators 不一致）；
+#          复权因子限频：Tushare 1次/小时，每日只跑一次（17:00 启动 24h 限频通过）；
+# ============================================
+
+# 每日 16:05 - 增量导入行情数据（周一至周五）
+5 16 * * 1-5 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/collector/etl/import_daily_data.py --incremental >> ./logs/cron/daily_import.log 2>&1
+
+# 每日 16:30 - 宽表同步（周一至周五，使用项目根目录的同步脚本）
+30 16 * * 1-5 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./sync_quotes_to_snapshot.py $(date -v -1d '+%Y-%m-%d') >> ./logs/cron/daily_sync.log 2>&1
+
+# 每日 16:35 - 日频基本面同步（周一至周五）
+35 16 * * 1-5 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/collector/etl/sync_daily_basic.py --latest >> ./logs/cron/daily_basic_sync.log 2>&1
+
+# 每日 17:30 - 复权因子同步（避开 Tushare 1次/小时限频，按代码段分批间隔 70 分钟）
+30 17 * * 1-5 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/collector/etl/sync_adj_factor.py --batch-size 200 --interval 4200 >> ./logs/cron/adj_factor_sync.log 2>&1
+
+# 每周日 02:00 - 更新股票基础信息
+0 2 * * 0 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/collector/etl/init_data.py >> ./logs/cron/stock_basic_update.log 2>&1
+
+# 每日 22:00 - 完整性检查
+0 22 * * * cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/clean/quality/check_data_quality.py >> ./logs/cron/integrity_check.log 2>&1
+
+# 每日 18:00 - 技术指标计算（全市场，已修复 save_indicators 时区 bug）
+0 18 * * 1-5 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/clean/etl/compute_indicators_daily.py >> ./logs/cron/indicators_compute.log 2>&1
+
+# 每日 18:30 - 信号预计算（依赖技术指标）
+30 18 * * 1-5 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/clean/etl/signal_precompute.py >> ./logs/cron/signal_precompute.log 2>&1
+
+# 每日 23:30 - cron 时间漂移检测
+30 23 * * * cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/scheduler/check_cron_drift.py >> ./logs/cron/drift_check.log 2>&1

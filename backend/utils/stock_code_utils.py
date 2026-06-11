@@ -37,8 +37,10 @@ def normalize_code(code: str) -> Optional[str]:
     code = str(code).strip()
     
     # 移除市场标识后缀/前缀
-    code = code.replace('.SH', '').replace('.SZ', '').replace('.sh', '').replace('.sz', '')
-    code = code.replace('SH', '').replace('SZ', '').replace('sh', '').replace('sz', '')
+    code = code.replace('.SH', '').replace('.SZ', '').replace('.BJ', '')
+    code = code.replace('.sh', '').replace('.sz', '').replace('.bj', '')
+    code = code.replace('SH', '').replace('SZ', '').replace('BJ', '')
+    code = code.replace('sh', '').replace('sz', '').replace('bj', '')
     code = code.replace('.', '')
     
     # 校验是否为6位数字
@@ -71,7 +73,7 @@ def validate_stock_code(code: str) -> bool:
         return True
     
     prefix3 = normalized[:3]
-    return prefix3 in {'002', '688'}
+    return prefix3 in {'002', '688', '920'}
 
 
 def get_exchange(code: str) -> Optional[str]:
@@ -93,6 +95,10 @@ def get_exchange(code: str) -> Optional[str]:
     # 上交所：600/601/602/603/605/688/689 开头
     if prefix in ['600', '601', '602', '603', '604', '605', '688', '689']:
         return 'SH'
+    
+    # 北交所：920/8 开头
+    if prefix in ['920'] or prefix.startswith('8'):
+        return 'BJ'
     
     # 深交所：其他前缀
     return 'SZ'
@@ -193,8 +199,8 @@ def classify_market(code: str) -> Tuple[str, str]:
     elif prefix in ['300', '301']:
         return ('sz_cyb', '创业板')
     
-    # 北交所: 8 开头
-    elif prefix.startswith('8'):
+    # 北交所: 920/8 开头
+    elif prefix in ['920'] or prefix.startswith('8'):
         return ('bj', '北交所')
     
     return ('unknown', '未知')
@@ -274,6 +280,7 @@ def is_a_stock(code: str) -> bool:
         '000', '001',                               # 深市主板
         '002', '003',                               # 中小板
         '300', '301',                               # 创业板
+        '920',                                      # 北交所
     ]
     
     return prefix in a_stock_prefixes

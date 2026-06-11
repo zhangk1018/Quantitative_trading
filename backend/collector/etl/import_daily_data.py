@@ -26,16 +26,17 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import argparse
+import subprocess
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import List
-import threading
 
 from collector.datasource.base import DataSourceManager, SwitchStrategy
 from collector.datasource.tushare import TushareDataSource
 from collector.datasource.baostock import BaostockDataSource
 from clean.processor.base_importer import BaseDataImporter
 from utils.logger import setup_logger
+from utils.stock_code_utils import normalize_code
 
 logger = setup_logger('daily_import')
 
@@ -56,6 +57,87 @@ class DailyDataImporter(BaseDataImporter):
         )
         self.datasource_manager.connect()
         self._interrupted = False
+
+    def import_by_trade_date(self, trade_date: str):
+        """
+        使用 Tushare 的 trade_date 参数批量导入指定日期的所有股票数据（带限流+容灾）
+        
+        Args:
+            trade_date: 交易日期，格式 YYYY-MM-DD
+        """
+        logger.info(f"🚀 使用批量模式导入 {trade_date} 的日线数据")
+        
+        try:
+            # 通过 TushareDataSource.batch_get_daily() 访问，内置限流控制
+            tushare = TushareDataSource()
+            tushare.connect()
+            df = tushare.batch_get_daily(trade_date)
+            tushare.disconnect()
+            
+            if df is None or df.empty:
+                logger.warning(f"⚠️  {trade_date} 没有数据")
+                return 0, 0, 0
+            
+            logger.info(f"✅ 获取到 {len(df)} 条原始数据")
+            
+            # 处理数据
+            df = self._process_batch_kline_data(df)
+            
+            if df is None or df.empty:
+                logger.warning(f"⚠️  {trade_date} 数据处理后为空")
+                return 0, 0, 0
+            
+            # 写入数据库
+            count = self.storage.save_quotes(df)
+            logger.info(f"✅ 成功导入 {count} 条记录")
+            
+            return len(df), 0, count
+            
+        except Exception as e:
+            logger.error(f"❌ 批量导入失败: {e}")
+            return 0, 1, 0
+
+    def _process_batch_kline_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """处理批量获取的K线数据"""
+        if df is None or df.empty:
+            return df
+        
+        # 重命名字段
+        df = df.rename(columns={
+            'ts_code': 'code',
+            'vol': 'volume',
+            'pre_close': 'pre_close'
+        })
+        
+        # 标准化股票代码：去除后缀（000001.SZ → 000001）
+        df['code'] = df['code'].apply(lambda x: normalize_code(x) or x)
+        
+        # 转换日期格式
+        df['trade_date'] = df['trade_date'].str.replace(r'(\d{4})(\d{2})(\d{2})', r'\1-\2-\3')
+        
+        # 转换数值类型
+        numeric_cols = ['open', 'high', 'low', 'close', 'pre_close', 'amount']
+        df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
+        
+        # volume: Tushare 返回的是手，转换为股数（*100），并处理类型转换
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce') * 100
+        
+        # 过滤无效数据
+        price_cols = ['open', 'high', 'low', 'close']
+        mask = (df[price_cols] > 0).all(axis=1) & df['volume'].notna() & (df['volume'] > 0)
+        df = df[mask]
+        
+        # 转换 volume 为 Int64 类型：先四舍五入到整数，再转换
+        df['volume'] = df['volume'].round().astype('Int64')
+        
+        # 添加必要字段
+        df['cycle'] = '1d'
+        df['adjust_type'] = 'qfq'
+        
+        # 选择需要的列
+        df = df[['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close', 'volume', 'amount', 'adjust_type']]
+        
+        return df
 
     def close(self):
         """关闭连接"""
@@ -103,8 +185,14 @@ class DailyDataImporter(BaseDataImporter):
         df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
         
         # volume 列需要特殊处理（保留 NaN 以便后续过滤）
-        df['volume'] = pd.to_numeric(df['volume'], errors='coerce').astype('Int64')
-        df['volume'] = df['volume'].where(df['volume'].notna() & (df['volume'] != ''), None)
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+        # 过滤掉无效值（NaN 和无穷大）
+        df['volume'] = df['volume'].where(df['volume'].notna() & df['volume'].notnull() & (df['volume'] != float('inf')) & (df['volume'] != float('-inf')), None)
+        # 只对非空值进行 Int64 转换
+        valid_mask = df['volume'].notna()
+        if valid_mask.any():
+            # 只转换有效值，避免类型转换错误
+            df.loc[valid_mask, 'volume'] = df.loc[valid_mask, 'volume'].astype('Int64')
         
         # 一次性过滤所有无效价格数据（避免多次 df = df[...] 创建副本）
         price_cols = ['open', 'high', 'low', 'close']
@@ -228,179 +316,79 @@ class DailyDataImporter(BaseDataImporter):
         logger.info(f"   • 数据覆盖: 从 {start_date if start_date else '上市日'} 到 {end_date if end_date else '最新'}")
         logger.info("=" * 70)
 
-    def parallel_import(self, codes: List[str], start_date: str = None, end_date: str = None):
-        """SH/SZ 双线程并行导入：
-        - 沪市(6xxx) → TushareDataSource
-        - 深市(0xxx, 3xxx) → BaostockDataSource
-        两线程同时跑，互为备份。
+    def incremental_import(self, parallel: bool = True):
+        """增量导入
+        
+        Args:
+            parallel: 是否使用 Tushare 批量接口（推荐），False 则使用单线程逐个股票导入
         """
-        # 按市场分拆
-        sh_codes = [c for c in codes if c.startswith('6')]
-        sz_codes = [c for c in codes if c.startswith(('0', '3'))]
-
-        logger.info(f"📦 并行导入启动: 沪市 {len(sh_codes)} 只 → Tushare, 深市 {len(sz_codes)} 只 → Baostock")
-
-        result = {'sh': {}, 'sz': {}}
-
-        def run_sh():
-            """沪市线程：Tushare 主数据源，Baostock 备用"""
-            mgr = DataSourceManager(
-                sources=[
-                    {'source': TushareDataSource(), 'weight': 1, 'priority': 0},
-                    {'source': BaostockDataSource(), 'weight': 1, 'priority': 1}
-                ],
-                strategy=SwitchStrategy.FAILOVER,
-                auto_recovery=True
-            )
-            mgr.connect()
-            try:
-                self._run_market('SH', sh_codes, mgr, start_date, end_date, result)
-            finally:
-                mgr.disconnect()
-
-        def run_sz():
-            """深市线程：Baostock 主数据源，Tushare 备用（互为备份）"""
-            mgr = DataSourceManager(
-                sources=[
-                    {'source': BaostockDataSource(), 'weight': 1, 'priority': 0},
-                    {'source': TushareDataSource(), 'weight': 1, 'priority': 1}
-                ],
-                strategy=SwitchStrategy.FAILOVER,
-                auto_recovery=True
-            )
-            mgr.connect()
-            try:
-                self._run_market('SZ', sz_codes, mgr, start_date, end_date, result)
-            finally:
-                mgr.disconnect()
-
-        t_sh = threading.Thread(target=run_sh, name='SH-Thread')
-        t_sz = threading.Thread(target=run_sz, name='SZ-Thread')
-
-        t_sh.start()
-        t_sz.start()
-
-        t_sh.join()
-        t_sz.join()
-
-        # 汇总结果
-        sh = result['sh']
-        sz = result['sz']
-        total_success = sh.get('success', 0) + sz.get('success', 0)
-        total_fail = sh.get('fail', 0) + sz.get('fail', 0)
-        total_skip = sh.get('skip', 0) + sz.get('skip', 0)
-        total_records = sh.get('records', 0) + sz.get('records', 0)
-
-        msg = f"并行导入完成: 沪市(SH→Tushare) 成功{sh.get('success',0)}/失败{sh.get('fail',0)}, 深市(SZ→Baostock) 成功{sz.get('success',0)}/失败{sz.get('fail',0)}, 总记录 {total_records}"
-        logger.info(msg)
-        self.update_task_progress('completed', 100, msg)
-        
-        # ===== 任务总结日志 =====
-        logger.info("=" * 70)
-        logger.info(f"📊 【并行导入任务总结】")
-        logger.info(f"   • 任务状态: {'全部完成' if total_fail == 0 else f'部分完成(失败{total_fail}只)'}")
-        logger.info(f"   • 处理股票: {len(codes)} 只")
-        logger.info(f"   • ├── 沪市(SH→Tushare): {len(sh_codes)} 只")
-        logger.info(f"   • │   ├── 成功: {sh.get('success', 0)} 只")
-        logger.info(f"   • │   └── 失败: {sh.get('fail', 0)} 只")
-        logger.info(f"   • └── 深市(SZ→Baostock): {len(sz_codes)} 只")
-        logger.info(f"   •     ├── 成功: {sz.get('success', 0)} 只")
-        logger.info(f"   •     └── 失败: {sz.get('fail', 0)} 只")
-        logger.info(f"   • 跳过(已有数据): {total_skip} 只")
-        logger.info(f"   • 总记录数: {total_records:,} 条")
-        if total_fail > 0:
-            logger.warning(f"   ⚠️  警告: 有 {total_fail} 只股票导入失败，请检查网络或数据源状态")
-        logger.info(f"   • 数据覆盖: 从 {start_date if start_date else '上市日'} 到 {end_date if end_date else '最新'}")
-        logger.info("=" * 70)
-        
-        return total_success, total_fail, total_skip, total_records
-
-    def _run_market(self, market: str, codes: List[str], mgr: DataSourceManager,
-                    start_date: str, end_date: str, result: dict):
-        """单市场导入（供并行线程调用）"""
-        success = fail = skip = records = 0
-        total = len(codes)
-
-        # 预查询已有数据的股票
-        last_date_cache = {}
-        if not start_date:
-            try:
-                last_date_cache = self.batch_get_last_trade_date(codes)
-            except Exception:
-                pass
-
-        for i, code in enumerate(codes, 1):
-            if getattr(self, '_interrupted', False):
-                break
-
-            if i % 100 == 0:
-                self._ensure_db_connected()
-
-            formatted = self._format_code(code)
-            if not formatted:
-                continue
-
-            last_date = last_date_cache.get(code)
-            if last_date:
-                skip += 1
-                if skip <= 3:
-                    logger.debug(f"[{market}] {code} 已有数据({last_date})，跳过")
-                continue
-
-            current_start = start_date
-            if not current_start:
-                with self.storage.conn.cursor() as cursor:
-                    cursor.execute("SELECT list_date FROM stock_basic WHERE code = %s", (formatted,))
-                    r = cursor.fetchone()
-                    current_start = r[0] if r else '2000-01-01'
-
-            try:
-                df = self.retry_on_network_error(
-                    mgr.get_kline, code, cycle='daily',
-                    start_date=current_start, end_date=end_date,
-                    max_retries=3, initial_delay=5, max_delay=30
-                )
-                if df is None or df.empty:
-                    fail += 1
-                    continue
-
-                df = self._process_kline_data(df)
-                if df is None or df.empty:
-                    fail += 1
-                    continue
-
-                df['code'] = formatted
-                df['cycle'] = '1d'
-                df['adjust_type'] = 'qfq'
-                df = df[['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close', 'volume', 'amount', 'adjust_type']]
-
-                cnt = self.storage.save_quotes(df)
-                if cnt > 0:
-                    success += 1
-                    records += cnt
-                else:
-                    fail += 1
-
-                if i % 200 == 0 or i == total:
-                    logger.info(f"[{market}] 进度 {i}/{total}")
-
-                progress = int((i / total) * 100)
-                self.update_task_progress('running', progress, f"[{market}] {i}/{total}")
-
-            except Exception as e:
-                logger.error(f"[{market}] {code} 失败: {e}")
-                fail += 1
-
-        result[market.lower()] = {
-            'success': success, 'fail': fail, 'skip': skip, 'records': records
-        }
-        logger.info(f"[{market}] 完成: 成功 {success}, 失败 {fail}, 跳过 {skip}, 记录 {records}")
-
-    def incremental_import(self):
-        """增量导入"""
         codes = self.get_stock_list()
         today = datetime.now().strftime('%Y-%m-%d')
 
+        if parallel:
+            logger.info("🚀 使用 Tushare 批量接口增量导入（优先）")
+            # 获取数据库中最新交易日
+            latest_date = self._get_latest_trade_date()
+            logger.info(f"📅 数据库中最新数据日期: {latest_date or '无数据'}")
+
+            if latest_date and latest_date >= today:
+                logger.info("✅ 数据已是最新，无需增量导入")
+                return
+
+            # 尝试使用 Tushare 批量接口导入缺失日期
+            batch_success = False
+            if latest_date:
+                logger.info(f"📤 从 {latest_date} 之后开始批量导入...")
+                cursor_date = latest_date
+                while cursor_date < today:
+                    next_date = self._increment_date(cursor_date)
+                    if not next_date or next_date > today:
+                        break
+                    logger.info(f"📥 批量导入 {next_date}...")
+                    total, fail, count = self.import_by_trade_date(next_date)
+                    if count > 0:
+                        batch_success = True
+                        logger.info(f"✅ {next_date} 导入 {count} 条")
+                    else:
+                        logger.info(f"⏭️  {next_date} 无数据（非交易日或已收盘）")
+                    cursor_date = next_date
+            else:
+                # 无历史数据，导入最近的交易日
+                logger.info("📥 无历史数据，尝试导入今日数据...")
+                total, fail, count = self.import_by_trade_date(today)
+                if count > 0:
+                    batch_success = True
+
+            if not batch_success:
+                logger.warning("⚠️  Tushare 批量接口未获取到数据，回退到单线程逐个导入（Tushare优先→Baostock备用）")
+                logger.info("📦 使用单线程逐个导入模式（每只股票先Tushare，失败则Baostock）")
+                self._single_thread_incremental(codes, today)
+        else:
+            logger.info("📦 使用单线程增量导入模式")
+            self._single_thread_incremental(codes, today)
+
+    def _get_latest_trade_date(self) -> str:
+        """查询 stock_quotes 表中最新交易日"""
+        try:
+            with self.storage.conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'"
+                )
+                result = cursor.fetchone()
+                if result and result[0]:
+                    return result[0].strftime('%Y-%m-%d') if hasattr(result[0], 'strftime') else str(result[0])
+            return None
+        except Exception as e:
+            logger.warning(f"查询最新交易日失败: {e}")
+            return None
+
+    def _increment_date(self, date_str: str) -> str:
+        """日期加一天"""
+        dt = datetime.strptime(date_str, '%Y-%m-%d') + timedelta(days=1)
+        return dt.strftime('%Y-%m-%d')
+
+    def _single_thread_incremental(self, codes: List[str], today: str):
+        """单线程增量导入（备用方法）"""
         total_stocks = len(codes)
         success_count = 0
         fail_count = 0
@@ -469,19 +457,56 @@ def main():
     parser.add_argument('--code', type=str, help='股票代码（如 000001），不指定则导入全部')
     parser.add_argument('--start', type=str, help='开始日期（YYYY-MM-DD）')
     parser.add_argument('--end', type=str, help='结束日期（YYYY-MM-DD）')
-    parser.add_argument('--incremental', action='store_true', help='增量导入模式')
-    parser.add_argument('--parallel', action='store_true', help='SH→Tushare、SZ→Baostock 双线程并行导入')
+    parser.add_argument('--date', type=str, help='指定交易日（YYYY-MM-DD），使用 Tushare trade_date 批量导入模式（推荐）')
+    parser.add_argument('--incremental', action='store_true', help='增量导入模式（优先Tushare批量，回退单线程逐个导入）')
+    parser.add_argument('--no-parallel', action='store_true', help='跳过Tushare批量接口，直接使用单线程逐个导入（Tushare优先→Baostock备用）')
+    parser.add_argument('--skip-health-check', action='store_true', help='跳过前置条件检查（不推荐）')
 
     args = parser.parse_args()
+
+    # 前置条件检查（避免在错误环境下浪费时间下载）
+    if not args.skip_health_check:
+        logger.info('🔍 执行前置条件检查...')
+        health_script = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            'collector', 'etl', 'pipeline_health_check.py'
+        )
+        if os.path.exists(health_script):
+            ret = subprocess.run(
+                [sys.executable, health_script, '--pre-import'],
+                capture_output=False
+            )
+            if ret.returncode != 0:
+                logger.error('❌ 前置条件检查未通过！')
+                logger.error('   使用 --skip-health-check 强制跳过（不推荐）')
+                logger.error('   或先执行: python pipeline_health_check.py --pre-import')
+                sys.exit(1)
+        else:
+            logger.warning(f'⚠️  前置检查脚本不存在: {health_script}（跳过检查）')
 
     importer = None
     try:
         importer = DailyDataImporter()
+        
+        # 使用 trade_date 批量导入模式（推荐）
+        if args.date:
+            task_name = f"日线数据导入_批量_{args.date}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            importer.create_task(task_name, {'mode': 'batch', 'date': args.date})
+            logger.info(f"📅 使用批量模式导入 {args.date} 的日线数据...")
+            total, fail, count = importer.import_by_trade_date(args.date)
+            importer.update_task_progress('completed', 100, f"批量导入完成: 总数 {total}, 失败 {fail}, 成功 {count} 条记录")
+            logger.info(f"✅ 批量导入完成: {count} 条记录")
+            return
+            
         if args.incremental:
             task_name = f"日线数据导入_增量_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             importer.create_task(task_name, {'mode': 'incremental'})
-            logger.info("开始增量导入...")
-            importer.incremental_import()
+            use_parallel = not args.no_parallel
+            if use_parallel:
+                logger.info("开始并行增量导入...")
+            else:
+                logger.info("开始单线程增量导入...")
+            importer.incremental_import(parallel=use_parallel)
         else:
             if args.code:
                 task_name = f"日线数据导入_单股_{args.code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -495,10 +520,7 @@ def main():
                 importer.create_task(task_name, {'mode': 'full'})
                 codes = importer.get_stock_list()
                 logger.info(f"开始全量导入: {len(codes)} 只股票")
-                if args.parallel:
-                    importer.parallel_import(codes, args.start, args.end)
-                else:
-                    importer.full_import(codes, args.start, args.end)
+                importer.full_import(codes, args.start, args.end)
     except (KeyboardInterrupt, SystemExit):
         if importer:
             importer._interrupted = True

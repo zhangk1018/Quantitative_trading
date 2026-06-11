@@ -29,7 +29,7 @@
 -- 日期：2026-06-02
 -- 关联文档：
 --   - data/DATA_SCHEMA.md（v3.2 变更记录）
---   - scripts/init_db.sql（v3.2 封版基线）
+--   - backend/collector/db/sql/init_db.sql（v3.2 封版基线）
 -- ==========================================
 
 \set ON_ERROR_STOP on

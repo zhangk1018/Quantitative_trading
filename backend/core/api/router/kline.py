@@ -3,7 +3,8 @@ import logging
 from typing import Optional
 from datetime import datetime
 
-from core.api.models.schemas import KLineResponse
+from shared.schemas import KLineResponse
+from shared.constants import ALLOWED_ADJ_METHODS
 from core.service.kline_service import KlineService
 from core.api.dependencies import get_loader, validate_stock_code_format, validate_date_range
 from collector.storage.postgresql_storage import PostgreSQLStorage
@@ -81,11 +82,15 @@ async def get_kline_data(
     period: str = Query("daily", description="K线周期，支持 daily/weekly/monthly"),
     start_date: Optional[str] = Query(None, description="开始日期，格式 YYYY-MM-DD"),
     end_date: Optional[str] = Query(None, description="结束日期，格式 YYYY-MM-DD"),
-    limit: int = Query(100, ge=1, le=1000, description="返回数量限制（1-1000）"),
+    limit: int = Query(150, ge=1, le=1000, description="返回数量限制（1-1000）"),
+    adj: str = Query(
+        "none",
+        description=f"复权方式: none/forward/backward (默认 none, 推荐 forward 避免跳空)",
+    ),
     kline_service: KlineService = KlineServiceDep
 ):
     """获取指定股票的K线数据"""
-    logger.info(f"获取K线: {stock_code}, 周期={period}")
+    logger.info(f"获取K线: {stock_code}, 周期={period}, 复权={adj}")
 
     # 参数校验
     code = validate_stock_code(stock_code)
@@ -96,12 +101,20 @@ async def get_kline_data(
             detail=f"不支持的K线周期: '{period}'，可选: {sorted(VALID_KLINE_PERIODS)}"
         )
 
+    if adj not in ALLOWED_ADJ_METHODS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的复权方式: '{adj}'，可选: {sorted(ALLOWED_ADJ_METHODS)}"
+        )
+
     validated_start = validate_date(start_date, "start_date")
     validated_end = validate_date(end_date, "end_date")
     validate_date_range(validated_start, validated_end)
 
     try:
-        data = kline_service.get_kline_data(code, validated_start, validated_end, period, limit)
+        data = kline_service.get_kline_data(
+            code, validated_start, validated_end, period, limit, adj_method=adj
+        )
     except Exception as e:
         logger.error(f"K线数据获取失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"K线服务异常: {str(e)}")

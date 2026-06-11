@@ -16,6 +16,42 @@
 export type ListedBoard = '主板' | '创业板' | '科创板' | '北交所'
 
 // ============================================
+// 选股策略（Strategy / ScreenerFilters）
+// ============================================
+
+/**
+ * 选股筛选条件
+ * 与 mocks/meta.ts 和 docs/design/CUSTOM_INDICATOR_AND_STRATEGY_DESIGN.md 对齐
+ */
+export interface ScreenerFilters {
+  /** 上市地筛选：['main_sh', 'main_sz', 'chinext', 'star', 'bse', 'kjj'] */
+  boards: string[];
+  /** 行业筛选：['银行', '地产', ...] */
+  industries: string[];
+  /** 形态/动量字段：['pattern_morning_star', 'break_high_20', ...] */
+  patterns: string[];
+  /** 排序字段 */
+  sortBy: string;
+  /** 排序方向 */
+  sortOrder: 'asc' | 'desc';
+  /** 取前 N 名 */
+  topN: number;
+}
+
+/**
+ * 选股策略
+ */
+export interface Strategy {
+  id: string;                    // UUID，本地生成
+  name: string;                  // 策略名
+  description?: string;          // 策略描述
+  author?: string;               // 策略作者（导入时记录来源）
+  filters: ScreenerFilters;
+  createdAt: string;             // ISO 8601
+  updatedAt: string;
+}
+
+// ============================================
 // 筛选相关类型（用于 FilterPanel）
 // ============================================
 
@@ -203,7 +239,7 @@ export interface MetaResponseData {
 /**
  * 单根K线数据
  * 
- * 对应后端: KLineItem (schemas.py:401-413)
+ * 对应后端: KLineItem (schemas.py:576-598)
  */
 export interface KLineItem {
   trade_date: string                    // 交易日期 (YYYY-MM-DD)
@@ -211,8 +247,18 @@ export interface KLineItem {
   high: number                          // 最高价
   low: number                           // 最低价
   close: number                         // 收盘价
-  volume: number                        // 成交量
-  amount: number                        // 成交额
+  volume: number                        // 成交量（手）
+  amount: number                        // 成交额（元）
+
+  // --- 技术指标字段（后端已计算好） ---
+  ma5?: number | null                   // 5日均线
+  ma10?: number | null                  // 10日均线
+  ma20?: number | null                  // 20日均线
+  rsi_6?: number | null                 // RSI6
+  macd?: number | null                  // MACD值
+  boll_upper?: number | null            // 布林带上轨
+  boll_mid?: number | null              // 布林带中轨
+  boll_lower?: number | null            // 布林带下轨
 }
 
 /**
@@ -232,12 +278,14 @@ export interface KLineResponse {
 
 /**
  * 单个买卖信号
- * 
+ *
  * 对应后端: SignalItem (schemas.py:428-437)
  */
 export interface SignalItem {
   trade_date: string                    // 信号日期 (YYYY-MM-DD)
-  signal_type: string                   // 信号类型（buy/sell）
+  signal_type: string                   // 技术型信号（rsi_oversold/macd_cross/bollinger_breakout/...）
+  /** 买卖方向（'buy' 买入 / 'sell' 卖出），由后端根据 signal_type 映射（P2-SCHEMA-20260609） */
+  direction: 'buy' | 'sell'
   price: number                         // 信号价格
   reason: string                        // 信号原因（如 MACD金叉）
 }

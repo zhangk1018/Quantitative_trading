@@ -1,0 +1,76 @@
+# ============================================
+# docker-compose.yml - 后端服务编排（数据库 + FastAPI）
+# ============================================
+# 用法:
+#   docker compose --env-file .env.production up -d
+#   docker compose --env-file .env.production down
+#   docker compose logs -f backend
+#   docker compose ps
+# ============================================
+
+name: quant-backend
+
+services:
+  # ---- PostgreSQL 数据库 ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: quant-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PG_DATABASE:-quant_trading}
+      POSTGRES_USER: ${PG_USER:-quant_user}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-quant_user} -d ${PG_DATABASE:-quant_trading}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - quant_net
+
+  # ---- 后端 FastAPI（端口 8000 暴露到宿主机）----
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: quant-backend:1.0.0
+    container_name: quant-backend
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - backend_data:/app/data
+    ports:
+      - "8000:8000"  # 暴露到宿主机，前端容器通过 host.docker.internal 访问
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - quant_net
+
+networks:
+  quant_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  backend_data:

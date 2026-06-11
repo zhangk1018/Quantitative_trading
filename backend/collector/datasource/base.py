@@ -571,17 +571,19 @@ def create_dsm(
     Returns:
         DataSourceManager实例
     """
+    from collector.datasource.tushare import TushareDataSource
     from collector.datasource.baostock import BaostockDataSource
     from collector.datasource.akshare import AkshareDataSource
     from collector.datasource.sina import SinaDataSource
     from collector.datasource.tencent import TencentDataSource
     
-    # 配置多数据源
+    # 配置多数据源：Tushare 主，Baostock/Akshare/Tencent/Sina 备用
     sources = [
-        {'source': BaostockDataSource(), 'weight': 3, 'priority': 0},  # 主数据源，权重最高
-        {'source': AkshareDataSource(), 'weight': 2, 'priority': 1},    # 备用1
-        {'source': TencentDataSource(), 'weight': 1, 'priority': 2},    # 备用2
-        {'source': SinaDataSource(), 'weight': 1, 'priority': 3}        # 备用3
+        {'source': TushareDataSource(), 'weight': 3, 'priority': 0},   # 主数据源（优先级最高）
+        {'source': BaostockDataSource(), 'weight': 2, 'priority': 1},   # 备用1
+        {'source': AkshareDataSource(), 'weight': 1, 'priority': 2},    # 备用2
+        {'source': TencentDataSource(), 'weight': 1, 'priority': 3},    # 备用3
+        {'source': SinaDataSource(), 'weight': 1, 'priority': 4}        # 备用4
     ]
     
     strategy_enum = {

@@ -34,7 +34,8 @@ MONITORED_TASKS = {
         'label': '下载',
     },
     'clean': {
-        'script_pattern': 'daily_snapshot_sync.py',
+        # 项目根目录下的 sync_quotes_to_snapshot.py（旧 daily_snapshot_sync.py 已废弃）
+        'script_pattern': 'sync_quotes_to_snapshot.py',
         'log_file': os.path.join(LOG_DIR, 'daily_sync.log'),
         'label': '清洗',
     },

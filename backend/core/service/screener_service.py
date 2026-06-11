@@ -42,12 +42,24 @@ class ScreenerService:
 
     def __init__(self, loader: DataLoader):
         self.loader = loader
-        self.df = loader.df
-        self.trade_date = loader.trade_date
-        self.field_counts = loader.field_counts
 
         # 初始化筛选字段配置
         self._init_filter_config()
+
+    # ------------------------------------------------------------------
+    # 数据访问属性（通过 loader 动态获取，支持 parquet 热更新）
+    # ------------------------------------------------------------------
+    @property
+    def df(self):
+        return self.loader.df
+
+    @property
+    def trade_date(self):
+        return self.loader.trade_date
+
+    @property
+    def field_counts(self):
+        return self.loader.field_counts
 
     # ------------------------------------------------------------------
     # 列名解析
@@ -215,6 +227,9 @@ class ScreenerService:
             if col not in df.columns:
                 continue
 
+            # 检查筛选字段类型（在所有分组中查找）
+            field_type = self._get_filter_field_type(field)
+
             if isinstance(condition, dict):
                 min_val = condition.get("min")
                 max_val = condition.get("max")
@@ -223,7 +238,15 @@ class ScreenerService:
                 if max_val is not None:
                     mask &= (df[col] <= max_val)
             elif isinstance(condition, bool):
-                mask &= (df[col] == (1 if condition else 0))
+                if field_type == "range":
+                    # 范围型字段的 bool 筛选：True → >0, False → <0
+                    if condition:
+                        mask &= (df[col] > 0)
+                    else:
+                        mask &= (df[col] < 0)
+                else:
+                    # 二进制/其他字段：精确匹配 0/1
+                    mask &= (df[col] == (1 if condition else 0))
             elif isinstance(condition, (list, tuple)):
                 # 处理列表类型的筛选条件，如多个行业
                 mask &= df[col].isin(condition)
@@ -231,6 +254,13 @@ class ScreenerService:
                 mask &= (df[col] == condition)
 
         return df[mask].copy()
+
+    def _get_filter_field_type(self, field: str) -> str:
+        """获取字段的筛选类型（range/binary），用于 _apply_filters 处理逻辑"""
+        for group in self.filter_config.values():
+            if field in group:
+                return group[field].get("type", "binary")
+        return "binary"
 
     def _apply_sorting(self, df: pd.DataFrame, sort_by: str, sort_order: str) -> pd.DataFrame:
         col = self.to_parquet_col(sort_by)
@@ -256,7 +286,6 @@ class ScreenerService:
     def _convert_to_stock_responses(self, df: pd.DataFrame) -> List[StockResponse]:
         stocks = []
         for _, row in df.iterrows():
-            ts_code = str(row.get("ts_code", ""))
             raw_date = str(row.get("trade_date", self.trade_date))
             try:
                 parsed_date = datetime.datetime.strptime(raw_date, "%Y%m%d").date()
@@ -265,7 +294,7 @@ class ScreenerService:
             stocks.append(StockResponse(
                 stock_code=str(row.get("code", "")),
                 stock_name=str(row.get("stock_name", "")),
-                listed_board=self.derive_listed_board(ts_code),
+                listed_board=self._to_listed_board(row.get("listed_board")),
                 trade_date=parsed_date,
                 industry=self._str_or_none(row.get("industry")),
                 sub_industry=self._str_or_none(row.get("sub_industry")),
@@ -378,6 +407,16 @@ class ScreenerService:
         if val is None or (isinstance(val, float) and pd.isna(val)):
             return None
         return str(val)
+
+    @staticmethod
+    def _to_listed_board(val) -> ListedBoard:
+        """将 Parquet listed_board 字段值转为 ListedBoard 枚举"""
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return ListedBoard.MAIN
+        for member in ListedBoard:
+            if member.value == val:
+                return member
+        return ListedBoard.MAIN
 
     def get_stock_by_code(self, stock_code: str) -> Optional[StockResponse]:
         """根据股票代码查询单只股票"""

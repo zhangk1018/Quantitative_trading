@@ -1,6 +1,18 @@
 /**
  * utils/indicators.ts - 前端技术指标计算
  *
+ * 数据来源决策：
+ * - 后端每个 KLineItem 已附带 ma5/ma10/ma20/rsi_6/macd/boll 预计算字段
+ * - 但为保证渲染效率和字段完整性，本模块统一计算全部指标（含后端未提供的字段）
+ * - 前端计算的指标与 klineCache 缓存配合，避免重复序列化
+ * - 如需与后端指标对齐验证，可对比 KLineItem.ma5 与 IndicatorSeries.ma5
+ *
+ * 数据排序约定：所有收盘价/最高价/最低价数组按日期从新到旧（DESCENDING）
+ * - values[0] = 最新交易日
+ * - values[length-1] = 最旧交易日
+ * - 与 klineCache 存储约定一致
+ * - 与轻量级图表组件输入约定相反（图表需要从旧到新）
+ *
  * 与后端 technical_indicator.py 算法一致（保持数值同步）：
  * - MA: 简单移动平均
  * - RSI: Wilder 平滑算法
@@ -17,6 +29,8 @@ export interface IndicatorSeries {
   ma5: (number | null)[]
   ma10: (number | null)[]
   ma20: (number | null)[]
+  ma30: (number | null)[]
+  ma60: (number | null)[]
   rsi6: (number | null)[]
   /** MACD 三线：DIF / DEA / MACD */
   macd: { dif: (number | null)[]; dea: (number | null)[]; macd: (number | null)[] }
@@ -259,6 +273,8 @@ export function computeAllIndicators(items: KLineLite[]): IndicatorSeries {
       ma5: [],
       ma10: [],
       ma20: [],
+      ma30: [],
+      ma60: [],
       rsi6: [],
       macd: { dif: [], dea: [], macd: [] },
       boll: { upper: [], mid: [], lower: [] },
@@ -276,6 +292,8 @@ export function computeAllIndicators(items: KLineLite[]): IndicatorSeries {
     ma5: sma(closes, 5),
     ma10: sma(closes, 10),
     ma20: sma(closes, 20),
+    ma30: sma(closes, 30),
+    ma60: sma(closes, 60),
     rsi6: rsi(closes, 6),
     macd: macd(closes),
     boll: boll(closes),

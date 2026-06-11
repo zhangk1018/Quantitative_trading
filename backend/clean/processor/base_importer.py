@@ -32,6 +32,7 @@ from functools import lru_cache
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
 from utils.logger import setup_logger
+from utils.stock_code_utils import normalize_code, is_a_stock
 
 logger = setup_logger('base_importer')
 
@@ -161,83 +162,21 @@ class BaseDataImporter(ABC):
 
     @staticmethod
     def _format_code(code: str) -> Optional[str]:
-        """标准化股票代码格式，统一为6位数字
+        """标准化股票代码格式，统一为6位纯数字
         
-        Args:
-            code: 股票代码（支持多种格式：000001, sz000001, 000001.SZ, sh.600000）
-        
-        Returns:
-            标准化后的6位数字代码，格式不合法返回None
-        
-        支持的输入格式：
-            - 纯数字：600000
-            - 带市场前缀：sh600000, sz000001
-            - 带点分隔：600000.SH, 000001.SZ, sh.600000, sz.000001
+        委托 utils.stock_code_utils.normalize_code 实现，
+        支持科创板(688xxx)、北交所(8xxxxx)等全市场代码。
         """
-        if not code:
-            return None
-        
-        code = str(code).strip()
-        
-        # 移除市场标识后缀/前缀
-        code = code.replace('.SH', '').replace('.SZ', '').replace('.sh', '').replace('.sz', '')
-        code = code.replace('SH', '').replace('SZ', '').replace('sh', '').replace('sz', '')
-        code = code.replace('.', '')
-        
-        # 校验是否为6位数字
-        if len(code) == 6 and code.isdigit():
-            # 进一步校验A股代码范围
-            # 支持的A股代码：
-            # - 沪市主板：600xxx, 601xxx, 603xxx, 605xxx
-            # - 深市主板：000xxx, 001xxx
-            # - 中小板：002xxx
-            # - 创业板：300xxx, 301xxx
-            # 不支持：科创板(688xxx)、B股(900xxx/200xxx)、北交所(8xxx)
-            if code.startswith('60') and not code.startswith('688'):  # 沪市主板（排除科创板）
-                return code
-            elif code.startswith('000') or code.startswith('001'):  # 深市主板
-                return code
-            elif code.startswith('002'):  # 中小板
-                return code
-            elif code.startswith('30'):  # 创业板（300xxx, 301xxx）
-                return code
-        
-        logger.warning(f"股票代码格式不合法: {code}")
-        return None
+        return normalize_code(code)
 
     @staticmethod
     def validate_stock_code(code: str) -> bool:
-        """校验股票代码格式（6位数字，且符合A股代码规则）
+        """校验股票代码是否为合法A股代码
         
-        A股代码规则：
-            - 60开头：上海证券交易所主板（排除688科创板）
-            - 000/001开头：深圳证券交易所主板
-            - 002开头：深圳证券交易所中小板
-            - 30开头：深圳证券交易所创业板
-        
-        Returns:
-            True表示格式合法，False表示格式不合法
+        委托 utils.stock_code_utils.is_a_stock 实现，
+        支持科创板(688xxx)、北交所(8xxxxx)等全市场代码。
         """
-        if not code:
-            return False
-        
-        code = str(code).strip()
-        match = re.match(r'^\d{6}$', code)
-        if not match:
-            return False
-        
-        prefix = code[:2]
-        # 60开头但不是688（科创板）
-        if prefix == '60' and not code.startswith('688'):
-            return True
-        # 00开头（000/001/002）
-        elif prefix == '00':
-            return True
-        # 30开头（创业板）
-        elif prefix == '30':
-            return True
-        
-        return False
+        return is_a_stock(code)
 
     def get_last_trade_date(self, code: str) -> Optional[str]:
         """获取股票最后交易日"""
@@ -517,8 +456,109 @@ class BaseDataImporter(ABC):
                 else:
                     logger.error(f"❌ 重试 {max_retries} 次后仍失败")
                     raise
+            except Exception as e:
+                # 识别 Tushare 限频异常：1次/分钟 或 1次/小时
+                msg = str(e)
+                if '频率超限' in msg or 'rate limit' in msg.lower():
+                    # 提取限制时间: 例如 "1次/小时" 或 "1次/分钟"
+                    import re
+                    m = re.search(r'(\d+)次/(\w+)', msg)
+                    if m:
+                        unit = m.group(2)
+                        if '小时' in unit or 'hour' in unit.lower():
+                            wait_sec = 3700  # 超过 1 小时
+                        else:
+                            wait_sec = 65
+                    else:
+                        wait_sec = 65
+
+                    logger.warning(
+                        f"⚠️  Tushare 限频 (第 {attempt}/{max_retries} 次): {msg}"
+                    )
+                    if attempt < max_retries:
+                        logger.info(f"    {wait_sec}秒后重试...")
+                        time.sleep(wait_sec)
+                        continue
+                    raise
+                # token 无效等明确错误：直接抛出
+                if 'token' in msg.lower() and ('invalid' in msg.lower() or '无效' in msg):
+                    logger.error(f"❌ Tushare token 无效: {e}")
+                    raise
+                # 其他未知异常：不重试
+                raise
 
         raise last_error
+
+    @staticmethod
+    def retry_with_failover(sources: list, method_name: str, max_total_attempts: int = 6,
+                            initial_delay: int = 5, **kwargs):
+        """多数据源故障切换重试（带指数退避）
+
+        适用于 Baostock → Tushare 故障切换场景：
+        1. 优先调用第 1 个数据源
+        2. 失败后自动切换到下一个数据源
+        3. 每个数据源内部走指数退避
+        4. 全部失败时抛错
+
+        Args:
+            sources: 数据源列表（按优先级排序）
+            method_name: 要调用的方法名
+            max_total_attempts: 总尝试次数上限（所有源合计）
+            initial_delay: 初始延迟
+            **kwargs: 方法参数
+
+        Returns:
+            方法返回值
+
+        Raises:
+            最后一次重试仍失败的异常
+        """
+        import time
+
+        attempts_left = max_total_attempts
+        last_error = None
+        delay = initial_delay
+        tried = set()
+
+        for idx, source in enumerate(sources):
+            if attempts_left <= 0:
+                break
+            if idx in tried:
+                continue
+            tried.add(idx)
+
+            try:
+                method = getattr(source, method_name)
+                # 对单数据源做退避重试
+                for attempt in range(1, attempts_left + 1):
+                    try:
+                        return method(**kwargs)
+                    except (ConnectionError, TimeoutError, OSError) as e:
+                        last_error = e
+                        logger.warning(
+                            f"⚠️  [{source.name}] 网络异常 (第 {attempt}): {e}"
+                        )
+                        if attempt < attempts_left:
+                            time.sleep(delay)
+                            delay = min(delay * 2, 30)
+                            attempts_left -= 1
+                        else:
+                            break
+            except Exception as e:
+                last_error = e
+                msg = str(e)
+                if '频率超限' in msg or 'rate limit' in msg.lower():
+                    logger.warning(f"⚠️  [{source.name}] 限频，切换下一数据源")
+                elif 'token' in msg.lower() and 'invalid' in msg.lower():
+                    logger.warning(f"⚠️  [{source.name}] token 异常，切换下一数据源")
+                else:
+                    logger.warning(f"⚠️  [{source.name}] 异常: {e}，切换下一数据源")
+                delay = initial_delay  # 切换后重置 delay
+                continue
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("无可用数据源")
 
     @staticmethod
     def validate_date_range(start_date: str, end_date: str) -> None:

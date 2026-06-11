@@ -1,6 +1,11 @@
 /**
  * utils/klineCache.ts - K线数据 + 技术指标本地缓存
  *
+ * 数据排序约定：所有数据按日期从新到旧（DESCENDING）存储和处理
+ * - 后端返回 ASCENDING → 写缓存时转为 DESCENDING
+ * - computeAllIndicators 接收 DESCENDING 数据
+ * - 图表渲染前由组件转为 ASCENDING
+ *
  * 策略：
  * - LRU 缓存，最多 200 只股票（约 1.5-2MB，可控）
  * - 每只股票保留最近 120 个交易日的 K线 + 一次计算的指标（KLINE-120）
@@ -18,6 +23,8 @@ import type { KLineItem } from '../types'
 import { computeAllIndicators, type IndicatorSeries } from './indicators'
 
 const KLINE_STORAGE_KEY = 'quant.kline_cache.v1'
+/** 缓存版本号：指标算法变更时递增，触发缓存的指标重算 */
+const CACHE_VERSION = 1
 /** 最多缓存的股票数量（LRU 上限） */
 const MAX_KLINE_ENTRIES = 200
 /** 每只股票保留的天数（KLINE-120：与后端 kline 默认 120 天保持一致） */
@@ -39,18 +46,24 @@ interface KLineEntry {
 
 /** 缓存结构 */
 interface CacheShape {
+  version: number
   entries: Record<string, KLineEntry>
 }
 
 function loadCache(): CacheShape {
   try {
     const raw = localStorage.getItem(KLINE_STORAGE_KEY)
-    if (!raw) return { entries: {} }
+    if (!raw) return { version: CACHE_VERSION, entries: {} }
     const parsed = JSON.parse(raw) as CacheShape
-    if (!parsed.entries) return { entries: {} }
+    // 版本不匹配 → 丢弃旧缓存（指标算法已变更）
+    if (parsed.version !== CACHE_VERSION) {
+      localStorage.removeItem(KLINE_STORAGE_KEY)
+      return { version: CACHE_VERSION, entries: {} }
+    }
+    if (!parsed.entries) return { version: CACHE_VERSION, entries: {} }
     return parsed
   } catch {
-    return { entries: {} }
+    return { version: CACHE_VERSION, entries: {} }
   }
 }
 
@@ -138,7 +151,7 @@ export function mergeAndCacheKLine(
   }
   newItems.forEach(it => map.set(it.trade_date, it))
 
-  // 按日期从新到旧排序
+  // 按日期从新到旧排序（DESCENDING：与 computeAllIndicators 约定一致）
   const merged = Array.from(map.values()).sort((a, b) =>
     b.trade_date.localeCompare(a.trade_date)
   )

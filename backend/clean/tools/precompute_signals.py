@@ -4,9 +4,10 @@
 
 功能：
 - 预计算所有股票的 MACD 金叉/死叉信号
+- 预计算 RSI 超买/超卖信号
+- 预计算 BOLL 突破信号
 - 支持全量计算和增量更新
 - 信号写入 trade_signals 表，供 API 查询使用
-- 规则：只写不读（预计算后写入数据库）
 
 用法：
     python backend/clean/tools/precompute_signals.py --all              # 全量计算
@@ -21,34 +22,22 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 import pandas as pd
 import numpy as np
-from sqlalchemy import create_engine, text
-from utils.config import load_config
-
-
-SIGNAL_TABLE_DDL = """
-CREATE TABLE IF NOT EXISTS trade_signals (
-    id SERIAL PRIMARY KEY,
-    code VARCHAR(32) NOT NULL,
-    trade_date DATE NOT NULL,
-    signal_type VARCHAR(32) NOT NULL,   -- 'golden_cross' | 'death_cross'
-    price NUMERIC(12, 4),
-    macd NUMERIC(12, 4),
-    macd_signal NUMERIC(12, 4),
-    macd_hist NUMERIC(12, 4),
-    created_at TIMESTAMP DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_trade_signals_code_date ON trade_signals(code, trade_date DESC);
-CREATE INDEX IF NOT EXISTS idx_trade_signals_type ON trade_signals(signal_type, trade_date DESC);
-"""
+from utils.config import config
+from collector.storage.postgresql_storage import PostgreSQLStorage
 
 
 def _ema(series: pd.Series, span: int) -> pd.Series:
     """计算指数移动平均"""
     return series.ewm(span=span, adjust=False).mean()
+
+
+def _sma(series: pd.Series, window: int) -> pd.Series:
+    """计算简单移动平均"""
+    return series.rolling(window=window, min_periods=1).mean()
 
 
 def compute_macd(close: pd.Series, span_fast=12, span_slow=26, span_signal=9):
@@ -61,144 +50,172 @@ def compute_macd(close: pd.Series, span_fast=12, span_slow=26, span_signal=9):
     return macd_line, signal_line, histogram
 
 
+def compute_rsi(close: pd.Series, period=6):
+    """计算 RSI 指标"""
+    delta = close.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period, min_periods=1).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period, min_periods=1).mean()
+    rs = gain / (loss + 1e-10)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+
+def compute_boll(close: pd.Series, period=20, num_std=2):
+    """计算 BOLL 指标"""
+    mid = _sma(close, period)
+    std = close.rolling(window=period, min_periods=1).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    return upper, mid, lower
+
+
 def extract_signals(df: pd.DataFrame) -> pd.DataFrame:
-    """从日线数据中提取 MACD 金叉/死叉信号"""
+    """从日线数据中提取 MACD/RSI/BOLL 信号"""
     if df is None or len(df) < 26:
         return pd.DataFrame()
 
     df = df.sort_values('trade_date').reset_index(drop=True)
     close = df['close'].astype(float)
-    macd_line, signal_line, _ = compute_macd(close)
+
+    # 计算指标
+    macd_line, signal_line, macd_hist = compute_macd(close)
+    rsi = compute_rsi(close)
+    boll_upper, boll_mid, boll_lower = compute_boll(close)
 
     signals = []
-    for i in range(1, len(df)):
-        if pd.isna(macd_line.iloc[i]) or pd.isna(signal_line.iloc[i]):
-            continue
-        prev_macd = macd_line.iloc[i - 1]
-        prev_signal = signal_line.iloc[i - 1]
-        curr_macd = macd_line.iloc[i]
-        curr_signal = signal_line.iloc[i]
 
-        # 金叉：MACD 上穿信号线
-        if prev_macd <= prev_signal and curr_macd > curr_signal:
-            signals.append({
-                'trade_date': df['trade_date'].iloc[i],
-                'signal_type': 'golden_cross',
-                'price': round(float(df['close'].iloc[i]), 4),
-                'macd': round(curr_macd, 4),
-                'macd_signal': round(curr_signal, 4),
-                'macd_hist': round(curr_macd - curr_signal, 4),
-            })
-        # 死叉：MACD 下穿信号线
-        elif prev_macd >= prev_signal and curr_macd < curr_signal:
-            signals.append({
-                'trade_date': df['trade_date'].iloc[i],
-                'signal_type': 'death_cross',
-                'price': round(float(df['close'].iloc[i]), 4),
-                'macd': round(curr_macd, 4),
-                'macd_signal': round(curr_signal, 4),
-                'macd_hist': round(curr_macd - curr_signal, 4),
-            })
+    for i in range(1, len(df)):
+        trade_date = df['trade_date'].iloc[i]
+        curr_close = close.iloc[i]
+
+        # MACD 金叉/死叉
+        if not pd.isna(macd_line.iloc[i]) and not pd.isna(signal_line.iloc[i]):
+            prev_macd = macd_line.iloc[i - 1]
+            prev_signal = signal_line.iloc[i - 1]
+            curr_macd_val = macd_line.iloc[i]
+            curr_signal_val = signal_line.iloc[i]
+
+            if prev_macd <= prev_signal and curr_macd_val > curr_signal_val:
+                signals.append({
+                    'code': df['code'].iloc[i],
+                    'cycle': 'daily',
+                    'trade_date': trade_date,
+                    'signal_type': 'macd_golden_cross',
+                    'signal_value': round(curr_macd_val, 4),
+                    'signal_strength': 3,
+                    'description': f'MACD金叉: MACD={curr_macd_val:.4f}, Signal={curr_signal_val:.4f}'
+                })
+            elif prev_macd >= prev_signal and curr_macd_val < curr_signal_val:
+                signals.append({
+                    'code': df['code'].iloc[i],
+                    'cycle': 'daily',
+                    'trade_date': trade_date,
+                    'signal_type': 'macd_death_cross',
+                    'signal_value': round(curr_macd_val, 4),
+                    'signal_strength': 3,
+                    'description': f'MACD死叉: MACD={curr_macd_val:.4f}, Signal={curr_signal_val:.4f}'
+                })
+
+        # RSI 超买/超卖
+        if not pd.isna(rsi.iloc[i]):
+            curr_rsi = rsi.iloc[i]
+            prev_rsi = rsi.iloc[i - 1]
+
+            if prev_rsi >= 80 and curr_rsi < 80:
+                signals.append({
+                    'code': df['code'].iloc[i],
+                    'cycle': 'daily',
+                    'trade_date': trade_date,
+                    'signal_type': 'rsi_overbought',
+                    'signal_value': round(curr_rsi, 2),
+                    'signal_strength': 2,
+                    'description': f'RSI超买回落: RSI={curr_rsi:.2f}'
+                })
+            elif prev_rsi <= 20 and curr_rsi > 20:
+                signals.append({
+                    'code': df['code'].iloc[i],
+                    'cycle': 'daily',
+                    'trade_date': trade_date,
+                    'signal_type': 'rsi_oversold',
+                    'signal_value': round(curr_rsi, 2),
+                    'signal_strength': 2,
+                    'description': f'RSI超卖反弹: RSI={curr_rsi:.2f}'
+                })
+
+        # BOLL 突破
+        if not pd.isna(boll_upper.iloc[i]) and not pd.isna(boll_lower.iloc[i]):
+            curr_upper = boll_upper.iloc[i]
+            curr_lower = boll_lower.iloc[i]
+            prev_close = close.iloc[i - 1]
+            prev_upper = boll_upper.iloc[i - 1]
+            prev_lower = boll_lower.iloc[i - 1]
+
+            if prev_close <= prev_upper and curr_close > curr_upper:
+                signals.append({
+                    'code': df['code'].iloc[i],
+                    'cycle': 'daily',
+                    'trade_date': trade_date,
+                    'signal_type': 'boll_break_upper',
+                    'signal_value': round(curr_close, 2),
+                    'signal_strength': 2,
+                    'description': f'突破BOLL上轨: Price={curr_close:.2f}, Upper={curr_upper:.2f}'
+                })
+            elif prev_close >= prev_lower and curr_close < curr_lower:
+                signals.append({
+                    'code': df['code'].iloc[i],
+                    'cycle': 'daily',
+                    'trade_date': trade_date,
+                    'signal_type': 'boll_break_lower',
+                    'signal_value': round(curr_close, 2),
+                    'signal_strength': 2,
+                    'description': f'跌破BOLL下轨: Price={curr_close:.2f}, Lower={curr_lower:.2f}'
+                })
 
     if not signals:
         return pd.DataFrame()
     return pd.DataFrame(signals)
 
 
-def ensure_table(engine):
-    """确保 trade_signals 表存在"""
-    with engine.connect() as conn:
-        for stmt in SIGNAL_TABLE_DDL.split(';'):
-            stmt = stmt.strip()
-            if stmt:
-                conn.execute(text(stmt))
-        conn.commit()
+def get_stock_codes(storage) -> list:
+    """获取所有股票代码"""
+    df = storage.get_quotes(code=None, cycle='daily')
+    if df.empty:
+        return []
+    return sorted(df['code'].unique())
 
 
-def clear_stock_signals(engine, code: str, since_date: str = None):
+def load_stock_quotes(storage, code: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+    """加载单只股票的日线数据"""
+    df = storage.get_quotes(code=code, cycle='daily', start_date=start_date, end_date=end_date)
+    if df.empty:
+        return pd.DataFrame()
+    df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
+    return df
+
+
+def clear_stock_signals(storage, code: str, since_date: str = None):
     """清除某只股票的旧信号"""
-    with engine.connect() as conn:
+    try:
+        cursor = storage.conn.cursor()
         if since_date:
-            conn.execute(
-                text("DELETE FROM trade_signals WHERE code = :code AND trade_date >= :since"),
-                {'code': code, 'since': since_date}
+            cursor.execute(
+                "DELETE FROM trade_signals WHERE code = %s AND cycle = 'daily' AND trade_date >= %s",
+                (code, since_date)
             )
         else:
-            conn.execute(
-                text("DELETE FROM trade_signals WHERE code = :code"),
-                {'code': code}
+            cursor.execute(
+                "DELETE FROM trade_signals WHERE code = %s AND cycle = 'daily'",
+                (code,)
             )
-        conn.commit()
+        storage.conn.commit()
+        cursor.close()
+    except Exception as e:
+        print(f"    ⚠️  清除旧信号失败: {e}")
 
 
-def save_signals(engine, code: str, signals_df: pd.DataFrame):
-    """批量保存信号"""
-    if signals_df.empty:
-        return 0
-
-    rows = []
-    for _, row in signals_df.iterrows():
-        rows.append({
-            'code': code,
-            'trade_date': row['trade_date'],
-            'signal_type': row['signal_type'],
-            'price': row['price'],
-            'macd': row['macd'],
-            'macd_signal': row['macd_signal'],
-            'macd_hist': row['macd_hist'],
-        })
-
-    with engine.connect() as conn:
-        for r in rows:
-            conn.execute(
-                text("""
-                    INSERT INTO trade_signals (code, trade_date, signal_type, price, macd, macd_signal, macd_hist)
-                    VALUES (:code, :trade_date, :signal_type, :price, :macd, :macd_signal, :macd_hist)
-                """),
-                r
-            )
-        conn.commit()
-    return len(rows)
-
-
-def get_stock_codes(engine) -> list:
-    """获取所有股票代码"""
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT DISTINCT code FROM stock_quotes ORDER BY code")
-        )
-        return [row[0] for row in result.fetchall()]
-
-
-def load_stock_quotes(engine, code: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
-    """加载单只股票的日线数据"""
-    query = """
-        SELECT code, trade_date, open, high, low, close, volume
-        FROM stock_quotes
-        WHERE code = :code
-    """
-    params = {'code': code}
-    if start_date:
-        query += " AND trade_date >= :start"
-        params['start'] = start_date
-    if end_date:
-        query += " AND trade_date <= :end"
-        params['end'] = end_date
-    query += " ORDER BY trade_date ASC"
-
-    with engine.connect() as conn:
-        result = conn.execute(text(query), params)
-        rows = result.fetchall()
-        if not rows:
-            return pd.DataFrame()
-        df = pd.DataFrame(rows, columns=result.keys())
-        df['trade_date'] = pd.to_datetime(df['trade_date'])
-        return df
-
-
-def run_stock(engine, code: str, start_date: str = None, end_date: str = None, clear_first: bool = True):
+def run_stock(storage, code: str, start_date: str = None, end_date: str = None, clear_first: bool = True):
     """处理单只股票"""
-    df = load_stock_quotes(engine, code, start_date, end_date)
+    df = load_stock_quotes(storage, code, start_date, end_date)
     if df.empty:
         return 0
 
@@ -207,15 +224,15 @@ def run_stock(engine, code: str, start_date: str = None, end_date: str = None, c
         return 0
 
     if clear_first:
-        clear_stock_signals(engine, code, start_date)
+        clear_stock_signals(storage, code, start_date)
 
-    count = save_signals(engine, code, signals)
+    count = storage.save_signals(signals)
     return count
 
 
-def run_all(engine, start_date: str = None, end_date: str = None):
+def run_all(storage, start_date: str = None, end_date: str = None):
     """全量计算所有股票"""
-    codes = get_stock_codes(engine)
+    codes = get_stock_codes(storage)
     total = len(codes)
     print(f"📊 共 {total} 只股票")
 
@@ -223,7 +240,7 @@ def run_all(engine, start_date: str = None, end_date: str = None):
     total_signals = 0
     for i, code in enumerate(codes, 1):
         try:
-            n = run_stock(engine, code, start_date, end_date, clear_first=False)
+            n = run_stock(storage, code, start_date, end_date, clear_first=False)
             if n > 0:
                 total_signals += n
             success += 1
@@ -236,16 +253,16 @@ def run_all(engine, start_date: str = None, end_date: str = None):
     print(f"\n✅ 全量计算完成: 成功 {success}/{total}, 共 {total_signals} 个信号")
 
 
-def run_incremental(engine, days: int = 30):
+def run_incremental(storage, days: int = 30):
     """增量更新最近 N 天"""
     end = datetime.now().strftime('%Y-%m-%d')
     start = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
     print(f"📅 增量范围: {start} ~ {end}")
-    run_all(engine, start, end)
+    run_all(storage, start, end)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='信号预计算脚本（MACD 金叉/死叉）')
+    parser = argparse.ArgumentParser(description='信号预计算脚本（MACD/RSI/BOLL）')
     parser.add_argument('--all', action='store_true', help='全量计算所有股票')
     parser.add_argument('--code', type=str, help='单只股票代码')
     parser.add_argument('--incremental', action='store_true', help='增量更新')
@@ -254,28 +271,39 @@ def main():
     parser.add_argument('--days', type=int, default=30, help='增量更新天数')
     args = parser.parse_args()
 
-    config = load_config()
-    db_url = config.get('database', {}).get('url', 'postgresql://quant_user:quant_password@localhost:5432/quant_trading')
-    engine = create_engine(db_url)
+    db_config = config.get('database', {})
+    storage = PostgreSQLStorage({
+        'host': db_config.get('host', 'localhost'),
+        'port': db_config.get('port', 5432),
+        'database': db_config.get('database', 'quant_trading'),
+        'username': db_config.get('username', 'quant_user'),
+        'password': db_config.get('password', ''),
+    })
 
     print("=" * 50)
     print("🔧 信号预计算脚本")
     print("=" * 50)
 
+    if not storage.connect():
+        print("❌ 数据库连接失败")
+        return 1
+
     # 确保表存在
-    ensure_table(engine)
+    storage.init_tables()
     print("✅ 确保 trade_signals 表存在")
 
     if args.all:
-        run_all(engine, args.start, args.end)
+        run_all(storage, args.start, args.end)
     elif args.code:
-        n = run_stock(engine, args.code, args.start, args.end)
+        n = run_stock(storage, args.code, args.start, args.end)
         print(f"✅ {args.code}: 生成 {n} 个信号")
     elif args.incremental:
-        run_incremental(engine, args.days)
+        run_incremental(storage, args.days)
     else:
         parser.print_help()
         print("\n请指定运行模式：--all, --code 或 --incremental")
+
+    storage.disconnect()
 
 
 if __name__ == '__main__':

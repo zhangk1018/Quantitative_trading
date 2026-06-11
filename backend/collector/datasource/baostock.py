@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from .base import BaseDataSource
 from utils.logger import setup_logger
+from utils.stock_code_utils import normalize_code
 
 logger = setup_logger('baostock_datasource')
 
@@ -270,14 +271,38 @@ class BaostockDataSource(BaseDataSource):
         except Exception:
             return False
     
+    def _get_latest_trade_date(self) -> str:
+        """获取最近一个交易日的日期"""
+        try:
+            today = datetime.now()
+            # 查询一年内的交易日
+            start = (today - timedelta(days=365)).strftime('%Y-%m-%d')
+            end = today.strftime('%Y-%m-%d')
+            self._wait_for_rate_limit()
+            rs = bs.query_trade_dates(start_date=start, end_date=end)
+            if rs.error_code != '0':
+                # 降级到默认值
+                return '2026-06-05'
+            df = rs.get_data()
+            if df.empty:
+                return '2026-06-05'
+            # 取最近一个交易日
+            open_days = df[df['isOpen'].isin(['1', 1])]['calendarDate']
+            if open_days.empty:
+                return '2026-06-05'
+            return open_days.iloc[-1]
+        except Exception:
+            return '2026-06-05'
+
     def get_stock_list(self) -> pd.DataFrame:
         """获取股票列表"""
         if not self.connected:
             raise RuntimeError("未连接到Baostock")
 
         try:
-            query_date = datetime.now().strftime('%Y-%m-%d')
-            rs = bs.query_all_stock(day=query_date)
+            # 先获取最近交易日
+            latest_date = self._get_latest_trade_date()
+            rs = bs.query_all_stock(day=latest_date)
             
             if rs.error_code != '0':
                 raise RuntimeError(f"获取股票列表失败: {rs.error_msg}")
@@ -289,9 +314,9 @@ class BaostockDataSource(BaseDataSource):
             if df.empty:
                 raise RuntimeError("获取股票列表为空")
             
-            # 处理数据
+            # 处理数据（统一为纯数字格式）
             result = pd.DataFrame({
-                'code': df['code'],
+                'code': df['code'].apply(lambda x: normalize_code(x) or x),
                 'name': df['code_name'],
                 'exchange': df['code'].apply(lambda x: 'SH' if x.startswith('sh') else 'SZ'),
                 'industry': '',
@@ -299,16 +324,267 @@ class BaostockDataSource(BaseDataSource):
                 'delist_date': ''
             })
             
-            # 过滤有效股票（排除指数，只保留6位数字代码的股票）
-            result = result[result['code'].str.match(r'^(sh|sz)\.\d{6}$')]
+            # 过滤有效股票（纯6位数字代码）
+            result = result[result['code'].str.match(r'^\d{6}$')]
             # 排除指数代码：sh.000xxx（上证指数）、sz.399xxx（深证系列指数）
             # 注意：sz.000xxx 是深市主板股票（如平安银行 000001），不是指数
-            result = result[~result['code'].str.match(r'^(sh\.000\d{3}|sz\.399\d{3})$')]
+            # 纯数字格式下：排除 000 开头且 exchange=SH 的（上证指数），排除 399 开头的（深证系列指数）
+            result = result[~((result['code'].str.startswith('000')) & (result['exchange'] == 'SH'))]
+            result = result[~result['code'].str.startswith('399')]
             
             return result
             
         except Exception as e:
             raise RuntimeError(f"获取股票列表异常: {str(e)}")
+
+    def get_adj_factor(self, trade_date: str) -> pd.DataFrame:
+        """
+        获取指定日期所有股票的复权因子
+
+        使用 Baostock query_history_k_data_plus 获取每日复权因子。
+        query_adjust_factor 只返回除权除息事件日，不适合每日同步。
+
+        Args:
+            trade_date: 交易日期，格式 YYYYMMDD
+
+        Returns:
+            DataFrame: 包含 code, trade_date, adj_factor 三列
+        """
+        if not self._ensure_connected():
+            raise RuntimeError("未连接到 Baostock")
+
+        # 格式化 Baostock 日期格式 YYYY-MM-DD
+        bs_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+
+        try:
+            stocks = self.get_stock_list()
+        except Exception:
+            query_date = datetime.now().strftime('%Y-%m-%d')
+            rs = bs.query_all_stock(day=query_date)
+            if rs.error_code != '0':
+                return pd.DataFrame()
+            df_raw = rs.get_data()
+            df_raw['code'] = df_raw['code'].apply(lambda x: normalize_code(x) or x)
+            stocks = df_raw[df_raw['code'].str.match(r'^\d{6}$')].copy()
+
+        if stocks.empty:
+            return pd.DataFrame()
+
+        results = []
+        total = len(stocks)
+
+        for idx, row in stocks.iterrows():
+            code_raw = row.get('code', '')
+            exchange = row.get('exchange', 'SH' if code_raw.startswith('6') else 'SZ')
+            bs_code = f"{exchange.lower()}.{code_raw}"
+
+            try:
+                self._wait_for_rate_limit()
+
+                # 使用 query_history_k_data_plus 获取每日复权因子
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,code,tradestatus,isST",
+                    start_date=bs_date,
+                    end_date=bs_date,
+                    frequency="d",
+                    adjustflag="3"
+                )
+                self._last_request_time = time.time()
+
+                if rs.error_code != '0':
+                    continue
+
+                # 获取复权因子需要用 query_adjust_factor 的最新记录
+                rs2 = bs.query_adjust_factor(code=bs_code, start_date=bs_date, end_date=bs_date)
+                adj_val = None
+                if rs2.error_code == '0':
+                    while rs2.next():
+                        row_data = rs2.get_row_data()
+                        if len(row_data) >= 2 and row_data[1] and row_data[1] != '':
+                            adj_val = float(row_data[1])
+                            break
+
+                # 如果当天没有除权事件，用最近的历史复权因子
+                if adj_val is None:
+                    # 向前查找最近的复权因子
+                    rs3 = bs.query_adjust_factor(code=bs_code, start_date="2000-01-01", end_date=bs_date)
+                    if rs3.error_code == '0':
+                        last_adj = None
+                        while rs3.next():
+                            row_data = rs3.get_row_data()
+                            if len(row_data) >= 2 and row_data[1] and row_data[1] != '':
+                                last_adj = float(row_data[1])
+                        adj_val = last_adj
+
+                # 检查是否交易（非停牌）
+                is_trading = False
+                while rs.next():
+                    r = rs.get_row_data()
+                    if len(r) >= 3 and r[2] == '1':  # tradestatus == '1'
+                        is_trading = True
+                    break
+
+                if adj_val is not None:
+                    results.append({
+                        'code': code_raw,
+                        'trade_date': trade_date,
+                        'adj_factor': adj_val
+                    })
+
+            except Exception as e:
+                logger.debug(f"获取 {code_raw} 复权因子失败: {e}")
+                continue
+
+            if (idx + 1) % 200 == 0:
+                logger.info(f"  📊 复权因子进度: {idx+1}/{total}，已获取 {len(results)} 条")
+
+        if not results:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(results)
+        return df
+
+    def get_stock_basic(self) -> pd.DataFrame:
+        """
+        获取股票基本资料（含行业分类）
+        
+        使用 Baostock query_stock_industry 获取全市场行业信息。
+        
+        Returns:
+            DataFrame: 包含 code, name, industry 三列
+        """
+        if not self._ensure_connected():
+            raise RuntimeError("未连接到 Baostock")
+
+        try:
+            self._wait_for_rate_limit()
+
+            rs = bs.query_stock_industry()
+
+            if rs.error_code != '0':
+                raise RuntimeError(f"获取行业分类失败: {rs.error_msg}")
+
+            self._last_request_time = time.time()
+
+            data_list = []
+            while (rs.error_code == '0') & rs.next():
+                data_list.append(rs.get_row_data())
+
+            if not data_list:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(data_list, columns=rs.fields)
+            # fields: code, code_name, industry
+            df = df.rename(columns={
+                'code_name': 'name',
+            })
+            # 统一 code 为纯数字格式
+            df['code'] = df['code'].apply(lambda x: normalize_code(x) or x)
+            df = df[['code', 'name', 'industry']]
+            df = df.dropna(subset=['code'])
+            return df
+
+        except Exception as e:
+            raise RuntimeError(f"获取股票基本资料异常: {str(e)}")
+
+    def get_daily_basic(self, trade_date: str, **kwargs) -> pd.DataFrame:
+        """
+        获取指定日期全市场日频基本面数据（PE/PB/换手率/量比）
+
+        使用 Baostock query_history_k_data_plus 批量获取。
+        Baostock 不直接提供 daily_basic 接口，但 kline 数据包含
+        peTTM, pbMRQ, turn 等字段。
+
+        Args:
+            trade_date: 交易日期，格式 YYYY-MM-DD 或 YYYYMMDD
+
+        Returns:
+            DataFrame: 包含 code, trade_date, pe, pe_ttm, pb, turnover_rate, volume_ratio
+        """
+        if not self._ensure_connected():
+            raise RuntimeError("未连接到 Baostock")
+
+        # 标准化日期格式
+        if len(trade_date) == 8:
+            bs_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+        else:
+            bs_date = trade_date
+
+        try:
+            stocks = self.get_stock_list()
+            if stocks is None or stocks.empty:
+                return pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+
+        results = []
+        total = len(stocks)
+        failed = 0
+
+        for idx, row in stocks.iterrows():
+            plain_code = str(row.get('code', '')).strip()
+            if not plain_code or not plain_code.isdigit():
+                continue
+
+            bs_code = self._normalize_code(plain_code)
+            if not bs_code:
+                continue
+
+            try:
+                self._wait_for_rate_limit()
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,code,peTTM,pbMRQ,turn,tradestatus,volume",
+                    start_date=bs_date,
+                    end_date=bs_date,
+                    frequency="d",
+                    adjustflag="3"
+                )
+                self._last_request_time = time.time()
+
+                if rs.error_code != '0':
+                    failed += 1
+                    continue
+
+                while rs.next():
+                    r = rs.get_row_data()
+                    if len(r) < 7:
+                        continue
+                    status = r[5]
+                    if status != '1':  # 跳过停牌
+                        continue
+                    pe_ttm = float(r[2]) if r[2] and r[2] != '' else None
+                    pb_val = float(r[3]) if r[3] and r[3] != '' else None
+                    turn_val = float(r[4]) if r[4] and r[4] != '' else None
+                    vol_val = float(r[6]) if r[6] and r[6] != '' else None
+
+                    results.append({
+                        'code': plain_code,
+                        'trade_date': bs_date,
+                        'pe': pe_ttm,  # Baostock 只有 peTTM
+                        'pe_ttm': pe_ttm,
+                        'pb': pb_val,
+                        'turnover_rate': turn_val,
+                        'volume_ratio': None,  # 需要后续计算
+                        'total_mv': None,  # Baostock 不提供
+                        'circ_mv': None,
+                    })
+
+            except Exception:
+                failed += 1
+                continue
+
+            # 每 500 只打印进度
+            if (idx + 1) % 500 == 0:
+                logger.info(f"  daily_basic 进度: {idx+1}/{total} (获取:{len(results)} 失败:{failed})")
+
+        if not results:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(results)
+        logger.info(f"✅ {bs_date} daily_basic 获取 {len(df)} 条 (失败:{failed})")
+        return df
     
     def get_kline(
         self,
@@ -648,42 +924,43 @@ class BaostockDataSource(BaseDataSource):
 if __name__ == '__main__':
     import logging
     logging.basicConfig(level=logging.INFO)
+    _logger = logging.getLogger(__name__)
     
     ds = BaostockDataSource()
     
     if ds.connect():
-        print("✅ 连接成功")
+        _logger.info("✅ 连接成功")
         
         # 测试股票列表
-        print("\n📋 获取股票列表...")
+        _logger.info("📋 获取股票列表...")
         stocks = ds.get_stock_list()
-        print(f"获取到 {len(stocks)} 只股票")
-        print(stocks.head())
+        _logger.info(f"获取到 {len(stocks)} 只股票")
+        _logger.info(f"\n{stocks.head()}")
         
         # 测试日线数据
-        print("\n📊 获取日线数据...")
+        _logger.info("📊 获取日线数据...")
         df = ds.get_kline('600000', cycle='daily', start_date='2025-05-01', end_date='2025-05-28')
-        print(f"获取到 {len(df)} 条日线数据")
-        print(df.head())
+        _logger.info(f"获取到 {len(df)} 条日线数据")
+        _logger.info(f"\n{df.head()}")
         
         # 测试分钟线数据
-        print("\n⏱️ 获取60分钟线数据...")
+        _logger.info("⏱️ 获取60分钟线数据...")
         df = ds.get_kline('600000', cycle='min60', start_date='2025-05-20', end_date='2025-05-28')
-        print(f"获取到 {len(df)} 条60分钟线数据")
-        print(df.head())
+        _logger.info(f"获取到 {len(df)} 条60分钟线数据")
+        _logger.info(f"\n{df.head()}")
         
         # 测试交易日历
-        print("\n📅 获取交易日历...")
+        _logger.info("📅 获取交易日历...")
         calendar = ds.get_trade_calendar(start_date='2025-05-01', end_date='2025-05-31')
-        print(f"获取到 {len(calendar)} 天日历数据")
-        print(calendar.head())
+        _logger.info(f"获取到 {len(calendar)} 天日历数据")
+        _logger.info(f"\n{calendar.head()}")
         
         # 测试获取下一个交易日
-        print("\n🔮 获取下一个交易日...")
+        _logger.info("🔮 获取下一个交易日...")
         next_date = ds.get_next_trade_date('2025-05-28')
-        print(f"2025-05-28 的下一个交易日: {next_date}")
+        _logger.info(f"2025-05-28 的下一个交易日: {next_date}")
         
         ds.disconnect()
-        print("\n✅ 断开连接")
+        _logger.info("✅ 断开连接")
     else:
-        print("❌ 连接失败")
+        _logger.error("❌ 连接失败")

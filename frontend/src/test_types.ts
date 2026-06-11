@@ -168,7 +168,8 @@ const klineResponse: KLineResponse = {
 
 const signal: SignalItem = {
   trade_date: '2026-05-29',
-  signal_type: 'buy',
+  signal_type: 'macd_cross',
+  direction: 'buy',
   price: 10.93,
   reason: 'MACD金叉'
 }

@@ -1,0 +1,59 @@
+# ============================================
+# Dockerfile.frontend - 量化交易系统前端镜像
+# ============================================
+# 构建: docker build -t quant-frontend:1.0.0 -f Dockerfile.frontend .
+# 运行: docker run -d --name quant-frontend -p 80:80 quant-frontend:1.0.0
+# ============================================
+
+# ---- 阶段1：构建（Node 20 alpine）----
+FROM node:20-alpine AS builder
+
+WORKDIR /build
+
+# 先复制 package 文件利用 Docker 缓存
+COPY frontend/package.json frontend/package-lock.json* ./
+
+# 安装依赖
+RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+# 复制源码
+COPY frontend/ ./
+
+# 前端构建参数
+ARG VITE_API_BASE=/api
+ENV VITE_API_BASE=$VITE_API_BASE
+
+# 后端 URL（构建时注入，Docker 内部用 host.docker.internal:8000 访问宿主机）
+ARG BACKEND_HOST=host.docker.internal
+ARG BACKEND_PORT=8000
+ENV BACKEND_HOST=$BACKEND_HOST
+ENV BACKEND_PORT=$BACKEND_PORT
+
+RUN npm run build
+
+# ---- 阶段2：运行时（Nginx alpine，~50MB）----
+FROM nginx:1.27-alpine
+
+# 继承构建参数（ARG 在阶段间不自动传递）
+ARG BACKEND_HOST=host.docker.internal
+ARG BACKEND_PORT=8000
+
+# 复制构建产物
+COPY --from=builder /build/dist/ /usr/share/nginx/html/
+
+# 复制自定义 nginx 配置（完整配置文件，覆盖默认主配置）
+# BACKEND_HOST/BACKEND_PORT 在构建时注入
+COPY nginx.conf /etc/nginx/nginx.conf.tmpl
+RUN sed -i \
+    "s|__BACKEND_HOST__|${BACKEND_HOST:-localhost}|g; \
+     s|__BACKEND_PORT__|${BACKEND_PORT:-8000}|g" \
+    /etc/nginx/nginx.conf.tmpl && \
+    mv /etc/nginx/nginx.conf.tmpl /etc/nginx/nginx.conf
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q --spider http://localhost/ || exit 1
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

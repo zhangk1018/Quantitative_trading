@@ -65,7 +65,9 @@ def run_script(script_name, args=None):
 
 def run_sql_script(sql_file):
     """执行SQL脚本"""
-    sql_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), sql_file)
+    # 在 collector/db/sql/ 目录下查找 SQL 文件
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sql_path = os.path.join(base_dir, 'collector', 'db', 'sql', sql_file)
     
     if not os.path.exists(sql_path):
         print(f"❌ SQL文件不存在: {sql_path}")

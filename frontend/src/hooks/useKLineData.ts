@@ -1,6 +1,11 @@
 /**
  * hooks/useKLineData.ts - 单只股票 K线数据（含本地缓存 + 增量更新 + 指标）
  *
+ * 数据排序约定：返回的 data 按日期从新到旧（DESCENDING）
+ * - 与 klineCache 存储约定一致
+ * - 与 computeAllIndicators 输入约定一致
+ * - 图表组件需自行转为 ASCENDING 渲染
+ *
  * 数据流：
  * 1. 立即从 localStorage 读取（如有），秒级首屏
  * 2. 后台拉取增量数据（仅 lastDate 之后）
@@ -89,7 +94,7 @@ export function useKLineData(
         // 如果缓存已有 limit 条，理论上增量只有几条；但为了保险仍用 limit
         const fetchLimit = cached ? Math.max(limit, 30) : limit
 
-        const apiResponse = await fetchKline(
+        const klineResponse = await fetchKline(
           code,
           period,
           startDate,
@@ -98,15 +103,16 @@ export function useKLineData(
           controller.signal
         )
 
-        if (!apiResponse) return // 已中止
+        if (!klineResponse) return // 已中止
 
-        console.log('useKLineData: API 响应:', apiResponse)
+        console.log('useKLineData: API 原生响应（裸 KLineResponse）:', klineResponse)
 
-        // 解析 ApiResponse 信封
-        const response = apiResponse?.data
+        // 后端返回裸 KLineResponse，直接读 .data 获取 KLineItem[]
+        // KLineResponse = { stock_code, data: KLineItem[], count }
+        const klineItems: KLineItem[] | undefined = klineResponse?.data
 
-        if (!response) {
-          console.warn('useKLineData: API 响应中无 data')
+        if (!klineItems || klineItems.length === 0) {
+          console.warn('useKLineData: KLineResponse.data 为空')
           if (!cached) {
             setData([])
             setIndicators(null)
@@ -114,20 +120,13 @@ export function useKLineData(
           return
         }
 
-        console.log('useKLineData: K线数据:', response)
+        console.log('useKLineData: 获取到', klineItems.length, '条K线')
 
-        // 拉到了才需要合并并显示 loading
-        if (response.data && response.data.length > 0) {
-          // 合并 + 写回缓存
-          const merged = mergeAndCacheKLine(code, response.data)
-          console.log('useKLineData: 合并后数据:', merged)
-          setData(merged.items)
-          setIndicators(merged.indicators)
-        } else if (!cached) {
-          // 缓存空 + 接口空 → 无数据
-          setData([])
-          setIndicators(null)
-        }
+        // 合并 + 写回缓存
+        const merged = mergeAndCacheKLine(code, klineItems)
+        console.log('useKLineData: 合并后数据:', merged)
+        setData(merged.items)
+        setIndicators(merged.indicators)
         setFromCache(false)
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return

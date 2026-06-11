@@ -35,6 +35,7 @@ crontab -l
 | 时间 | 频率 | 任务 | 脚本路径 | 说明 |
 |------|------|------|----------|------|
 | 16:00 | 周一至周五 | 盘后数据同步 | `backend/collector/etl/daily_snapshot_sync.py` | 下载当日交易数据并入库 |
+| 21:00 | 每日 | 复权因子同步 | `backend/collector/etl/sync_adj_factor.py --incremental` | 增量同步复权因子 |
 | 22:00 | 每日 | 数据完整性检查 | `backend/clean/quality/check_data_quality.py` | 检查数据完整性和一致性 |
 | 周日 02:00 | 每周 | 全量数据校验 | `backend/collector/etl/daily_snapshot_sync.py` | 同步过去7天数据用于校验 |
 | 01:00 | 每日 | 日志清理 | `find ... -mtime +5 -delete` | 清理5天前的日志文件 |
@@ -79,6 +80,15 @@ python backend/collector/etl/daily_snapshot_sync.py --latest
 
 # 手动指定日期范围同步
 python backend/collector/etl/daily_snapshot_sync.py --start-date 2026-06-01 --end-date 2026-06-04
+
+# 手动复权因子同步（全量）
+python backend/collector/etl/sync_adj_factor.py
+
+# 手动复权因子同步（增量）
+python backend/collector/etl/sync_adj_factor.py --incremental
+
+# 手动行业数据补全
+python backend/collector/etl/fill_industry.py
 
 # 手动数据完整性检查
 python backend/clean/quality/check_data_quality.py

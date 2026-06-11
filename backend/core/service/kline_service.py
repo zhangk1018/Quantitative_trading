@@ -11,6 +11,9 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 import time
 import random
+import logging
+
+logger = logging.getLogger(__name__)
 
 from collector.db.loader import DataLoader
 from collector.storage.postgresql_storage import PostgreSQLStorage
@@ -37,7 +40,7 @@ class KlineService:
     def _generate_mock_kline(self, base_price: float, limit: int) -> pd.DataFrame:
         """生成模拟 K线数据（用于演示）"""
         dates = []
-        base_date = datetime.strptime(self.trade_date, "%Y%m%d")
+        base_date = datetime.strptime(self.trade_date.replace('-', ''), "%Y%m%d")
         
         for i in range(limit, 0, -1):
             trade_date = (base_date - timedelta(days=i)).strftime("%Y-%m-%d")
@@ -65,27 +68,29 @@ class KlineService:
         return pd.DataFrame(dates)
     
     def get_kline_data(
-        self, 
-        stock_code: str, 
+        self,
+        stock_code: str,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         period: str = "daily",
-        limit: int = 100
+        limit: int = 100,
+        adj_method: str = "none",
     ) -> Optional[KLineResponse]:
         """获取K线数据
-        
+
         Args:
             stock_code: 股票代码
             start_date: 开始日期 (YYYYMMDD格式)
             end_date: 结束日期 (YYYYMMDD格式)
             period: 周期类型 (daily, weekly, monthly, minute)
             limit: 最大返回条数
-            
+            adj_method: 复权方式 (none/forward/backward)
+
         Returns:
             KLineResponse对象，包含K线数据列表
         """
-        # 生成缓存键
-        cache_key = f"{stock_code}_{period}"
+        # 生成缓存键（包含limit和adj_method，不同复权方式/不同数据量需独立缓存）
+        cache_key = f"{stock_code}_{period}_{limit}_{adj_method}"
         
         # 检查缓存
         cached_data = self._get_from_cache(cache_key)
@@ -118,6 +123,9 @@ class KlineService:
                 )
                 if not raw.empty:
                     kline_df = raw.copy()
+                    # 去重：同一天只保留一条（防止因 trade_datetime 不同导致的重复）
+                    if 'trade_date' in kline_df.columns:
+                        kline_df = kline_df.drop_duplicates(subset=['trade_date'], keep='last')
                     # 确保日期格式统一为 YYYY-MM-DD
                     if 'trade_date' in kline_df.columns:
                         kline_df['trade_date'] = pd.to_datetime(kline_df['trade_date']).dt.strftime('%Y-%m-%d')
@@ -128,12 +136,19 @@ class KlineService:
                 kline_df = pd.DataFrame()
 
         # 2. 数据库无数据时降级使用 mock（仅用于演示/测试）
+        # 退市股/无效代码：stock_info 为 None 时返回空
         if kline_df.empty:
-            base_price = 10.0
             stock_info = self._get_stock_info(stock_code)
-            if stock_info and stock_info.close:
-                base_price = float(stock_info.close)
-            kline_df = self._generate_mock_kline(base_price, limit)
+            if stock_info is None:
+                # 退市/无效代码：返回空数组（验收要求）
+                kline_df = pd.DataFrame(columns=[
+                    "trade_date", "open", "high", "low", "close", "volume", "amount"
+                ])
+            else:
+                base_price = 10.0
+                if stock_info.close:
+                    base_price = float(stock_info.close)
+                kline_df = self._generate_mock_kline(base_price, limit)
 
         # 3. 应用日期范围过滤
         if start_date or end_date:
@@ -148,11 +163,32 @@ class KlineService:
         # 转换为K线项列表
         kline_items = self._convert_to_kline_items(kline_df)
 
+        # 应用复权
+        warning_msg = None
+        latest_factor = None
+        if adj_method != 'none' and kline_df is not None and not kline_df.empty:
+            try:
+                from backend.imputer import Adjuster
+                from shared.constants import AdjMethod
+                adjuster = Adjuster()
+                kline_df, latest_factor = adjuster.adjust(
+                    kline_df,
+                    stock_code=stock_code,
+                    method=AdjMethod(adj_method),
+                )
+                kline_items = self._convert_to_kline_items(kline_df)
+            except Exception as e:
+                warning_msg = f'复权处理失败: {e}，返回原始价格'
+                logger.warning(f'⚠️  {warning_msg}')
+
         # 构建响应
         response = KLineResponse(
             stock_code=stock_code,
             data=kline_items,
-            count=len(kline_items)
+            count=len(kline_items),
+            adj_method=adj_method,
+            latest_factor=latest_factor,
+            warning=warning_msg,
         )
         
         # 存入缓存
@@ -242,32 +278,60 @@ class KlineService:
     
     def _calc_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """计算技术指标：MA、RSI、MACD、BOLL"""
-        if df.empty or len(df) < 20:
+        if df.empty:
             return df
         df = df.copy()
         df['close_f'] = df['close'].astype(float)
-        # MA
-        df['ma5'] = df['close_f'].rolling(window=5, min_periods=1).mean()
-        df['ma10'] = df['close_f'].rolling(window=10, min_periods=1).mean()
-        df['ma20'] = df['close_f'].rolling(window=20, min_periods=1).mean()
-        # RSI(6)
-        delta = df['close_f'].diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = (-delta).where(delta < 0, 0.0)
-        avg_gain = gain.rolling(window=6, min_periods=1).mean()
-        avg_loss = loss.rolling(window=6, min_periods=1).mean()
-        rs = avg_gain / (avg_loss + 1e-10)
-        df['rsi_6'] = 100 - (100 / (1 + rs))
-        # MACD
+        
+        # MA - 根据数据量计算可用的均线
+        if len(df) >= 5:
+            df['ma5'] = df['close_f'].rolling(window=5, min_periods=1).mean()
+        else:
+            df['ma5'] = None
+            
+        if len(df) >= 10:
+            df['ma10'] = df['close_f'].rolling(window=10, min_periods=1).mean()
+        else:
+            df['ma10'] = None
+            
+        if len(df) >= 20:
+            df['ma20'] = df['close_f'].rolling(window=20, min_periods=1).mean()
+        else:
+            df['ma20'] = None
+            
+        # RSI(6) - 需要至少2条数据计算差值
+        if len(df) >= 2:
+            delta = df['close_f'].diff()
+            gain = delta.where(delta > 0, 0.0)
+            loss = (-delta).where(delta < 0, 0.0)
+            avg_gain = gain.rolling(window=6, min_periods=1).mean()
+            avg_loss = loss.rolling(window=6, min_periods=1).mean()
+            rs = avg_gain / (avg_loss + 1e-10)
+            df['rsi_6'] = 100 - (100 / (1 + rs))
+        else:
+            df['rsi_6'] = None
+            
+        # MACD - 使用 min_periods=1 允许数据量不足时也能计算
+        # EMA12 需要至少12条数据才能稳定，但使用 min_periods=1 可以从第1条开始计算
         ema12 = df['close_f'].ewm(span=12, adjust=False).mean()
         ema26 = df['close_f'].ewm(span=26, adjust=False).mean()
         df['macd'] = ema12 - ema26
-        # BOLL(20,2)
-        ma20 = df['close_f'].rolling(window=20, min_periods=1).mean()
-        std20 = df['close_f'].rolling(window=20, min_periods=1).std()
-        df['boll_upper'] = ma20 + 2 * std20
-        df['boll_mid'] = ma20
-        df['boll_lower'] = ma20 - 2 * std20
+        # 数据量少于12条时，MACD值不稳定，标记为None
+        if len(df) < 12:
+            df['macd'] = None
+            
+        # BOLL(20,2) - 需要至少20条数据
+        if len(df) >= 20:
+            ma20 = df['close_f'].rolling(window=20, min_periods=1).mean()
+            std20 = df['close_f'].rolling(window=20, min_periods=1).std()
+            df['boll_upper'] = ma20 + 2 * std20
+            df['boll_mid'] = ma20
+            df['boll_lower'] = ma20 - 2 * std20
+        else:
+            df['boll_upper'] = None
+            df['boll_mid'] = None
+            df['boll_lower'] = None
+            
         # 清理临时列
         df = df.drop(columns=['close_f'])
         return df

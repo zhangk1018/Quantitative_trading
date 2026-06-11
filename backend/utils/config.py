@@ -188,15 +188,21 @@ def load_config(path: str = None, env: str = None) -> Config:
     # 设置环境变量
     os.environ['APP_ENV'] = env
     
-    # 加载.env文件
+    # 获取 backend 目录的绝对路径（__file__ 是 config.py，需要取父目录）
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    # 加载.env 文件（先后尝试 CWD 和项目根目录）
     _load_env_file()
+    _load_env_file(os.path.abspath(os.path.join(backend_dir, "..", ".env")))
     
     config = _DEFAULT_CONFIG.copy()
     
-    # 默认配置文件路径
+    # 默认配置文件路径（使用绝对路径）
     default_paths = [
-        "config/pipeline.yaml",
-        f"config/pipeline.{env}.yaml"
+        os.path.join(backend_dir, "pipeline.yaml"),
+        os.path.join(backend_dir, f"pipeline.{env}.yaml"),
+        os.path.join(backend_dir, "config", "pipeline.yaml"),
+        os.path.join(backend_dir, "config", f"pipeline.{env}.yaml")
     ]
     
     # 确定要加载的配置文件

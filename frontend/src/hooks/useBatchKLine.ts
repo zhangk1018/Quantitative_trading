@@ -138,7 +138,7 @@ export function useBatchKLine(): UseBatchKLineReturn {
               : undefined
             const fetchLimit = cached ? Math.max(limit, 30) : limit
 
-            const apiRes = await fetchKline(
+            const klineRes = await fetchKline(
               code,
               'daily',
               startDate,
@@ -146,11 +146,10 @@ export function useBatchKLine(): UseBatchKLineReturn {
               fetchLimit,
               controller.signal
             )
-            const res = apiRes?.data
-            console.log('useBatchKLine:', code, 'API 响应:', apiRes)
-            if (res?.data && res.data.length > 0) {
+            console.log('useBatchKLine:', code, 'API 响应:', klineRes)
+            if (klineRes?.data && klineRes.data.length > 0) {
               // 写 klineCache（同时计算并缓存 indicators）
-              const mergedK = mergeAndCacheKLine(code, res.data)
+              const mergedK = mergeAndCacheKLine(code, klineRes.data)
               // 用合并后的 K线计算形态（确保有完整 5 根）
               const klinesForPattern: KLineItem[] = mergedK.items.slice(0, limit)
               const patterns = detectPatterns(klinesForPattern)

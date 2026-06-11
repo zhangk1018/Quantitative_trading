@@ -1,425 +1,348 @@
-import { useEffect, useMemo, useRef } from 'react'
-import * as echarts from 'echarts'
-import type { EChartsOption } from 'echarts'
-import { useEchartsTheme } from '../hooks/useEchartsTheme'
-import { MA_PERIODS, getMaColor, MA_LEGEND_NAMES } from '../config/klineTheme'
-import type { KLineItem } from '../types'
+/**
+ * KlineChart.tsx - K线图组件（基于 klinecharts 9.8）
+ *
+ * Phase 4.3.4 K线图集成
+ *
+ * 核心设计：
+ * - data 变化时 clearData + applyNewData（避免增量错位）
+ * - 组件卸载时 dispose（风险点 5：内存泄漏）
+ * - 监听容器尺寸变化调用 resize() 自适应
+ * - trade_date 字符串 → timestamp 毫秒
+ * - 主题色与项目一致：#131722 背景，#26a69a 涨，#ef5350 跌
+ *
+ * 风险点应对：
+ * - 风险点 4（跨周期数据不一致）：周期切换时清空图表，避免日/周线混淆
+ * - 风险点 5（频繁切换内存泄漏）：useEffect cleanup 中 dispose
+ *
+ * 后续任务：
+ * - 4.3.5 买卖信号叠加（tradeMarker 覆盖物）通过 props.signals 传入
+ */
 
-interface KLineChartProps {
-  data: KLineItem[]
-  loading: boolean
-  error: string | null
-  stockCode: string | null
-  stockName?: string | null
-  height?: number
+import { useEffect, useRef } from 'react';
+import {
+  init,
+  dispose,
+  LineType,
+  type LayoutChild,
+  type Chart,
+  type KLineData,
+} from 'klinecharts';
+import type { KLineItem, SignalItem } from '../types';
+import {
+  ensureTradeMarkerRegistered,
+  buildTradeMarkerPoints,
+  TRADE_MARKER_NAME,
+} from '../utils/tradeMarker';
+
+interface KlineChartProps {
+  /** K线数据（按日期从新到旧，DESCENDING） */
+  data: KLineItem[];
+  /** 买卖信号（可选，4.3.5 集成） */
+  signals?: SignalItem[];
+  /** 容器高度（默认 400） */
+  height?: number;
+  /** 周期标签（用于显示） */
+  period?: string;
+  /** 复权方式（用于显示） */
+  adj?: string;
+  /** 副图指标（默认 VOL） */
+  subIndicator?: 'VOL' | 'MACD' | 'RSI' | 'KDJ';
 }
 
-const HEADER_HEIGHT = 88
+// ============================================
+// 工具：trade_date (YYYY-MM-DD) → timestamp (ms)
+// ============================================
 
-export function KLineChart({
-  data,
-  loading,
-  error,
-  stockCode,
-  stockName,
-  height = 500
-}: KLineChartProps) {
-  const { theme, resolvedMode } = useEchartsTheme('auto')
-  const chartContainerRef = useRef<HTMLDivElement>(null)
-  const chartInstanceRef = useRef<echarts.ECharts | null>(null)
+function toTimestamp(tradeDate: string): number {
+  // YYYY-MM-DD → 当天 00:00:00 本地时区对应的 UTC 毫秒
+  // klinecharts 会用本地时区解释 timestamp
+  const t = Date.parse(tradeDate);
+  return Number.isNaN(t) ? Date.now() : t;
+}
 
-  const chartHeight = Math.max(height - HEADER_HEIGHT, 200)
+// ============================================
+// 工具：KLineItem[] → klinecharts KLineData[]
+// klinecharts 需要按时间从旧到新（ASCENDING）
+// 后端返回已经是 ASCENDING（旧→新），不需要反转
+// ============================================
 
-  const prepared = useMemo(() => {
-    const reversed = [...data].reverse()
-    console.log('KLineChart: 原始数据长度', data.length)
-    const dates = reversed.map(d => d.trade_date.slice(5))
-    const ohlc: [number, number, number, number][] = reversed.map(d => [
-      Number(d.open), Number(d.close), Number(d.low), Number(d.high)
-    ])
-    const closes = reversed.map(d => Number(d.close))
-    const volumes = reversed.map(d => {
-      const isUp = Number(d.close) >= Number(d.open)
-      return {
-        value: Number(d.volume),
-        itemStyle: { color: isUp ? theme.up : theme.down }
-      }
-    })
-    const ma: Record<number, (number | null)[]> = {}
-    MA_PERIODS.forEach(p => { ma[p] = sma(closes, p) })
-    const normalized = reversed.map(d => ({
-      trade_date: d.trade_date,
-      open: Number(d.open),
-      high: Number(d.high),
-      low: Number(d.low),
-      close: Number(d.close),
-      volume: Number(d.volume),
-      amount: Number(d.amount)
-    }))
-    return { dates, ohlc, volumes, ma, reversed: normalized }
-  }, [data, theme.up, theme.down])
+function toChartData(items: KLineItem[]): KLineData[] {
+  return items.map((it) => ({
+    timestamp: toTimestamp(it.trade_date),
+    // 后端 Pydantic Decimal 序列化为 string，klinecharts 内部算法（尤其 MACD）要求 number
+    // RSI/KDJ 内部有 Number() 兜底所以正常，MACD 直接 NaN（v9.8.12 实测）
+    open: Number(it.open),
+    high: Number(it.high),
+    low: Number(it.low),
+    close: Number(it.close),
+    volume: it.volume ?? 0,
+    turnover: Number(it.amount ?? 0),
+  }))
+}
 
-  const latest = prepared.reversed[prepared.reversed.length - 1] ?? null
-  const prev = prepared.reversed[prepared.reversed.length - 2] ?? null
-  const preClose = prev?.close ?? latest?.open ?? 0
-  const change = latest ? latest.close - preClose : 0
-  const changePct = preClose > 0 ? (change / preClose) * 100 : 0
-  const changeColor = change > 0 ? theme.up : change < 0 ? theme.down : theme.textMuted
-  const changeSign = change > 0 ? '+' : ''
+// ============================================
+// 主题样式：与项目设计语言一致
+// ============================================
 
-  const option: EChartsOption = useMemo(() => ({
-    backgroundColor: theme.panelBg,
-    animation: false,
-    legend: {
+const klineStyles = {
+  grid: {
+    show: true,
+    horizontal: {
       show: true,
-      top: 6,
-      left: 10,
-      itemWidth: 24,
-      itemHeight: 2,
-      textStyle: { color: theme.textMuted, fontSize: 11 },
-      data: MA_PERIODS.map(p => ({ name: MA_LEGEND_NAMES[p] }))
+      color: '#1e222d',
+      style: LineType.Dashed,
     },
-    axisPointer: {
-      link: [{ xAxisIndex: 'all' }],
-      label: {
-        backgroundColor: theme.mode === 'dark' ? '#1a1a1a' : '#ffffff',
-        color: theme.text,
-        borderColor: theme.axisLine,
-        fontSize: 10
-      }
+    vertical: {
+      show: true,
+      color: '#1e222d',
+      style: LineType.Dashed,
     },
-    grid: [
-      {
-        left: 60,
-        right: 60,
-        top: 30,
-        bottom: '25%',
-        containLabel: true
+  },
+  candle: {
+    bar: {
+      upColor: '#26a69a',
+      downColor: '#ef5350',
+      noChangeColor: '#888888',
+      upBorderColor: '#26a69a',
+      downBorderColor: '#ef5350',
+      noChangeBorderColor: '#888888',
+      upWickColor: '#26a69a',
+      downWickColor: '#ef5350',
+      noChangeWickColor: '#888888',
+    },
+    priceMark: {
+      last: {
+        line: {
+          show: true,
+          color: '#888888',
+          dashedValue: [4, 4],
+        },
+        text: {
+          show: true,
+          color: '#eaecef',
+          backgroundColor: '#26a69a',
+          size: 11,
+        },
       },
-      {
-        left: 60,
-        right: 60,
-        top: '78%',
-        bottom: 10,
-        containLabel: true
-      }
-    ],
+      high: {
+        color: '#26a69a',
+        textSize: 11,
+      },
+      low: {
+        color: '#ef5350',
+        textSize: 11,
+      },
+    },
     tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'cross' },
-      backgroundColor: theme.mode === 'dark' ? 'rgba(20,20,20,0.92)' : 'rgba(255,255,255,0.92)',
-      borderColor: theme.axisLine,
-      textStyle: { color: theme.text, fontSize: 12 },
-      formatter: (params: any) => {
-        if (!params || params.length === 0) return ''
-        const p = Array.isArray(params) ? params : [params]
-        const kline = p.find((x: any) => x.seriesName === 'K线')
-        if (!kline) return kline?.axisValue || ''
-        const idx = kline.dataIndex
-        const d = prepared.reversed[prepared.reversed.length - 1 - idx]
-        if (!d) return kline.axisValue || ''
-        const isUp = d.close >= d.open
-        const chg = d.close - (prepared.reversed[prepared.reversed.length - 2 - idx]?.close ?? d.open)
-        const chgPct = chg / (prepared.reversed[prepared.reversed.length - 2 - idx]?.close ?? d.open) * 100
-        const color = isUp ? theme.up : theme.down
-        const sign = chg > 0 ? '+' : ''
-        let html = `<div style="font-size:12px;margin-bottom:2px">${d.trade_date}</div>`
-        html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 14px;font-size:11px">`
-        html += `<span>开: <b>${d.open.toFixed(2)}</b></span><span>高: <b>${d.high.toFixed(2)}</b></span>`
-        html += `<span>低: <b>${d.low.toFixed(2)}</b></span><span>收: <b style="color:${color}">${d.close.toFixed(2)}</b> ${sign}${chg.toFixed(2)} ${sign}${chgPct.toFixed(2)}%</span>`
-        html += `<span>成交量: <b>${formatVolume(d.volume)}</b></span><span>成交额: <b>${formatAmount(d.amount)}</b></span>`
-        html += `</div>`
-        const maLines = p.filter((x: any) => x.seriesName?.startsWith('MA'))
-        if (maLines.length > 0) {
-          html += `<div style="display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:6px;padding-top:6px;border-top:1px solid ${theme.axisLine};font-size:11px">`
-          maLines.forEach((m: any) => {
-            if (m.value != null) {
-              html += `<span style="color:${m.color}">${m.seriesName}: <b>${Number(m.value).toFixed(2)}</b></span>`
-            }
-          })
-          html += `</div>`
-        }
-        return html
-      }
+      // 格式：TooltipLegend[] = { title: string, value: string }[]
+      // 注意 klinecharts 用 {time} 占位日期，不是 {date}
+      custom: [
+        { title: '时间', value: '{time}' },
+        { title: '开盘', value: '{open}' },
+        { title: '收盘', value: '{close}' },
+        { title: '最高', value: '{high}' },
+        { title: '最低', value: '{low}' },
+        { title: '成交量', value: '{volume}' },
+        { title: '成交额', value: '{turnover}' },
+        { title: '涨跌幅', value: '{change}' },
+      ],
     },
-    xAxis: [
-      {
-        type: 'category',
-        data: prepared.dates,
-        gridIndex: 0,
-        boundaryGap: false,
-        axisLine: { lineStyle: { color: theme.axisLine, width: 1 } },
-        axisLabel: { show: false },
-        splitLine: { show: true, lineStyle: { color: theme.gridLine, type: 'dashed', width: 1 } },
-        axisTick: { show: false }
-      },
-      {
-        type: 'category',
-        data: prepared.dates,
-        gridIndex: 1,
-        boundaryGap: false,
-        axisLine: { lineStyle: { color: theme.axisLine, width: 1 } },
-        axisLabel: { color: theme.textMuted, fontSize: 10 },
-        splitLine: { show: false },
-        axisTick: { show: false }
-      }
-    ],
-    yAxis: [
-      {
-        scale: true,
-        position: 'right',
-        gridIndex: 0,
-        axisLine: { show: false },
-        axisLabel: {
-          showMinLabel: true,
-          showMaxLabel: true,
-          inside: false,
-          color: theme.textMuted,
-          fontSize: 10
-        },
-        splitLine: { show: true, lineStyle: { color: theme.gridLine, type: 'dashed', width: 1 } },
-        axisTick: { show: false }
-      },
-      {
-        scale: true,
-        position: 'right',
-        gridIndex: 1,
-        axisLine: { show: false },
-        axisLabel: {
-          showMinLabel: true,
-          showMaxLabel: true,
-          inside: false,
-          color: theme.textMuted,
-          fontSize: 10
-        },
-        splitLine: { show: false },
-        axisTick: { show: false }
-      }
-    ],
-    dataZoom: [
-      {
-        type: 'inside',
-        xAxisIndex: [0, 1],
-        start: 0,
-        end: 100,
-        minSpan: 10
-      }
-    ],
-    series: [
-      {
-        name: 'K线',
-        type: 'candlestick',
-        data: prepared.ohlc,
-        xAxisIndex: 0,
-        yAxisIndex: 0,
-        itemStyle: {
-          color: theme.up,
-          color0: theme.down,
-          borderColor: theme.up,
-          borderColor0: theme.down,
-          borderWidth: 1
-        }
-      },
-      ...MA_PERIODS.map(p => ({
-        name: MA_LEGEND_NAMES[p],
-        type: 'line' as const,
-        data: prepared.ma[p],
-        xAxisIndex: 0,
-        yAxisIndex: 0,
-        smooth: true,
-        symbol: 'none',
-        lineStyle: { color: getMaColor(p, resolvedMode), width: 1.2 }
-      })),
-      {
-        name: 'VOL',
-        type: 'bar',
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: prepared.volumes
-      }
-    ]
-  }), [prepared, theme, resolvedMode])
+  },
+  indicator: {
+    tooltip: {
+      showName: true,
+      showParams: true,
+    },
+  },
+  xAxis: {
+    axisLine: { color: '#2a2e39' },
+    tickText: { color: '#8a8e99', size: 10 },
+    tickLine: { color: '#2a2e39' },
+  },
+  yAxis: {
+    axisLine: { color: '#2a2e39' },
+    tickText: { color: '#8a8e99', size: 10 },
+    tickLine: { color: '#2a2e39' },
+  },
+};
 
+// ============================================
+// 主组件
+// ============================================
+
+export default function KlineChart({
+  data,
+  signals,
+  height = 400,
+  period = 'daily',
+  adj = 'forward',
+  subIndicator = 'VOL',
+}: KlineChartProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<Chart | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+
+  // ========== 初始化图表（仅一次） ==========
   useEffect(() => {
-    if (!chartContainerRef.current) return
-    const dpr = Math.max(window.devicePixelRatio || 1, 2)
-    const instance = echarts.init(chartContainerRef.current, undefined, {
-      renderer: 'canvas',
-      devicePixelRatio: dpr
-    })
-    chartInstanceRef.current = instance
-    const onResize = () => instance.resize({ animation: { duration: 0 } })
-    window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      instance.dispose()
-      chartInstanceRef.current = null
+    if (!containerRef.current) return;
+
+    // 注册自定义覆盖物（仅一次）
+    ensureTradeMarkerRegistered();
+
+    // 副图固定 paneId，方便切换时精准删除
+    const SUB_PANE_ID = 'sub_pane';
+
+    const chart = init(containerRef.current, {
+      styles: klineStyles,
+      // 使用 layout 明确指定布局：主图 + 1 个副图
+      // 注意：MA 是主图指标，不放副图 content
+      // 字符串字面量通过 as LayoutChild 类型断言（klinecharts 9.8 const enum + isolatedModules 限制）
+      layout: [
+        { type: 'candle' } as LayoutChild, // 主图（K线 + MA）
+        {
+          type: 'indicator',
+          content: [subIndicator], // 副图：当前选中的副图指标
+          options: { id: SUB_PANE_ID, height: 100, minHeight: 60 },
+        } as LayoutChild,
+      ],
+    });
+    if (!chart) {
+      console.error('[KlineChart] klinecharts init failed');
+      return;
     }
-  }, [])
+    chartRef.current = chart;
+
+    // 创建主图 MA 指标（叠加在 candle pane）
+    chart.createIndicator('MA', false, { id: 'candle_pane' });
+
+    // 监听容器尺寸变化（Modal 弹出/窗口缩放/侧边栏切换）
+    const observer = new ResizeObserver(() => {
+      chart.resize();
+    });
+    observer.observe(containerRef.current);
+    resizeObserverRef.current = observer;
+
+    return () => {
+      // 风险点 5：必须 dispose 防止内存泄漏
+      observer.disconnect();
+      resizeObserverRef.current = null;
+      if (chartRef.current) {
+        dispose(chartRef.current);
+        chartRef.current = null;
+      }
+    };
+  }, []);
+
+  // ========== 副图指标切换（4.3.6） ==========
+  // 跟踪当前副图指标名，避免重复操作
+  // 初始化为初始 subIndicator，首次 useEffect 直接跳过（init layout 已建好 sub_pane）
+  const currentSubIndicatorRef = useRef<string | null>(subIndicator);
 
   useEffect(() => {
-    if (!chartInstanceRef.current || !option || prepared.ohlc.length === 0) return
-    chartInstanceRef.current.setOption(option, {
-      notMerge: false,
-      lazyUpdate: false
-    })
-    setTimeout(() => {
-      chartInstanceRef.current?.resize()
-    }, 100)
-  }, [option, prepared.ohlc.length])
+    const chart = chartRef.current;
+    if (!chart) return;
+    if (!subIndicator) return;
 
+    const SUB_PANE_ID = 'sub_pane';
+
+    // 首次加载由 init layout 创建了 sub_pane + subIndicator，
+    // 跳过重复创建（避免销毁-重建导致渲染异常）
+    if (currentSubIndicatorRef.current === subIndicator) {
+      return;
+    }
+    currentSubIndicatorRef.current = subIndicator;
+
+    // 1. 删除副图上所有已有指标（klinecharts 内部：空 pane 会被销毁）
+    try {
+      const paneIndicators = chart.getIndicatorByPaneId(SUB_PANE_ID) as
+        | Map<string, unknown>
+        | null;
+      if (paneIndicators && paneIndicators.size > 0) {
+        paneIndicators.forEach((_ind, name) => {
+          chart.removeIndicator(SUB_PANE_ID, name);
+        });
+      }
+    } catch (e) {
+      console.debug(`[KlineChart] removeIndicator on ${SUB_PANE_ID} failed:`, e);
+    }
+
+    // 2. 等下一帧再创建新指标，确保 chart 已完成 removeIndicator 的 adjustPaneViewport
+    requestAnimationFrame(() => {
+      const chart2 = chartRef.current;
+      if (!chart2) return;
+      try {
+        const result = chart2.createIndicator(
+          subIndicator,
+          false,
+          { id: SUB_PANE_ID, height: 100, minHeight: 60 }
+        );
+        if (!result) {
+          console.warn(
+            `[KlineChart] createIndicator ${subIndicator} on ${SUB_PANE_ID} returned null`
+          );
+        } else {
+          console.info(
+            `[KlineChart] switched sub-pane to ${subIndicator} (id=${result})`
+          );
+        }
+      } catch (e) {
+        console.error(`[KlineChart] createIndicator ${subIndicator} failed:`, e);
+      }
+    });
+  }, [subIndicator]);
+
+  // ========== 数据更新 ==========
   useEffect(() => {
-    chartInstanceRef.current?.resize()
-  }, [chartHeight])
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    if (!data || data.length === 0) {
+      chart.clearData();
+      // 清理所有 tradeMarker
+      chart.removeOverlay({ name: TRADE_MARKER_NAME });
+      return;
+    }
+
+    const chartData = toChartData(data);
+    chart.applyNewData(chartData);
+    chart.scrollToRealTime();
+
+    // ========== 叠加买卖信号（4.3.5） ==========
+    // 风险点 3：数据层去重（buildTradeMarkerPoints 内部已做）
+    // 风险点 2：使用同一套复权（K线数据 + 信号价格均来自后端 adj_factor）
+    if (signals && signals.length > 0) {
+      const points = buildTradeMarkerPoints(signals, data);
+      if (points.length > 0) {
+        // 清理旧 marker，避免叠加
+        chart.removeOverlay({ name: TRADE_MARKER_NAME });
+        // 为每个 point 创建一个覆盖物（klinecharts 不支持单个 overlay 多 point 动态绘制）
+        for (const pt of points) {
+          chart.createOverlay(
+            {
+              name: TRADE_MARKER_NAME,
+              lock: true, // 防止拖拽误操作（项目硬约束）
+              needDefaultPointFigure: false,
+              points: [pt],
+              extendData: pt.extendData as unknown as Record<string, unknown>,
+            },
+            'candle_pane'
+          );
+        }
+      } else {
+        chart.removeOverlay({ name: TRADE_MARKER_NAME });
+      }
+    } else {
+      chart.removeOverlay({ name: TRADE_MARKER_NAME });
+    }
+  }, [data, signals]);
 
   return (
     <div
-      className="w-full h-full flex flex-col overflow-hidden"
-      style={{ backgroundColor: theme.panelBg, color: theme.text }}
-    >
-      <div
-        className="px-4 pt-3 pb-2 border-b"
-        style={{ backgroundColor: theme.panelBg, borderColor: theme.gridLine }}
-      >
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-baseline gap-3">
-            <div className="flex items-baseline gap-2">
-              {stockName && (
-                <span className="text-xl font-bold leading-tight">{stockName}</span>
-              )}
-              {stockCode && (
-                <span className="text-sm" style={{ color: theme.textMuted }}>{stockCode}</span>
-              )}
-            </div>
-            {latest && (
-              <>
-                <span
-                  className="text-2xl font-bold leading-tight"
-                  style={{ color: changeColor }}
-                >
-                  {latest.close.toFixed(2)}
-                </span>
-                <span
-                  className="text-sm leading-tight"
-                  style={{ color: changeColor }}
-                >
-                  {changeSign}{change.toFixed(2)} {changeSign}{changePct.toFixed(2)}%
-                </span>
-              </>
-            )}
-          </div>
-          {latest && (
-            <div
-              className="grid grid-cols-6 gap-x-4 gap-y-1 text-xs"
-              style={{ color: theme.textMuted }}
-            >
-              <div className="flex items-center gap-1.5">
-                <span>高:</span>
-                <span style={{ color: theme.up }}>{latest.high.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>低:</span>
-                <span style={{ color: theme.down }}>{latest.low.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>开:</span>
-                <span style={{ color: theme.text }}>{latest.open.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>市值:</span>
-                <span style={{ color: theme.text }}>75.93亿</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>流通:</span>
-                <span style={{ color: theme.text }}>75.93亿</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>量比:</span>
-                <span style={{ color: theme.text }}>1.04</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>换:</span>
-                <span style={{ color: theme.text }}>0.47%</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>市盈TTM:</span>
-                <span style={{ color: theme.text }}>7.14</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>额:</span>
-                <span style={{ color: theme.text }}>3569.95万</span>
-              </div>
-            </div>
-          )}
-          <div className="flex items-center gap-3 text-sm" style={{ color: theme.textMuted }}>
-            <span className="flex items-center gap-1">
-              日K
-            </span>
-          </div>
-        </div>
-      </div>
-      <div style={{ height: chartHeight, position: 'relative', width: '100%' }}>
-        <div
-          ref={chartContainerRef}
-          style={{
-            width: '100%',
-            height: '100%',
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            boxSizing: 'border-box'
-          }}
-        />
-        {loading && (
-          <div
-            className="absolute inset-0 flex items-center justify-center z-10"
-            style={{ backgroundColor: theme.mode === 'dark' ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.7)' }}
-          >
-            <div className="flex flex-col items-center">
-              <div
-                className="w-8 h-8 border-4 border-t-transparent rounded-full animate-spin mb-2"
-                style={{ borderColor: theme.axisLine, borderTopColor: 'transparent' }}
-              />
-              <span className="text-sm" style={{ color: theme.textMuted }}>加载中…</span>
-            </div>
-          </div>
-        )}
-        {error && (
-          <div
-            className="absolute inset-0 flex items-center justify-center z-10"
-            style={{ backgroundColor: theme.mode === 'dark' ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.7)' }}
-          >
-            <div className="flex flex-col items-center text-center p-4">
-              <div className="text-2xl mb-2" style={{ color: theme.down }}>⚠️</div>
-              <span className="font-medium" style={{ color: theme.down }}>加载失败</span>
-              <span className="text-sm mt-1" style={{ color: theme.textMuted }}>{error}</span>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function sma(values: number[], period: number): (number | null)[] {
-  const result: (number | null)[] = []
-  let sum = 0
-  for (let i = 0; i < values.length; i++) {
-    sum += values[i]
-    if (i >= period) sum -= values[i - period]
-    result.push(i >= period - 1 ? sum / period : null)
-  }
-  return result
-}
-
-function formatVolume(v: number): string {
-  if (v >= 1e8) return `${(v / 1e8).toFixed(2)}亿手`
-  if (v >= 1e4) return `${(v / 1e4).toFixed(2)}万手`
-  return `${v.toFixed(0)}手`
-}
-
-function formatAmount(a: number): string {
-  if (a >= 1e8) return `${(a / 1e8).toFixed(2)}亿元`
-  if (a >= 1e4) return `${(a / 1e4).toFixed(2)}万元`
-  return `${a.toFixed(0)}元`
+      ref={containerRef}
+      style={{ height: `${height}px`, width: '100%' }}
+      data-testid="kline-chart"
+      data-period={period}
+      data-adj={adj}
+    />
+  );
 }

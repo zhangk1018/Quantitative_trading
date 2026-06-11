@@ -10,11 +10,10 @@ import pandas as pd
 import logging
 import time
 from fastapi import APIRouter, Query, Path, Depends
-from typing import Dict, Any
 
-from core.api.models.schemas import StockResponse, ScreenerRequest, ApiResponse
+from core.api.models.schemas import ScreenerRequest, ApiResponse
 from core.service.screener_service import ScreenerService
-from core.api.dependencies import get_screener_service, DateDep
+from core.api.dependencies import get_screener_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["股票数据接口"])
@@ -30,10 +29,14 @@ def get_stocks(
     sort_asc: bool = Query(False, description="是否升序排列"),
     offset: int = Query(0, ge=0, description="分页偏移量"),
     limit: int = Query(100, ge=1, le=200, description="每页数量"),
-    as_of_date: str = DateDep,
+    as_of_date: str = Query(None, description="数据截止日期（YYYYMMDD），不传则使用最新交易日"),
     screener: ScreenerService = Depends(get_screener_service),
-):
+) -> ApiResponse:
     try:
+        # 若未传 as_of_date，使用 screener 内部的最新交易日
+        if not as_of_date:
+            as_of_date = screener.trade_date
+
         filter_dict = {}
         if filters:
             for f in filters.split(","):

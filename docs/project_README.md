@@ -1,43 +1,68 @@
 # 量化交易系统
 
-一个基于 Python 的量化交易数据展示与分析平台。
+一个基于 Python 的量化交易数据采集、清洗、分析与展示平台。
 
 ## 📋 项目概述
 
-本项目旨在构建一个完整的量化交易数据展示系统，提供股票数据的实时展示、市场分类筛选、以及数据统计功能。
+本项目构建了一套完整的量化交易数据流水线，涵盖数据采集（多数据源）、清洗校验、技术指标计算、信号生成，并提供 RESTful API 和监控看板。
 
 ## ✨ 功能特性
 
 ### 已实现功能
 
-1. **股票数据展示**
-   - 实时展示股票最新价、涨跌幅、涨跌额等数据
-   - 支持 45+ 字段展示：代码、名称、行业、涨跌幅、收盘价、PE、PB、总市值、成交额、换手率、量比、净流入、开盘、最高、最低、昨收、涨跌额、成交量、PE-TTM、PS、PS-TTM、股息率、股息率TTM、流通市值、流通股、资金流向（小单/中单/大单/特大单）、20日新高、60日新高、连涨天数、5日量比、5日均量、MA5/MA10/MA20、RSI6、MACD、布林带等
+1. **多数据源管理**
+   - Baostock 主力数据源（免费、稳定、无Token）
+   - Tushare 备用数据源（免费版，仅限日线）
+   - DataSourceManager 自动故障切换（FAILOVER 策略）
+   - 令牌桶限流器，避免触发 API 频率限制
+
+2. **数据采集与清洗**
+   - 日线数据全量/增量同步
+   - 复权因子同步（Baostock query_adjust_factor）
+   - 行业数据补全（Baostock query_stock_industry）
+   - 数据格式校验、业务规则校验、跨数据源交叉验证
+   - 脏数据自动修复与死信表
+
+3. **技术指标计算**
+   - 移动平均线（MA5/MA10/MA20/MA60）
+   - MACD 指标（DIF/DEA/MACD）
+   - RSI 指标（6/12/24）
+   - KDJ 指标（K/D/J）
+   - 布林带（上轨/中轨/下轨）
+
+4. **交易信号**
+   - MACD 金叉/死叉预计算
+   - 信号持久化到 trade_signals 表
+
+5. **股票数据展示**
+   - 实时展示股票最新价、涨跌幅、涨跌额等 45+ 字段
    - 涨跌颜色区分（红色上涨、绿色下跌）
 
-2. **多维度筛选**
+6. **多维度筛选**
    - 全部股票
    - 上市板块：上海主板、深圳主板、创业板、科创板、中小板
    - 行业分类筛选
-   - **地区筛选**：31个省市自治区
+   - 地区筛选：31个省市自治区
 
-3. **表格交互**
+7. **表格交互**
    - 表头固定，不随内容滚动
    - 支持列排序（点击表头）
    - 分页浏览
    - 点击"查看更多字段"展开完整字段
 
-4. **数据统计**
+8. **数据监控看板** `/admin`
+   - 数据完整性总览（覆盖率、最新日期、缺失股票）
+   - 覆盖率趋势图表
+   - 管道执行状态（各 ETL 任务进度）
+   - 当前下载进度
+   - 数据质量统计（脏数据、同步失败）
+   - 系统健康状态（数据库/数据源/分区校验）
+
+9. **数据统计**
    - API调用次数统计
    - 快照文件数量统计
    - 日线文件数量统计
    - 系统运行时间统计
-
-5. **界面优化**
-   - 统一的深色主题配色
-   - 表格与按钮区块无缝连接
-   - 页面加载时默认显示全部股票
-   - 股票代码可点击跳转至同花顺详情页
 
 ## 🛠 技术栈
 
@@ -48,60 +73,50 @@
 | 前端构建 | Vite | 5+ |
 | 数据存储 | PostgreSQL | 15+ |
 | 数据格式 | Parquet | - |
-| 数据源 | Akshare / Tushare | - |
+| 数据源 | Baostock（主力） / Tushare（备用） | - |
+| 调度系统 | crontab（主力） / APScheduler（备选） | - |
 
 ## 📁 项目结构
 
 ```
 Quantitative_trading/
 ├── .env                     # 环境变量配置
-├── requirements.txt         # Python 依赖
-├── start_service.sh         # 服务管理脚本（start/stop/restart/status）
+├── requirements.txt         # Python 依赖（根级公共依赖）
+├── start_service.sh         # 服务管理脚本（start/stop/restart/status/all）
 ├── README.md                # 项目主文档
-├── IMPROVEMENTS.md          # 改进文档
-├── AKSHARE_README.md        # Akshare 使用说明
-├── postgresql_migration_plan.md  # PostgreSQL 迁移方案
-├── data_preparation_plan.md # 数据准备计划
-├── config/
-│   └── pipeline.yaml        # 配置文件
-├── data/
-│   ├── price/
-│   │   └── daily/           # 日线数据（Parquet格式）
-│   ├── snapshot/
-│   │   └── latest/          # 实时快照数据（JSON格式）
-│   ├── backup/              # 数据库备份目录
-│   └── metadata/            # 元数据（股票列表等）
-├── logs/                    # 日志目录
-├── scripts/
-│   ├── data_pipeline.py     # 数据处理管道主入口
-│   ├── etl/                 # ETL核心脚本
-│   │   ├── daily_snapshot_sync.py
-│   │   ├── tushare_fetcher.py
-│   │   └── ...
-│   ├── quality/             # 数据质量检查
-│   │   ├── check_table_schema.py
-│   │   ├── check_data_quality.py
-│   │   └── ...
-│   ├── enrichment/          # 数据补全/增强
-│   │   ├── update_from_parquet.py
-│   │   ├── update_indicators_from_parquet.py
-│   │   ├── calculate_highs.py
-│   │   └── ...
-│   └── utils/               # 工具脚本
-├── src/
-│   ├── backend/             # FastAPI 后端
-│   │   ├── main.py          # API入口
-│   │   ├── models.py        # SQLAlchemy模型
-│   │   ├── repository.py    # 数据访问层
-│   │   └── database.py      # 数据库连接
-│   └── frontend/            # React前端
-│       ├── src/
-│       │   ├── App.tsx      # 主应用组件
-│       │   ├── components/  # UI组件
-│       │   └── api.ts       # API调用封装
-│       └── dist/            # 构建产物
-├── tests/                   # 测试目录
-└── venv/                    # 虚拟环境
+├── backend/                 # 后端代码主目录
+│   ├── main.py              # FastAPI 主入口
+│   ├── pipeline.yaml        # 核心配置文件
+│   ├── task_scheduler.py    # APScheduler 调度器
+│   ├── collector/           # 数据采集
+│   │   ├── datasource/      # 多数据源（base/tushare/baostock/akshare）
+│   │   ├── db/              # 数据库操作（models/loader/meta/repository）
+│   │   │   └── sql/         # SQL 脚本（建表/分区/迁移）
+│   │   ├── etl/             # ETL 流程（import/sync_adj_factor/fill_industry/分区维护）
+│   │   ├── scheduler/       # 智能调度系统
+│   │   └── storage/         # 存储层（PostgreSQL/SQLite）
+│   ├── clean/               # 数据清洗与补全
+│   │   ├── enrich/          # 数据补全（基本面/行业/技术指标/新高突破）
+│   │   ├── processor/       # 核心处理（导入器/缺口处理/质量检查/技术指标）
+│   │   ├── quality/         # 数据质量检查
+│   │   └── tools/           # 工具脚本（信号预计算/数据管道/清理/对比）
+│   ├── core/                # 核心服务
+│   │   └── api/             # FastAPI 路由（main/config/dependencies/models/router/）
+│   ├── monitoring/          # 系统监控（system_monitor）
+│   ├── static/              # 静态文件（monitor.html 监控看板）
+│   ├── utils/               # 工具模块（配置/日志/错误分类/存储工厂/股票代码工具）
+│   └── logs/                # 运行日志
+├── data/                    # 数据目录
+│   ├── metadata/            # 元数据缓存（stock_list.parquet）
+│   └── price/daily/         # 日线快照（latest_quotes.parquet）
+├── logs/                    # 根级日志
+│   └── etl/                 # ETL 定时任务日志
+└── docs/                    # 项目文档
+    ├── DATA_SCHEMA.md       # 数据架构
+    ├── DATA_COLLECTION_DESIGN.md  # 数据采集设计
+    ├── SCHEDULER_GUIDE.md   # 调度系统指南
+    ├── project_README.md    # 本文档
+    └── ...                  # 其他设计文档
 ```
 
 ## 🚀 快速开始
@@ -112,42 +127,60 @@ Quantitative_trading/
 - Node.js 18+
 - PostgreSQL 15+
 
+### 环境变量配置
+
+创建 `.env` 文件（在项目根目录）：
+
+```env
+# 数据库配置
+PG_HOST=localhost
+PG_PORT=5432
+PG_DATABASE=quant_trading
+PG_USER=quant_user
+PG_PASSWORD=your_password
+
+# Tushare Token（可选，仅备用数据源需要）
+TUSHARE_TOKEN=your_token_here
+```
+
 ### 安装依赖
 
 ```bash
-# 安装 Python 依赖
+# 安装 Python 依赖（后端）
 pip install -r requirements.txt
+pip install -r backend/requirements.txt
 
 # 安装前端依赖
 cd src/frontend
 npm install
 ```
 
+### 初始化数据库
+
+```bash
+# 执行建表脚本
+psql -h localhost -U quant_user -d quant_trading -f backend/collector/db/sql/init_db.sql
+```
+
 ### 启动服务
 
 ```bash
-# 使用统一脚本启动（推荐）
-./start_service.sh start
+# 启动所有服务（后端 + 前端 + 监控看板）
+./start_service.sh all
 
-# 或手动启动
-# 后端：cd src/backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
-# 前端：cd src/frontend && npm run dev
+# 或分别启动
+./start_service.sh start    # 仅后端 + 前端
+./start_service.sh admin    # 仅监控看板
 ```
 
 ### 服务管理
 
 ```bash
-# 启动服务
-./start_service.sh start
-
-# 停止服务
-./start_service.sh stop
-
-# 重启服务
-./start_service.sh restart
-
-# 查看状态
-./start_service.sh status
+./start_service.sh start      # 启动服务
+./start_service.sh stop       # 停止服务
+./start_service.sh restart    # 重启服务
+./start_service.sh status     # 查看状态
+./start_service.sh all        # 启动全部（含监控看板）
 ```
 
 ### 访问地址
@@ -157,109 +190,92 @@ npm install
 | 前端页面 | http://localhost:5173 |
 | 后端API | http://localhost:8000/api |
 | API文档 | http://localhost:8000/docs |
+| 监控看板 | http://localhost:8000/admin |
+| 静态监控 | http://localhost:9000/monitor.html |
 
 ## 🔧 数据处理
 
-### 数据处理管道
+### 数据采集 ETL
 
 ```bash
-# 完整流程（检查 + 补全）
-python scripts/data_pipeline.py full --date 2026-06-01
+# 日线数据导入
+cd /Users/zhangk/workspace/Quantitative_trading/backend
+python collector/etl/import_daily_data.py --start-date 2026-06-01 --end-date 2026-06-05
 
-# 仅执行数据质量检查
-python scripts/data_pipeline.py check
+# 复权因子同步（全量）
+python collector/etl/sync_adj_factor.py
 
-# 仅执行数据补全
-python scripts/data_pipeline.py enrich
+# 复权因子同步（增量）
+python collector/etl/sync_adj_factor.py --incremental
+
+# 行业数据补全
+python collector/etl/fill_industry.py
+```
+
+### 数据清洗与补全
+
+```bash
+# 技术指标计算
+python clean/processor/calculate_technical_indicators.py
+
+# 信号预计算（MACD 金叉/死叉）
+python clean/tools/precompute_signals.py
+
+# 新高突破计算
+python clean/enrich/calculate_highs.py --date 2026-06-01
+```
+
+### 数据质量检查
+
+```bash
+# 检查表结构一致性
+python clean/quality/check_table_schema.py
+
+# 检查数据完整性
+python clean/quality/check_data_quality.py
+
+# 检查重复数据
+python clean/quality/check_duplicates.py
 ```
 
 ### 定时任务
 
 本系统使用 Crontab 实现定时任务调度：
 
-| 任务名称 | 执行时间 | 说明 |
-|---------|---------|------|
-| 每日股票列表更新 | 17:30 | 更新股票列表信息 |
-| **收盘作业** | **15:10 (周一至周五)** | 收盘后下载当日最终交易数据，写入数据库 |
-| **每日行情更新** | **20:10** | 增量更新日线数据 |
-| 每周数据库维护 | 周六 02:00 | VACUUM + ANALYZE + 备份 |
-| 每日数据完整性检查 | 03:00 | 检查数据完整性 |
-
-### 数据质量检查
-
-```bash
-# 检查表结构一致性
-python scripts/quality/check_table_schema.py
-
-# 检查数据完整性
-python scripts/quality/check_data_quality.py
-
-# 检查重复数据
-python scripts/quality/check_duplicates.py
-```
-
-### 数据补全
-
-```bash
-# 从Parquet更新基础字段
-python scripts/enrichment/update_from_parquet.py
-
-# 更新技术指标
-python scripts/enrichment/update_indicators_from_parquet.py
-
-# 更新特殊标志（ST/新股/涨跌停）
-python scripts/enrichment/update_special_flags.py
-
-# 计算20日新高和60日新高
-python scripts/enrichment/calculate_highs.py --date 2026-06-01
-```
+| 任务名称 | 执行时间 | 脚本路径 | 说明 |
+|---------|---------|----------|------|
+| 收盘作业 | 16:00（周一至周五） | `collector/etl/daily_snapshot_sync.py` | 下载当日交易数据 |
+| 每日行情更新 | 20:10 | `collector/etl/daily_snapshot_sync.py` | 增量更新日线数据 |
+| 复权因子同步 | 21:00 | `collector/etl/sync_adj_factor.py` | 增量同步复权因子 |
+| 每日数据完整性检查 | 22:00 | `clean/quality/check_data_quality.py` | 检查数据完整性 |
+| 每周数据库维护 | 周六 02:00 | `collector/etl/weekly_maintenance.py` | VACUUM + ANALYZE + 备份 |
 
 ## 📊 API 接口
 
-### 获取股票列表
+### 股票相关
 
 ```
-GET /api/stocks
+GET /api/stocks                     # 获取股票列表
+GET /api/stocks/query               # 按代码/名称搜索
+GET /api/meta                       # 获取元数据（行业/地区/板块）
+GET /api/kline/{code}               # 获取K线数据
+GET /api/signals/{code}             # 获取交易信号
 ```
 
-**参数**:
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| as_of_date | string | 查询日期（YYYY-MM-DD） |
-| listed_board | string | 上市板块筛选 |
-| industry | string | 行业筛选（逗号分隔） |
-| area | string | 地区筛选（逗号分隔） |
-| sort_by | string | 排序字段 |
-| sort_asc | boolean | 是否升序 |
-| offset | int | 分页偏移量 |
-| limit | int | 每页数量（1-500） |
+### 监控相关
 
-**返回示例**:
-```json
-{
-    "code": 200,
-    "message": "success",
-    "data": {
-        "total": 300,
-        "items": [
-            {
-                "stock_code": "000001",
-                "stock_name": "平安银行",
-                "industry": "银行",
-                "change_pct": 2.35,
-                "close": 12.58,
-                "pe": 8.56,
-                "pb": 0.92,
-                "market_cap": 2560.00,
-                "amount": 15.20,
-                "turnover_rate": 1.85,
-                "volume_ratio": 1.23,
-                "net_mf_amount": 5200.00
-            }
-        ]
-    }
-}
 ```
+GET /api/monitor/data-summary/      # 数据完整性总览
+GET /api/monitor/coverage-trend/    # 覆盖率趋势
+GET /api/monitor/pipeline-status/   # 管道执行状态
+GET /api/monitor/download-progress/ # 当前下载进度
+GET /api/monitor/data-quality/      # 数据质量统计
+GET /api/monitor/sync-checkpoints/  # 同步水位线异常
+GET /api/monitor/health-check/      # 系统健康状态
+GET /api/monitor/pipeline-history/  # 管道历史趋势
+```
+
+监控看板访问地址：`http://localhost:8000/admin` 或 `http://localhost:9000/monitor.html`
 
 ### 获取元数据
 
@@ -283,6 +299,22 @@ GET /api/meta
 ```
 
 ## 📝 开发日志
+
+### 2026-06-08
+- ✅ 重构 Tushare 数据源，仅保留日线数据下载功能
+- ✅ 新增 Baostock 复权因子获取（get_adj_factor）
+- ✅ 新增 Baostock 行业数据获取（get_stock_industry）
+- ✅ 实现 DataSourceManager 故障切换策略
+- ✅ 新增复权因子同步脚本 sync_adj_factor.py
+- ✅ 新增行业数据补全脚本 fill_industry.py
+- ✅ 新增系统监控看板（/admin）
+- ✅ 修复 .env 配置文件加载路径
+- ✅ 修正监控看板分区检查逻辑（年度分区）
+
+### 2026-06-04
+- ✅ 数据采集设计文档完成
+- ✅ 合并调度系统指南文档
+- ✅ 数据架构文档 v4.0 更新
 
 ### 2026-06-02
 - ✅ 整理代码结构：新增 quality/、enrichment/ 目录
@@ -345,4 +377,4 @@ MIT License
 ---
 
 *项目名称：量化交易系统*
-*最后更新：2026-06-02*
+*最后更新：2026-06-08*

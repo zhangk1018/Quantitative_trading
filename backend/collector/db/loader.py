@@ -1,13 +1,16 @@
 """
 loader.py — Data access layer for the stock screener backend.
 
-Loads `latest_quotes.parquet` into memory once at startup via `DataLoader.load()`.
+Loads `latest_quotes.parquet` into memory via `DataLoader.load()`.
+Automatically detects file modification and reloads when data changes,
+so ETL pipeline updates are reflected without server restart.
+
 After `load()` is called, callers access data through the `DataLoader` instance:
   - `loader.df`           : the full pandas DataFrame
   - `loader.trade_date`   : trading date string in YYYYMMDD format
   - `loader.field_counts` : dict of {column_name: hit_count} for binary 0/1 indicator columns
 
-The module-level functions `get_df()`, `get_trade_date()`, `get_field_counts()` 
+The module-level functions `get_df()`, `get_trade_date()`, `get_field_counts()`
 are deprecated; use `DataLoader` instead.
 """
 
@@ -42,29 +45,22 @@ class DataLoader:
     def __init__(self):
         self._df = None
         self._trade_date = ""
-        self._field_counts = {}
+        self._field_counts: dict | None = None
+        self._parquet_mtime: float = 0  # 上次加载时 parquet 文件的 mtime
 
-    @property
-    def df(self) -> pd.DataFrame:
-        if self._df is None:
-            raise RuntimeError("数据未加载，请先调用 load()")
-        return self._df
+    def _check_reload(self) -> None:
+        """检测 parquet 文件是否已变更，是则自动重新加载"""
+        try:
+            current_mtime = os.path.getmtime(PARQUET_PATH)
+            if current_mtime > self._parquet_mtime:
+                self._do_load()
+        except (FileNotFoundError, OSError):
+            pass  # 文件暂时不可读，继续使用缓存数据
 
-    @property
-    def trade_date(self) -> str:
-        if not self._trade_date:
-            raise RuntimeError("交易日未设置，请先调用 load()")
-        return self._trade_date
-
-    @property
-    def field_counts(self) -> dict:
-        if not self._field_counts:
-            raise RuntimeError("字段计数未计算，请先调用 load()")
-        return self._field_counts
-
-    def load(self) -> "DataLoader":
-        """加载数据，更新内部状态"""
+    def _do_load(self) -> None:
+        """内部加载逻辑（不检查 mtime）"""
         self._df = pd.read_parquet(PARQUET_PATH)
+        self._parquet_mtime = os.path.getmtime(PARQUET_PATH)
         self._trade_date = str(self._df["trade_date"].iloc[0])
 
         # Only count integer binary (0/1) columns with these prefixes.
@@ -76,6 +72,31 @@ class DataLoader:
             if c.startswith(binary_prefixes) and self._df[c].dtype in ("int64", "int32", "int8", "bool")
         ]
         self._field_counts = {c: int(self._df[c].sum()) for c in binary_cols}
+
+    @property
+    def df(self) -> pd.DataFrame:
+        self._check_reload()
+        if self._df is None:
+            raise RuntimeError("数据未加载，请先调用 load()")
+        return self._df
+
+    @property
+    def trade_date(self) -> str:
+        self._check_reload()
+        if not self._trade_date:
+            raise RuntimeError("交易日未设置，请先调用 load()")
+        return self._trade_date
+
+    @property
+    def field_counts(self) -> dict:
+        self._check_reload()
+        if self._field_counts is None:
+            raise RuntimeError("字段计数未计算，请先调用 load()")
+        return self._field_counts
+
+    def load(self) -> "DataLoader":
+        """加载数据，更新内部状态"""
+        self._do_load()
         return self
 
 

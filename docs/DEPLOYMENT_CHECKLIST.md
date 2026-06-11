@@ -5,6 +5,13 @@
 # 创建日期: 2026-05-30
 # 适用环境: 生产环境部署
 
+### 设计变更记录
+
+| 版本 | 日期 | 变更内容 |
+|------|------|---------|
+| v1.1 | 2026-06-08 | 更新 SQL 脚本路径，与实际一致 |
+| v1.0 | 2026-05-30 | 初始版本 |
+
 ---
 
 ## 📋 部署检查清单
@@ -25,8 +32,8 @@
 
 | 步骤 | 命令 | 说明 | 状态 |
 |------|------|------|------|
-| 2.1 | `psql -h localhost -U postgres -d quant_trading -f scripts/init_db.sql` | **首次初始化**（超级用户执行） | ☐ |
-| 2.2 | `psql -h localhost -U quant_user -d quant_trading -f scripts/partition_maintenance.sql` | 创建分区维护存储过程 | ☐ |
+| 2.1 | `psql -h localhost -U postgres -d quant_trading -f backend/collector/db/sql/init_db.sql` | **首次初始化**（超级用户执行） | ☐ |
+| 2.2 | `psql -h localhost -U quant_user -d quant_trading -f backend/collector/db/sql/partition_maintenance.sql` | 创建分区维护存储过程 | ☐ |
 | 2.3 | `psql -h localhost -U postgres -d quant_trading -f scripts/partition_cold_hot.sql` | 冷热分离配置（按需执行） | ☐ |
 
 **重要提示**:

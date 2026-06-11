@@ -1,0 +1,121 @@
+# ============================================
+# Dockerfile.backend - 量化交易系统后端镜像
+# ============================================
+# 构建: docker build -t quant-backend:1.0.0 -f Dockerfile.backend .
+# 运行: docker run -d --name quant-backend -p 8000:8000 --env-file .env.production quant-backend:1.0.0
+# 健康: docker inspect --format='{{json .State.Health.Status}}' quant-backend
+# ============================================
+
+# ---- 阶段1：构建（编译 Python 包 + 安装 TA-Lib）----
+FROM python:3.11-slim AS builder
+
+# TA-Lib 编译依赖（Docker Desktop HTTP 代理不稳定，添加重试循环）
+RUN for i in 1 2 3; do \
+        apt-get update -o Acquire::Retries=3 && \
+        apt-get install -y --fix-missing --no-install-recommends ca-certificates \
+        && break || { echo "[retry $i] apt failed"; sleep 10; }; \
+    done && \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list 2>/dev/null; \
+    for i in 1 2 3; do \
+        apt-get update -o Acquire::Retries=3 && \
+        apt-get install -y --fix-missing --no-install-recommends \
+            build-essential \
+            wget \
+            curl \
+        && break || { echo "[retry $i] apt install failed"; sleep 10; }; \
+    done && \
+    rm -rf /var/lib/apt/lists/*
+
+# 安装 TA-Lib C 库（从 SourceForge 下载，支持 HTTP 回退）
+# Docker Desktop 代理可能拦截 HTTPS，使用 HTTP 兜底
+RUN (curl -fsSL --retry 3 -o /tmp/ta-lib.tar.gz \
+        https://downloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz || \
+     wget -q --no-check-certificate -O /tmp/ta-lib.tar.gz \
+        http://downloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz) && \
+    tar -xzf /tmp/ta-lib.tar.gz -C /tmp/ && \
+    cd /tmp/ta-lib && \
+    ./configure --prefix=/usr && \
+    make && \
+    make install && \
+    rm -rf /tmp/ta-lib /tmp/ta-lib.tar.gz
+
+# Python 虚拟环境（避免污染系统）
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /build
+
+# 先复制 requirements 以利用 Docker 缓存
+COPY backend/requirements.txt backend/requirements_api.txt* ./
+
+# 安装 Python 依赖
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    if [ -f requirements_api.txt ]; then pip install --no-cache-dir -r requirements_api.txt; fi
+
+# ---- 阶段2：运行时（精简镜像，~200MB）----
+FROM python:3.11-slim
+
+# 运行时依赖（libpq5 给 psycopg2、curl 给健康检查）
+# 注意：libta-lib 不在 Debian 官方源，从 builder 复制
+RUN for i in 1 2 3; do \
+        apt-get update -o Acquire::Retries=3 && \
+        apt-get install -y --fix-missing --no-install-recommends ca-certificates \
+        && break || { echo "[retry $i] apt failed"; sleep 10; }; \
+    done && \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list 2>/dev/null; \
+    for i in 1 2 3; do \
+        apt-get update -o Acquire::Retries=3 && \
+        apt-get install -y --fix-missing --no-install-recommends \
+            libpq5 \
+            curl \
+        && break || { echo "[retry $i] apt install failed"; sleep 10; }; \
+    done && \
+    rm -rf /var/lib/apt/lists/*
+
+# 从 builder 阶段复制 TA-Lib 运行时库（.so + lib）
+COPY --from=builder /usr/lib/libta-lib* /usr/lib/
+COPY --from=builder /usr/include/ta-lib /usr/include/ta-lib
+RUN ldconfig
+
+# 复制虚拟环境
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH="/app"
+
+# 创建非 root 用户
+RUN useradd --create-home --shell /bin/bash --uid 1001 quant && \
+    mkdir -p /app /app/data /app/logs && \
+    chown -R quant:quant /app
+
+WORKDIR /app
+
+# 复制后端代码
+COPY --chown=quant:quant backend/ /app/backend/
+# 复制公共模块（shared 包）
+COPY --chown=quant:quant shared/ /app/shared/
+# 复制数据目录（包含预生成 parquet）
+COPY --chown=quant:quant data/ /app/data/
+
+USER quant
+
+EXPOSE 8000
+
+# 健康检查（每 30s 探测一次 /health）
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -fsS http://localhost:8000/health || exit 1
+
+# 启动 uvicorn（4 worker + 单 worker debug=true 时 reload）
+CMD ["uvicorn", "backend.core.api.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "4", \
+     "--proxy-headers", \
+     "--forwarded-allow-ips", "*", \
+     "--access-log", \
+     "--log-level", "info"]

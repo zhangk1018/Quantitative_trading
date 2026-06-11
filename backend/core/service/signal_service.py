@@ -7,7 +7,6 @@ signal_service.py - 买卖信号服务
 import pandas as pd
 from typing import Dict, List, Any, Optional
 from datetime import datetime
-from decimal import Decimal
 import time
 
 from collector.db.loader import DataLoader
@@ -183,11 +182,11 @@ class SignalService:
         
         if start_date:
             start_date_val = str_to_date(start_date)
-            filtered_signals = [s for s in filtered_signals if s.signal_date >= start_date_val]
+            filtered_signals = [s for s in filtered_signals if s.trade_date >= start_date_val]
         
         if end_date:
             end_date_val = str_to_date(end_date)
-            filtered_signals = [s for s in filtered_signals if s.signal_date <= end_date_val]
+            filtered_signals = [s for s in filtered_signals if s.trade_date <= end_date_val]
         
         # 应用限制
         filtered_signals = filtered_signals[:limit]
@@ -198,8 +197,8 @@ class SignalService:
             stock_name=response.stock_name,
             listed_board=response.listed_board,
             signal_type=response.signal_type,
-            start_date=filtered_signals[0].signal_date if filtered_signals else None,
-            end_date=filtered_signals[-1].signal_date if filtered_signals else None,
+            start_date=str(filtered_signals[0].trade_date) if filtered_signals else None,
+            end_date=str(filtered_signals[-1].trade_date) if filtered_signals else None,
             count=len(filtered_signals),
             signals=filtered_signals,
         )
@@ -252,22 +251,22 @@ class SignalService:
         df = df.sort_values("date", ascending=True)
         
         # 生成MACD信号
-        if not signal_type or signal_type == "macd_cross":
+        if not signal_type or signal_type == "macd_cross" or signal_type == "all":
             macd_signals = self._generate_macd_signals(df)
             signals.extend(macd_signals)
-        
+
         # 生成RSI信号
-        if not signal_type or signal_type == "rsi_overbought":
+        if not signal_type or signal_type in ("rsi_oversold", "rsi_overbought", "all"):
             rsi_signals = self._generate_rsi_signals(df)
             signals.extend(rsi_signals)
-        
+
         # 生成布林带信号
-        if not signal_type or signal_type == "bollinger_breakout":
+        if not signal_type or signal_type == "bollinger_breakout" or signal_type == "all":
             bollinger_signals = self._generate_bollinger_signals(df)
             signals.extend(bollinger_signals)
         
         # 按日期排序（从新到旧）
-        signals.sort(key=lambda x: x.date, reverse=True)
+        signals.sort(key=lambda x: x.trade_date, reverse=True)
         
         # 限制返回数量
         return signals[:100]
@@ -298,7 +297,8 @@ class SignalService:
                 signals.append(SignalItem(
                     trade_date=curr_row["date"],
                     signal_type="macd_cross",
-                    price=Decimal(str(curr_row["close"])),
+                    direction="buy",
+                    price=float(curr_row["close"]),
                     reason=f"MACD金叉：{curr_macd:.2f} > {curr_signal:.2f}",
                 ))
 
@@ -307,7 +307,8 @@ class SignalService:
                 signals.append(SignalItem(
                     trade_date=curr_row["date"],
                     signal_type="macd_cross",
-                    price=Decimal(str(curr_row["close"])),
+                    direction="sell",
+                    price=float(curr_row["close"]),
                     reason=f"MACD死叉：{curr_macd:.2f} < {curr_signal:.2f}",
                 ))
 
@@ -325,7 +326,8 @@ class SignalService:
                 signals.append(SignalItem(
                     trade_date=row["date"],
                     signal_type="rsi_oversold",
-                    price=Decimal(str(row["close"])),
+                    direction="buy",
+                    price=float(row["close"]),
                     reason=f"RSI超卖：{rsi:.2f} < 30",
                 ))
 
@@ -334,7 +336,8 @@ class SignalService:
                 signals.append(SignalItem(
                     trade_date=row["date"],
                     signal_type="rsi_overbought",
-                    price=Decimal(str(row["close"])),
+                    direction="sell",
+                    price=float(row["close"]),
                     reason=f"RSI超买：{rsi:.2f} > 70",
                 ))
 
@@ -354,7 +357,8 @@ class SignalService:
                 signals.append(SignalItem(
                     trade_date=row["date"],
                     signal_type="bollinger_breakout",
-                    price=Decimal(str(close)),
+                    direction="sell",
+                    price=float(close),
                     reason=f"突破布林上轨：{close:.2f} > {boll_upper:.2f}",
                 ))
 
@@ -363,7 +367,8 @@ class SignalService:
                 signals.append(SignalItem(
                     trade_date=row["date"],
                     signal_type="bollinger_breakout",
-                    price=Decimal(str(close)),
+                    direction="buy",
+                    price=float(close),
                     reason=f"突破布林下轨：{close:.2f} < {boll_lower:.2f}",
                 ))
 

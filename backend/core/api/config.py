@@ -50,6 +50,7 @@ class APISettings(BaseSettings):
         env_file = ".env"
         env_prefix = "API_"
         case_sensitive = False
+        extra = "ignore"  # 忽略未声明的环境变量（如 TUSHARE_TOKEN、PG_*）
 
 # 全局配置实例
 settings = APISettings()

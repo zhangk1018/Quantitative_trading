@@ -1,7 +1,7 @@
 # 数据采集与校验设计文档
 
 **创建日期**：2026-06-04  
-**最后更新**：2026-06-04
+**最后更新**：2026-06-08
 
 ---
 
@@ -148,10 +148,140 @@
 
 ---
 
+## 六、多数据源架构
+
+### 6.1 架构概览
+
+```
+┌─────────────────────────────────────────────┐
+│              DataSourceManager               │
+│    策略: FAILOVER (故障切换)                  │
+│    优先级: Baostock(PRIMARY) > Tushare(备用)  │
+└──────┬──────────────┬──────────────┬─────────┘
+       │              │              │
+       ▼              ▼              ▼
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│ Baostock │  │ Tushare  │  │ AkShare  │
+│ (主力)   │  │ (日线)   │  │ (备用)   │
+└──────────┘  └──────────┘  └──────────┘
+```
+
+**设计原则**：
+- **故障切换（FAILOVER）**：主数据源失败时自动切换到备用数据源
+- **接口统一**：所有数据源实现 `BaseDataSource` 抽象基类，提供统一接口
+- **频率控制**：每个数据源自带令牌桶限流器，避免触发API限制
+
+### 6.2 数据源清单
+
+| 数据源 | 优先级 | 当前状态 | 支持接口 | 限制说明 |
+|--------|--------|----------|----------|----------|
+| **Baostock** | PRIMARY | ✅ 生产使用 | get_stock_list, get_kline, get_adj_factor, get_trade_calendar, get_stock_industry | 免费，无Token，每分钟≤20次 |
+| **Tushare** | 备用 | ✅ 生产使用（仅日线） | get_kline (daily) | 免费用户200次/分钟，仅支持日线 |
+| **AkShare** | 备用 | 📦 可用组件 | 完整行情 | 免费，依赖网络稳定性 |
+
+### 6.3 接口清单
+
+| 接口方法 | Baostock | Tushare | 说明 |
+|----------|----------|---------|------|
+| `connect()` | ✅ | ✅ | 建立连接 |
+| `disconnect()` | ✅ | ✅ | 断开连接 |
+| `get_stock_list()` | ✅ | ❌（权限受限） | 获取股票列表 |
+| `get_kline()` | ✅ | ✅ 仅日线 | 获取K线数据 |
+| `get_trade_calendar()` | ✅ | ❌（权限受限） | 获取交易日历 |
+| `get_adj_factor()` | ✅ | ❌（权限受限） | 获取复权因子 |
+| `get_stock_industry()` | ✅ | ❌（权限受限） | 获取行业分类 |
+| `get_daily_basic()` | ❌ | ✅（需Pro） | 获取每日基本面指标（PE/PB/dv/ps等），**限5次/天** |
+
+### 6.4 频率限制（Rate Limiter）
+
+所有数据源使用令牌桶算法实现请求频率控制：
+
+| 参数 | Baostock | Tushare | Tushare `daily_basic` |
+|------|----------|---------|-----------------------|
+| 最小请求间隔 | 0.15秒 | 0.35秒 | — |
+| 每分钟最大请求数 | 20次 | 180次 | — |
+| 每日最大请求数 | 无限制 | 200次 | **5次/天**（Tushare Pro 官方限制） |
+| 突发容量 | 3 | 5 | — |
+
+> **注意**：`daily_basic` 接口每日配额仅 5 次（Tushare Pro 官方限制），同步完整历史数据需分多天执行。建议优先同步最新交易日，待配额刷新后再补历史。
+
+### 6.5 DataSourceManager 故障切换策略
+
+```
+1. 按优先级顺序尝试数据源
+2. 主数据源成功 => 返回结果
+3. 主数据源失败 => 自动切换到备用数据源
+4. 所有数据源失败 => 抛出异常
+```
+
+---
+
+## 七、复权因子同步
+
+### 7.1 数据源说明
+
+复权因子数据通过 **Baostock** 获取。Baostock 的 `query_adjust_factor` 接口：
+- 支持按股票代码查询
+- 返回每个交易日的复权因子
+- 数据免费且完整
+
+### 7.2 同步流程
+
+```
+Baostock.query_adjust_factor(code)
+        │
+        ▼
+逐股票遍历（全市场 ~5800只）
+        │
+        ▼
+写入 stock_adj_factor 表
+        │
+        ▼
+更新 sync_checkpoints 表
+```
+
+### 7.3 同步脚本
+
+| 脚本 | 说明 | 用法 |
+|------|------|------|
+| `collector/etl/sync_adj_factor.py` | 复权因子全量/增量同步 | `python sync_adj_factor.py [--incremental] --start-date YYYY-MM-DD --end-date YYYY-MM-DD` |
+
+**同步模式**：
+- **全量同步**：遍历所有股票，同步全部复权因子数据
+- **增量同步**：根据 sync_checkpoints 水位线，仅同步最新数据
+
+---
+
+## 八、行业数据补全
+
+### 8.1 数据源说明
+
+行业数据通过 **Baostock** 的 `query_stock_industry` 接口获取。
+
+### 8.2 补全脚本
+
+| 脚本 | 说明 | 用法 |
+|------|------|------|
+| `collector/etl/fill_industry.py` | 行业数据补全 | `python fill_industry.py` |
+
+**执行流程**：
+```
+1. 连接 Baostock 获取全市场行业分类
+2. 查询数据库现有股票列表
+3. 将行业数据更新到 stock_basic 表
+```
+
+---
+
 ## 五、相关文件
 
 | 文件 | 说明 |
 |------|------|
+| `collector/datasource/base.py` | 数据源抽象基类 & DataSourceManager |
+| `collector/datasource/tushare.py` | Tushare 数据源实现（仅日线） |
+| `collector/datasource/baostock.py` | Baostock 数据源实现（主力） |
+| `collector/etl/sync_adj_factor.py` | 复权因子同步脚本 |
+| `collector/etl/fill_industry.py` | 行业数据补全脚本 |
 | `collector/etl/import_daily_data.py` | 数据导入主脚本 |
 | `clean/processor/data_validator.py` | 数据校验器 |
 | `collector/scheduler/` | 调度相关代码 |

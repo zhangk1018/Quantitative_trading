@@ -5,14 +5,27 @@ main.py - FastAPI 应用入口
 """
 
 import os
+import sys
+
+# 修正 Python 路径：使 shared/ 和 backend/ 均可导入
+# 获取项目根目录：Quantitative_trading
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(_current_dir)))
+_backend_dir = os.path.join(_project_root, "backend")
+
+for p in [_project_root, _backend_dir]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from .config import settings
 from .dependencies import get_loader, get_screener_service
-from .router import meta, stocks, kline, signals
+from .router import meta, stocks, kline, signals, monitor, watchlist
 
 # 应用生命周期管理
 @asynccontextmanager
@@ -56,6 +69,20 @@ app.include_router(meta.router, prefix="/api/meta", tags=["元数据"])
 app.include_router(stocks.router, prefix="/api/stocks", tags=["股票筛选"])
 app.include_router(kline.router, prefix="/api/kline", tags=["K线数据"])
 app.include_router(signals.router, prefix="/api/signals", tags=["买卖信号"])
+app.include_router(monitor.router, prefix="/api", tags=["数据监控"])
+app.include_router(watchlist.router, prefix="/api/watchlist", tags=["自选股管理"])
+
+# 挂载静态文件服务（监控看板）
+static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
+app.mount("/static", StaticFiles(directory=static_dir, html=True), name="static")
+
+# 管理员监控看板入口
+@app.get("/admin", response_class=HTMLResponse)
+async def get_admin_dashboard():
+    """返回管理员数据监控看板页面"""
+    html_path = os.path.join(static_dir, "monitor.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
 
 # 全局异常处理
 @app.exception_handler(Exception)
