@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-bg-base text-text-primary font-sans antialiased;
+  margin: 0;
+  padding: 0;
+  overflow: hidden; 
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-bg-base;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-bg-card rounded-full hover:bg-border-hover transition-colors;
+}

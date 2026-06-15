@@ -6,14 +6,11 @@ import pandas as pd
 import psycopg2
 from psycopg2 import OperationalError, IntegrityError
 from typing import Optional, Dict, Any
-
 from .base_storage import BaseStorage
-
 logger = logging.getLogger(__name__)
 
 class PostgreSQLStorage(BaseStorage):
     """PostgreSQL 存储实现"""
-
     def __init__(self, config: Dict[str, Any]):
         self.host = config.get('host', 'localhost')
         self.port = config.get('port', 5432)
@@ -111,7 +108,7 @@ class PostgreSQLStorage(BaseStorage):
                     pb NUMERIC(14, 4),
                     total_mv NUMERIC(18, 2),
                     circ_mv NUMERIC(18, 2),
-                    dv_ratio  NUMERIC(10, 4),
+                    dv_ratio NUMERIC(10, 4),
                     dv_ttm    NUMERIC(10, 4),
                     ps        NUMERIC(10, 2),
                     ps_ttm    NUMERIC(10, 2),
@@ -790,8 +787,6 @@ class PostgreSQLStorage(BaseStorage):
             logger.error(f"❌ 获取日频基本面失败: {str(e)}")
             return pd.DataFrame()
 
-
-
     def get_stock_list(self) -> pd.DataFrame:
         """获取股票列表"""
         query = "SELECT code, name, exchange, industry FROM stock_basic ORDER BY code"
@@ -931,4 +926,61 @@ class PostgreSQLStorage(BaseStorage):
             return df
         except Exception as e:
             logger.error(f"❌ 获取交易信号失败: {str(e)}")
+            return pd.DataFrame()
+
+    def get_kline_with_indicators(self, code: str, cycle: str = 'daily', 
+                                  start_date: Optional[str] = None, 
+                                  end_date: Optional[str] = None, 
+                                  limit: int = 100) -> pd.DataFrame:
+        """
+        获取包含行情、基本面和技术指标的完整 K 线数据
+        通过 SQL JOIN 复用数据库已有数据，避免 Python 重复计算
+        """
+        if not self.conn:
+            logger.error("❌ 数据库未连接")
+            return pd.DataFrame()
+
+        # cycle 映射
+        cycle_map = {'daily': '1d', '1d': '1d', 'weekly': '1w', 'monthly': '1m'}
+        cycle_val = cycle_map.get(cycle.lower(), cycle)
+
+        query = """
+            SELECT 
+                q.trade_date, q.open, q.high, q.low, q.close, q.volume, q.amount,
+                b.pe_ttm, b.pb, b.circ_mv, b.turnover_rate,
+                i.ma5, i.ma10, i.ma20, i.ma60,
+                i.dif, i.dea, i.rsi6
+            FROM stock_quotes q
+            LEFT JOIN stock_daily_basic b ON q.code = b.code AND q.trade_date = b.trade_date
+            LEFT JOIN stock_indicators i ON q.code = i.code AND q.trade_date = i.trade_date AND q.cycle = i.cycle
+            WHERE q.code = %s AND q.cycle = %s
+        """
+        params = [code, cycle_val]
+
+        if start_date:
+            query += " AND q.trade_date >= %s"
+            params.append(start_date)
+        if end_date:
+            query += " AND q.trade_date <= %s"
+            params.append(end_date)
+
+        query += " ORDER BY q.trade_date DESC LIMIT %s"
+        params.append(limit)
+
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(query, params)
+            colnames = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+            cursor.close()
+            
+            if not rows:
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(rows, columns=colnames)
+            # 按日期正序排列，方便前端画图和指标计算
+            return df.sort_values('trade_date').reset_index(drop=True)
+            
+        except Exception as e:
+            logger.error(f"❌ 获取带指标 K 线数据失败: {str(e)}")
             return pd.DataFrame()

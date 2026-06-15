@@ -30,7 +30,7 @@ class TestStockResponse:
         data = {
             "stock_code": "000001.SZ",
             "stock_name": "平安银行",
-            "listed_board": ListedBoard.MAIN,
+            "listed_board": ListedBoard.SH_MAIN,
             "industry": "银行",
             "trade_date": date(2026, 5, 29),
             "pre_close": Decimal("10.50"),
@@ -50,7 +50,7 @@ class TestStockResponse:
         data = {
             "stock_code": "000001.SZ",
             "stock_name": "平安银行",
-            "listed_board": ListedBoard.MAIN,
+            "listed_board": ListedBoard.SH_MAIN,
             "trade_date": date(2026, 5, 29)
         }
         
@@ -75,7 +75,7 @@ class TestStockResponse:
             StockResponse(
                 stock_code="000001.SZ",
                 stock_name="平安银行",
-                listed_board=ListedBoard.MAIN,
+                listed_board=ListedBoard.SH_MAIN,
                 trade_date=date(2026, 5, 29),
                 close=Decimal("-10.00")  # 负价格
             )
@@ -86,7 +86,7 @@ class TestStockResponse:
         stock = StockResponse(
             stock_code="000001.SZ",
             stock_name="平安银行",
-            listed_board=ListedBoard.MAIN,
+            listed_board=ListedBoard.SH_MAIN,
             trade_date=date(2026, 5, 29),
             rsi_6=Decimal("65.5")
         )
@@ -97,7 +97,7 @@ class TestStockResponse:
             StockResponse(
                 stock_code="000001.SZ",
                 stock_name="平安银行",
-                listed_board=ListedBoard.MAIN,
+                listed_board=ListedBoard.SH_MAIN,
                 trade_date=date(2026, 5, 29),
                 rsi_6=Decimal("150.0")  # > 100
             )
@@ -172,12 +172,12 @@ class TestStocksRequest:
     def test_listed_board_filter(self):
         """测试上市板块筛选"""
         req = StocksRequest(
-            listed_board=ListedBoard.MAIN,
+            listed_board=ListedBoard.SH_MAIN,
             sort_by="change_pct",
             limit=100,
             as_of_date=date(2026, 5, 29)
         )
-        assert req.listed_board == ListedBoard.MAIN
+        assert req.listed_board == ListedBoard.SH_MAIN
 
 
 class TestApiResponse:

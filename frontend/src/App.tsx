@@ -9,7 +9,7 @@ import SettingsView from "./components/SettingsView";
 import StockDetailView from "./components/StockDetailView";
 import { useUrlCode } from "./hooks/useUrlCode";
 import {
-  createGroup,
+  createEmptyFilter,
   flattenFilters,
   type FilterTree,
   type FlatFilters,
@@ -55,7 +55,7 @@ export default function App() {
 
   // ========== 条件构建器状态（已提升到顶层，Sidebar 与 StockPickerView 共享）==========
   const [conditionTree, setConditionTree] = useState<FilterTree>(() =>
-    createGroup("AND")
+    createEmptyFilter()
   );
   const [builderCollapsed, setBuilderCollapsed] = useState(false);
   // 选股列表筛选条件（TopN / 排序）
@@ -125,6 +125,7 @@ export default function App() {
           op: "between",
           min: range.min,
           max: range.max,
+          condOp: "AND",
         });
       }
     };
@@ -168,7 +169,10 @@ export default function App() {
   // 加载股票列表（由"开始选股"按钮手动触发）
   // 读取当前最新的 conditionTree + 侧边栏范围，不再通过 appliedFlat 中转
   const loadStocks = useCallback(async () => {
-    if (!tradeDate) return;
+    if (!tradeDate) {
+      setError("交易日期尚未加载，请稍后重试");
+      return;
+    }
 
     abortRef.current?.abort();
     const ctrl = new AbortController();
@@ -247,6 +251,16 @@ export default function App() {
     loadStocks();
   }, [loadStocks]);
 
+  // 「重置」按钮：清空条件树、清空股票结果、重置指标范围
+  const handleReset = useCallback(() => {
+    setConditionTree(createEmptyFilter());
+    setStocks([]);
+    setTotal(0);
+    setError(null);
+    setMarketIndicatorRanges({});
+    setFinancialIndicatorRanges({});
+  }, []);
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-bg-primary text-text-primary dark">
       {/* 顶部状态栏 */}
@@ -268,6 +282,7 @@ export default function App() {
           builderCollapsed={builderCollapsed}
           onToggleBuilderCollapsed={() => setBuilderCollapsed((c) => !c)}
           onStartScreener={handleStartScreener}
+          onReset={handleReset}
         />
 
         {/* 右侧主工作区 */}

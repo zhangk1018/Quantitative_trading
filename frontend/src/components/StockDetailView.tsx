@@ -112,7 +112,7 @@ const fmtLarge = (v: number | null | undefined): string => {
 /** 上市板块枚举转中文 */
 const boardName = (b?: string | null): string => {
   if (!b) return '-';
-  // ListedBoard 本身就是中文（'主板' / '创业板' / '科创板' / '北交所'）
+  // ListedBoard 本身就是中文（'上海主板' / '深圳主板' / '创业板' / '科创板' / '北交所'）
   return b;
 };
 
@@ -123,7 +123,7 @@ const boardName = (b?: string | null): string => {
 const mockStockDetail: StockResponse = {
   stock_code: '000001',
   stock_name: '平安银行',
-  listed_board: '主板',
+  listed_board: '上海主板',
   industry: '银行',
   sub_industry: '股份制银行',
   trade_date: '2026-06-05',

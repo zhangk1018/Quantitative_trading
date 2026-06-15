@@ -67,4 +67,66 @@
 [方舟 2026-06-11 16:30] 协作单 [6.1-INDICATOR-20260611] 状态变更: NEW（选股视图侧边栏8个灰显指标全部因后端缺字段：行情3个[振幅/每手价格/委比] StockResponse无字段；财务5个[净利润增长率/营收增长率/毛利率/净利率/资产负债率] 无字段；财务3个[净利润/营业收入/净资产收益率] stock_fundamental_pit表存在但未导出parquet也未关联StockResponse。请量量补全字段+视图+parquet导出。）
 [方舟 2026-06-11 16:45] 协作单 [6.1-INDICATOR-20260611] 范围缩减：行情指标 3 个（振幅/每手价格/委比）确认后端长期无法提供数据，已从前端 Sidebar.tsx 移除（MARKET_INDICATOR_FIELD_MAP + 按钮网格）。工单范围现仅剩财务指标 5+3 项待量量补全。
 [方舟 2026-06-11 16:55] 协作单 [6.1-INDICATOR-20260611] 范围再缩减：财务指标 5 个（净利润增长率/营收增长率/毛利率/净利率/资产负债率）确认后端无字段且短期无法补全，已从前端 Sidebar.tsx 移除（FINANCIAL_INDICATOR_FIELD_MAP + 按钮网格）。工单范围现仅剩财务指标 3 项（净利润/营业收入/净资产收益率，待后端 stock_fundamental_pit 表填充并导出 parquet）。
+[方舟 2026-06-11 15:31] 协作单 [6.1-RANGE-20260611] 状态变更: NEW（范围模块"上市地/股票范围"选择未传到后端。选"上海主板"→开始选股，API 请求不含 listed_board 参数，结果含 300/688 等非上海主板股票。请量量确认后端 /api/stocks/ 是否支持 listed_board/watchlist_only/market 参数及值映射规则。）
 [量量 2026-06-11 18:00] 协作单 [6.1-INDICATOR-20260611] 状态变更: NEW→VERIFY（诊断结果：行情3个已移除✅；财务5个数据源无字段永久禁用❌；财务3个 stock_fundamental_pit 表为空表0条记录，保留占位待后续填充数据❌。本工单无代码修复可做，Sidebar.tsx 注释已更新。请方舟验证。）
+[量量 2026-06-11] 协作单 [6.1-RANGE-20260611] 状态变更: NEW→ASSIGNED（认领：诊断后端 /api/stocks/ 接口 listed_board 参数支持情况+前端 label→后端 value 映射规则。）
+[量量 2026-06-11] 协作单 [6.1-RANGE-20260611] 状态变更: ASSIGNED→VERIFY（后端已修复：`backend/core/api/router/stocks.py` 将 listed_board 参数传入 filter_dict。curl 验证通过：主板2,274只✅创业板1,397只✅科创板607只✅。**前端侧仍需修复**：`frontend/src/api.ts` 需做 label→value 映射，详见上方说明。请方舟验证。）
+[量量 2026-06-11] 更新板块规则 v2：应 K 要求，上海主板/深圳主板/主板 三者并列区分。后端所有文件已同步。最新完整规则：
+
+**板块枚举（shared/constants.py ListedBoard）：**
+| 枚举成员 | 值 | 含义 |
+|----------|-----|------|
+| `MAIN` | `"主板"` | 聚合：上海主板 + 深圳主板 |
+| `SH_MAIN` | `"上海主板"` | 600xxx |
+| `SZ_MAIN` | `"深圳主板"` | 000/001/002/003xxx（含原中小板） |
+| `CHINEXT` | `"创业板"` | 300/301xxx |
+| `STAR` | `"科创板"` | 688/689xxx |
+| `BSE` | `"北交所"` | 920xxx |
+
+**数据库 SQL CASE（daily_snapshot_sync.py）：**
+- 60xxx → `'上海主板'`
+- 000/001/002/003xxx → `'深圳主板'`
+- 300/301xxx → `'创业板'`
+- 688/689xxx → `'科创板'`
+- 920/8xxx → `'北交所'`
+
+**ScreenerService 特殊逻辑：**
+- `_fix_listed_board()`: parquet 内存修正 60xxx→上海主板，000/001/002/003→深圳主板
+- `_apply_filters()`: listed_board=`主板` 时展开为 [`上海主板`, `深圳主板`] 列表（聚合筛选）
+- `_to_listed_board()`: 兼容旧数据中小板/深证主板→深圳主板
+
+**修改的文件（全部已同步）：**
+- `shared/constants.py` ✅
+- `backend/utils/stock_code_utils.py` ✅
+- `backend/collector/etl/daily_snapshot_sync.py` ✅
+- `backend/core/service/screener_service.py` ✅
+- `frontend/src/types.ts` ✅
+- `backend/core/api/router/stocks.py` ✅
+
+### 修复方案（前端侧，方舟来做）
+在 `frontend/src/api.ts` 的 `fetchStocks()` 中，发送 `listed_board` 前做值映射：
+```typescript
+const BOARD_MAP: Record<string, string> = {
+  "上海主板": "上海主板",
+  "深圳主板": "深圳主板",
+  "创业板": "创业板",
+  "科创板": "科创板",
+  "北交所": "北交所",
+  "全部": "",               // 空=不限
+}
+if (params.listed_board) {
+  const backendVal = BOARD_MAP[params.listed_board]
+  if (backendVal) p.set('listed_board', backendVal)
+}
+```
+⚠️ 注意：前端侧**不再需要**把"上海主板"映射为"主板"，现在后端直接支持"上海主板"和"深圳主板"作为独立值。"主板"是聚合值（=上海+深圳），后端自动展开。
+
+---
+
+**通知**: [量量 2026-06-11 23:30] 协作单 [6.1-RANGE-20260611] 状态变更: REOPENED→VERIFY
+后端沪/深主板区分全套改动已完成，12个文件同步修改，验证通过：
+- 上海主板 1704 只（全部 60 开头 ✅）
+- 深圳主板 1487 只（全部 000/001/002/003 开头 ✅）
+- 创业板 1397 只（全部 300/301 开头 ✅）
+- 科创板 607 只（全部 688/689 开头 ✅）
+请方舟在前端验证：选"沪深+上海主板+全部"→结果应只含 60 开头，"沪深+深圳主板+全部"→应只含 000/001/002/003 开头。

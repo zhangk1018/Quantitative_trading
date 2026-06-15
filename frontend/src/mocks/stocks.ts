@@ -23,7 +23,7 @@ export function generateMockStocks(count: number = 100): StockResponse[] {
   ]
   
   const industries = ['银行', '地产', '医药', '电子', '计算机', '通信', '传媒']
-  const boards: Array<'主板' | '创业板' | '科创板' | '北交所'> = ['主板', '创业板', '科创板', '北交所']
+  const boards: Array<'上海主板' | '深圳主板' | '创业板' | '科创板' | '北交所'> = ['上海主板', '深圳主板', '创业板', '科创板', '北交所']
   
   for (let i = 0; i < count; i++) {
     const basePrice = 5 + Math.random() * 50

@@ -51,8 +51,8 @@ app = FastAPI(
     description="基于FastAPI的量化交易系统后端服务，提供股票筛选、K线数据、买卖信号等功能",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/docs" if settings.debug else None,
-    redoc_url="/redoc" if settings.debug else None,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 # 配置CORS中间件

@@ -90,7 +90,7 @@ class StockResponse(BaseModel):
     {
         "stock_code": "000001.SZ",
         "stock_name": "平安银行",
-        "listed_board": "主板",
+        "listed_board": "上海主板",
         "industry": "银行",
         ...
     }

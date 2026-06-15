@@ -87,16 +87,15 @@ def fetch_stock_list_from_baostock():
     result.loc[result['code'].str.startswith('920'), 'exchange'] = 'BJ'
     result.loc[result['code'].str.match(r'^8\d{5}$'), 'exchange'] = 'BJ'
 
-    # 统计
+    # 统计（按项目规范：002/003归深圳主板，302归创业板）
     def classify(code):
         p = code[:3]
-        if p in ['600', '601', '602', '603', '604', '605']: return '沪主板'
+        if p in ['600', '601', '602', '603', '604', '605']: return '上海主板'
         if p in ['688', '689']: return '科创板'
-        if p in ['000', '001']: return '深主板'
-        if p in ['002', '003']: return '中小板'
-        if p in ['300', '301']: return '创业板'
-        if p == '920': return '北交所920'
-        if code[0] == '8': return '北交所8'
+        if p in ['000', '001', '002', '003']: return '深圳主板'
+        if p in ['300', '301', '302']: return '创业板'
+        if p == '920': return '北交所'
+        if code[0] == '8': return '北交所'
         return '其他'
 
     result['market'] = result['code'].apply(classify)
@@ -174,17 +173,16 @@ def sync_to_stock_basic(conn, stock_df):
     total = cursor.fetchone()[0]
     logger.info(f"stock_basic 总数: {total}")
 
-    # 按市场统计
+    # 按市场统计（按项目规范：002/003归深圳主板，302归创业板）
     cursor.execute("""
         SELECT
             CASE
-                WHEN substring(code, 1, 3) IN ('600','601','602','603','604','605') THEN '沪主板'
+                WHEN substring(code, 1, 3) IN ('600','601','602','603','604','605') THEN '上海主板'
                 WHEN substring(code, 1, 3) IN ('688','689') THEN '科创板'
-                WHEN substring(code, 1, 3) IN ('000','001') THEN '深主板'
-                WHEN substring(code, 1, 3) IN ('002','003') THEN '中小板'
-                WHEN substring(code, 1, 3) IN ('300','301') THEN '创业板'
-                WHEN substring(code, 1, 3) = '920' THEN '北交所920'
-                WHEN substring(code, 1, 1) = '8' THEN '北交所8'
+                WHEN substring(code, 1, 3) IN ('000','001','002','003') THEN '深圳主板'
+                WHEN substring(code, 1, 3) IN ('300','301','302') THEN '创业板'
+                WHEN substring(code, 1, 3) = '920' THEN '北交所'
+                WHEN substring(code, 1, 1) = '8' THEN '北交所'
                 ELSE '其他'
             END as market,
             COUNT(*)

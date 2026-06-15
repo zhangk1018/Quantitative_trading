@@ -13,14 +13,13 @@
  * - 删除按钮 + 添加子条件/子组
  */
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FilterGroup } from '../types'
 
 // ============================================
-// 节点类型定义
+// 节点类型定义（Phase 6.1.d 扁平化）
 // ============================================
 
-/** 范围操作符 */
 export type RangeOp = 'between' | 'gt' | 'lt' | 'gte' | 'lte' | 'eq'
 
 /** 范围条件值 */
@@ -31,28 +30,35 @@ export interface RangeValue {
   op: RangeOp
 }
 
-/** 条件节点 */
-export interface ConditionNode {
+/**
+ * 平级条件（Phase 6.1.e 独立 op）
+ * - field: 字段 key，如 'change_pct' / 'pattern_morning_star'
+ * - fieldType: 字段类型
+ * - binaryValue: binary 字段（true = 命中）
+ * - rangeValue: range 字段（带操作符 + min/max）
+ * - op: 该条件的关系（AND / OR / NOT），独立于其他条件
+ *   - AND: 与前一个条件"且"
+ *   - OR: 与前一个条件"或"
+ *   - NOT: 该条件取反
+ */
+export interface FilterCondition {
   id: string
-  type: 'condition'
-  field: string                  // 字段 key，如 'change_pct' / 'pattern_morning_star'
-  fieldType: 'range' | 'binary'  // 字段类型
-  // range 字段
+  field: string
+  fieldType: 'range' | 'binary'
   rangeValue?: RangeValue
-  // binary 字段（true = 命中，false = 未命中）
   binaryValue?: boolean
-}
-
-/** 组节点（AND/OR/NOT） */
-export interface GroupNode {
-  id: string
-  type: 'group'
+  /** 该条件的关系（独立） */
   op: 'AND' | 'OR' | 'NOT'
-  children: (ConditionNode | GroupNode)[]
 }
 
-/** 根节点永远是一个 group（AND） */
-export type FilterTree = GroupNode
+/**
+ * 筛选树（Phase 6.1.e 扁平结构）
+ * - conditions: 平级条件列表（不再嵌套子组）
+ * - 无顶层 op（每个条件独立带 op）
+ */
+export interface FilterTree {
+  conditions: FilterCondition[]
+}
 
 // ============================================
 // 字段元数据（与 ScreenerService.filter_config 对齐）
@@ -150,37 +156,25 @@ export const genId = (): string => {
   return `node-${Date.now().toString(36)}-${_idCounter}`
 }
 
-/** 创建空的条件节点 */
-export const createCondition = (): ConditionNode => {
-  // 默认第一个 range 字段
-  const firstRangeField = Object.entries(FIELD_META).find(([, m]) => m.type === 'range')?.[0] ?? 'change_pct'
-  return {
-    id: genId(),
-    type: 'condition',
-    field: firstRangeField,
-    fieldType: 'range',
-    rangeValue: { min: undefined, max: undefined, op: 'between' },
-  }
-}
+/** 创建空筛选树（无条件，默认 pendingOp=AND） */
+export const createEmptyFilter = (): FilterTree => ({
+  conditions: [],
+})
 
-/** 创建空的二进制条件节点 */
-export const createBinaryCondition = (): ConditionNode => {
+/**
+ * 创建单条条件（默认 binary 命中，op 默认 AND）
+ * @param field 字段 key
+ * @param op 该条件的关系（AND / OR / NOT）
+ */
+export const createCondition = (field: string, op: 'AND' | 'OR' | 'NOT' = 'AND'): FilterCondition => {
+  const meta = FIELD_META[field]
   return {
     id: genId(),
-    type: 'condition',
-    field: 'pattern_morning_star',
-    fieldType: 'binary',
-    binaryValue: true,
-  }
-}
-
-/** 创建空的组节点 */
-export const createGroup = (op: 'AND' | 'OR' | 'NOT' = 'AND'): GroupNode => {
-  return {
-    id: genId(),
-    type: 'group',
+    field,
+    fieldType: meta?.type ?? 'binary',
+    binaryValue: meta?.type === 'binary' ? true : undefined,
+    rangeValue: meta?.type === 'range' ? { op: 'between', min: undefined, max: undefined } : undefined,
     op,
-    children: [],
   }
 }
 
@@ -197,19 +191,14 @@ export interface PresetTemplate {
   buildTree: () => FilterTree
 }
 
-/** 可用的预设模板列表 */
+/** 可用的预设模板列表（Phase 6.1.e 扁平结构） */
 export const PRESET_TEMPLATES: PresetTemplate[] = [
   {
     id: 'rsi_oversold',
     label: 'RSI超卖',
     description: 'RSI(6) < 30，超卖反弹信号',
     buildTree: () => ({
-      id: genId(),
-      type: 'group',
-      op: 'AND',
-      children: [
-        { id: genId(), type: 'condition', field: 'rsi_6', fieldType: 'range', rangeValue: { op: 'lt', min: 30 } },
-      ],
+      conditions: [createCondition('rsi_6', 'AND')],
     }),
   },
   {
@@ -217,12 +206,9 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     label: '放量突破',
     description: '量比 > 2 + 突破20日高点',
     buildTree: () => ({
-      id: genId(),
-      type: 'group',
-      op: 'AND',
-      children: [
-        { id: genId(), type: 'condition', field: 'volume_ratio', fieldType: 'range', rangeValue: { op: 'gt', min: 2 } },
-        { id: genId(), type: 'condition', field: 'break_high_20', fieldType: 'binary', binaryValue: true },
+      conditions: [
+        createCondition('volume_ratio', 'AND'),
+        createCondition('break_high_20', 'AND'),
       ],
     }),
   },
@@ -231,12 +217,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     label: 'MACD金叉',
     description: 'MACD > 0，偏多信号',
     buildTree: () => ({
-      id: genId(),
-      type: 'group',
-      op: 'AND',
-      children: [
-        { id: genId(), type: 'condition', field: 'macd', fieldType: 'range', rangeValue: { op: 'gt', min: 0 } },
-      ],
+      conditions: [createCondition('macd', 'AND')],
     }),
   },
   {
@@ -244,12 +225,9 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     label: '底部放量+MACD金叉',
     description: '量比 > 1.5 且 MACD > 0',
     buildTree: () => ({
-      id: genId(),
-      type: 'group',
-      op: 'AND',
-      children: [
-        { id: genId(), type: 'condition', field: 'volume_ratio', fieldType: 'range', rangeValue: { op: 'gt', min: 1.5 } },
-        { id: genId(), type: 'condition', field: 'macd', fieldType: 'range', rangeValue: { op: 'gt', min: 0 } },
+      conditions: [
+        createCondition('volume_ratio', 'AND'),
+        createCondition('macd', 'AND'),
       ],
     }),
   },
@@ -258,12 +236,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     label: '连续上涨',
     description: '连涨3天以上（用 consec_up_days >= 3，parquet 实际可用）',
     buildTree: () => ({
-      id: genId(),
-      type: 'group',
-      op: 'AND',
-      children: [
-        { id: genId(), type: 'condition', field: 'consec_up_days', fieldType: 'range', rangeValue: { op: 'gte', min: 3 } },
-      ],
+      conditions: [createCondition('consec_up_days', 'AND')],
     }),
   },
   {
@@ -271,12 +244,7 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
     label: '低估值',
     description: '市盈率 0~15',
     buildTree: () => ({
-      id: genId(),
-      type: 'group',
-      op: 'AND',
-      children: [
-        { id: genId(), type: 'condition', field: 'pe', fieldType: 'range', rangeValue: { op: 'between', min: 0, max: 15 } },
-      ],
+      conditions: [createCondition('pe', 'AND')],
     }),
   },
 ]
@@ -286,55 +254,62 @@ export const PRESET_TEMPLATES: PresetTemplate[] = [
 // ============================================
 
 /**
- * 扁平化输出：
- * - boolFilters: 逗号分隔的 binary 字段（实际生效 → 后端 filters 参数）
+ * 扁平化输出（Phase 6.1.e 独立 op）：
+ * - boolFilters: binary 字段列表（实际生效 → 后端 filters 参数，逗号分隔）
+ *   - AND 条件：直接传 field
+ *   - OR 条件：暂用同款（后端若支持 OR 列表再调整）；前端 UI 已区分
+ *   - NOT 条件：前缀 `not_` 约定；后端若不支持则只显示命中
  * - rangeFilters: 范围条件（前端预览，不传给后端）
- * - 后续 Phase 6.1.b：后端支持 range 过滤时把 rangeFilters 也发出
+ * - totalConditions: 条件总数
  */
 export interface FlatFilters {
-  boolFilters: string[]        // 实际传给后端（binary 字段）
-  rangeFilters: Array<{         // 前端预览用（后端未支持前不传）
+  boolFilters: string[]
+  rangeFilters: Array<{
     field: string
     label: string
     op: RangeOp
     min?: number
     max?: number
+    /** 条件关系（与 chip 前的标签一致） */
+    condOp: 'AND' | 'OR' | 'NOT'
   }>
   totalConditions: number
 }
 
-/** 递归扁平化条件树（仅 binary 生效，range 记录） */
+/** 扁平遍历 conditions（不再递归） */
 export function flattenFilters(tree: FilterTree): FlatFilters {
   const boolFilters: string[] = []
   const rangeFilters: FlatFilters['rangeFilters'] = []
-  let totalConditions = 0
 
-  const walk = (node: ConditionNode | GroupNode, _opContext: 'AND' | 'OR' | 'NOT') => {
-    if (node.type === 'condition') {
-      totalConditions += 1
-      const meta = FIELD_META[node.field]
-      if (!meta) return
-      if (meta.type === 'binary' && node.binaryValue) {
-        // 二值条件：仅在 AND 或裸置时有效
-        // 简化处理：所有 binary 一律 AND 关系，统一传给后端
-        boolFilters.push(node.field)
-      } else if (meta.type === 'range' && node.rangeValue) {
-        rangeFilters.push({
-          field: node.field,
-          label: meta.label,
-          op: node.rangeValue.op,
-          min: node.rangeValue.min,
-          max: node.rangeValue.max,
-        })
-      }
-    } else {
-      // 递归到子节点
-      node.children.forEach((child) => walk(child, node.op))
+  for (const cond of tree.conditions) {
+    const meta = FIELD_META[cond.field]
+    if (!meta) continue
+    if (meta.type === 'binary' && cond.binaryValue) {
+      // 命中条件：传给后端
+      // - AND: `field`
+      // - OR:  `or_field`（后端识别为 OR 关系）
+      // - NOT: `not_field`（后端识别为 NOT 关系）
+      let token = cond.field
+      if (cond.op === 'NOT') token = `not_${cond.field}`
+      else if (cond.op === 'OR') token = `or_${cond.field}`
+      boolFilters.push(token)
+    } else if (meta.type === 'range' && cond.rangeValue) {
+      rangeFilters.push({
+        field: cond.field,
+        label: meta.label,
+        op: cond.rangeValue.op,
+        min: cond.rangeValue.min,
+        max: cond.rangeValue.max,
+        condOp: cond.op,
+      })
     }
   }
 
-  walk(tree, tree.op)
-  return { boolFilters, rangeFilters, totalConditions }
+  return {
+    boolFilters,
+    rangeFilters,
+    totalConditions: tree.conditions.length,
+  }
 }
 
 // ============================================
@@ -354,9 +329,13 @@ interface ConditionBuilderProps {
 }
 
 /**
- * 条件构建器
- * 顶级根：永远是一个 AND 组；用户可嵌套 AND/OR/NOT 子组
- * Phase 6.1.d：移除「应用筛选」按钮与「实时命中数」— 由侧边栏底部「开始选股」统一触发查询
+ * ConditionBuilder（Phase 6.1.e 独立 op + pendingOp）
+ * - 不再有顶层 op（每个条件独立带 op）
+ * - 三个独立按钮 [AND] [OR] [NOT]（互斥单选）
+ *   - 反映"下一个待添加条件将使用的关系"（pendingOp）
+ *   - 已添加条件的 op 不会被后续切换影响
+ * - 选中关系 + 点击弹层中的指标 → 创建「该 op + 该指标」条件
+ * - 选中后只显示指标本身（chip），不能调整参数
  */
 export default function ConditionBuilder({
   tree,
@@ -365,26 +344,93 @@ export default function ConditionBuilder({
   onToggleCollapsed,
 }: ConditionBuilderProps) {
   const flat = useMemo(() => flattenFilters(tree), [tree])
+  const [addPanelOpen, setAddPanelOpen] = useState(false)
+  const [pendingOp, setPendingOp] = useState<'AND' | 'OR' | 'NOT'>('AND')
+  const addBtnRef = useRef<HTMLButtonElement>(null)
+  const addPanelRef = useRef<HTMLDivElement>(null)
+  const [addPanelPos, setAddPanelPos] = useState<{ top: number; left: number } | null>(null)
 
-  // 顶层 group 变更
-  const updateRoot = useCallback(
-    (newRoot: FilterTree) => onChange(newRoot),
-    [onChange]
-  )
-
-  // 「重置」按钮：清空条件树（恢复为空 AND 组）
+  // 「重置」按钮：清空条件树 + pendingOp 回到 AND
   const handleReset = useCallback(() => {
-    onChange(createGroup("AND"))
+    onChange(createEmptyFilter())
+    setPendingOp("AND")
   }, [onChange])
 
-  // 应用预设模板（Phase 6.1.b）
-  // 预设点击后只更新条件树，不自动触发查询 — 由「开始选股」按钮统一触发
+  // 应用预设模板
   const handleApplyPreset = useCallback(
     (template: PresetTemplate) => {
       onChange(template.buildTree())
     },
     [onChange]
   )
+
+  // 添加条件（使用当前 pendingOp）
+  const handleAddCondition = useCallback(
+    (fieldKey: string) => {
+      onChange({
+        ...tree,
+        conditions: [...tree.conditions, createCondition(fieldKey, pendingOp)],
+      })
+      setAddPanelOpen(false)
+    },
+    [tree, onChange, pendingOp]
+  )
+
+  // 切换某条件的 op（点击 op 标签时切换 AND/OR/NOT 循环）
+  const cycleOp = useCallback(
+    (id: string) => {
+      const next: Record<'AND' | 'OR' | 'NOT', 'AND' | 'OR' | 'NOT'> = {
+        AND: 'OR',
+        OR: 'NOT',
+        NOT: 'AND',
+      }
+      onChange({
+        ...tree,
+        conditions: tree.conditions.map((c) =>
+          c.id === id ? { ...c, op: next[c.op] } : c
+        ),
+      })
+    },
+    [tree, onChange]
+  )
+
+  // 删除条件
+  const removeCondition = useCallback(
+    (id: string) => {
+      onChange({
+        ...tree,
+        conditions: tree.conditions.filter((c) => c.id !== id),
+      })
+    },
+    [tree, onChange]
+  )
+
+  // 打开/关闭弹层
+  const toggleAddPanel = useCallback(() => {
+    if (!addPanelOpen && addBtnRef.current) {
+      const r = addBtnRef.current.getBoundingClientRect()
+      // 弹层展开在按钮上方（避免被侧边栏底部裁剪）
+      setAddPanelPos({ top: r.top - 8, left: r.left })
+    }
+    setAddPanelOpen((v) => !v)
+  }, [addPanelOpen])
+
+  // 点击外部关闭弹层
+  useEffect(() => {
+    if (!addPanelOpen) return
+    const handler = (e: MouseEvent) => {
+      if (
+        addPanelRef.current &&
+        !addPanelRef.current.contains(e.target as Node) &&
+        addBtnRef.current &&
+        !addBtnRef.current.contains(e.target as Node)
+      ) {
+        setAddPanelOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [addPanelOpen])
 
   return (
     <div className="border border-border-color bg-bg-secondary rounded" data-testid="condition-builder">
@@ -414,10 +460,10 @@ export default function ConditionBuilder({
 
       {/* 主体（折叠时隐藏） */}
       {!collapsed && (
-        <div className="p-3 border-t border-border-color">
+        <div className="p-3 border-t border-border-color space-y-2">
           {/* 预设模板按钮行（Phase 6.1.b） */}
           <div
-            className="flex items-center gap-2 mb-3 flex-wrap"
+            className="flex items-center gap-2 flex-wrap"
             data-testid="condition-presets"
             onClick={(e) => e.stopPropagation()}
           >
@@ -435,189 +481,111 @@ export default function ConditionBuilder({
             ))}
           </div>
 
-          <GroupEditor
-            group={tree}
-            depth={0}
-            onChange={updateRoot}
-          />
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ============================================
-// GroupEditor：递归编辑组（AND/OR/NOT）
-// ============================================
-
-interface GroupEditorProps {
-  group: GroupNode
-  depth: number
-  onChange: (newGroup: GroupNode) => void
-}
-
-function GroupEditor({ group, depth, onChange }: GroupEditorProps) {
-  /** 更新组本身 */
-  const updateSelf = (patch: Partial<GroupNode>) => {
-    onChange({ ...group, ...patch })
-  }
-
-  /** 更新子节点 */
-  const updateChild = (idx: number, newChild: ConditionNode | GroupNode) => {
-    const newChildren = [...group.children]
-    newChildren[idx] = newChild
-    updateSelf({ children: newChildren })
-  }
-
-  /** 删除子节点 */
-  const removeChild = (idx: number) => {
-    const newChildren = group.children.filter((_, i) => i !== idx)
-    updateSelf({ children: newChildren })
-  }
-
-  /**
-   * 添加条件（按"具体字段"插入：形态识别/突破信号/连续走势分类下的某个指标）
-   * 选中后只读 chip，不能调整参数
-   */
-  const addCondition = (fieldKey: string) => {
-    const meta = FIELD_META[fieldKey]
-    if (!meta) return
-    updateSelf({
-      children: [
-        ...group.children,
-        {
-          id: genId(),
-          type: 'condition',
-          field: fieldKey,
-          fieldType: meta.type,
-          // binary 条件默认命中；range 条件不设值（chip 不显示参数）
-          binaryValue: meta.type === 'binary' ? true : undefined,
-          rangeValue: meta.type === 'range' ? { op: 'between', min: undefined, max: undefined } : undefined,
-        },
-      ],
-    })
-  }
-
-  /** 添加子组 */
-  const addSubgroup = (op: 'AND' | 'OR' | 'NOT') => {
-    updateSelf({ children: [...group.children, createGroup(op)] })
-  }
-
-  const indent = depth * 16
-
-  return (
-    <div
-      className={`relative ${depth > 0 ? 'border-l-2 border-border-color/60 pl-3 ml-2' : ''}`}
-      style={{ marginLeft: depth > 0 ? `${indent}px` : 0 }}
-    >
-      {/* 组头：操作符 + 工具 */}
-      <div className="flex items-center gap-2 mb-2">
-        <select
-          value={group.op}
-          onChange={(e) => updateSelf({ op: e.target.value as 'AND' | 'OR' | 'NOT' })}
-          className={`text-xs px-2 py-1 rounded font-medium ${
-            group.op === 'AND'
-              ? 'bg-up-green/20 text-up-green border border-up-green/40'
-              : group.op === 'OR'
-                ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40'
-                : 'bg-down-red/20 text-down-red border border-down-red/40'
-          }`}
-          data-testid={`group-op-${depth}`}
-        >
-          <option value="AND">且 (AND)</option>
-          <option value="OR">或 (OR)</option>
-          <option value="NOT">非 (NOT)</option>
-        </select>
-        <span className="text-text-muted text-xs">
-          {group.op === 'AND' ? '全部满足' : group.op === 'OR' ? '任一满足' : '取反'}
-        </span>
-
-        <div className="flex-1" />
-
-        <div className="flex items-center gap-1">
-          {/* 「+ 条件」按钮：hover 弹出二级菜单（3 分类 + 各自指标） */}
-          <div className="relative group">
-            <button
-              className="text-text-muted hover:text-up-green text-xs"
-              title="添加条件"
-              data-testid={`add-condition-${depth}`}
-            >
-              + 条件
-            </button>
+          {/* 三个独立按钮：AND / OR / NOT（互斥单选）— 控制"下一个待添加条件"的关系 */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-text-muted text-xs">关系:</span>
             <div
-              className="absolute z-20 top-full right-0 mt-1 w-56 bg-bg-card border border-border-color rounded shadow-lg py-1 invisible group-hover:visible hover:visible max-h-80 overflow-y-auto"
+              className="inline-flex bg-bg-card border border-border-color rounded overflow-hidden"
+              data-testid="pending-op-toggle"
             >
-              {(['pattern', 'breakout', 'consecutive'] as const).map((gid) => {
-                const groupMeta = FIELD_GROUPS.find((g) => g.id === gid)
-                if (!groupMeta) return null
+              {(['AND', 'OR', 'NOT'] as const).map((op) => {
+                const active = pendingOp === op
+                const activeClass =
+                  op === "AND"
+                    ? "bg-up-green text-white"
+                    : op === "OR"
+                      ? "bg-blue-500 text-white"
+                      : "bg-yellow-500 text-white"
                 return (
-                  <div key={gid} className="border-b border-border-color/40 last:border-b-0">
-                    <div
-                      className="px-3 py-1 text-xs text-text-muted font-medium bg-bg-secondary/60"
-                      data-testid={`add-condition-${depth}-${gid}-header`}
-                    >
-                      {groupMeta.label}
-                    </div>
-                    {groupMeta.fieldKeys.map((fk) => (
-                      <button
-                        key={fk}
-                        onClick={() => addCondition(fk)}
-                        className="block w-full text-left px-3 py-1.5 text-xs text-text-primary hover:bg-bg-primary"
-                        data-testid={`add-condition-${depth}-${gid}-${fk}`}
-                      >
-                        {FIELD_META[fk]?.label ?? fk}
-                      </button>
-                    ))}
-                  </div>
+                  <button
+                    key={op}
+                    onClick={() => setPendingOp(op)}
+                    className={`text-xs px-3 py-1 ${
+                      active
+                        ? activeClass
+                        : "text-text-secondary hover:bg-bg-primary"
+                    }`}
+                    data-testid={`pending-op-${op}`}
+                  >
+                    {op}
+                  </button>
                 )
               })}
             </div>
-          </div>
-          <span className="text-text-muted/40">|</span>
-          <button
-            onClick={() => addSubgroup('AND')}
-            className="text-text-muted hover:text-blue-400 text-xs"
-            title="添加子组 (AND)"
-          >
-            + 子组
-          </button>
-        </div>
-      </div>
+            <span className="text-text-muted text-xs">
+              {pendingOp === 'AND' ? '（且）' : pendingOp === 'OR' ? '（或）' : '（取反）'}
+            </span>
 
-      {/* 子节点列表 */}
-      {group.children.length === 0 ? (
-        <div className="text-text-muted text-xs italic py-2 px-3">— 暂无条件，点击上方按钮添加 —</div>
-      ) : (
-        <div className="space-y-1.5">
-          {group.children.map((child, idx) => (
-            <div key={child.id} className="flex items-start gap-1.5">
-              <span className="text-text-muted/60 text-xs mt-2 w-6 text-right font-mono">
-                {idx + 1}.
-              </span>
-              <div className="flex-1">
-                {child.type === 'group' ? (
-                  <GroupEditor
-                    group={child}
-                    depth={depth + 1}
-                    onChange={(g) => updateChild(idx, g)}
-                  />
-                ) : (
-                  <ConditionRow
-                    condition={child}
-                    onChange={(c) => updateChild(idx, c)}
-                  />
-                )}
-              </div>
-              <button
-                onClick={() => removeChild(idx)}
-                className="text-text-muted hover:text-down-red text-sm px-1 mt-1"
-                title="删除"
-                data-testid={`remove-${depth}-${idx}`}
-              >
-                ×
-              </button>
+            <span className="text-text-muted/40">|</span>
+
+            <button
+              ref={addBtnRef}
+              onClick={toggleAddPanel}
+              className={`text-xs px-2 py-1 rounded ${
+                addPanelOpen
+                  ? "bg-up-green/20 text-up-green border border-up-green/40"
+                  : "text-text-muted hover:text-up-green border border-border-color"
+              }`}
+              data-testid="add-condition-0"
+            >
+              + 条件
+            </button>
+          </div>
+
+          {/* 条件列表（平级） */}
+          {tree.conditions.length === 0 ? (
+            <div className="text-text-muted text-xs italic py-1.5 px-1">— 暂无条件，点击"+ 条件"添加 —</div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5" data-testid="condition-list">
+              {tree.conditions.map((cond) => (
+                <ConditionRow
+                  key={cond.id}
+                  condition={cond}
+                  onCycleOp={() => cycleOp(cond.id)}
+                  onRemove={() => removeCondition(cond.id)}
+                />
+              ))}
             </div>
-          ))}
+          )}
+        </div>
+      )}
+
+      {/* 「+ 条件」弹层（fixed 定位，避免被侧边栏滚动容器裁剪） */}
+      {addPanelOpen && addPanelPos && (
+        <div
+          ref={addPanelRef}
+          className="fixed z-50 w-56 bg-bg-card border border-border-color rounded shadow-xl py-1 max-h-80 overflow-y-auto"
+          style={{
+            // 弹层展开在按钮左侧（避免超出视口右/底）
+            top: Math.max(8, addPanelPos.top - 320),
+            left: Math.max(8, addPanelPos.left - 224),
+          }}
+          data-testid="add-condition-panel"
+        >
+          {(['pattern', 'breakout', 'consecutive'] as const).map((gid) => {
+            const groupMeta = FIELD_GROUPS.find((g) => g.id === gid)
+            if (!groupMeta) return null
+            return (
+              <div key={gid} className="border-b border-border-color/40 last:border-b-0">
+                <div
+                  className="px-3 py-1 text-xs text-text-muted font-medium bg-bg-secondary/60"
+                  data-testid={`add-condition-panel-${gid}-header`}
+                >
+                  {groupMeta.label}
+                </div>
+                {groupMeta.fieldKeys.map((fk) => (
+                  <button
+                    key={fk}
+                    onClick={() => handleAddCondition(fk)}
+                    className="block w-full text-left px-3 py-1.5 text-xs text-text-primary hover:bg-bg-primary"
+                    data-testid={`add-condition-panel-${gid}-${fk}`}
+                  >
+                    {FIELD_META[fk]?.label ?? fk}
+                  </button>
+                ))}
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
@@ -625,32 +593,76 @@ function GroupEditor({ group, depth, onChange }: GroupEditorProps) {
 }
 
 // ============================================
-// ConditionRow：单条件编辑（字段 + 操作符 + 值）
+// ConditionRow：单条件 chip（op 标签 + 指标 + 删除）
 // ============================================
 
 interface ConditionRowProps {
-  condition: ConditionNode
-  onChange: (c: ConditionNode) => void
+  condition: FilterCondition
+  /** 点击 op 标签时循环切换 AND → OR → NOT */
+  onCycleOp: () => void
+  onRemove: () => void
 }
 
 /**
- * ConditionRow：单条件展示（只读 chip）
- * - 选中后只显示"指标本身"（FIELD_META.label），不再提供参数调整
- * - 不可编辑（用户新需求）：删除 select / 操作符 / 数值输入
- * - 删除仍由父级 GroupEditor 的 × 按钮控制
+ * ConditionRow：单条件展示（Phase 6.1.e 独立 op + chip 只读）
+ * - 关系标签：chip 前的 [AND] / [OR] / [NOT]（取自 condition.op）
+ *   - 点击 op 标签可循环切换 AND → OR → NOT → AND
+ * - 指标本身：chip 主体（只读，参数调整在条件树/弹层中完成）
+ * - 删除：右侧 ×
+ *
+ * 三个 op 的颜色：
+ *   - AND：绿色
+ *   - OR：蓝色
+ *   - NOT：黄色
  */
-function ConditionRow({ condition, onChange: _onChange }: ConditionRowProps) {
+function ConditionRow({ condition, onCycleOp, onRemove }: ConditionRowProps) {
   const meta = FIELD_META[condition.field]
   const label = meta?.label ?? condition.field
 
+  // 关系标签颜色（按 condition.op 决定）
+  const opClass =
+    condition.op === "AND"
+      ? "bg-up-green/15 text-up-green border-up-green/30"
+      : condition.op === "OR"
+        ? "bg-blue-500/15 text-blue-400 border-blue-500/30"
+        : "bg-yellow-500/15 text-yellow-400 border-yellow-500/30"
+
   return (
     <div
-      className="inline-flex items-center gap-1.5 bg-up-green/10 border border-up-green/30 text-up-green text-xs px-2.5 py-1 rounded"
-      data-testid={`condition-row-${condition.id}`}
-      data-field={condition.field}
+      className="inline-flex items-center gap-1 text-xs"
+      data-testid={`condition-row-wrap-${condition.id}`}
     >
-      <span className="text-xs">✓</span>
-      <span className="font-medium">{label}</span>
+      {/* 关系标签（可点击循环切换） */}
+      <button
+        onClick={onCycleOp}
+        className={`px-1.5 py-0.5 rounded border text-[10px] font-bold cursor-pointer hover:opacity-80 transition-opacity ${opClass}`}
+        title={`点击切换关系（当前：${condition.op}，下一档：${condition.op === "AND" ? "OR" : condition.op === "OR" ? "NOT" : "AND"}）`}
+        data-testid={`condition-row-op-${condition.id}`}
+        data-op={condition.op}
+      >
+        {condition.op}
+      </button>
+
+      {/* 指标 chip（只读） */}
+      <span
+        className="inline-flex items-center gap-1 border pl-1.5 pr-1 py-0.5 rounded bg-bg-card border-border-color text-text-primary"
+        data-testid={`condition-row-${condition.id}`}
+        data-field={condition.field}
+        data-op={condition.op}
+      >
+        <span className="text-xs">✓</span>
+        <span className="font-medium">{label}</span>
+      </span>
+
+      {/* 删除按钮 */}
+      <button
+        onClick={onRemove}
+        className="text-text-muted hover:text-down-red px-1"
+        title="删除该条件"
+        data-testid={`condition-row-remove-${condition.id}`}
+      >
+        ×
+      </button>
     </div>
   )
 }

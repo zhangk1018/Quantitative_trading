@@ -1,5 +1,5 @@
 import { type ViewType } from "./ViewTabs";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import TechnicalIndicatorDialog, {
   DEFAULT_TECHNICAL_CONFIG,
   type TechnicalIndicator,
@@ -39,6 +39,8 @@ interface SidebarProps {
   onToggleBuilderCollapsed?: () => void;
   // 「开始选股」按钮：手动触发选股
   onStartScreener?: () => void;
+  // 「重置」按钮：清空所有条件与选股结果
+  onReset?: () => void;
 }
 
 export default function Sidebar({
@@ -50,6 +52,7 @@ export default function Sidebar({
   builderCollapsed,
   onToggleBuilderCollapsed,
   onStartScreener,
+  onReset,
 }: SidebarProps) {
   return (
     <aside className="w-[280px] h-full bg-bg-secondary border-r border-border-color flex flex-col flex-shrink-0 overflow-hidden">
@@ -62,6 +65,7 @@ export default function Sidebar({
           builderCollapsed={builderCollapsed}
           onToggleBuilderCollapsed={onToggleBuilderCollapsed}
           onStartScreener={onStartScreener}
+          onReset={onReset}
         />
       )}
       {currentView === "watchlist" && <WatchlistSidebar />}
@@ -147,6 +151,7 @@ function StockPickerSidebar({
   builderCollapsed,
   onToggleBuilderCollapsed,
   onStartScreener,
+  onReset,
 }: {
   onMarketIndicatorRangesChange?: (
     ranges: Record<string, IndicatorRangeValue>
@@ -159,8 +164,9 @@ function StockPickerSidebar({
   onConditionTreeChange?: (tree: FilterTree) => void;
   builderCollapsed?: boolean;
   onToggleBuilderCollapsed?: () => void;
-  // 「开始选股」按钮（手动触发选股；条件构建器内部已有「重置」按钮）
+  // 「开始选股」按钮 + 「重置」按钮
   onStartScreener?: () => void;
+  onReset?: () => void;
 }) {
   const [isRangeExpanded, setIsRangeExpanded] = useState(true);
   // 行情指标 / 财务指标 / 技术指标 折叠状态
@@ -190,22 +196,29 @@ function StockPickerSidebar({
   );
   // 当前打开的弹窗对应的指标（null = 关闭）
   const [activeTechDialog, setActiveTechDialog] = useState<TechnicalIndicator | null>(null);
-  const [listingPlaces, setListingPlaces] = useState<string[]>([
-    "全部", "上海主板", "深证主板", "创业板", "科创板"
-  ]);
+
+  // 上市板块选项
+  const listingChildOptions = ["上海主板", "深圳主板", "创业板", "科创板"];
+  const allListingPlaces = [
+    { label: "全部", value: "全部" },
+    ...listingChildOptions.map(v => ({ label: v, value: v })),
+  ];
+
+  // 状态模型：explicitAll 表示 "全部" 是否被显式勾选
+  // selectedChildren 存储已选的子项
+  // 这样可以正确处理 "全部" 的显示和联动
+  const [explicitAll, setExplicitAll] = useState(true);
+  const [selectedChildren, setSelectedChildren] = useState<string[]>(
+    () => [...listingChildOptions]
+  );
+  const allCheckboxRef = useRef<HTMLInputElement>(null);
   const [isListingPlacesOpen, setIsListingPlacesOpen] = useState(false);
+  // 控制全部按钮是否禁用的状态（根据业务逻辑设置）
+  const [allDisabled, setAllDisabled] = useState(false);
   // 所属市场（港股/美股/沪深）：单选
   const [selectedMarket, setSelectedMarket] = useState<"港股" | "美股" | "沪深">("沪深");
   // 股票范围：单选（全部/仅看自选）
   const [selectedScope, setSelectedScope] = useState<"全部" | "仅看自选">("全部");
-
-  const allListingPlaces = [
-    { label: "全部", value: "全部" },
-    { label: "上海主板", value: "上海主板" },
-    { label: "深证主板", value: "深证主板" },
-    { label: "创业板", value: "创业板" },
-    { label: "科创板", value: "科创板" },
-  ];
 
   // 行情指标 → 后端字段映射
   // 振幅 / 每手价格 / 委比 三个因后端无字段已从前端移除（详见协作单 [6.1-INDICATOR-20260611]）
@@ -309,31 +322,60 @@ function StockPickerSidebar({
   }, [financialIndicatorRanges, onFinancialIndicatorRangesChange]);
 
   const toggleListingPlace = (place: string) => {
+    // 如果全部按钮被禁用，不执行任何操作
+    if (allDisabled) return;
+    
     if (place === "全部") {
-      if (listingPlaces.length === allListingPlaces.length) {
-        setListingPlaces([]);
+      if (explicitAll) {
+        // 取消"全部"：子项保持当前选择
+        setExplicitAll(false);
       } else {
-        setListingPlaces(allListingPlaces.map((p) => p.value));
+        // 勾选"全部"：4 个子项全选
+        setExplicitAll(true);
+        setSelectedChildren([...listingChildOptions]);
       }
     } else {
-      if (listingPlaces.includes(place)) {
-        const newPlaces = listingPlaces.filter((p) => p !== place && p !== "全部");
-        setListingPlaces(newPlaces);
+      if (explicitAll || selectedChildren.includes(place)) {
+        // 取消子项：移除该项 + 自动取消"全部"
+        setExplicitAll(false);
+        setSelectedChildren(selectedChildren.filter(c => c !== place));
       } else {
-        const newPlaces = [...listingPlaces.filter((p) => p !== "全部"), place];
-        setListingPlaces(newPlaces.length === allListingPlaces.length - 1 
-          ? allListingPlaces.map((p) => p.value) 
-          : newPlaces);
+        // 添加子项
+        const next = [...selectedChildren, place];
+        setSelectedChildren(next);
+        // 选满 4 个子项时"全部"自动勾选
+        if (listingChildOptions.every(c => next.includes(c))) {
+          setExplicitAll(true);
+        }
       }
     }
   };
 
+  // "全部" checkbox 的 indeterminate 状态同步
+  useEffect(() => {
+    if (allCheckboxRef.current) {
+      allCheckboxRef.current.indeterminate =
+        !explicitAll &&
+        selectedChildren.length > 0 &&
+        selectedChildren.length < listingChildOptions.length;
+    }
+  }, [explicitAll, selectedChildren, listingChildOptions]);
+
+  // 当全部按钮从enable切换到disable时，重置选择状态
+  useEffect(() => {
+    if (allDisabled) {
+      // 禁用时重置为默认状态：全部勾选
+      setExplicitAll(true);
+      setSelectedChildren([...listingChildOptions]);
+    }
+  }, [allDisabled, listingChildOptions]);
+
   const getDisplayText = () => {
-    if (listingPlaces.length === 0) return "全部";
-    if (listingPlaces.includes("全部")) return "全部";
-    if (listingPlaces.length === allListingPlaces.length - 1) return "全部";
-    if (listingPlaces.length <= 2) return listingPlaces.join(",");
-    return `已选 ${listingPlaces.length}项`;
+    if (explicitAll || listingChildOptions.every(c => selectedChildren.includes(c)))
+      return "全部";
+    if (selectedChildren.length === 0) return "未选";
+    if (selectedChildren.length <= 2) return selectedChildren.join(",");
+    return `已选 ${selectedChildren.length}项`;
   };
 
   // 点击外部关闭下拉菜单
@@ -425,14 +467,26 @@ function StockPickerSidebar({
                       {allListingPlaces.map((place) => (
                         <label
                           key={place.value}
-                          className="flex items-center gap-2 px-3 py-2 hover:bg-bg-primary cursor-pointer"
+                          className={`flex items-center gap-2 px-3 py-2 hover:bg-bg-primary cursor-pointer ${allDisabled ? 'opacity-40' : ''}`}
                         >
-                          <input
-                            type="checkbox"
-                            checked={listingPlaces.includes(place.value)}
-                            onChange={() => toggleListingPlace(place.value)}
-                            className="accent-up-green"
-                          />
+                          {place.value === "全部" ? (
+                            <input
+                              type="checkbox"
+                              ref={allCheckboxRef}
+                              checked={explicitAll}
+                              onChange={() => toggleListingPlace(place.value)}
+                              className="accent-up-green"
+                              disabled={allDisabled}
+                            />
+                          ) : (
+                            <input
+                              type="checkbox"
+                              checked={explicitAll || selectedChildren.includes(place.value)}
+                              onChange={() => toggleListingPlace(place.value)}
+                              className="accent-up-green"
+                              disabled={allDisabled}
+                            />
+                          )}
                           <span className="text-text-primary text-xs">{place.label}</span>
                         </label>
                       ))}
@@ -737,14 +791,21 @@ function StockPickerSidebar({
         </div>
       </div>
 
-      {/* 固定底部：「开始选股」— 「重置」按钮已移入条件构建器内部 */}
-      <div className="px-3 py-2 border-t border-border-color flex-shrink-0 bg-bg-secondary">
+      {/* 固定底部：「▶开始选股」和「重置」按钮并排 */}
+      <div className="px-3 py-2 border-t border-border-color flex-shrink-0 bg-bg-secondary flex items-center gap-2">
         <button
           onClick={onStartScreener}
           data-testid="start-screener"
-          className="w-full bg-up-green text-white text-sm font-medium px-4 py-2 rounded hover:opacity-90 transition-opacity"
+          className="flex-1 bg-up-green text-white text-sm font-medium px-4 py-2 rounded hover:opacity-90 transition-opacity"
         >
           ▶ 开始选股
+        </button>
+        <button
+          onClick={onReset}
+          data-testid="reset-screener"
+          className="bg-bg-card border border-border-color text-text-secondary text-sm px-4 py-2 rounded hover:bg-bg-primary transition-colors"
+        >
+          重置
         </button>
       </div>
 

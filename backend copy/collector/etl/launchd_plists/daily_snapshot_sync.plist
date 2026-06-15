@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quant.daily_snapshot_sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/zhangk/workspace/Quantitative_trading/venv/bin/python</string>
+        <string>/Users/zhangk/workspace/Quantitative_trading/backend/collector/etl/daily_snapshot_sync.py</string>
+        <string>$(date -v -1d '+%Y-%m-%d')</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/zhangk/workspace/Quantitative_trading</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>16</integer>
+        <key>Minute</key><integer>30</integer>
+        <key>Weekday</key><integer>2</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/zhangk/workspace/Quantitative_trading/logs/etl/daily_sync.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/zhangk/workspace/Quantitative_trading/logs/etl/daily_sync.err.log</string>
+</dict>
+</plist>

@@ -51,14 +51,12 @@ def calc_boll(series, window=20, std_dev=2):
 def get_listed_board(code):
     """根据股票代码判断上市板"""
     if code.startswith('60'):
-        return '主板'
-    elif code.startswith('000'):
-        return '主板'
-    elif code.startswith('002'):
-        return '中小板'
-    elif code.startswith('300'):
+        return '上海主板'
+    elif code.startswith('000') or code.startswith('001') or code.startswith('002') or code.startswith('003'):
+        return '深圳主板'
+    elif code.startswith('300') or code.startswith('301'):
         return '创业板'
-    elif code.startswith('688'):
+    elif code.startswith('688') or code.startswith('689'):
         return '科创板'
     else:
         return '其他'

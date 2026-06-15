@@ -21,10 +21,10 @@ import type {
 // 测试 ListedBoard 枚举
 // ============================================
 
-const board1: ListedBoard = '主板'
-const board2: ListedBoard = '创业板'
-const board3: ListedBoard = '科创板'
-const board4: ListedBoard = '北交所'
+const board1: ListedBoard = '上海主板'
+const board2: ListedBoard = '深圳主板'
+const board3: ListedBoard = '创业板'
+const board4: ListedBoard = '科创板'
 
 // 以下代码应该报错（类型不匹配）
 // const invalidBoard: ListedBoard = '无效板块'
@@ -36,7 +36,7 @@ const board4: ListedBoard = '北交所'
 const stock: StockResponse = {
   stock_code: '000001.SZ',
   stock_name: '平安银行',
-  listed_board: '主板',
+  listed_board: '上海主板',
   industry: '银行',
   sub_industry: '股份制银行',
   trade_date: '2026-05-29',
@@ -73,7 +73,7 @@ const stock: StockResponse = {
 const minimalStock: StockResponse = {
   stock_code: '000001.SZ',
   stock_name: '平安银行',
-  listed_board: '主板',
+  listed_board: '上海主板',
   trade_date: '2026-05-29',
   is_st: false,
   is_new: false,
@@ -87,7 +87,7 @@ const minimalStock: StockResponse = {
 
 const request: StocksRequest = {
   filters: 'pattern_bull_candle,pattern_hammer',
-  listed_board: '主板',
+  listed_board: '上海主板',
   industry: '银行,地产',
   area: '北京,上海',
   sort_by: 'change_pct',
