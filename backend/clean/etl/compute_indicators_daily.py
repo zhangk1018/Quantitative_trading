@@ -54,10 +54,14 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
     # 列顺序必须与 save_indicators 的 copy_from 一致：
     #   code, cycle, trade_date, ma5, ma10, ma20, ma60, macd, dif, dea, rsi6, rsi12, rsi24, trade_time, trade_datetime
     # TechnicalIndicator.calculate_all 返回列名为大写：MA5, MA10, MACD, MACD_SIGNAL, MACD_HIST, RSI 等
+    # 2026-06-16 修复：MACD 字段映射错误 + RSI12/RSI24 未计算
+    # 标准 MACD 定义：DIF = EMA12-EMA26, DEA = DIF 的 9 日 EMA, MACD 柱 = (DIF-DEA)*2
+    # 代码计算：MACD = EMA12-EMA26 = DIF, MACD_SIGNAL = DEA, MACD_HIST = 柱状图
     indicator_mapping = {
         'MA5': 'ma5', 'MA10': 'ma10', 'MA20': 'ma20', 'MA60': 'ma60',
-        'MACD': 'macd', 'MACD_SIGNAL': 'dif', 'MACD_HIST': 'dea',
-        'RSI': 'rsi6'
+        'MACD_HIST': 'macd',  # 柱状图 → macd
+        'MACD': 'dif',        # EMA12-EMA26 → dif
+        'MACD_SIGNAL': 'dea'  # DIF 的 9 日 EMA → dea
     }
 
     # 从 indicators_df（=== result == df.copy()）取 code/trade_date 以保持索引一致，避免 NaN 对齐问题
@@ -72,9 +76,14 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
         else:
             save_df[dst_col] = 0
 
-    # rsi12/rsi24（calculate_rsi 只返回一个 RSI 列，补零）
-    for col in ['rsi12', 'rsi24']:
-        save_df[col] = 0
+    # 2026-06-16 修复：RSI 需要分别计算 6/12/24 三个窗口
+    # calculate_all 默认 RSI window=14，不符合 RSI6 要求
+    for window, col_name in [(6, 'rsi6'), (12, 'rsi12'), (24, 'rsi24')]:
+        try:
+            rsi_df = TechnicalIndicator.calculate_rsi(quotes_df.copy(), window=window, require_adjust=False)
+            save_df[col_name] = rsi_df['RSI'].fillna(0) if 'RSI' in rsi_df.columns else 0
+        except Exception:
+            save_df[col_name] = 0
 
     # trade_time / trade_datetime 必须在数值列之后
     save_df['trade_time'] = save_df['trade_date'].apply(
