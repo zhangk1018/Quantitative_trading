@@ -277,6 +277,48 @@ market_cap 字段数据问题（与 [6.4] 修复解耦）：① 升序前 20 只
 - **⏳ 跳过 3 项**（影响面大或需联合重构）：
   - 1a `filterTree` 重命名为 `ConditionList`/`FilterGroup`（影响 5+ 文件 + 14 个测试）
   - 2c `ADD_CONDITION` 接受 source 参数（依赖 1a）
+
+---
+
+## 📋 日报 2026-06-16
+
+### 今日完成
+
+**1. 协作单 [6.6-TECHNICAL-API-20260616] ✅ CLOSED**
+- 修复 MACD/RSI pattern 全为 0 问题
+- 根因：字段映射错误 + self 未定义 + RSI 缺少 12/24 窗口
+- 验证：14 个 pattern 全部正常，MA(223/1221)、MACD(72/6/381/87)、BOLL(86/37/203/49)、RSI(19/1/91/338)
+
+**2. 协作单 [6.8-FIELDS-DIFF-DEA-20260616] ✅ VERIFY**
+- 修复 API 响应 diff/dea/rsi_12/rsi_24 返回 NULL
+- 根因：parquet 缺少 4 个列（数据库有值但未导出）
+- 修复：ALTER TABLE 加列 + daily_snapshot_sync.py 更新 + 重新导出 parquet（72→76 列）
+- 验证：300005 探路者 diff=0.0458, dea=-0.0566, rsi_12=66.16, rsi_24=56.61 ✅
+
+**3. 代码清理**
+- 删除 `backend copy` 冗余目录
+- 合并 3 个 shell 脚本为统一 `start.sh`
+- 修改系统仪表盘 URL 为 `http://localhost:8000/admin`
+
+**4. 文档更新**
+- 新增 `docs/ETL_PIPELINE.md`：数据下载→清洗→计算→导出 parquet 全流程
+- 更新 `DATA_SCHEMA.md`：stock_daily_snapshot 新增 4 字段
+- 更新 `协作单.md`：6.8 状态 NEW→VERIFY
+
+**5. 前端 P2 自编指标**
+- P2 状态层设计评审通过，4 项决策已确认
+- RESET_ALL 代码修复 + 单测补充 + vitest 190/190 全过
+- P3 解除阻塞，可启动 CustomIndicatorModal 开发
+
+### Git 提交
+- `2dba04d` feat: fix API diff/dea/rsi_12/rsi_24 NULL fields, cleanup backend copy, update docs
+- `5f5adb7` fix: MACD/RSI 指标字段映射修复 + pattern 计算逻辑优化
+- `a963fc7` feat: 技术指标 pattern API 支持 + 前端技术筛选模块 + 启动脚本合并
+
+### 明日待办
+- [ ] 方舟验证协作单 [6.8] 字段透出
+- [ ] 启动 P3.1 CustomIndicatorModal 开发
+- [ ] 前端 K 线图/详情页确认 diff/dea/rsi_12/rsi_24 显示正常
   - 4a `isNameTaken` 改 props 注入（需改 4 处父组件）
 - **ScreenerProvider 启动流程增强**：autoLoad 加载后立即 dispatch `RESOLVE_MISSING_INDICATORS`，确保从 localStorage 恢复的 filterTree 中失效条件被正确标记
 - **回归验证**：全量 vitest **197/197 全过**（含 storage 33/33 + ScreenerContext 47/47），TS 编译 0 错误
