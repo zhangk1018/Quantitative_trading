@@ -694,6 +694,10 @@ COMMENT ON COLUMN stock_adj_factor.adj_factor IS '复权因子，用于前复权
 | `v_ma5` | BIGINT | | 5日均量 |
 | `rsi_6` | NUMERIC | | 6日RSI |
 | `macd` | NUMERIC | | MACD值 |
+| `dif` | NUMERIC | | DIF值（MACD快线） |
+| `dea` | NUMERIC | | DEA值（MACD慢线） |
+| `rsi_12` | NUMERIC | | 12日RSI |
+| `rsi_24` | NUMERIC | | 24日RSI |
 | `boll_upper` | NUMERIC | | 布林上轨 |
 | `boll_mid` | NUMERIC | | 布林中轨 |
 | `boll_lower` | NUMERIC | | 布林下轨 |

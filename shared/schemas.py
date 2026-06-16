@@ -150,6 +150,8 @@ class StockResponse(BaseModel):
     v_ma5: Optional[int] = Field(None, description="5日均量（手）")
     rsi_6: Optional[Decimal] = Field(None, description="RSI6（相对强弱指标）", ge=0, le=100)
     macd: Optional[Decimal] = Field(None, description="MACD值")
+    diff: Optional[Decimal] = Field(None, description="DIF值（MACD快线）")
+    dea: Optional[Decimal] = Field(None, description="DEA值（MACD慢线）")
     boll_upper: Optional[Decimal] = Field(None, description="布林带上轨")
     boll_mid: Optional[Decimal] = Field(None, description="布林带中轨")
     boll_lower: Optional[Decimal] = Field(None, description="布林带下轨")

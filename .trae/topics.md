@@ -219,3 +219,67 @@ market_cap 字段数据问题（与 [6.4] 修复解耦）：① 升序前 20 只
 **通知**: [方舟→量量 2026-06-16 12:10] 协作单 [6.7-CONDITION-API-20260616] 状态变更: NEW→CLOSED（**K 指示撤回**：先处理 6.6 的问题。前端代码已落地，vitest 142/142 + Playwright 9/9 + 覆盖率 100%/96.29%/100%，等 6.6 关闭后择期重提）
 
 **通知**: [方舟→量量 2026-06-16 12:10] 协作单 [6.6-TECHNICAL-API-20260616] 状态变更: VERIFY→REOPENED（**验证不通过**：端到端 curl 抽样检查 5189 只股票 → MA/BOLL 4 个 pattern 正常工作（ma_long_align=456✅ boll_break_upper=52✅），但 **MACD/RSI 8 个 pattern 全部 0 只=True**（macd_low_golden_cross / macd_high_death_cross / macd_bottom_divergence / macd_top_divergence / rsi_low_golden_cross / rsi_high_death_cross / rsi_bottom_divergence / rsi_top_divergence 在 offset 0/500/1000/2000/3000/4000/5000 共 6 批次抽样中 true_count=0）。根因疑似 `daily_snapshot_sync.py` 中 MACD/RSI pattern SQL 计算逻辑异常，可能"前一日指标 join（iprev）"或"前一日收盘价 join（pq）"失败/条件判断错误。请量量排查并重跑同步脚本后通知方舟重验。⚠️ REOPENED 第 1 次/共 2 次）
+
+**通知**: [量量→方舟 2026-06-16 16:30] 协作单 [6.6-TECHNICAL-API-20260616] 状态变更: REOPENED→VERIFY（**已修复**：① compute_indicators_daily.py 修复 MACD 字段映射（MACD→dif, MACD_SIGNAL→dea, MACD_HIST→macd）+ RSI 分别计算 6/12/24 三个窗口；② daily_snapshot_sync.py 修复 self 未定义问题（_update_tech_patterns 改为独立函数）；③ 重新计算全市场指标（5158/5531 成功）；④ 重新生成 parquet（5189 条记录，72 列）；⑤ API 验证通过：tech_macd=low_golden_cross 返回 144 条，macd_bottom_divergence=976，rsi_top_divergence=775。请方舟验证。）
+
+**通知**: [方舟→量量 2026-06-16 16:45] 协作单 [6.6-TECHNICAL-API-20260616] 状态变更: VERIFY→CLOSED（**验证通过**：全量 11 批次抽样 14 个 pattern 全部正常 — MA: 223/1221 ✅、MACD: 72/6/381/87 ✅、BOLL: 86/37/203/49 ✅、RSI: 19/1/91/338 ✅。MACD/RSI 8 个从 0 恢复，数量级与量量自测一致。**新发现**：API 响应 `diff/dea/rsi_12/rsi_24` 字段仍为 NULL（不影响 pattern 筛选）→ 已新立 [6.8-FIELDS-DIFF-DEA-20260616]）
+
+**通知**: [方舟→量量 2026-06-16 16:50] 协作单 [6.8-FIELDS-DIFF-DEA-20260616] 状态变更: NEW（**新工单**：6.6 验证后新发现 — API 响应中 `diff/dea/rsi_12/rsi_24` 4 个字段仍为 NULL（抽样 300005 探路者：macd=0.1025 但 diff=None dea=None）。**不影响 6.6 关闭**（pattern 筛选已正常），**仅影响 K 线 / 详情页 MACD/RSI 完整显示**。需在 `shared/schemas.py` 新增 4 个字段定义 + `loader.py` 字段映射 + `screener_service._convert_to_stock_responses` 转换逻辑。P2 中优先级，详见协作单 [6.8]）
+
+**通知**: [量量→方舟 2026-06-16 19:30] 协作单 [6.8-FIELDS-DIFF-DEA-20260616] 状态变更: NEW→VERIFY（**已修复**：① 确认代码层面 `schemas.py`/`screener_service.py` 已添加字段定义和映射；② 发现根因：parquet 文件缺少 `dif/dea/rsi_12/rsi_24` 4 个列（数据库有值但未导出）；③ 重新导出 parquet（列数 72→76）；④ 重启后端服务；⑤ API 验证通过：300005 探路者 diff=0.0458, dea=-0.0566, rsi_12=66.16, rsi_24=56.61 ✅；pattern 筛选功能正常：tech_macd=low_golden_cross 返回 145 条 ✅。请方舟验证。）
+
+**通知**: [方舟→K 2026-06-16 18:40] 自编指标 **P2 状态层设计文档已完成**，请 K 评审（按 P1 评审时的"配套约束 1"要求同步提交阶段性评审）
+- **输出文档**：[P2-CustomIndicator-Context-Reducer.md](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/docs/architecture/P2-CustomIndicator-Context-Reducer.md)
+- **覆盖内容**：State 扩展（2 字段：customIndicators + activeIndicatorTab）/ Action 扩展（7 个：LOAD/ADD/UPDATE/REMOVE/SET_TAB/RESOLVE/IMPORT）/ ScreenerProvider autoLoad 机制 / 关键决策点（reducer 纯函数、storage 与 state 解耦、V1.0 过渡 RESOLVE noop）/ 测试覆盖（reducer 12 + autoLoad 3 = 15 个新用例，vitest 190/190 全过）/ 4 项待 K 决策项
+- **4 项待决策议题**（详见文档第八节）：
+  1. `RESET_ALL` 是否清空 `customIndicators`？当前清空 vs 建议保留
+  2. `RESOLVE_MISSING_INDICATORS` 何时启用？V1.0 noop vs P5.2 启用
+  3. V1.0 自编指标导入是否做跨 Tab 同步？不做 vs V2.0 监听 storage 事件
+  4. `activeIndicatorTab` 是否需要持久化？不持久化 vs V2.0 localStorage 记忆
+- **等 K 决策**：P2 评审通过后启动 P3.1 CustomIndicatorModal；P2 评审未通过则按反馈调整后再次提交
+
+**通知**: [K→方舟 2026-06-16 19:00] 协作单 [P2-CONTEXT-20260616] 状态变更: VERIFY→CLOSED（**P2 评审通过 ✅**——四项议题全部采纳当前建议：① `RESET_ALL` 保留 customIndicators + activeIndicatorTab（用户私有长期资产语义隔离）② `RESOLVE_MISSING_INDICATORS` V1.0 保持 noop，P5.2 启用（前置：扩展 `FilterCondition` 加 `sourceId/invalid/invalidReason`）③ V1.0 不做跨 Tab storage 同步，V2.0 迭代 ④ `activeIndicatorTab` V1.0 不持久化，V2.0 可选。落地要求：完成 `RESET_ALL` 代码修复 + 单测补充 + 全量 vitest 190/190 回归。验收通过后**解除 P3 阻塞**，允许启动 P3.1 自编指标表单弹窗开发）
+
+**通知**: [方舟→K 2026-06-16 19:05] 协作单 [P2-CONTEXT-20260616] 状态变更: CLOSED 落地完成 — `RESET_ALL` 修复 + 单测补充 + 全量 vitest 190/190 通过
+- **代码修改**：[ScreenerContext.tsx:272-278](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/context/ScreenerContext.tsx#L272-L278) — `return initialState` 改为 `{...initialState, customIndicators: state.customIndicators, activeIndicatorTab: state.activeIndicatorTab}`，附 K 决策注释
+- **测试补充**：[ScreenerContext.test.tsx:210-238](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/tests/context/ScreenerContext.test.tsx#L210-L238) — 在原 RESET_ALL 用例加 customIndicators + activeIndicatorTab 预置和保留断言；[line 529-537](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/tests/context/ScreenerContext.test.tsx#L529-L537) 旧"清空"用例反转为"保留"用例
+- **回归验证**：全量 vitest **190/190 全过**（含 storage 33/33 + ScreenerContext 40/40），无回归
+- **P3 解除阻塞 ✅**：可以启动 P3.1 CustomIndicatorModal 开发
+
+**🚧 P5.2 前置依赖（开发前必做）**：
+- 扩展 `FilterCondition` 数据模型（types/filterTree.ts）新增 3 字段：`sourceId: string`、`invalid: boolean`、`invalidReason?: string`
+- ScreenerContext 新增 action 字段承载失效信息（待 P5.2 实施时细化）
+- 启用 `RESOLVE_MISSING_INDICATORS` reducer 逻辑（V1.0 保持 noop，P5.2 改为根据 `state.customIndicators` 计算每条 condition 的 invalid 状态）
+- 补全对应单测：覆盖"指标删除→条件标记 invalid→UI 置灰失效"全链路
+
+**📋 V2.0 待迭代项**：
+- **跨 Tab storage 同步**：监听 `window.addEventListener('storage', ...)`，在 A Tab 增删自编指标时同步 B Tab（V1.0 已知限制，仅单浏览器单会话使用）
+- **`activeIndicatorTab` 选中状态持久化**：写入 localStorage，刷新页面保持上次选中（V1.0 刷新默认回到 system）
+- **Mock User 替换为真实登录态 userId**：当前 `MOCK_USER_ID = 'mock_user_default'`，V2.0 接入真实用户体系后需替换为登录态 `userId`，存储层已有 `userId` 隔离能力无需重构
+
+**✅ P2 阶段正式闭环**：可启动 P3.1 CustomIndicatorModal（8 字段表单弹窗）开发
+
+---
+
+**通知**: [K→方舟 2026-06-16 20:30] **代码审阅 9 项建议**已交付（K 直接给出建议清单，方舟按优先级实施）：
+- **✅ 已实施 8 项**：
+  - 1b [`SET_CONDITION_TREE` payload 类型](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/context/ScreenerContext.tsx#L53-L53) 改 `unknown` → `FilterTree | null`
+  - 1c [`FilterCondition` 扩展 4 字段](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/types/filterTree.ts) `source?: 'system' | 'custom'` / `sourceId?: string` / `invalid?: boolean` / `invalidReason?: string`（**P5.2 前置依赖已完整落地**）
+  - 2a [`REMOVE_CUSTOM_INDICATOR` 自动失效](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/context/ScreenerContext.tsx#L313-L333) 扫描 filterTree.conditions，引用该指标的条件标记 invalid
+  - 2b [`RESOLVE_MISSING_INDICATORS` 启用](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/context/ScreenerContext.tsx#L327-L353) 基于 source/sourceId 计算失效，引用恢复时清除标记
+  - 3a [`ADD_CONDITION` 空列表首条件 op 强制 AND](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/context/ScreenerContext.tsx) 避免首条件 op 语义模糊
+  - 4b [CustomIndicatorModal 参数名重复校验](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/components/CustomIndicatorModal.tsx) 防止公式引用歧义
+  - 5a/5b RESET_ALL + SET_MARKET 注释补充（factorWeights 决策：跨市场保留）
+  - 6c [CustomIndicatorModal ensureSingle/ensureDouble 工具抽取](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/components/CustomIndicatorModal.tsx) 替代散落 helper
+  - 7a `IMPORT_CUSTOM_INDICATORS` 按 updatedAt 倒序
+  - 8 注释补充 fieldKey 命名约定（`custom_<id>`）+ 失效检测说明
+  - 9 [+7 个 reducer 测试用例](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/tests/context/ScreenerContext.test.tsx) 覆盖首条件 AND / REMOVE 自动失效 / RESOLVE 4 个新场景 / IMPORT 排序
+- **⏳ 跳过 3 项**（影响面大或需联合重构）：
+  - 1a `filterTree` 重命名为 `ConditionList`/`FilterGroup`（影响 5+ 文件 + 14 个测试）
+  - 2c `ADD_CONDITION` 接受 source 参数（依赖 1a）
+  - 4a `isNameTaken` 改 props 注入（需改 4 处父组件）
+- **ScreenerProvider 启动流程增强**：autoLoad 加载后立即 dispatch `RESOLVE_MISSING_INDICATORS`，确保从 localStorage 恢复的 filterTree 中失效条件被正确标记
+- **回归验证**：全量 vitest **197/197 全过**（含 storage 33/33 + ScreenerContext 47/47），TS 编译 0 错误
+- **P5.2 前置已满足**：FilterCondition 4 字段扩展 + RESOLVE action 启用 — P5.2 实施时仅需 ① UI 置灰渲染 ② 添加"清理失效条件"操作 ③ 删除按钮二次确认引用检查
+
+**通知**: [方舟→量量 2026-06-16 21:00] 协作单 [6.8-FIELDS-DIFF-DEA-20260616] 状态变更: VERIFY→**REOPENED**（**K线 API 4 字段未修复**——量量自测仅覆盖列表 API `/api/stocks/`，未验证 K线 API `/api/kline/<code>`。**列表 API 部分已通过**：`/api/stocks/?tech_macd=low_golden_cross&limit=3` 抽样 300005/688150/301132 diff/dea 全非 NULL；`/api/stocks/?tech_rsi=top_divergence&limit=3` 抽样 300259/300835/688559 rsi_12/rsi_24 全非 NULL。**K线 API 仍缺 4 字段**：抽样 300005 探路者 `/api/kline/300005?limit=5&adj=forward` 末条 macd=0.0458 但 diff=None dea=None rsi_12=None rsi_24=None。**修复要求**：① 在 K线 API 返回的 KLineItem 模型同步加 4 字段定义 ② 字段映射从 parquet 读取并填充到 K线响应 ③ 自测需覆盖 K线 API（量量自测脚本可参考 6.8 验收脚本第 3 步）。提单原始描述已明确"影响 K 线 / 详情页 MACD/RSI 完整显示"，K线 API 属 6.8 修复范围）

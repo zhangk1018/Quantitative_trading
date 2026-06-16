@@ -86,6 +86,7 @@
 ├─────────────────────────┤
 │  🧱 条件组合（搭积木）  │
 │  ┌───────────────────┐ │
+│  │ [系统预设|我的自编]│ │  ← Tab 切换（V1.0）
 │  │ [+] 添加条件      │ │
 │  │                   │ │
 │  ├─ PE < 20          │ │
@@ -93,10 +94,15 @@
 │  ├─ 逻辑: [AND▼]     │ │
 │  ├─ RSI < 30         │ │
 │  │     [删除]        │ │
-│  └─ 逻辑: [AND▼]     │ │
+│  ├─ 逻辑: [AND▼]     │ │
+│  ├─ [自编] 突破N新高  │ │  ← 自编指标可混合组合
+│  │     [删除]        │ │
+│  └─ 逻辑: [OR▼]      │ │
 │  ┌───────────────────┐ │
 │  │ [✓] 连续上涨3天   │ │
 │  │ [✓] 突破60日高    │ │
+│  │ [+ 新建自编指标]  │ │  ← 弹 8 字段表单 (P3.1)
+│  │ [📥导入] [📤导出] │ │  ← 导入导出 (P3.2)
 │  └───────────────────┘ │
 ├─────────────────────────┤
 │  ⚖️ 因子打分配置       │
@@ -523,7 +529,28 @@ const VALID_PATTERN_KEYS = new Set([
 
 ## 七、实现优先级与路线图
 
-### Phase 6: 选股策略保存/加载（1.5 天）⏳ 待开工
+### Phase 6: 选股策略保存/加载 + 自编指标 V1.0（已完成 P1-P3.1）
+
+#### Phase 6A: 自编指标 P1-P6（V1.0 已部分完成，⏳ P3.2-P6 待办）
+
+- [x] **P1.1 数据模型**（[types/customIndicator.ts](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/types/customIndicator.ts)）— 8 个核心类型（IndicatorCategory/Operator/Visibility/Syntax/CustomIndicatorParam/CustomIndicator/IndicatorSource/PlanCondition/ScreenerPlan）
+- [x] **P1.2 存储层**（[utils/customIndicatorStorage.ts](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/utils/customIndicatorStorage.ts)）— localStorage + 软删除 + Mock User 隔离
+- [x] **P2.1 Context 扩展**（[ScreenerContext.tsx](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/context/ScreenerContext.tsx)）— 7 个 action + autoLoad
+- [x] **P2.2 单测**（reducer 12 + autoLoad 3 + storage 33 = 48 用例，**190/190 全过**）
+- [x] **P2.DOC**（[P2-CustomIndicator-Context-Reducer.md](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/docs/architecture/P2-CustomIndicator-Context-Reducer.md)）— K 评审通过
+- [x] **P3.1 自编指标表单弹窗**（[CustomIndicatorModal.tsx](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/src/features/stock-picker/components/CustomIndicatorModal.tsx)）— 8 字段，width=480
+- [ ] **P3.2 导入导出按钮**（ImportExportButtons + JSON 校验）
+- [ ] **P4.1 条件构建器拆分重构**（ConditionTabSwitcher + SystemPresetsPanel + CustomIndicatorsPanel + ConditionList）
+- [ ] **P4.2 条件下拉分组**（ConditionPicker + 【自编】tag）
+- [ ] **P5.1 临时参数配置弹窗**（ConditionParamModal — 选中自编指标后弹）
+- [ ] **P5.2 失效检测启用**（RESOLVE_MISSING_INDICATORS + 扩展 FilterCondition 加 sourceId/invalid/invalidReason）
+- [ ] **P5.3 删除二次确认**（Popconfirm + Modal，引用检查）
+- [ ] **P6.1 集成测试**（StockPickerView test — tab 切换 / 下拉分组 / 临时覆盖 / 失效置灰）
+- [ ] **P6.2 浏览器自测**（Playwright — CRUD / 导入导出 / 失效检测）
+- [ ] **P6.3 文档**（docs/tests/CustomIndicator.md + 更新 README）
+- [ ] **P6.4 后端协作单**（6.9-CUSTOM-INDICATOR-API，4 表 + 6 接口，需提单给量量）
+
+#### Phase 6B: 选股策略保存/加载（待 P3.2 完成后启动）
 
 - [ ] `types.ts` 加 `Strategy` / `ScreenerFilters` 类型定义
 - [ ] `utils/strategyStorage.ts` 完整实现（CRUD + 短码 + 校验 + ID 冲突处理）

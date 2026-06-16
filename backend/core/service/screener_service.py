@@ -394,6 +394,8 @@ class ScreenerService:
                 rsi_12=self._to_decimal(row.get("rsi_12")),
                 rsi_24=self._to_decimal(row.get("rsi_24")),
                 macd=self._to_decimal(row.get("macd")),
+                diff=self._to_decimal(row.get("dif")),  # 数据库字段是 dif，API 返回 diff
+                dea=self._to_decimal(row.get("dea")),
                 boll_upper=self._to_decimal(row.get("boll_upper")),
                 boll_mid=self._to_decimal(row.get("boll_mid")),
                 boll_lower=self._to_decimal(row.get("boll_lower")),

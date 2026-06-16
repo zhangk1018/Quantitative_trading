@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, render, screen } from '@testing-library/react';
 import { ReactNode } from 'react';
 import {
@@ -8,6 +8,7 @@ import {
   type ScreenerState,
 } from '@/features/stock-picker/context/ScreenerContext';
 import { FACTOR_CONFIG } from '@/features/stock-picker/config/indicatorConfig';
+import { CustomIndicator } from '@/features/stock-picker/types/customIndicator';
 
 // ============ 工具：构造初始 state ============
 const getInitialState = (): ScreenerState => ({
@@ -34,7 +35,29 @@ const getInitialState = (): ScreenerState => ({
     factor: true,
     condition: true,
   },
+  customIndicators: [],
+  activeIndicatorTab: 'system',
 });
+
+// ============ 工具：构造一个自编指标 ============
+function makeIndicator(overrides: Partial<CustomIndicator> = {}): CustomIndicator {
+  return {
+    id: 'ind_test_1',
+    userId: 'mock_user_default',
+    name: '测试指标',
+    category: 'trend',
+    formula: 'MA(CLOSE, 5)',
+    syntax: 'tdx',
+    params: [],
+    operator: '>',
+    defaultThreshold: 10,
+    description: '',
+    visibility: 'private',
+    createdAt: '2026-06-16T00:00:00.000Z',
+    updatedAt: '2026-06-16T00:00:00.000Z',
+    ...overrides,
+  };
+}
 
 // ============ Hook 工具：useScreener 但带 throw-on-missing 检测 ============
 // 注意：必须是 React 组件（接收 props.children），不是普通函数
@@ -231,18 +254,35 @@ describe('screenerReducer', () => {
       expect(after.nextConditionOp).toBe('OR');
     });
 
-    it('ADD_CONDITION 添加一个新 condition，op 来自 nextConditionOp', () => {
+    it('ADD_CONDITION 空列表时首条件 op 强制 AND（K 2026-06-16 决策 3a）', () => {
       let state = getInitialState();
+      // nextConditionOp 是 NOT，但因空列表，首条件 op 强制为 AND
       state = screenerReducer(state, { type: 'SET_NEXT_CONDITION_OP', payload: 'NOT' });
       const after = screenerReducer(state, {
         type: 'ADD_CONDITION',
         payload: { fieldKey: 'rsi_oversold', label: 'RSI超卖' },
       });
       expect(after.filterTree?.conditions).toHaveLength(1);
-      expect(after.filterTree?.conditions[0].op).toBe('NOT');
+      expect(after.filterTree?.conditions[0].op).toBe('AND');
       expect(after.filterTree?.conditions[0].fieldKey).toBe('rsi_oversold');
       expect(after.filterTree?.conditions[0].label).toBe('RSI超卖');
       expect(after.filterTree?.conditions[0].id).toMatch(/^cond_/);
+    });
+
+    it('ADD_CONDITION 非空列表时新条件 op 来自 nextConditionOp', () => {
+      let state = getInitialState();
+      state = screenerReducer(state, {
+        type: 'ADD_CONDITION',
+        payload: { fieldKey: 'rsi_oversold', label: 'RSI超卖' },
+      });
+      // 列表已有 1 条，再 SET_NEXT_CONDITION_OP 后添加，新条件 op 来自 nextConditionOp
+      state = screenerReducer(state, { type: 'SET_NEXT_CONDITION_OP', payload: 'NOT' });
+      const after = screenerReducer(state, {
+        type: 'ADD_CONDITION',
+        payload: { fieldKey: 'volume_breakout', label: '放量突破' },
+      });
+      expect(after.filterTree?.conditions).toHaveLength(2);
+      expect(after.filterTree?.conditions[1].op).toBe('NOT');
     });
 
     it('ADD_CONDITION 追加：多次添加时新 condition 接在末尾', () => {
@@ -392,5 +432,287 @@ describe('ScreenerProvider / useScreener', () => {
       min: '',
       max: '',
     });
+  });
+});
+
+// =====================================================================
+// V1.0 自编指标 reducer 测试
+// =====================================================================
+describe('screenerReducer - V1.0 自编指标', () => {
+  it('LOAD_CUSTOM_INDICATORS 加载 3 个指标', () => {
+    const state = getInitialState();
+    const indicators = [
+      makeIndicator({ id: 'ind_1', name: '指标1' }),
+      makeIndicator({ id: 'ind_2', name: '指标2' }),
+      makeIndicator({ id: 'ind_3', name: '指标3' }),
+    ];
+    const after = screenerReducer(state, { type: 'LOAD_CUSTOM_INDICATORS', payload: indicators });
+    expect(after.customIndicators).toHaveLength(3);
+    expect(after.customIndicators[0].id).toBe('ind_1');
+  });
+
+  it('ADD_CUSTOM_INDICATOR 插入到列表头部', () => {
+    const state = getInitialState();
+    state.customIndicators = [makeIndicator({ id: 'ind_existing', name: '已存在' })];
+    const after = screenerReducer(state, {
+      type: 'ADD_CUSTOM_INDICATOR',
+      payload: makeIndicator({ id: 'ind_new', name: '新指标' }),
+    });
+    expect(after.customIndicators).toHaveLength(2);
+    expect(after.customIndicators[0].id).toBe('ind_new');
+  });
+
+  it('UPDATE_CUSTOM_INDICATOR 替换指定 id 的指标', () => {
+    const state = getInitialState();
+    state.customIndicators = [makeIndicator({ id: 'ind_1', name: '原名' })];
+    const after = screenerReducer(state, {
+      type: 'UPDATE_CUSTOM_INDICATOR',
+      payload: makeIndicator({ id: 'ind_1', name: '新名' }),
+    });
+    expect(after.customIndicators[0].name).toBe('新名');
+  });
+
+  it('UPDATE_CUSTOM_INDICATOR 未匹配 id 时列表不变', () => {
+    const state = getInitialState();
+    state.customIndicators = [makeIndicator({ id: 'ind_1', name: '原名' })];
+    const after = screenerReducer(state, {
+      type: 'UPDATE_CUSTOM_INDICATOR',
+      payload: makeIndicator({ id: 'ind_unknown', name: '不相关' }),
+    });
+    expect(after.customIndicators).toHaveLength(1);
+    expect(after.customIndicators[0].name).toBe('原名');
+  });
+
+  it('REMOVE_CUSTOM_INDICATOR 从列表移除指定 id', () => {
+    const state = getInitialState();
+    state.customIndicators = [
+      makeIndicator({ id: 'ind_1', name: 'A' }),
+      makeIndicator({ id: 'ind_2', name: 'B' }),
+    ];
+    const after = screenerReducer(state, { type: 'REMOVE_CUSTOM_INDICATOR', payload: 'ind_1' });
+    expect(after.customIndicators).toHaveLength(1);
+    expect(after.customIndicators[0].id).toBe('ind_2');
+  });
+
+  it('REMOVE_CUSTOM_INDICATOR 自动标记 filterTree 中引用该指标的条件为 invalid（K 2026-06-16 决策 2a）', () => {
+    const state = getInitialState();
+    state.customIndicators = [
+      makeIndicator({ id: 'ind_1', name: 'A' }),
+      makeIndicator({ id: 'ind_2', name: 'B' }),
+    ];
+    state.filterTree = {
+      conditions: [
+        {
+          id: 'c1',
+          op: 'AND',
+          fieldKey: 'custom_ind_1',
+          label: 'A',
+          source: 'custom',
+          sourceId: 'ind_1',
+        },
+        {
+          id: 'c2',
+          op: 'AND',
+          fieldKey: 'custom_ind_2',
+          label: 'B',
+          source: 'custom',
+          sourceId: 'ind_2',
+        },
+        { id: 'c3', op: 'AND', fieldKey: 'rsi_oversold', label: 'RSI超卖' },
+      ],
+    };
+    const after = screenerReducer(state, { type: 'REMOVE_CUSTOM_INDICATOR', payload: 'ind_1' });
+    // 引用 ind_1 的 c1 被标记 invalid
+    expect(after.filterTree?.conditions[0].invalid).toBe(true);
+    // K 2026-06-16 修复：toContain 是子串匹配，用 toBe + 完整字符串
+    expect(after.filterTree?.conditions[0].invalidReason).toBe('引用的自编指标已被删除');
+    // 引用 ind_2 的 c2 不受影响
+    expect(after.filterTree?.conditions[1].invalid).toBeFalsy();
+    // 系统预设 c3 不受影响
+    expect(after.filterTree?.conditions[2].invalid).toBeFalsy();
+  });
+
+  it('REMOVE_CUSTOM_INDICATOR filterTree 为 null 时不影响', () => {
+    const state = getInitialState();
+    state.customIndicators = [makeIndicator({ id: 'ind_1', name: 'A' })];
+    state.filterTree = null;
+    const after = screenerReducer(state, { type: 'REMOVE_CUSTOM_INDICATOR', payload: 'ind_1' });
+    expect(after.filterTree).toBeNull();
+  });
+
+  it('SET_INDICATOR_TAB 切换到 custom', () => {
+    const state = getInitialState();
+    expect(state.activeIndicatorTab).toBe('system');
+    const after = screenerReducer(state, { type: 'SET_INDICATOR_TAB', payload: 'custom' });
+    expect(after.activeIndicatorTab).toBe('custom');
+  });
+
+  it('SET_INDICATOR_TAB 切回 system', () => {
+    const state = getInitialState();
+    state.activeIndicatorTab = 'custom';
+    const after = screenerReducer(state, { type: 'SET_INDICATOR_TAB', payload: 'system' });
+    expect(after.activeIndicatorTab).toBe('system');
+  });
+
+  it('RESOLVE_MISSING_INDICATORS 自编条件引用的 sourceId 存在则无 invalid', () => {
+    const state = getInitialState();
+    state.customIndicators = [makeIndicator({ id: 'ind_1', name: 'A' })];
+    state.filterTree = {
+      conditions: [
+        {
+          id: 'c1',
+          op: 'AND',
+          fieldKey: 'custom_ind_1',
+          label: 'A',
+          source: 'custom',
+          sourceId: 'ind_1',
+        },
+      ],
+    };
+    const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
+    expect(after.filterTree?.conditions[0].invalid).toBeFalsy();
+    expect(after.filterTree?.conditions[0].invalidReason).toBeUndefined();
+  });
+
+  it('RESOLVE_MISSING_INDICATORS 自编条件引用的 sourceId 缺失则标记 invalid', () => {
+    const state = getInitialState();
+    // customIndicators 为空，sourceId='ind_missing' 找不到
+    state.filterTree = {
+      conditions: [
+        {
+          id: 'c1',
+          op: 'AND',
+          fieldKey: 'custom_ind_missing',
+          label: '缺失指标',
+          source: 'custom',
+          sourceId: 'ind_missing',
+        },
+      ],
+    };
+    const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
+    expect(after.filterTree?.conditions[0].invalid).toBe(true);
+    expect(after.filterTree?.conditions[0].invalidReason).toBe('引用的自编指标已被删除');
+  });
+
+  it('RESOLVE_MISSING_INDICATORS 系统预设条件不参与失效检测', () => {
+    const state = getInitialState();
+    state.filterTree = {
+      conditions: [
+        { id: 'c1', op: 'AND', fieldKey: 'rsi_oversold', label: 'RSI超卖' },
+      ],
+    };
+    const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
+    expect(after.filterTree?.conditions[0].invalid).toBeFalsy();
+  });
+
+  it('RESOLVE_MISSING_INDICATORS filterTree 为 null 时直接返回原 state', () => {
+    const state = getInitialState();
+    state.filterTree = null;
+    const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
+    expect(after.filterTree).toBeNull();
+  });
+
+  it('IMPORT_CUSTOM_INDICATORS 合并新指标（去重 id）', () => {
+    const state = getInitialState();
+    state.customIndicators = [makeIndicator({ id: 'ind_1', name: 'A' })];
+    const imported = [
+      makeIndicator({ id: 'ind_2', name: 'B' }),
+      makeIndicator({ id: 'ind_1', name: 'A-重复' }), // 同 id 应跳过
+    ];
+    const after = screenerReducer(state, { type: 'IMPORT_CUSTOM_INDICATORS', payload: imported });
+    expect(after.customIndicators).toHaveLength(2);
+    expect(after.customIndicators.map((i) => i.id).sort()).toEqual(['ind_1', 'ind_2']);
+  });
+
+  it('IMPORT_CUSTOM_INDICATORS 合并后按 updatedAt 倒序（K 2026-06-16 决策 7a）', () => {
+    const state = getInitialState();
+    state.customIndicators = [
+      makeIndicator({ id: 'ind_old', name: '旧', updatedAt: '2026-01-01T00:00:00Z' }),
+    ];
+    const imported = [
+      makeIndicator({ id: 'ind_new', name: '新', updatedAt: '2026-06-15T00:00:00Z' }),
+      makeIndicator({ id: 'ind_mid', name: '中', updatedAt: '2026-03-01T00:00:00Z' }),
+    ];
+    const after = screenerReducer(state, { type: 'IMPORT_CUSTOM_INDICATORS', payload: imported });
+    expect(after.customIndicators).toHaveLength(3);
+    // 排序：ind_new (06-15) > ind_mid (03-01) > ind_old (01-01)
+    expect(after.customIndicators.map((i) => i.id)).toEqual(['ind_new', 'ind_mid', 'ind_old']);
+  });
+
+  it('SET_MARKET 不影响 customIndicators（独立状态）', () => {
+    const state = getInitialState();
+    state.customIndicators = [makeIndicator({ id: 'ind_1', name: 'A' })];
+    const after = screenerReducer(state, { type: 'SET_MARKET', payload: 'hk' });
+    expect(after.customIndicators).toHaveLength(1);
+    expect(after.customIndicators[0].id).toBe('ind_1');
+    expect(after.selectedMarket).toBe('hk');
+  });
+
+  it('RESET_ALL 保留 customIndicators + activeIndicatorTab（K 2026-06-16 决策：用户私有长期资产不重置）', () => {
+    const state = getInitialState();
+    state.customIndicators = [makeIndicator({ id: 'ind_1', name: '指标A' })];
+    state.activeIndicatorTab = 'custom';
+    const after = screenerReducer(state, { type: 'RESET_ALL' });
+    expect(after.customIndicators).toEqual(state.customIndicators);
+    expect(after.customIndicators[0].id).toBe('ind_1');
+    expect(after.activeIndicatorTab).toBe('custom');
+  });
+
+  it('初始 state 自带空 customIndicators 和 system Tab', () => {
+    const state = getInitialState();
+    expect(state.customIndicators).toEqual([]);
+    expect(state.activeIndicatorTab).toBe('system');
+  });
+});
+
+// =====================================================================
+// ScreenerProvider autoLoad 行为
+// =====================================================================
+describe('ScreenerProvider - V1.0 autoLoad', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('autoLoad=true 时启动自动从 localStorage 加载自编指标', async () => {
+    // 预存指标
+    const seed = makeIndicator({ id: 'ind_seed', name: '预存指标' });
+    window.localStorage.setItem(
+      'qt_custom_indicators_v1_mock_user_default',
+      JSON.stringify([seed]),
+    );
+
+    const { result } = renderHook(() => useScreener(), { wrapper: Wrapper });
+
+    // useEffect 异步执行
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(result.current.state.customIndicators).toHaveLength(1);
+    expect(result.current.state.customIndicators[0].id).toBe('ind_seed');
+  });
+
+  it('localStorage 为空时 customIndicators 保持空', async () => {
+    const { result } = renderHook(() => useScreener(), { wrapper: Wrapper });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(result.current.state.customIndicators).toEqual([]);
+  });
+
+  it('autoLoad=false 时不自动加载', async () => {
+    const seed = makeIndicator({ id: 'ind_seed', name: 'A' });
+    window.localStorage.setItem(
+      'qt_custom_indicators_v1_mock_user_default',
+      JSON.stringify([seed]),
+    );
+    const NoAuto = ({ children }: { children: ReactNode }) => (
+      <ScreenerProvider autoLoad={false}>{children}</ScreenerProvider>
+    );
+    const { result } = renderHook(() => useScreener(), { wrapper: NoAuto });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(result.current.state.customIndicators).toEqual([]);
   });
 });
