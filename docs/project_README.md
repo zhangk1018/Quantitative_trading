@@ -190,8 +190,7 @@ psql -h localhost -U quant_user -d quant_trading -f backend/collector/db/sql/ini
 | 前端页面 | http://localhost:5173 |
 | 后端API | http://localhost:8000/api |
 | API文档 | http://localhost:8000/docs |
-| 监控看板 | http://localhost:8000/admin |
-| 静态监控 | http://localhost:9000/monitor.html |
+| 系统看板 | http://localhost:8000/admin |
 
 ## 🔧 数据处理
 
@@ -275,7 +274,7 @@ GET /api/monitor/health-check/      # 系统健康状态
 GET /api/monitor/pipeline-history/  # 管道历史趋势
 ```
 
-监控看板访问地址：`http://localhost:8000/admin` 或 `http://localhost:9000/monitor.html`
+监控看板访问地址：`http://localhost:8000/admin`
 
 ### 获取元数据
 

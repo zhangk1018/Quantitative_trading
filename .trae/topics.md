@@ -120,6 +120,9 @@ if (params.listed_board) {
 }
 ```
 ⚠️ 注意：前端侧**不再需要**把"上海主板"映射为"主板"，现在后端直接支持"上海主板"和"深圳主板"作为独立值。"主板"是聚合值（=上海+深圳），后端自动展开。
+[方舟 2026-06-15] 协作单 [6.2-SCREENER-20260615] 状态变更: NEW（开始选股接口联调：API 参数对齐（listed_board/market_cap_min 等）+ 响应结构确认（results/total）+ StockResponse 字段清单）
+[方舟 2026-06-15] 协作单 [6.2-SCREENER-20260615] 状态变更: ASSIGNED→VERIFY（前端代码已对齐 API：完整透传 listed_board/watchlist_only/*_min/*_max/sort_by/sort_asc/limit；响应路径 data.data.items + data.data.total；字段映射 stock_code/stock_name/market_cap/turnover_rate/amount/listed_board；顶部 Select 受控；卡片展示 6 项核心字段 + 板块标签）
+[方舟 2026-06-15 21:00] 协作单 [6.3-MULTIBOARD-20260615] 状态变更: NEW（前端多板块组合查询失败：逗号分隔 / 重复参数 / 数组格式 后端均不支持，仅"主板"聚合值可用。请求后端 stocks.py:48-49 支持多值 IN 查询，验收 5 种组合场景）
 
 ---
 
@@ -130,3 +133,89 @@ if (params.listed_board) {
 - 创业板 1397 只（全部 300/301 开头 ✅）
 - 科创板 607 只（全部 688/689 开头 ✅）
 请方舟在前端验证：选"沪深+上海主板+全部"→结果应只含 60 开头，"沪深+深圳主板+全部"→应只含 000/001/002/003 开头。
+
+---
+
+**通知**: [方舟 2026-06-15 15:18] 协作单 [6.4-INDICATOR-FILTER-20260615] 状态变更: NEW
+行情指标范围筛选后端完全未生效——`/api/stocks/` 未解析 `*_min / *_max` query 参数，10 个字段（市值/价格/涨跌幅/PE静/PE_TTM/PB/量比/成交额/成交量/换手率）全部失效。Playwright 验证：场景 1（无过滤）=5195 只，场景 2（市值 1.2~1.5 亿）=5195 只（应远小）。需后端在 router 端维护 id→field 映射表并装配到 filter_dict。量比字段在 `stock_daily_basic.volume_ratio` 中已存在，**保留**。详见 docs/协作单.md。
+
+---
+
+**通知**: [方舟 2026-06-15 15:35] 协作单 [6.3-MULTIBOARD-20260615] 状态变更: VERIFY→VERIFY（方舟端到端验证通过：5 个组合 curl total 全部与工单预期一致——上海+深圳主板=3191✅、上海+创业=3101✅、创业+科创=2004✅、沪+深+创=4588✅、主板+创业=4588✅。等 K 决策 CLOSE。）
+
+---
+
+**通知**: [方舟 2026-06-15 15:35] 协作单 [6.4-INDICATOR-FILTER-20260615] 状态变更: VERIFY→VERIFY（方舟 Playwright 端到端验证：①价格10~50+换手率2~10%=1502✅ ②量比>=1.5=516✅ ③市值1.2~1.5亿=**0只**❌——后端代码修复有效，但**暴露 market_cap 字段数据问题**：升序排序前20只全是 ST/*ST 退市股（7041~151437万元），正常股市值字段为NULL/0/单位混乱。将在 B2 步骤开新工单。等 K 决策：6.4 修复部分可 CLOSE，数据问题由新工单跟踪）
+
+---
+
+**通知**: [方舟 2026-06-15 15:50] 协作单 [6.5-MARKETCAP-20260615] 状态变更: NEW
+market_cap 字段数据问题（与 [6.4] 修复解耦）：① 升序前 20 只全是 ST/*ST 退市股（7041~151437 万元），正常股市值字段为 NULL/0/异常值；② curl 验证 `mc [12000, 15000] 万元=0 只`（应数百只）；③ `mc >= 10000` 单边过滤给出 5189 只，与 min+max 组合矛盾。需量量排查：mc 字段实际单位 / PyWenCai-Tushare 数据源 total_mv / daily_snapshot_sync 单位换算 / NULL 处理。修复后重跑同步+删除旧 parquet 缓存+重新生成。详见 docs/协作单.md。
+
+---
+
+**通知**: [量量 2026-06-15] 协作单 [6.5-MARKETCAP-20260615] 状态变更: NEW→VERIFY
+**根因诊断**：后端 `market_cap` 字段数据正确（单位统一为万元，非空率 99.92%），问题出在**前端传参单位未转换**。
+- 数据验证：mc min=7041.6万(*ST华嵘), max=26.7万亿, median=70亿；工商银行26160亿✓、茅台15911亿✓、宁德18645亿✓
+- 市场事实：A股1.2~1.5亿市值股票确实极少（<1亿:2只, 1~5亿:1只，1.2~1.5亿:0只），非bug
+- 根因：前端 `indicatorConfig.ts` 显示"元"，用户输入"亿"，但直接透传原始值给后端（1.2→1.2万元而非12000万元）
+- 修复：① `indicatorConfig.ts` unit 改为"亿元" ② `StockPickerView.tsx` 添加单位转换（亿→万元 ×10000）
+- curl 验证：`?market_cap_min=100000&market_cap_max=200000`（10~20亿）→ total=107 ✓
+请方舟验证前端修复效果。
+
+---
+
+**通知**: [方舟 2026-06-15 16:10] 协作单 [6.5-MARKETCAP-20260615] 状态变更: VERIFY→VERIFY（**方舟 Playwright 端到端验证完全通过**）。
+- 确认 `StockPickerView.tsx:114-129` 的 `UNIT_CONVERSION = { market_cap: 10000, amount: 10000 }` 转换逻辑**已正确实现**
+- 确认 `indicatorConfig.ts` unit 标注已正确为"亿元"
+- 3 场景端到端验证（按"亿元"输入）：
+  - A: 市值 1.2-1.5 亿 → URL `market_cap_min=12000&max=15000` 万元 → total=0 ✅（与量量 A 股 <5 只市场事实一致）
+  - B: 市值 10-20 亿 → URL `market_cap_min=100000&max=200000` 万元 → total=107 ✅（与量量 curl 数字一致）
+  - C: 成交额 1-5 亿 → URL `amount_min=10000&max=50000` 万元 → total=1115 ✅
+- 表格正确渲染（研奥股份/仁度生物/睿昂基因等 20 行）
+- **等 K 决策 CLOSE**（修复完整）
+
+---
+
+**通知**: [方舟 2026-06-15 23:50] 行情指标 Vitest 测试框架交付
+- 59 个用例 / 4 个测试文件 / 关键模块 100% 覆盖（IndicatorFilter / indicatorConfig / marketConfig）
+- 测试入口：[tests/README.md](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/tests/README.md)
+- 协作单 [6.3]/[6.4]/[6.5] 端到端验证全部完成，等 K 决策 CLOSE
+- 明日计划：扩展 FinancialFilter/TechnicalFilter/ConditionBuilder/StockTable 测试
+
+**通知**: [方舟 2026-06-15 23:55] 协作单 [6.3-MULTIBOARD-20260615] 状态变更: VERIFY→CLOSED（K 拍板关闭 —— 5 场景端到端验证通过：沪+深=3191✅ 沪+创=3101✅ 创+科=2004✅ 沪+深+创=4588✅ 主板+创=4588✅）
+
+**通知**: [方舟 2026-06-15 23:55] 协作单 [6.4-INDICATOR-FILTER-20260615] 状态变更: VERIFY→CLOSED（K 拍板关闭 —— 10 字段 INDICATOR_FIELD_MAP + `_parse_indicator_ranges` 解析生效；价格10~50+换手2~10%=1502✅ 量比>=1.5=516✅；市值 1.2-1.5 亿=0 为 A 股市场事实）
+
+**通知**: [方舟 2026-06-15 23:55] 协作单 [6.5-MARKETCAP-20260615] 状态变更: VERIFY→CLOSED（K 拍板关闭 —— 根因为前端单位未转换，已修复 `indicatorConfig.ts` unit 标"亿元" + `StockPickerView.tsx` 加 `UNIT_CONVERSION = { market_cap: 10000, amount: 10000 }` ×10000 转换，3 场景端到端验证全过）
+
+**通知**: [量量 2026-06-16] 协作单 [6.6-TECHNICAL-API-20260616] 状态变更: ASSIGNED→VERIFY
+后端 14 个技术指标 pattern 筛选 API 已完成实现：
+- **daily_snapshot_sync.py**: SQL 新增 14 个 pattern 列计算（ma_long_align/ma_short_align/macd_low_golden_cross/macd_bottom_divergence/macd_high_death_cross/macd_top_divergence/boll_break_upper/boll_break_middle_up/boll_break_middle_down/boll_break_lower/rsi_low_golden_cross/rsi_high_death_cross/rsi_top_divergence/rsi_bottom_divergence）
+- **models.py**: StockDailySnapshot 模型新增 14 个 Boolean pattern 列
+- **loader.py**: binary_prefixes 新增 14 个 pattern 列前缀
+- **stocks.py**: 新增 tech_ma/tech_macd/tech_boll/tech_rsi 四个查询参数
+- **screener_service.py**: filter_config 新增 4 个 tech 分组共 14 个 pattern 字段
+- **API 示例**: `?tech_ma=long_align&tech_macd=low_golden_cross` → 筛选多头排列+MACD低位金叉的股票
+请方舟在前端验证技术指标筛选功能。
+
+**通知**: [方舟→量量 2026-06-16 08:45] 协作单 [6.6-TECHNICAL-API-20260616] 状态变更: NEW（K 2026-06-16 决定开发技术指标功能：新增 RSI 指标 + 4 弹窗（MA/MACD/BOLL/RSI）取消"自定义"紧凑风格。前端已完成 4 指标 14 pattern + URL 序列化 `tech_*=*`，vitest 109/109 通过 + Playwright 9 场景自测全过。后端需在 `/api/stocks/` 解析 `tech_*` 参数并按 pattern 过滤）
+
+**通知格式规范（2026-06-16 起生效）**：
+- 统一格式：`[操作方→接单方 YYYY-MM-DD HH:mm] 协作单 [ID] 状态变更: OLD→NEW（摘要）`
+- "操作方"=本条通知的发件人角色；"接单方"=下一个动作的接收方
+- NEW 通知由**提单方**发，接单方=待认领方（如 `[方舟→量量 ...] 状态变更: NEW`）
+- NEW→ASSIGNED 由**认领方**发，接单方=验证方（如 `[量量→方舟 ...] 状态变更: NEW→ASSIGNED`）
+- ASSIGNED→VERIFY 由**处理方**发，接单方=验证方（如 `[量量→方舟 ...] 状态变更: ASSIGNED→VERIFY`）
+- VERIFY→CLOSED/REOPENED 由**验证方**发，接单方=处理方或知晓方（如 `[方舟→量量 ...] 状态变更: VERIFY→CLOSED`）
+- 旧格式（仅操作方）一律改写为"操作方→接单方"，避免读通知时不知道该谁接手
+
+---
+
+
+**通知**: [方舟→量量 2026-06-16 11:55] 协作单 [6.7-CONDITION-API-20260616] 状态变更: NEW（K 截图要求开发条件构建器模块，前端已完成 6 预设 + 3 关系（AND/OR/NOT）+ URL `cond_*=*` 序列化，vitest 142/142 通过 + Playwright 9 场景全过，ConditionBuilder 覆盖率 100% / 96.29% / 100%。需要后端在 `/api/stocks/` 解析 7 个 `cond_*` 参数并按 3 种 op 类型应用筛选 — 详见协作单 [6.7]）
+
+
+**通知**: [方舟→量量 2026-06-16 12:10] 协作单 [6.7-CONDITION-API-20260616] 状态变更: NEW→CLOSED（**K 指示撤回**：先处理 6.6 的问题。前端代码已落地，vitest 142/142 + Playwright 9/9 + 覆盖率 100%/96.29%/100%，等 6.6 关闭后择期重提）
+
+**通知**: [方舟→量量 2026-06-16 12:10] 协作单 [6.6-TECHNICAL-API-20260616] 状态变更: VERIFY→REOPENED（**验证不通过**：端到端 curl 抽样检查 5189 只股票 → MA/BOLL 4 个 pattern 正常工作（ma_long_align=456✅ boll_break_upper=52✅），但 **MACD/RSI 8 个 pattern 全部 0 只=True**（macd_low_golden_cross / macd_high_death_cross / macd_bottom_divergence / macd_top_divergence / rsi_low_golden_cross / rsi_high_death_cross / rsi_bottom_divergence / rsi_top_divergence 在 offset 0/500/1000/2000/3000/4000/5000 共 6 批次抽样中 true_count=0）。根因疑似 `daily_snapshot_sync.py` 中 MACD/RSI pattern SQL 计算逻辑异常，可能"前一日指标 join（iprev）"或"前一日收盘价 join（pq）"失败/条件判断错误。请量量排查并重跑同步脚本后通知方舟重验。⚠️ REOPENED 第 1 次/共 2 次）

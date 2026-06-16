@@ -359,6 +359,13 @@ class AkshareDataSource(BaseDataSource):
                 if col not in df.columns:
                     return None
 
+            # 过滤北交所、科创板、B股等，只保留沪深主板和创业板
+            # 沪市主板: 60xxxx, 深市主板: 000xxx/002xxx, 创业板: 300xxx
+            # 排除: 北交所(8xxxxx/92xxxx/43xxxx), 科创板(688xxx), B股(900xxx/200xxx)
+            stock_code = df['code'].astype(str)
+            valid_pattern = stock_code.str.match(r'^(60|000|002|300)\d{3}$')
+            df = df[valid_pattern]
+
             return df
 
         except Exception as e:

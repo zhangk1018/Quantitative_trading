@@ -9,7 +9,7 @@ VENV_DIR="$PROJECT_DIR/venv"
 PIPELINE_SCRIPT="$PROJECT_DIR/backend/scheduler/run_daily_pipeline.sh"
 HEARTBEAT_SCRIPT="$PROJECT_DIR/backend/collector/etl/health_monitor.py"
 PARTITION_SCHEDULER="$PROJECT_DIR/backend/collector/etl/partition_scheduler.py"
-STOCK_LIST_INIT="$PROJECT_DIR/backend/collector/etl/init_data.py"
+STOCK_LIST_INIT="$PROJECT_DIR/backend/collector/etl/sync_stock_list_baostock.py"
 LOG_DIR="$PROJECT_DIR/logs/etl"
 
 # 创建日志目录
@@ -30,8 +30,8 @@ CRONTAB_EOF
 cat >> /tmp/quant_crontab << EOF
 30 16 * * 1-5 $PROJECT_DIR/backend/scheduler/run_daily_pipeline.sh
 
-# 【P1】每周日 02:00 更新股票基础信息（含退市/新上市，行业分类更新）
-0 2 * * 0 cd $PROJECT_DIR && $VENV_DIR/bin/python $STOCK_LIST_INIT --force > $LOG_DIR/stock_basic_update.log 2>&1
+# 【P1】每周一 09:00 更新股票基础信息（含退市/新上市，行业分类更新）
+0 9 * * 1 cd $PROJECT_DIR && $VENV_DIR/bin/python $STOCK_LIST_INIT --force > $LOG_DIR/stock_basic_update.log 2>&1
 
 # 【P1】每月 1 日 01:00 创建下月/下年的数据库分区
 0 1 1 * * cd $PROJECT_DIR && $VENV_DIR/bin/python $PARTITION_SCHEDULER --mode auto > $LOG_DIR/partition_scheduler.log 2>&1

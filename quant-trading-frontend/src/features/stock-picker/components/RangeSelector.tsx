@@ -16,19 +16,49 @@ const RangeSelector: React.FC = () => {
     dispatch({ type: 'SET_MARKET', payload: value });
   };
 
-  const handleBoardsChange = (value: string[]) => {
-    const hasAll = value.includes('all');
-    const prevHadAll = selectedBoards.includes('all');
-    
-    if (hasAll) {
-      dispatch({ type: 'SET_BOARDS', payload: ['all'] });
-    } else {
-      if (prevHadAll) {
-        dispatch({ type: 'SET_BOARDS', payload: value });
-      } else if (value.length === availableBoardValues.length) {
+  const handleBoardsChange = (values: string[]) => {
+    const hadAll = selectedBoards.includes('all');
+    const nowHasAll = values.includes('all');
+    const specificValues = values.filter((v) => v !== 'all');
+
+    // 情况1：当前选中了"全部"
+    if (nowHasAll) {
+      if (!hadAll) {
+        // 用户主动勾选"全部" -> 全选所有板块
         dispatch({ type: 'SET_BOARDS', payload: ['all'] });
       } else {
-        dispatch({ type: 'SET_BOARDS', payload: value });
+        // 之前已是全选，现在可能通过操作具体板块触发了 onChange
+        if (specificValues.length === availableBoardValues.length) {
+          // 具体板块全选，保持全选状态
+          dispatch({ type: 'SET_BOARDS', payload: ['all'] });
+        } else {
+          // 具体板块不全，去掉"全部"，只保留选中的具体板块
+          dispatch({ type: 'SET_BOARDS', payload: specificValues });
+        }
+      }
+    }
+    // 情况2：当前没有选中"全部"
+    else {
+      // 如果之前是全选状态，现在"全部"被取消
+      if (hadAll) {
+        // 用户显式取消"全部"时，values 中会包含所有具体板块（因为显示上会包含全部具体选项）
+        // 此时应该清空所有具体板块，实现"全部"去掉勾选时，所有板块也都去掉勾选
+        if (specificValues.length === availableBoardValues.length) {
+          dispatch({ type: 'SET_BOARDS', payload: [] });
+        } else {
+          // 用户通过取消某个具体板块导致"全部"自然消失，则保留剩余的具体板块
+          dispatch({ type: 'SET_BOARDS', payload: specificValues });
+        }
+      }
+      // 之前不是全选状态
+      else {
+        if (specificValues.length === availableBoardValues.length && availableBoardValues.length > 0) {
+          // 所有具体板块都被选中 -> 自动勾选"全部"
+          dispatch({ type: 'SET_BOARDS', payload: ['all'] });
+        } else {
+          // 否则只保存具体板块
+          dispatch({ type: 'SET_BOARDS', payload: specificValues });
+        }
       }
     }
   };
@@ -37,6 +67,7 @@ const RangeSelector: React.FC = () => {
     dispatch({ type: 'SET_STOCK_RANGE', payload: value });
   };
 
+  // 用于展示的已选项：如果当前是 "全部" 状态，则显示 "all" 及所有具体板块（便于用户取消任意具体板块）
   const displayBoards = selectedBoards.includes('all')
     ? ['all', ...availableBoardValues]
     : selectedBoards;

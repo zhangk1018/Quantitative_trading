@@ -181,6 +181,29 @@ class ScreenerService:
                 "consec_up_5": {"label": "连涨5天", "type": "binary"},
                 "consec_up_days": {"label": "连涨天数", "type": "range", "unit": "天"},
             },
+            # 技术指标 pattern（2026-06-16 新增）
+            "tech_ma": {
+                "ma_long_align": {"label": "多头排列", "type": "binary"},
+                "ma_short_align": {"label": "空头排列", "type": "binary"},
+            },
+            "tech_macd": {
+                "macd_low_golden_cross": {"label": "MACD低位金叉", "type": "binary"},
+                "macd_bottom_divergence": {"label": "MACD底背离", "type": "binary"},
+                "macd_high_death_cross": {"label": "MACD高位死叉", "type": "binary"},
+                "macd_top_divergence": {"label": "MACD顶背离", "type": "binary"},
+            },
+            "tech_boll": {
+                "boll_break_upper": {"label": "升穿上轨", "type": "binary"},
+                "boll_break_middle_up": {"label": "升穿中轨", "type": "binary"},
+                "boll_break_middle_down": {"label": "跌穿中轨", "type": "binary"},
+                "boll_break_lower": {"label": "跌穿下轨", "type": "binary"},
+            },
+            "tech_rsi": {
+                "rsi_low_golden_cross": {"label": "RSI低位金叉", "type": "binary"},
+                "rsi_high_death_cross": {"label": "RSI高位死叉", "type": "binary"},
+                "rsi_top_divergence": {"label": "RSI顶背离", "type": "binary"},
+                "rsi_bottom_divergence": {"label": "RSI底背离", "type": "binary"},
+            },
         }
 
     def get_filter_meta(self) -> List[FilterGroup]:
@@ -247,9 +270,19 @@ class ScreenerService:
             # 检查筛选字段类型（在所有分组中查找）
             field_type = self._get_filter_field_type(field)
 
-            # 主板聚合：上海主板 + 深圳主板
-            if field == "listed_board" and condition == "主板":
-                condition = ["上海主板", "深圳主板"]
+            # 主板聚合：上海主板 + 深圳主板（支持单值"主板"和多值列表中含"主板"）
+            if field == "listed_board":
+                if condition == "主板":
+                    condition = ["上海主板", "深圳主板"]
+                elif isinstance(condition, list) and "主板" in condition:
+                    # 多值中含"主板"，展开为上海+深圳并去重
+                    expanded = []
+                    for v in condition:
+                        if v == "主板":
+                            expanded.extend(["上海主板", "深圳主板"])
+                        else:
+                            expanded.append(v)
+                    condition = list(dict.fromkeys(expanded))  # 去重保序
 
             if isinstance(condition, dict):
                 min_val = condition.get("min")
@@ -379,6 +412,21 @@ class ScreenerService:
                 pattern_shooting_star=self._to_bool(row.get("pattern_shooting_star")),
                 pattern_hanging_man=self._to_bool(row.get("pattern_hanging_man")),
                 pattern_spinning_top=self._to_bool(row.get("pattern_spinning_top")),
+                # 技术指标 pattern（2026-06-16 新增）
+                ma_long_align=self._to_bool(row.get("ma_long_align")),
+                ma_short_align=self._to_bool(row.get("ma_short_align")),
+                macd_low_golden_cross=self._to_bool(row.get("macd_low_golden_cross")),
+                macd_bottom_divergence=self._to_bool(row.get("macd_bottom_divergence")),
+                macd_high_death_cross=self._to_bool(row.get("macd_high_death_cross")),
+                macd_top_divergence=self._to_bool(row.get("macd_top_divergence")),
+                boll_break_upper=self._to_bool(row.get("boll_break_upper")),
+                boll_break_middle_up=self._to_bool(row.get("boll_break_middle_up")),
+                boll_break_middle_down=self._to_bool(row.get("boll_break_middle_down")),
+                boll_break_lower=self._to_bool(row.get("boll_break_lower")),
+                rsi_low_golden_cross=self._to_bool(row.get("rsi_low_golden_cross")),
+                rsi_high_death_cross=self._to_bool(row.get("rsi_high_death_cross")),
+                rsi_top_divergence=self._to_bool(row.get("rsi_top_divergence")),
+                rsi_bottom_divergence=self._to_bool(row.get("rsi_bottom_divergence")),
                 # 突破
                 break_high_20=self._to_bool(row.get("break_high_20")),
                 break_high_60=self._to_bool(row.get("break_high_60")),

@@ -66,7 +66,14 @@ class DataLoader:
         # Only count integer binary (0/1) columns with these prefixes.
         # vol_ratio_5 is intentionally excluded — it is a continuous float ratio,
         # not a binary flag, so the dtype guard below already excludes it.
-        binary_prefixes = ("pattern_", "break_high_", "consec_up_")
+        # 2026-06-16: 新增技术指标 pattern 列前缀
+        binary_prefixes = (
+            "pattern_", "break_high_", "consec_up_",
+            "ma_long_", "ma_short_",
+            "macd_low_", "macd_bottom_", "macd_high_", "macd_top_",
+            "boll_break_",
+            "rsi_low_", "rsi_high_", "rsi_top_", "rsi_bottom_",
+        )
         binary_cols = [
             c for c in self._df.columns
             if c.startswith(binary_prefixes) and self._df[c].dtype in ("int64", "int32", "int8", "bool")

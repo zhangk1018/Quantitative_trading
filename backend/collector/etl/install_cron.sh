@@ -29,11 +29,11 @@ CRON_TASKS="# ============================================
 # 每日 17:00 - 复权因子同步（周一至周五）
 0 17 * * 2,3,4,5,6 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/collector/etl/sync_adj_factor.py --latest >> ./logs/cron/adj_factor_sync.log 2>&1
 
-# 每周日 02:00 - 更新股票基础信息
-0 2 * * 0 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/collector/etl/init_data.py >> ./logs/cron/stock_basic_update.log 2>&1
+# 每周一 09:00 - 更新股票基础信息
+0 9 * * 1 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/collector/etl/sync_stock_list_baostock.py >> ./logs/cron/stock_basic_update.log 2>&1
 
-# 每日 22:00 - 完整性检查
-0 22 * * * cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/clean/quality/check_data_quality.py >> ./logs/cron/integrity_check.log 2>&1
+# 每日 17:00 - 完整性检查
+0 17 * * * cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/clean/quality/check_data_quality.py >> ./logs/cron/integrity_check.log 2>&1
 
 # 每日 18:00 - 技术指标计算
 0 18 * * 2,3,4,5,6 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python ./backend/clean/etl/compute_indicators_daily.py >> ./logs/cron/indicators_compute.log 2>&1
@@ -66,8 +66,8 @@ echo "  • 每日 16:05 - 增量导入行情数据"
 echo "  • 每日 16:30 - 宽表同步"
 echo "  • 每日 16:35 - 日频基本面同步"
 echo "  • 每日 17:00 - 复权因子同步"
-echo "  • 每周日 02:00 - 更新股票基础信息"
-echo "  • 每日 22:00 - 完整性检查"
+echo "  • 每周一 09:00 - 更新股票基础信息"
+echo "  • 每日 17:00 - 完整性检查"
 echo "  • 每日 18:00 - 技术指标计算"
 echo "  • 每日 18:30 - 信号预计算（MACD/RSI/BOLL 买卖点）"
 echo ""

@@ -36,6 +36,8 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
 .chart-strip { display: flex; gap: 8px; height: 120px; align-items: flex-end; padding: 8px 0; width: 100%; }
 .chart-bar { flex: 1; border-radius: 4px 4px 0 0; min-height: 4px; }
 .chart-bar.quotes { background: linear-gradient(to top, var(--blue), var(--cyan)); }
+.chart-labels { display: flex; gap: 8px; margin-top: 4px; }
+.chart-label { flex: 1; text-align: center; font-size: 10px; color: var(--text-dim); }
 .distribution-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 12px; }
 .distribution-label { width: 120px; color: var(--text-dim); }
 .distribution-bar { flex: 0.75; height: 20px; background: var(--bg); border-radius: 4px; overflow: hidden; }
@@ -104,6 +106,7 @@ async function fetchAPI(endpoint) {
 // 渲染数据完整性
 function renderSummary(summary, trend) {
   let bars = '';
+  let labels = '';
   const minDisplay = 50, maxDisplay = 100; // 显示范围50-100%
   
   if (trend && trend.trend) {
@@ -113,6 +116,9 @@ function renderSummary(summary, trend) {
       const clampedRate = Math.min(Math.max(r.coverage_rate, minDisplay), maxDisplay);
       const pct = Math.max(5, ((clampedRate - minDisplay) / (maxDisplay - minDisplay)) * 100);
       bars += `<div class="chart-bar quotes" style="height:${pct}%"></div>`;
+      // 提取日期标签（从 YYYY-MM-DD 格式转为 MM-DD）
+      const dateLabel = r.date ? r.date.substring(5) : '';
+      labels += `<div class="chart-label">${dateLabel}</div>`;
     }
   }
 
@@ -186,6 +192,7 @@ function renderSummary(summary, trend) {
         <!-- 图表区域 -->
         <div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;">
           <div class="chart-strip">${bars}</div>
+          <div class="chart-labels">${labels}</div>
         </div>
         <!-- Y轴刻度 -->
         <div style="display:flex;flex-direction:column;justify-content:space-between;width:30px;font-size:10px;color:var(--text-dim);text-align:left;padding-left:4px;">

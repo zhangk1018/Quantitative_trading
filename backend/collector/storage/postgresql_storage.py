@@ -330,7 +330,7 @@ class PostgreSQLStorage(BaseStorage):
                 SELECT code, cycle, trade_date, open, high, low, 
                     close, pre_close, volume, amount, adjust_type, trade_datetime
                 FROM tmp_stock_quotes
-                ON CONFLICT (code, cycle, trade_date, trade_datetime)
+                ON CONFLICT (code, cycle, trade_date)
                 DO UPDATE SET
                     open = EXCLUDED.open,
                     high = EXCLUDED.high,
@@ -339,7 +339,8 @@ class PostgreSQLStorage(BaseStorage):
                     pre_close = EXCLUDED.pre_close,
                     volume = EXCLUDED.volume,
                     amount = EXCLUDED.amount,
-                    adjust_type = EXCLUDED.adjust_type
+                    adjust_type = EXCLUDED.adjust_type,
+                    trade_datetime = EXCLUDED.trade_datetime
             """)
             
             count = cursor.rowcount

@@ -97,6 +97,22 @@ class StockDailySnapshot(Base):
     break_high_60 = Column(Boolean, server_default='false', comment='60日新高')
     consec_up_days = Column(Integer, comment='连涨天数')
     
+    # 技术指标 pattern（2026-06-16 新增）
+    ma_long_align = Column(Boolean, server_default='false', comment='多头排列')
+    ma_short_align = Column(Boolean, server_default='false', comment='空头排列')
+    macd_low_golden_cross = Column(Boolean, server_default='false', comment='MACD低位金叉')
+    macd_bottom_divergence = Column(Boolean, server_default='false', comment='MACD底背离')
+    macd_high_death_cross = Column(Boolean, server_default='false', comment='MACD高位死叉')
+    macd_top_divergence = Column(Boolean, server_default='false', comment='MACD顶背离')
+    boll_break_upper = Column(Boolean, server_default='false', comment='升穿上轨')
+    boll_break_middle_up = Column(Boolean, server_default='false', comment='升穿中轨')
+    boll_break_middle_down = Column(Boolean, server_default='false', comment='跌穿中轨')
+    boll_break_lower = Column(Boolean, server_default='false', comment='跌穿下轨')
+    rsi_low_golden_cross = Column(Boolean, server_default='false', comment='RSI低位金叉')
+    rsi_high_death_cross = Column(Boolean, server_default='false', comment='RSI高位死叉')
+    rsi_top_divergence = Column(Boolean, server_default='false', comment='RSI顶背离')
+    rsi_bottom_divergence = Column(Boolean, server_default='false', comment='RSI底背离')
+    
     # 状态标记字段（保留但不在前端展示）
     is_st = Column(Boolean, server_default='false', comment='是否ST股票')
     is_new = Column(Boolean, server_default='false', comment='是否新股')
@@ -177,4 +193,20 @@ class StockDailySnapshot(Base):
             'break_high_20': bool(self.break_high_20) if self.break_high_20 is not None else False,
             'break_high_60': bool(self.break_high_60) if self.break_high_60 is not None else False,
             'consec_up_days': int(self.consec_up_days) if self.consec_up_days is not None else None,
+            
+            # 技术指标 pattern
+            'ma_long_align': bool(self.ma_long_align) if self.ma_long_align is not None else False,
+            'ma_short_align': bool(self.ma_short_align) if self.ma_short_align is not None else False,
+            'macd_low_golden_cross': bool(self.macd_low_golden_cross) if self.macd_low_golden_cross is not None else False,
+            'macd_bottom_divergence': bool(self.macd_bottom_divergence) if self.macd_bottom_divergence is not None else False,
+            'macd_high_death_cross': bool(self.macd_high_death_cross) if self.macd_high_death_cross is not None else False,
+            'macd_top_divergence': bool(self.macd_top_divergence) if self.macd_top_divergence is not None else False,
+            'boll_break_upper': bool(self.boll_break_upper) if self.boll_break_upper is not None else False,
+            'boll_break_middle_up': bool(self.boll_break_middle_up) if self.boll_break_middle_up is not None else False,
+            'boll_break_middle_down': bool(self.boll_break_middle_down) if self.boll_break_middle_down is not None else False,
+            'boll_break_lower': bool(self.boll_break_lower) if self.boll_break_lower is not None else False,
+            'rsi_low_golden_cross': bool(self.rsi_low_golden_cross) if self.rsi_low_golden_cross is not None else False,
+            'rsi_high_death_cross': bool(self.rsi_high_death_cross) if self.rsi_high_death_cross is not None else False,
+            'rsi_top_divergence': bool(self.rsi_top_divergence) if self.rsi_top_divergence is not None else False,
+            'rsi_bottom_divergence': bool(self.rsi_bottom_divergence) if self.rsi_bottom_divergence is not None else False,
         }

@@ -9,7 +9,7 @@ router/stocks.py - 股票数据查询路由
 import pandas as pd
 import logging
 import time
-from fastapi import APIRouter, Query, Path, Depends
+from fastapi import APIRouter, Query, Path, Depends, Request
 
 from core.api.models.schemas import ScreenerRequest, ApiResponse
 from core.service.screener_service import ScreenerService
@@ -18,13 +18,60 @@ from core.api.dependencies import get_screener_service
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["股票数据接口"])
 
+# 前端指标 id → 后端 parquet 字段名映射
+INDICATOR_FIELD_MAP = {
+    "market_cap": "market_cap",
+    "price": "close",
+    "change_pct": "change_pct",
+    "pe_static": "pe",
+    "pe_ttm": "pe_ttm",
+    "pb": "pb",
+    "volume_ratio": "volume_ratio",
+    "amount": "amount",
+    "volume": "volume",
+    "turnover": "turnover_rate",
+}
+
+
+def _parse_indicator_ranges(query_params) -> dict:
+    """解析 query 参数中的 ${id}_min / ${id}_max，通过映射表转换为 filter_dict 范围条件。
+    
+    返回格式: {"field_name": {"min": 1.0, "max": 2.0}, ...}
+    """
+    ranges = {}
+    for param_name, param_value in query_params.items():
+        if not (param_name.endswith("_min") or param_name.endswith("_max")):
+            continue
+        suffix = "_min" if param_name.endswith("_min") else "_max"
+        ind_id = param_name[: -len(suffix)]  # 'market_cap_min' → 'market_cap'
+        field = INDICATOR_FIELD_MAP.get(ind_id)
+        if not field:
+            continue
+        try:
+            val = float(param_value)
+        except (ValueError, TypeError):
+            continue
+        if field not in ranges:
+            ranges[field] = {}
+        if suffix == "_min":
+            ranges[field]["min"] = val
+        else:
+            ranges[field]["max"] = val
+    return ranges
+
 
 @router.get("/", summary="股票列表（支持筛选、排序、分页）")
 def get_stocks(
+    request: Request,
     filters: str = Query(None, description="K线形态筛选条件（逗号分隔）"),
     listed_board: str = Query(None, description="上市板块筛选"),
     industry: str = Query(None, description="行业筛选（逗号分隔）"),
     area: str = Query(None, description="地区筛选（逗号分隔）"),
+    # 技术指标 pattern 筛选（2026-06-16 新增）
+    tech_ma: str = Query(None, description="MA形态筛选（逗号分隔：long_align,short_align）"),
+    tech_macd: str = Query(None, description="MACD形态筛选（逗号分隔：low_golden_cross,bottom_divergence,high_death_cross,top_divergence）"),
+    tech_boll: str = Query(None, description="BOLL形态筛选（逗号分隔：break_upper,break_middle_up,break_middle_down,break_lower）"),
+    tech_rsi: str = Query(None, description="RSI形态筛选（逗号分隔：low_golden_cross,high_death_cross,top_divergence,bottom_divergence）"),
     sort_by: str = Query("change_pct", description="排序字段"),
     sort_asc: bool = Query(False, description="是否升序排列"),
     offset: int = Query(0, ge=0, description="分页偏移量"),
@@ -46,7 +93,49 @@ def get_stocks(
         if area:
             filter_dict["area"] = area.split(",")
         if listed_board:
-            filter_dict["listed_board"] = listed_board
+            # 支持多值逗号分隔（如 "上海主板,创业板"）
+            boards = [b.strip() for b in listed_board.split(",") if b.strip()]
+            if len(boards) == 1:
+                filter_dict["listed_board"] = boards[0]
+            else:
+                filter_dict["listed_board"] = boards
+
+        # 解析行情/财务指标范围参数（*_min / *_max）
+        indicator_ranges = _parse_indicator_ranges(request.query_params)
+        for field, range_cond in indicator_ranges.items():
+            filter_dict[field] = range_cond
+
+        # 解析技术指标 pattern 筛选参数（2026-06-16 新增）
+        tech_pattern_map = {
+            'ma': {
+                'long_align': 'ma_long_align',
+                'short_align': 'ma_short_align',
+            },
+            'macd': {
+                'low_golden_cross': 'macd_low_golden_cross',
+                'bottom_divergence': 'macd_bottom_divergence',
+                'high_death_cross': 'macd_high_death_cross',
+                'top_divergence': 'macd_top_divergence',
+            },
+            'boll': {
+                'break_upper': 'boll_break_upper',
+                'break_middle_up': 'boll_break_middle_up',
+                'break_middle_down': 'boll_break_middle_down',
+                'break_lower': 'boll_break_lower',
+            },
+            'rsi': {
+                'low_golden_cross': 'rsi_low_golden_cross',
+                'high_death_cross': 'rsi_high_death_cross',
+                'top_divergence': 'rsi_top_divergence',
+                'bottom_divergence': 'rsi_bottom_divergence',
+            },
+        }
+        for tech_key, param_value in [('ma', tech_ma), ('macd', tech_macd), ('boll', tech_boll), ('rsi', tech_rsi)]:
+            if param_value:
+                for p in param_value.split(','):
+                    p = p.strip()
+                    if p in tech_pattern_map.get(tech_key, {}):
+                        filter_dict[tech_pattern_map[tech_key][p]] = True
 
         page = offset // limit + 1 if limit > 0 else 1
         page_size = limit

@@ -45,8 +45,8 @@ const AppLayout = () => {
                   onClick={() => navigate(item.key)}
                   className={`
                     flex items-center gap-2 px-4 h-full cursor-pointer transition-all text-sm font-medium
-                    ${isActive 
-                      ? 'text-color-up border-b-2 border-color-up bg-bg-base/30' 
+                    ${isActive
+                      ? 'text-color-accent border-b-2 border-color-accent bg-bg-base/30'
                       : 'text-text-secondary hover:text-text-primary hover:bg-bg-card/50'
                     }
                   `}

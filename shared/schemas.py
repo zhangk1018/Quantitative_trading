@@ -168,6 +168,22 @@ class StockResponse(BaseModel):
     pattern_morning_star: bool = Field(False, description="早晨之星")
     pattern_evening_star: bool = Field(False, description="黄昏之星")
 
+    # --- 技术指标 pattern 字段（2026-06-16 新增）---
+    ma_long_align: bool = Field(False, description="多头排列")
+    ma_short_align: bool = Field(False, description="空头排列")
+    macd_low_golden_cross: bool = Field(False, description="MACD低位金叉")
+    macd_bottom_divergence: bool = Field(False, description="MACD底背离")
+    macd_high_death_cross: bool = Field(False, description="MACD高位死叉")
+    macd_top_divergence: bool = Field(False, description="MACD顶背离")
+    boll_break_upper: bool = Field(False, description="升穿上轨")
+    boll_break_middle_up: bool = Field(False, description="升穿中轨")
+    boll_break_middle_down: bool = Field(False, description="跌穿中轨")
+    boll_break_lower: bool = Field(False, description="跌穿下轨")
+    rsi_low_golden_cross: bool = Field(False, description="RSI低位金叉")
+    rsi_high_death_cross: bool = Field(False, description="RSI高位死叉")
+    rsi_top_divergence: bool = Field(False, description="RSI顶背离")
+    rsi_bottom_divergence: bool = Field(False, description="RSI底背离")
+
     # --- 突破信号字段 ---
     break_high_20: bool = Field(False, description="突破20日高点")
     break_high_60: bool = Field(False, description="突破60日高点")

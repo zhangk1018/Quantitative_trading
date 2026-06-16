@@ -15,6 +15,48 @@ const unwrap = <T>(response: ApiResponse<T>): T => {
 
 // ==================== 2. 类型定义 ====================
 
+// 股票列表筛选参数
+export interface StockListParams {
+  listed_board?: string;        // 上市板块（逗号分隔）
+  industry?: string;            // 行业（逗号分隔）
+  area?: string;                // 地区（逗号分隔）
+  filters?: string;             // 形态筛选（逗号分隔）
+  sort_by?: string;             // 排序字段
+  sort_asc?: boolean;           // 是否升序
+  offset?: number;              // 分页偏移量
+  limit?: number;               // 每页数量
+  as_of_date?: string;          // 数据截止日期
+  watchlist_only?: boolean;     // 仅看自选
+  // 范围参数（动态）
+  [key: string]: any;
+}
+
+// 单只股票（来自后端 StockResponse）
+export interface StockItem {
+  stock_code: string;
+  stock_name: string;
+  close: number;
+  change_pct: number;
+  market_cap?: number;
+  pe?: number;
+  pe_ttm?: number;
+  pb?: number;
+  volume?: number;
+  amount?: number;
+  turnover_rate?: number;
+  listed_board?: string;
+  industry?: string;
+  area?: string;
+  trade_date?: string;
+  [key: string]: any;
+}
+
+// 股票列表响应
+export interface StockListResponse {
+  items: StockItem[];
+  total: number;
+}
+
 // 后端原始 K 线数据 (Swagger: KLineItem)
 interface RawKLineItem {
   trade_date: string;   // 注意：后端用 trade_date
@@ -67,6 +109,15 @@ export interface StockDetailInfo {
 
 // ==================== 3. API 封装 ====================
 const api = axios.create({ baseURL: '/api' });
+
+/**
+ * 获取股票列表（选股接口）
+ * 响应路径：json.data.items + json.data.total
+ */
+export const fetchStocks = async (params: StockListParams = {}): Promise<StockListResponse> => {
+  const { data } = await api.get<ApiResponse<StockListResponse>>('/stocks/', { params });
+  return unwrap(data);
+};
 
 /**
  * 获取股票详情

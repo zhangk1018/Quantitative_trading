@@ -1,5 +1,6 @@
 import React from 'react';
-import { Typography, Button, Input, Collapse } from 'antd';
+import { Typography, Button, InputNumber, Collapse, Tooltip } from 'antd';
+import { CloseCircleOutlined } from '@ant-design/icons';
 import { useScreener } from '../context/ScreenerContext';
 import { MARKET_INDICATORS } from '../config/indicatorConfig';
 
@@ -14,18 +15,28 @@ const IndicatorFilter: React.FC = () => {
     dispatch({ type: 'TOGGLE_MARKET_INDICATOR', payload: id });
   };
 
-  const updateRange = (indicatorId: string, field: 'min' | 'max', value: string) => {
+  const updateRange = (indicatorId: string, field: 'min' | 'max', value: number | null) => {
     const currentRange = marketIndicatorRanges[indicatorId] || { min: '', max: '' };
     dispatch({
       type: 'SET_MARKET_INDICATOR_RANGE',
       payload: {
         indicatorId,
-        range: { ...currentRange, [field]: value },
+        range: { ...currentRange, [field]: value === null ? '' : String(value) },
       },
     });
   };
 
-  const activeKey = collapsedPanels.market ? ['market'] : [];
+  const clearRange = (indicatorId: string) => {
+    dispatch({
+      type: 'SET_MARKET_INDICATOR_RANGE',
+      payload: {
+        indicatorId,
+        range: { min: '', max: '' },
+      },
+    });
+  };
+
+  const activeKey = collapsedPanels.market ? [] : ['market'];
 
   return (
     <Collapse
@@ -33,12 +44,16 @@ const IndicatorFilter: React.FC = () => {
       ghost
       className="border-b border-border-color"
       onChange={() => dispatch({ type: 'TOGGLE_PANEL', payload: 'market' })}
+      data-testid="indicator-filter-collapse"
     >
       <Panel
         header={
           <span className="flex items-center gap-2">
             <Text className="text-text-primary font-semibold">行情指标</Text>
-            <span className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full">
+            <span
+              data-testid="indicator-filter-badge"
+              className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full"
+            >
               {selectedMarketIndicators.length}
             </span>
           </span>
@@ -51,6 +66,8 @@ const IndicatorFilter: React.FC = () => {
               key={indicator.id}
               onClick={() => toggleIndicator(indicator.id)}
               disabled={indicator.disabled}
+              data-testid={`indicator-btn-${indicator.id}`}
+              data-selected={selectedMarketIndicators.includes(indicator.id)}
               className={`text-sm ${
                 selectedMarketIndicators.includes(indicator.id)
                   ? 'bg-color-up hover:bg-color-up/80 border-color-up text-white'
@@ -62,7 +79,7 @@ const IndicatorFilter: React.FC = () => {
           ))}
         </div>
 
-        {selectedMarketIndicators.length > 0 && (
+        {selectedMarketIndicators.length > 0 ? (
           <div className="border-t border-border-color pt-3">
             <div className="flex items-center gap-2 mb-2">
               <span className="flex items-center gap-1">
@@ -77,32 +94,52 @@ const IndicatorFilter: React.FC = () => {
               const indicator = MARKET_INDICATORS.find((i) => i.id === indicatorId);
               const range = marketIndicatorRanges[indicatorId] || { min: '', max: '' };
               return (
-                <div key={indicatorId} className="mb-2">
-                  <Text className="text-text-secondary text-sm">
-                    {indicator?.label}({indicator?.unit || ''})
-                  </Text>
-                  <div className="flex items-center gap-2 mt-1">
-                    <div className="flex items-center gap-1 flex-1">
-                      <Input
-                        type="number"
-                        value={range.min}
-                        onChange={(e) => updateRange(indicatorId, 'min', e.target.value)}
-                        placeholder="min"
-                        className="flex-1 bg-bg-base border-border-color text-text-primary text-sm"
-                      />
-                      <Button type="text" className="text-text-secondary">~</Button>
-                      <Input
-                        type="number"
-                        value={range.max}
-                        onChange={(e) => updateRange(indicatorId, 'max', e.target.value)}
-                        placeholder="max"
-                        className="flex-1 bg-bg-base border-border-color text-text-primary text-sm"
-                      />
-                    </div>
+                <div key={indicatorId} className="mb-3" data-testid={`indicator-range-${indicatorId}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <Text className="text-text-secondary text-sm">
+                      {indicator?.label}({indicator?.unit || ''})
+                    </Text>
+                    {(range.min !== '' || range.max !== '') && (
+                      <Tooltip title="清除范围">
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<CloseCircleOutlined />}
+                          onClick={() => clearRange(indicatorId)}
+                          data-testid={`indicator-clear-${indicatorId}`}
+                          className="text-text-secondary hover:text-red-500"
+                        />
+                      </Tooltip>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <InputNumber
+                      value={range.min === '' ? null : Number(range.min)}
+                      onChange={(val) => updateRange(indicatorId, 'min', val)}
+                      placeholder="min"
+                      data-testid={`indicator-min-${indicatorId}`}
+                      className="flex-1"
+                      controls={false}
+                      style={{ width: '100%' }}
+                    />
+                    <span className="text-text-secondary">~</span>
+                    <InputNumber
+                      value={range.max === '' ? null : Number(range.max)}
+                      onChange={(val) => updateRange(indicatorId, 'max', val)}
+                      placeholder="max"
+                      data-testid={`indicator-max-${indicatorId}`}
+                      className="flex-1"
+                      controls={false}
+                      style={{ width: '100%' }}
+                    />
                   </div>
                 </div>
               );
             })}
+          </div>
+        ) : (
+          <div className="border-t border-border-color pt-3" data-testid="indicator-empty-hint">
+            <Text className="text-text-secondary text-xs">点击上方按钮添加筛选条件</Text>
           </div>
         )}
       </Panel>
