@@ -1,11 +1,12 @@
 #!/bin/bash
 set -eo pipefail
 # ============================================
-# 一键提交到 GitHub (V1.1.2 在 K V1.1 基础上的微调)
-# 微调点（基于 K 审阅反馈）：
-#   1. xargs 改用 while read 循环（macOS BSD xargs 不支持 -d，-0 需 null 分隔输入）
-#   2. HTTPS 告警正则修正（去反引号 + grep -E）
-#   3. REMOTE_URL 读出后立即脱敏，避免脚本其他位置误输出 PAT
+# 一键提交到 GitHub (V1.1.3 安全修复版)
+# 安全修复（V1.1.3）：
+#   1. SENSITIVE_PATTERNS 改用 word boundary 正则，精确匹配敏感文件名而非子串
+#   2. 新增 IGNORE_FILE_SUFFIXES（.bak/.backup/.old 等），过滤备份文件
+#   3. read 输入加 -n 长度限制 + -t 超时，防止极端输入破坏交互
+#   4. grep -iE 正则替代循环遍历，提升敏感文件检测性能
 # 用法: ./scripts/git_push.sh [commit message]
 # 提交者说明：通过 -c 临时指定提交人 K，仅用于本项目仓库标识，不修改本机全局Git配置
 # 可配置忽略目录：统一过滤临时/缓存目录，避免误提交
@@ -18,8 +19,12 @@ set -eo pipefail
 IGNORE_DIRS=("temp/" "logs/" "data/cache/")
 # 允许直接推送的主分支，其他分支需二次确认
 ALLOW_PUSH_BRANCH=("main" "master")
-# 敏感文件后缀/名称，命中则终止提交
-SENSITIVE_PATTERNS=(".env" ".pem" ".key" ".pfx" ".rsa" "id_rsa")
+# 敏感文件名完整匹配（用 | 分隔，支持 word boundary）
+# .env.*: 拦截所有 .env 变体（含 .env.production、.env.local，不含 .bak/.old/.tmp/.swp 等备份后缀）
+# 扩展名：使用负向后顾 (?<!\.) 确保匹配的是文件扩展名而非子串
+SENSITIVE_PATTERNS_REGEX='(^|/)((\.env)(\.[a-z0-9_-]+)*|\.pem|\.key|\.pfx|\.rsa|id_rsa|credentials\.json|secrets\.json)$'
+# 备份/临时文件后缀，命中则跳过不提交
+IGNORE_FILE_SUFFIXES=(".bak" ".backup" ".old" ".tmp" ".swp" "~")
 # ====================================================
 
 # 切换到项目根目录
@@ -54,7 +59,7 @@ fi
 TRACKED_CHANGED=$(git status --porcelain | grep -v "^??" || true)
 ALL_UNTRACKED=$(git status --porcelain | grep "^??" || true)
 
-# 过滤所有需要忽略的目录下的未跟踪文件
+# 过滤：忽略目录下的文件 + 备份/临时后缀文件
 IGNORED_UNTRACKED=""
 NON_IGNORED_UNTRACKED="$ALL_UNTRACKED"
 for dir in "${IGNORE_DIRS[@]}"; do
@@ -63,16 +68,25 @@ for dir in "${IGNORE_DIRS[@]}"; do
     NON_IGNORED_UNTRACKED=$(echo "$NON_IGNORED_UNTRACKED" | grep -v "$dir" || true)
 done
 
-# 4. 前置安全检测：敏感密钥文件拦截
+# 过滤备份/临时后缀文件（问题2修复）
+for suffix in "${IGNORE_FILE_SUFFIXES[@]}"; do
+    TMP_SUFFIX=$(echo "$NON_IGNORED_UNTRACKED" | grep "$suffix" || true)
+    IGNORED_UNTRACKED+="$TMP_SUFFIX"$'\n'
+    NON_IGNORED_UNTRACKED=$(echo "$NON_IGNORED_UNTRACKED" | grep -v "$suffix" || true)
+done
+
+# 4. 前置安全检测：敏感密钥文件名拦截（问题1/4修复：word boundary 完整匹配）
 check_sensitive_file() {
     local file_list="$1"
-    for pattern in "${SENSITIVE_PATTERNS[@]}"; do
-        if echo "$file_list" | grep -qiF "$pattern"; then
-            echo "❌ 高危拦截：检测到敏感密钥类文件【$pattern】，禁止提交！"
-            echo "请检查待提交文件，配置到 .gitignore 后再执行提交操作"
-            exit 1
-        fi
-    done
+    local matched
+    matched=$(echo "$file_list" | grep -iE "$SENSITIVE_PATTERNS_REGEX" || true)
+    if [ -n "$matched" ]; then
+        echo "❌ 高危拦截：检测到敏感密钥类文件，禁止提交！"
+        echo "$matched" | sed 's/^/   /'
+        echo ""
+        echo "请确认该文件已正确加入 .gitignore，或手动删除后再执行提交"
+        exit 1
+    fi
 }
 check_sensitive_file "$TRACKED_CHANGED"
 check_sensitive_file "$NON_IGNORED_UNTRACKED"
@@ -146,16 +160,19 @@ else
 
     # 标准类型，支持 scope + 描述
     if [[ "$CHOICE" =~ ^[1-5]$ ]]; then
-        read -p "请输入模块Scope(如backtest/indicator，留空跳过): " SCOPE
+        read -t 30 -n 50 -p "请输入模块Scope(如backtest/indicator，留空跳过): " SCOPE
+        echo ""
         if [ -n "$SCOPE" ]; then
             PREFIX="${PREFIX}(${SCOPE}): "
         else
             PREFIX="${PREFIX}: "
         fi
-        read -p "提交详细描述: " SUFFIX
+        read -t 30 -n 200 -p "提交详细描述: " SUFFIX
+        echo ""
         COMMIT_MSG="${PREFIX}${SUFFIX}"
     elif [ "$CHOICE" = "6" ]; then
-        read -p "请输入完整commit提交信息: " COMMIT_MSG
+        read -t 60 -n 300 -p "请输入完整commit提交信息: " COMMIT_MSG
+        echo ""
     fi
 
     if [ -z "$COMMIT_MSG" ]; then

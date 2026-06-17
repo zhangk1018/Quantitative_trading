@@ -46,8 +46,11 @@ check_env() {
             exit 1
         fi
     fi
-    if grep -q "CHANGE_ME" "$ENV_FILE" 2>/dev/null; then
-        log_warn "$ENV_FILE 中仍有 CHANGE_ME 占位符，请先编辑"
+    # 精确匹配真实 CHANGE_ME 占位符（排除注释行 + 排除子串误报）
+    # v1.1 升级（2026-06-17 协作单 [6.11]）：防止 Phase 5 部署时 CHANGE_ME 漏编辑
+    if grep -E "^\s*[A-Z_][A-Z0-9_]*=.*CHANGE_ME" "$ENV_FILE" 2>/dev/null; then
+        log_error "$ENV_FILE 中仍有真实 CHANGE_ME 占位符，请先编辑"
+        exit 1
     fi
 }
 

@@ -13,7 +13,7 @@
 #   ./start.sh clean|nuke                       # 清理
 # ============================================
 
-set -e
+set -eo pipefail
 
 # ---- 颜色输出 ----
 RED='\033[0;31m'
@@ -205,7 +205,7 @@ dev_stop_backend() {
     if [ -f "$BACKEND_PID_FILE" ]; then
         local pid=$(cat "$BACKEND_PID_FILE")
         if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; stopped=1
+            kill "$pid" 2>/dev/null || true; sleep 2; kill -9 "$pid" 2>/dev/null || true; stopped=1
         fi
         rm -f "$BACKEND_PID_FILE"
     fi
@@ -213,7 +213,7 @@ dev_stop_backend() {
         local port_pid=$(find_pid_by_port "$BACKEND_PORT")
         if [ -n "$port_pid" ]; then
             log_warn "发现端口 $BACKEND_PORT 残留进程 (PID: $port_pid)，正在终止..."
-            kill "$port_pid" 2>/dev/null; sleep 2; kill -9 "$port_pid" 2>/dev/null; stopped=1
+            kill "$port_pid" 2>/dev/null || true; sleep 2; kill -9 "$port_pid" 2>/dev/null || true; stopped=1
         fi
     fi
     [ $stopped -eq 1 ] && log_ok "后端服务已停止" || log_warn "后端服务未运行"
@@ -262,7 +262,7 @@ dev_stop_frontend() {
     if [ -f "$FRONTEND_PID_FILE" ]; then
         local pid=$(cat "$FRONTEND_PID_FILE")
         if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; stopped=1
+            kill "$pid" 2>/dev/null || true; sleep 2; kill -9 "$pid" 2>/dev/null || true; stopped=1
         fi
         rm -f "$FRONTEND_PID_FILE"
     fi
@@ -270,7 +270,7 @@ dev_stop_frontend() {
         local port_pid=$(find_pid_by_port "$FRONTEND_PORT")
         if [ -n "$port_pid" ]; then
             log_warn "发现端口 $FRONTEND_PORT 残留进程 (PID: $port_pid)，正在终止..."
-            kill "$port_pid" 2>/dev/null; sleep 2; kill -9 "$port_pid" 2>/dev/null; stopped=1
+            kill "$port_pid" 2>/dev/null || true; sleep 2; kill -9 "$port_pid" 2>/dev/null || true; stopped=1
         fi
     fi
     [ $stopped -eq 1 ] && log_ok "前端服务已停止" || log_warn "前端服务未运行"
@@ -428,7 +428,9 @@ prod_shell() {
 prod_clean() {
     check_docker
     log_warn "清理（停服务+删容器，数据卷保留）"
-    read -p "确认? [y/N] " confirm
+    local confirm
+    read -n 200 -t 30 -p "确认? [y/N] " confirm
+    echo
     if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
         docker compose --env-file "$ENV_FILE" -p "$PROJECT_NAME" down
         docker image prune -f
@@ -439,7 +441,9 @@ prod_clean() {
 prod_nuke() {
     check_docker
     log_err "彻底清理（含数据卷，会删除所有数据）"
-    read -p "确认? [y/N] " confirm
+    local confirm
+    read -n 200 -t 30 -p "确认? [y/N] " confirm
+    echo
     if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
         docker compose --env-file "$ENV_FILE" -p "$PROJECT_NAME" down -v
         docker image prune -af
