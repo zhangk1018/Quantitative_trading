@@ -110,12 +110,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -fsS http://localhost:8000/health || exit 1
 
-# 启动 uvicorn（4 worker + 单 worker debug=true 时 reload）
-CMD ["uvicorn", "backend.core.api.main:app", \
-     "--host", "0.0.0.0", \
-     "--port", "8000", \
-     "--workers", "4", \
-     "--proxy-headers", \
-     "--forwarded-allow-ips", "*", \
-     "--access-log", \
-     "--log-level", "info"]
+# 启动 uvicorn（workers 数量由 UVICORN_WORKERS 环境变量控制，默认按 CPU 核数）
+ENTRYPOINT ["sh", "-c", "python /app/backend/core/api/start_server.py"]
+# start_server.py 会读取 UVICORN_WORKERS（默认 auto = CPU核数*2+1）并启动服务

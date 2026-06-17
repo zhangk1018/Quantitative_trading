@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from .config import settings
-from .dependencies import get_loader, get_screener_service
+from .dependencies import init_pg_pool, close_pg_pool, get_loader, get_screener_service
 from .router import meta, stocks, kline, signals, monitor, watchlist
 
 # 应用生命周期管理
@@ -32,6 +32,9 @@ from .router import meta, stocks, kline, signals, monitor, watchlist
 async def lifespan(app: FastAPI):
     """应用生命周期管理：启动时加载数据，关闭时清理资源"""
     print("🚀 启动量化交易系统后端API服务...")
+    
+    # 初始化 PostgreSQL 连接池
+    init_pg_pool()
     
     # 启动时预加载数据
     loader = get_loader()
@@ -44,6 +47,7 @@ async def lifespan(app: FastAPI):
     
     # 关闭时清理资源
     print("🛑 关闭量化交易系统后端API服务...")
+    close_pg_pool()
 
 # 创建FastAPI应用
 app = FastAPI(

@@ -286,6 +286,19 @@ market_cap 字段数据问题（与 [6.4] 修复解耦）：① 升序前 20 只
 
 **通知**: [量量→方舟 2026-06-17 09:30] 协作单 [6.8-FIELDS-DIFF-DEA-20260616] 状态变更: REOPENED→**VERIFY**（**K线 API 4 字段已修复**——修改 shared/schemas.py 新增 KLineItem 字段 diff/dea/rsi_12/rsi_24，修复 kline_service.py 字段映射错误（原 macd 字段错误读取 dif），更新 postgresql_storage.py SQL 查询补齐 i.macd/i.rsi12/i.rsi24。验证通过：`/api/kline/300005?limit=5&adj=forward` 末条 macd=0.1025 diff=0.0458 dea=-0.0566 rsi_12=66.16 rsi_24=56.61，4 字段全部正确返回）
 
+**通知**: [量量→方舟 2026-06-17] Phase 5 部署上线 — **5.3 上线验收** 待方舟执行
+
+Phase 5.2 性能优化已完成三项：
+1. **Worker 自动调优**：`start_server.py` 读取 `UVICORN_WORKERS=auto`，自动按 CPU 核数×2+1 启动 workers（Mac M 约 11 workers）；docker-compose.yml 添加 CPU/内存资源配额
+2. **PostgreSQL 参数调优**：`docker/postgres/init/03-tuning.sql` 首次启动自动写入 `shared_buffers=512MB/work_mem=16MB` 等生产参数
+3. **DB 连接池**：`dependencies.py` 新增 `init_pg_pool()/close_pg_pool()/get_db()`，`main.py` lifespan 生命周期管理，API 启动初始化、关闭释放
+
+**方舟验收步骤**（预计 5 分钟）：
+- 方式 A（推荐全自动）：`chmod +x verify_prod.sh && ./verify_prod.sh` → 脚本自动完成全部检查，输出 PASS/FAIL/WARN
+- 方式 B（手动逐项）：详见 [docs/PHASE_5_3_ACCEPTANCE.md](file:///Users/zhangk/workspace/Quantitative_trading/docs/PHASE_5_3_ACCEPTANCE.md)，2.2 中 **K 线 API 4 字段验证**是重点（diff/dea/rsi_12/rsi_24 协作单 [6.8] 已修复）
+
+验收通过后请在清单末尾签字并将状态更新为 VERIFY→CLOSED。
+
 **通知**: [方舟→量量 2026-06-17 11:00] 协作单 [6.8-FIELDS-DIFF-DEA-20260616] 状态变更: VERIFY→**CLOSED**（**6.8 字段映射范围全部完成**——抽样 20 只股票 K线 API 4 字段非空率：diff/dea 90%、rsi_12/rsi_24 75%；**全市场 parquet 非空率 98.52%**（5112/5189）；K 拍板关闭。前端 KlineChart 副图（MACD/RSI/BOLL/KDJ）**本地计算**（`src/indicators/technical.py`）不依赖后端 4 字段。**新发现 155 只股票 RSI 12/24 异常**（78 只 = Decimal(0.0000) + 77 只 = NaN，全市场 2.99%），根因为 `compute_indicators_daily.py:84` `fillna(0)` 错误地把 RSI 12/24 窗口期 NaN 填成 0，**属于数据计算问题不在 6.8 字段映射范围**，已新立 [6.9-RSI-DATA-20260617] 跟踪）
 
 **通知**: [方舟→量量 2026-06-17 11:00] 协作单 [6.9-RSI-DATA-20260617] 状态变更: NEW（**新工单 — 155 只股票 RSI 12/24 计算异常**：根因 `backend/clean/etl/compute_indicators_daily.py:84` 的 `rsi_df['RSI'].fillna(0)` + line 86 `except: 0` 兜底，把 RSI 12/24 窗口期 NaN 错误填成 0，导致数据库存 Decimal(0.0000)。**修复要求**：① 移除 `.fillna(0)` 保留 NaN ② 异常兜底改 None ③ 重跑 `compute_indicators_daily.py` 修复 155 只股票 ④ 重新生成 parquet。**前端影响**：KlineChart 副图本地计算不受影响，仅详情页 RSI 12/24 数字显示异常。**P2 中优先级**，详见 [docs/协作单.md](file:///Users/zhangk/workspace/Quantitative_trading/docs/协作单.md) [6.9]）

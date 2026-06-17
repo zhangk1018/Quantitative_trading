@@ -25,6 +25,12 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-quant_user} -d ${PG_DATABASE:-quant_trading}"]
       interval: 10s
@@ -50,12 +56,22 @@ services:
       TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      # 性能优化：workers 数量（auto=CPU核数*2+1，可通过 .env.production 覆盖）
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-auto}
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - ./logs:/app/logs
       - backend_data:/app/data
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
     ports:
       - "8000:8000"  # 暴露到宿主机，前端容器通过 host.docker.internal 访问
     healthcheck:

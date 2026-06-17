@@ -6,12 +6,91 @@ FastAPI 依赖注入管理，提供全局单例服务实例。
 """
 
 import re
+import os
+from contextlib import contextmanager
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Generator
+
+import psycopg2
+from psycopg2 import pool as pg_pool
 from fastapi import Depends, HTTPException
 
 from collector.db.loader import DataLoader
 from core.service.screener_service import ScreenerService
+
+# ====================================
+# PostgreSQL 连接池（ThreadedConnectionPool）
+# 初始化的 minconn=2/maxconn=10，可通过环境变量覆盖
+# ====================================
+_PG_POOL: pg_pool.ThreadedConnectionPool | None = None
+
+
+def init_pg_pool() -> None:
+    """在 FastAPI 启动时调用，初始化连接池。"""
+    global _PG_POOL
+    if _PG_POOL is not None:
+        return  # 已初始化，跳过
+
+    min_conn = int(os.environ.get("PG_POOL_MIN", "2"))
+    max_conn = int(os.environ.get("PG_POOL_MAX", "10"))
+
+    _PG_POOL = pg_pool.ThreadedConnectionPool(
+        minconn=min_conn,
+        maxconn=max_conn,
+        host=os.environ.get("PG_HOST", "localhost"),
+        port=int(os.environ.get("PG_PORT", "5432")),
+        database=os.environ.get("PG_DATABASE", "quant_trading"),
+        user=os.environ.get("PG_USER", "quant_user"),
+        password=os.environ.get("PG_PASSWORD", ""),
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+        connect_timeout=10,
+    )
+    print(f"[db_pool] 连接池已初始化: min={min_conn}, max={max_conn}")
+
+
+def close_pg_pool() -> None:
+    """在 FastAPI 关闭时调用，关闭所有连接。"""
+    global _PG_POOL
+    if _PG_POOL:
+        _PG_POOL.closeall()
+        _PG_POOL = None
+        print("[db_pool] 连接池已关闭")
+
+
+@contextmanager
+def get_db() -> Generator:
+    """
+    获取数据库连接的上下文管理器。
+
+    用法（FastAPI 依赖注入）：
+        @router.get("/")
+        def get_items(db=Depends(get_db)):
+            with db as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT ...")
+                ...
+
+    用法（直接调用）：
+        with get_db() as conn:
+            ...
+
+    每次从池中借出连接，用完自动归还，无需手动 close。
+    """
+    if _PG_POOL is None:
+        raise RuntimeError("数据库连接池未初始化，请确保 FastAPI 已启动")
+    conn = _PG_POOL.getconn()
+    try:
+        yield conn
+        conn.commit()  # 自动提交，异常时自动回滚
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _PG_POOL.putconn(conn)
+
 
 # ============================================
 # 公共验证常量
@@ -127,89 +206,33 @@ def validate_stock_code_format(stock_code: str) -> str:
     - 000001（纯6位数字）
     - 000001.SZ / 000001.SH / 000001.BJ（带后缀）
     - SH000001 / SZ000001（带前缀）
-
-    Returns:
-        规范化后的股票代码（strip + upper）
-
-    Raises:
-        HTTPException: 格式错误时返回 400
     """
-    if not stock_code:
+    stock_code = stock_code.strip().upper()
+    if not STOCK_CODE_REGEX.match(stock_code):
         raise HTTPException(
             status_code=400,
-            detail="股票代码不能为空"
+            detail=f"无效的股票代码格式: {stock_code}，支持的格式：000001、000001.SZ、SH000001"
         )
+    return stock_code
 
-    raw = stock_code
-    code = stock_code.strip().upper()
 
-    if not STOCK_CODE_REGEX.match(code):
+def validate_kline_period(period: str) -> str:
+    """校验 K 线周期参数"""
+    period = period.strip().lower()
+    if period not in VALID_KLINE_PERIODS:
         raise HTTPException(
             status_code=400,
-            detail=f"股票代码格式错误: '{raw}'，应为6位数字或带 SH/SZ/BJ 前缀（如 000001、000001.SZ、SZ000001）"
+            detail=f"无效的 K 线周期: {period}，支持的周期：{', '.join(VALID_KLINE_PERIODS)}"
         )
-    return code
+    return period
 
 
-StockCodeDep = Annotated[str, Depends(validate_stock_code)]
-StockCodeFormatDep = Annotated[str, Depends(validate_stock_code_format)]
-
-
-def validate_date_param(date_str: str) -> str:
-    """
-    校验日期参数
-
-    支持格式：
-    - YYYYMMDD（推荐，与后端统一）
-    - YYYY-MM-DD（自动转换为 YYYYMMDD）
-    """
-    if not date_str:
-        raise ValueError("日期参数不能为空")
-
-    # 尝试匹配 YYYY-MM-DD 格式
-    match = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', date_str)
-    if match:
-        # 转换为 YYYYMMDD 格式
-        return f"{match.group(1)}{match.group(2)}{match.group(3)}"
-
-    # 验证 YYYYMMDD 格式
-    if len(date_str) != 8 or not date_str.isdigit():
-        raise ValueError(f"无效的日期格式: {date_str}，应为 YYYYMMDD 或 YYYY-MM-DD 格式")
-
-    return date_str
-
-
-def validate_date_param_strict(date_str: str) -> str:
-    """
-    校验日期参数（严格版，直接返回 HTTPException 而非 ValueError）
-
-    适用场景：路由层直接调用
-    """
-    if not date_str:
-        raise HTTPException(status_code=400, detail="日期参数不能为空")
-
-    match = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', date_str)
-    if match:
-        return f"{match.group(1)}{match.group(2)}{match.group(3)}"
-
-    if len(date_str) != 8 or not date_str.isdigit():
+def validate_signal_type(signal_type: str) -> str:
+    """校验信号类型参数"""
+    signal_type = signal_type.strip().lower()
+    if signal_type not in VALID_SIGNAL_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"日期格式错误: {date_str}，应为 YYYYMMDD 或 YYYY-MM-DD 格式"
+            detail=f"无效的信号类型: {signal_type}，支持的类型：{', '.join(VALID_SIGNAL_TYPES)}"
         )
-
-    return date_str
-
-
-DateDep = Annotated[str, Depends(validate_date_param)]
-
-
-def validate_date_range(start: str, end: str) -> None:
-    """
-    校验日期范围：如果 start 和 end 均提供，必须 start <= end
-    """
-    if start and end and start > end:
-        raise HTTPException(
-            status_code=400,
-            detail=f"日期范围无效: start_date({start}) 不能晚于 end_date({end})"
-        )
+    return signal_type
