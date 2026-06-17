@@ -183,11 +183,12 @@ fi
 
 # 9. 安全暂存文件：使用 while read 逐行处理（POSIX 兼容，支持中文/空格/特殊字符）
 # 微调1: 替代原 xargs -I {} / xargs -d '\n'（macOS BSD xargs 不支持 -d，且 -0 需 null 分隔输入）
+# V1.1.4 修复: L189 增加 printf '%b' 解码 git status --porcelain 中文文件名八进制转义
 add_files_from_list() {
     local file_list="$1"
     [ -z "$file_list" ] && return 0
-    echo "$file_list" | awk '{print substr($0,4)}' | while IFS= read -r file; do
-        [ -n "$file" ] && git add "$file"
+    echo "$file_list" | awk '{print substr($0,4)}' | while IFS= read -r line; do
+        [ -n "$line" ] && file=$(printf '%b' "$line") && git add "$file"
     done
 }
 add_files_from_list "$TRACKED_CHANGED"
