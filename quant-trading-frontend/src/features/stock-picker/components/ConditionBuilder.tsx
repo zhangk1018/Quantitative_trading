@@ -12,7 +12,9 @@ import {
 import { useScreener } from '../context/ScreenerContext';
 import { FILTER_PRESETS, FilterOp } from '../types/filterTree';
 import { CustomIndicatorModal } from './CustomIndicatorModal';
+import { ImportExportButtons } from './ImportExportButtons';
 import { saveCustomIndicator } from '../utils/customIndicatorStorage';
+import type { CustomIndicator } from '../types/customIndicator';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
@@ -25,7 +27,7 @@ const RELATION_OPS: { value: FilterOp; label: string; color: string }[] = [
 
 const ConditionBuilder: React.FC = () => {
   const { state, dispatch } = useScreener();
-  const { collapsedPanels, filterTree, nextConditionOp } = state;
+  const { collapsedPanels, filterTree, nextConditionOp, customIndicators } = state;
 
   // P3.1：自编指标创建/编辑抽屉状态
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -51,6 +53,15 @@ const ConditionBuilder: React.FC = () => {
     } catch (e) {
       message.error((e as Error).message);
     }
+  };
+
+  /**
+   * P3.2：导入自编指标成功回调
+   * - IMPORT_CUSTOM_INDICATORS reducer 按 id 去重
+   * - 一次性 dispatch 多个新增指标
+   */
+  const handleImportSuccess = (newIndicators: CustomIndicator[]) => {
+    dispatch({ type: 'IMPORT_CUSTOM_INDICATORS', payload: newIndicators });
   };
 
   const handleApplyPreset = (presetIndex: number) => {
@@ -210,6 +221,20 @@ const ConditionBuilder: React.FC = () => {
             >
               新建自编指标（Monaco 公式）
             </Button>
+          </div>
+
+          {/* P3.2：导入/导出按钮（K 2026-06-17 决策：新建按钮下方并列） */}
+          <div className="flex items-center justify-between gap-2">
+            <ImportExportButtons
+              customIndicators={customIndicators}
+              onImportSuccess={handleImportSuccess}
+            />
+            <Text
+              className="text-text-secondary text-xs"
+              data-testid="condition-builder-custom-count"
+            >
+              已有 {customIndicators.length} 条
+            </Text>
           </div>
 
           {/* 条件列表 / 空状态 */}
