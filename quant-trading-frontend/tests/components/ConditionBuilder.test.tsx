@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { ScreenerProvider, useScreener } from '@/features/stock-picker/context/ScreenerContext';
 import ConditionBuilder from '@/features/stock-picker/components/ConditionBuilder';
 import { FILTER_PRESETS } from '@/features/stock-picker/types/filterTree';
@@ -26,13 +27,17 @@ function readState(): {
 }
 
 function renderBuilder() {
+  // K 2026-06-17 变更：ConditionBuilder 使用 useNavigate（跳转 /config），
+  // 需要 MemoryRouter 提供 Router 上下文
   return render(
-    <ScreenerProvider>
-      <div>
-        <ConditionBuilder />
-        <StateInspector />
-      </div>
-    </ScreenerProvider>
+    <MemoryRouter>
+      <ScreenerProvider>
+        <div>
+          <ConditionBuilder />
+          <StateInspector />
+        </div>
+      </ScreenerProvider>
+    </MemoryRouter>
   );
 }
 
@@ -283,11 +288,13 @@ describe('ConditionBuilder', () => {
         );
       }
       render(
-        <ScreenerProvider>
-          <ConditionBuilder />
-          <StateInspector />
-          <MarketSwitcher />
-        </ScreenerProvider>
+        <MemoryRouter>
+          <ScreenerProvider>
+            <ConditionBuilder />
+            <StateInspector />
+            <MarketSwitcher />
+          </ScreenerProvider>
+        </MemoryRouter>
       );
       await expandPanel(user);
 

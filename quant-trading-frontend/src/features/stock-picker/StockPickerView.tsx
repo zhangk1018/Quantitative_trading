@@ -396,11 +396,9 @@ const StockPickerContent: React.FC = () => {
 };
 
 const StockPickerView: React.FC = () => {
-  return (
-    <ScreenerProvider>
-      <StockPickerContent />
-    </ScreenerProvider>
-  );
+  // K 2026-06-17 决策：ScreenerProvider 已上移到 AppLayout 层（让 /config 和 /picker
+  // 共享同一份 screener state，无需事件桥接）
+  return <StockPickerContent />;
 };
 
 export default StockPickerView;

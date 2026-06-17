@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
+import { MemoryRouter } from 'react-router-dom';
 import { server } from '../mocks/server';
 import StockPickerView from '@/features/stock-picker/StockPickerView';
 import { ScreenerProvider, useScreener } from '@/features/stock-picker/context/ScreenerContext';
@@ -80,13 +81,17 @@ afterEach(() => {
 });
 
 // 包装完整 providers
+// K 2026-06-17 变更：ConditionBuilder 使用 useNavigate（跳转 /config），
+// 需要 MemoryRouter 提供 Router 上下文
 function renderView() {
   return render(
-    <SettingsProvider>
-      <ScreenerProvider>
-        <StockPickerView />
-      </ScreenerProvider>
-    </SettingsProvider>
+    <MemoryRouter>
+      <SettingsProvider>
+        <ScreenerProvider>
+          <StockPickerView />
+        </ScreenerProvider>
+      </SettingsProvider>
+    </MemoryRouter>
   );
 }
 

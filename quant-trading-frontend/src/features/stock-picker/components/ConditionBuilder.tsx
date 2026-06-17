@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Typography, Button, Collapse, Radio, Tooltip, message } from 'antd';
+import React from 'react';
+import { Typography, Button, Collapse, Tooltip } from 'antd';
 import {
   ControlOutlined,
   ReloadOutlined,
@@ -7,15 +7,9 @@ import {
   EyeOutlined,
   CloseOutlined,
   BookOutlined,
-  CodeOutlined,
 } from '@ant-design/icons';
 import { useScreener } from '../context/ScreenerContext';
 import { FILTER_PRESETS, FilterOp } from '../types/filterTree';
-import { CustomIndicatorModal } from './CustomIndicatorModal';
-import { ImportExportButtons } from './ImportExportButtons';
-import { CustomIndicatorList } from './CustomIndicatorList';
-import { saveCustomIndicator, removeCustomIndicator, MOCK_USER_ID } from '../utils/customIndicatorStorage';
-import type { CustomIndicator } from '../types/customIndicator';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
@@ -28,12 +22,7 @@ const RELATION_OPS: { value: FilterOp; label: string; color: string }[] = [
 
 const ConditionBuilder: React.FC = () => {
   const { state, dispatch } = useScreener();
-  const { collapsedPanels, filterTree, nextConditionOp, customIndicators } = state;
-
-  // P3.1：自编指标创建/编辑抽屉状态
-  // P3.3 扩展：editing 字段区分"新建"与"编辑"模式
-  const [showCustomModal, setShowCustomModal] = useState(false);
-  const [editingIndicator, setEditingIndicator] = useState<CustomIndicator | null>(null);
+  const { collapsedPanels, filterTree, nextConditionOp } = state;
 
   const conditionCount = filterTree?.conditions.length || 0;
 
@@ -41,77 +30,10 @@ const ConditionBuilder: React.FC = () => {
     dispatch({ type: 'CLEAR_CONDITIONS' });
   };
 
-  /**
-   * P3.1：保存自编指标
-   * - 调用 storage API 持久化
-   * - dispatch ADD_CUSTOM_INDICATOR 更新 state
-   * - 关闭抽屉
-   */
-  const handleSaveCustomIndicator = (data: Parameters<typeof saveCustomIndicator>[0]) => {
-    try {
-      const saved = saveCustomIndicator(data);
-      dispatch({ type: 'ADD_CUSTOM_INDICATOR', payload: saved });
-      message.success(`自编指标"${saved.name}"已创建`);
-      setShowCustomModal(false);
-      setEditingIndicator(null);
-    } catch (e) {
-      message.error((e as Error).message);
-    }
-  };
-
-  /**
-   * P3.3：编辑自编指标（保存）
-   * - 调用 saveCustomIndicator 持久化（带 id 会走更新分支）
-   * - dispatch UPDATE_CUSTOM_INDICATOR 更新 state
-   * - 关闭抽屉
-   */
-  const handleUpdateCustomIndicator = (data: Parameters<typeof saveCustomIndicator>[0]) => {
-    if (!editingIndicator) return;
-    try {
-      const updated = saveCustomIndicator({ ...data, id: editingIndicator.id });
-      dispatch({ type: 'UPDATE_CUSTOM_INDICATOR', payload: updated });
-      message.success(`自编指标"${updated.name}"已更新`);
-      setShowCustomModal(false);
-      setEditingIndicator(null);
-    } catch (e) {
-      message.error((e as Error).message);
-    }
-  };
-
-  /**
-   * P3.3：编辑入口
-   * - 列表项点击编辑按钮 → 设置 editingIndicator + 打开抽屉
-   */
-  const handleEditClick = (ind: CustomIndicator) => {
-    setEditingIndicator(ind);
-    setShowCustomModal(true);
-  };
-
-  /**
-   * P3.3：删除自编指标
-   * - 调用 removeCustomIndicator 软删除
-   * - dispatch REMOVE_CUSTOM_INDICATOR 更新 state（reducer 自动扫描 filterTree 标记失效）
-   */
-  const handleDeleteClick = (id: string) => {
-    const ind = customIndicators.find((i) => i.id === id);
-    if (!ind) return;
-    try {
-      removeCustomIndicator(id, MOCK_USER_ID);
-      dispatch({ type: 'REMOVE_CUSTOM_INDICATOR', payload: id });
-      message.success(`自编指标"${ind.name}"已删除`);
-    } catch (e) {
-      message.error((e as Error).message);
-    }
-  };
-
-  /**
-   * P3.2：导入自编指标成功回调
-   * - IMPORT_CUSTOM_INDICATORS reducer 按 id 去重
-   * - 一次性 dispatch 多个新增指标
-   */
-  const handleImportSuccess = (newIndicators: CustomIndicator[]) => {
-    dispatch({ type: 'IMPORT_CUSTOM_INDICATORS', payload: newIndicators });
-  };
+  // K 2026-06-17 决策：自编指标管理已迁移至 /config 页面
+  // K 2026-06-17 截图调整：ConditionBuilder 不再保留任何入口（避免 UI 拥挤）
+  // 用户通过侧边栏菜单"系统配置" → /config → 切到"自编指标" Tab 进入管理
+  // 详见 docs/architecture/P2-CustomIndicator-Context-Reducer.md
 
   const handleApplyPreset = (presetIndex: number) => {
     const preset = FILTER_PRESETS[presetIndex];
@@ -146,7 +68,6 @@ const ConditionBuilder: React.FC = () => {
   const activeKey = collapsedPanels.condition ? [] : ['condition'];
 
   return (
-    <>
     <Collapse
       activeKey={activeKey}
       ghost
@@ -258,44 +179,6 @@ const ConditionBuilder: React.FC = () => {
             </Button>
           </div>
 
-          {/* P3.1：新建自编指标按钮（K 2026-06-17 决策集成点） */}
-          <div>
-            <Button
-              type="dashed"
-              size="small"
-              icon={<CodeOutlined />}
-              onClick={() => {
-                setEditingIndicator(null);
-                setShowCustomModal(true);
-              }}
-              data-testid="condition-builder-create-custom"
-              className="w-full text-color-accent"
-            >
-              新建自编指标（Monaco 公式）
-            </Button>
-          </div>
-
-          {/* P3.2：导入/导出按钮（K 2026-06-17 决策：新建按钮下方并列） */}
-          <div className="flex items-center justify-between gap-2">
-            <ImportExportButtons
-              customIndicators={customIndicators}
-              onImportSuccess={handleImportSuccess}
-            />
-            <Text
-              className="text-text-secondary text-xs"
-              data-testid="condition-builder-custom-count"
-            >
-              已有 {customIndicators.length} 条
-            </Text>
-          </div>
-
-          {/* P3.3：自编指标列表（编辑 / 删除入口） */}
-          <CustomIndicatorList
-            indicators={customIndicators}
-            onEdit={handleEditClick}
-            onDelete={handleDeleteClick}
-          />
-
           {/* 条件列表 / 空状态 */}
           {conditionCount === 0 ? (
             <div
@@ -306,7 +189,7 @@ const ConditionBuilder: React.FC = () => {
             </div>
           ) : (
             <div className="space-y-1" data-testid="condition-list">
-              {filterTree?.conditions.map((cond, idx) => (
+              {filterTree?.conditions.map((cond) => (
                 <div
                   key={cond.id}
                   className="flex items-center justify-between bg-bg-elevated rounded px-2 py-1"
@@ -340,22 +223,7 @@ const ConditionBuilder: React.FC = () => {
         </div>
       </Panel>
     </Collapse>
-
-    {/* P3.1：自编指标创建/编辑抽屉（K 2026-06-17 决策升级：Modal → Drawer）
-        P3.3 扩展：editing 非空时为编辑模式（按钮显示"保存"且 dispatch UPDATE） */}
-    {showCustomModal && (
-      <CustomIndicatorModal
-        title={editingIndicator ? '编辑自编指标' : '新建自编指标'}
-        editing={editingIndicator}
-        onConfirm={editingIndicator ? handleUpdateCustomIndicator : handleSaveCustomIndicator}
-        onCancel={() => {
-          setShowCustomModal(false);
-          setEditingIndicator(null);
-        }}
-      />
-    )}
-  </>
-);
+  );
 };
 
 export default ConditionBuilder;

@@ -28,7 +28,8 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_err()  { echo -e "${RED}[ERR]${NC} $1"; }
 
 # ---- 路径配置 ----
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 脚本位于 scripts/，所以 SCRIPT_DIR 回到上一级（项目根目录）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 
 BACKEND_DIR="$SCRIPT_DIR/backend"

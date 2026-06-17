@@ -93,7 +93,8 @@ export const FILTER_PRESETS: FilterPreset[] = [
   },
   {
     fieldKey: 'bottom_volume_macd',
-    label: '底部放量+MACD金叉',
+    // K 2026-06-17 调整：preset 按钮文案简化（详见截图说明）
+    label: '底部放量',
     conditions: [
       { op: 'AND', fieldKey: 'volume_breakout', label: '底部放量' },
       { op: 'AND', fieldKey: 'macd_golden_cross', label: 'MACD金叉' },

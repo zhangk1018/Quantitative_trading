@@ -2,11 +2,12 @@ import React from 'react';
 import { Layout, Typography, Space } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { DashboardOutlined, StockOutlined, StarOutlined, LineChartOutlined, SettingOutlined } from '@ant-design/icons';
+import { ScreenerProvider } from '@/features/stock-picker/context/ScreenerContext';
 
 const { Header, Content } = Layout;
 const { Text } = Typography;
 
-const AppLayout = () => {
+const AppLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -20,6 +21,9 @@ const AppLayout = () => {
   const selectedKey = location.pathname;
 
   return (
+    // K 2026-06-17 决策：ScreenerProvider 上移到 AppLayout 层，让 /config 和 /picker
+    // 共享同一份 screener state（customIndicators 跨页面同步 + 不再需要事件桥接）
+    <ScreenerProvider>
     <Layout style={{ minHeight: '100vh', background: '#131722' }}>
       {/* 顶部通栏：Logo + 菜单栏 */}
       <Header className="h-14 px-6 flex items-center justify-between bg-bg-panel border-b border-border-color !leading-none">
@@ -71,6 +75,7 @@ const AppLayout = () => {
         </div>
       </Content>
     </Layout>
+    </ScreenerProvider>
   );
 };
 

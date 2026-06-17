@@ -18,6 +18,7 @@ set -eo pipefail
 # 协议: SSH（需 K 提前撤销暴露的 PAT + 切换 git remote 为 git@github.com:...）
 #
 # 变更历史:
+#   V1.1.6 fix(git): 修复 R/D 状态解析失败（用 git add -u 替代 substr + git add）
 #   V1.1.4 fix(git): 修复中文文件名八进制转义（printf '%b' 解码）
 #   V1.1.3 chore(git): 敏感文件名 word boundary + 备份后缀过滤 + read 输入加固
 #   V1.1.2 fix(git): macOS BSD xargs 不支持 -d，改用 while read（POSIX 兼容）
@@ -194,6 +195,9 @@ fi
 # 9. 安全暂存文件：使用 while read 逐行处理（POSIX 兼容，支持中文/空格/特殊字符）
 # 微调1: 替代原 xargs -I {} / xargs -d '\n'（macOS BSD xargs 不支持 -d，且 -0 需 null 分隔输入）
 # V1.1.4 修复: L189 增加 printf '%b' 解码 git status --porcelain 中文文件名八进制转义
+# V1.1.6 修复: 用 git add -u 处理已跟踪变更（M/D/R），git add 处理未跟踪文件
+#   - 原 add_files_from_list 解析 R/D 状态会失败（substr 提取的 "start.sh -> scripts/start.sh" 不是合法路径）
+#   - git add -u 自动处理 M/D/R（含 rename 检测 + 软删除）
 add_files_from_list() {
     local file_list="$1"
     [ -z "$file_list" ] && return 0
@@ -201,7 +205,9 @@ add_files_from_list() {
         [ -n "$line" ] && file=$(printf '%b' "$line") && git add "$file"
     done
 }
-add_files_from_list "$TRACKED_CHANGED"
+# 已跟踪变更（修改/删除/重命名）由 git add -u 一次性处理（V1.1.6 修复 R/D bug）
+git add -u
+# 未跟踪文件（新文件）由 add_files_from_list 处理
 add_files_from_list "$NON_IGNORED_UNTRACKED"
 
 # 10. 执行提交，捕获异常退出

@@ -37,6 +37,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    # 暴露到宿主机（dev 模式 host uvicorn 可直连 host:5432；与 prod 共享同一数据库实例）
+    ports:
+      - "5432:5432"
     networks:
       - quant_net
 

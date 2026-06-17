@@ -10,7 +10,7 @@ import os
 from contextlib import contextmanager
 from datetime import datetime
 from functools import lru_cache
-from typing import Annotated, Generator
+from typing import Annotated, Generator, Optional
 
 import psycopg2
 from psycopg2 import pool as pg_pool
@@ -234,25 +234,34 @@ def validate_signal_type(signal_type: str) -> str:
     if signal_type not in VALID_SIGNAL_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"无效的信号类型: {signal_type}，支持的类型：{', '.join(VALID_SIGNAL_TYPES)}"
+            detail=f"无效的信号类型: {signal_type}，支持的类型: {', '.join(VALID_SIGNAL_TYPES)}"
         )
     return signal_type
 
 
-def validate_date_range(start_date: str, end_date: str) -> None:
-    """校验日期范围是否合法 (start <= end)
+def validate_date_range(start_date: Optional[str], end_date: Optional[str]) -> tuple:
+    """校验日期范围（start_date <= end_date）
 
-    Args:
-        start_date: 开始日期
-        end_date: 结束日期
-
-    Raises:
-        HTTPException: 日期范围非法
+    输入: start_date, end_date (YYYY-MM-DD 或 YYYYMMDD)
+    输出: (start_date, end_date) 元组
+    异常: start_date > end_date 时抛 400
     """
+    if not start_date or not end_date:
+        return start_date, end_date
+    # 统一格式 YYYYMMDD
+    s = start_date.replace("-", "")
+    e = end_date.replace("-", "")
     try:
-        start = datetime.strptime(start_date, '%Y-%m-%d')
-        end = datetime.strptime(end_date, '%Y-%m-%d')
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"日期格式错误: {e}")
-    if start > end:
-        raise HTTPException(status_code=400, detail=f"日期范围非法: {start_date} > {end_date}")
+        datetime.strptime(s, "%Y%m%d")
+        datetime.strptime(e, "%Y%m%d")
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"日期格式错误: start_date={start_date}, end_date={end_date}"
+        )
+    if s > e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"start_date ({start_date}) 不能晚于 end_date ({end_date})"
+        )
+    return start_date, end_date
