@@ -13,7 +13,8 @@ import { useScreener } from '../context/ScreenerContext';
 import { FILTER_PRESETS, FilterOp } from '../types/filterTree';
 import { CustomIndicatorModal } from './CustomIndicatorModal';
 import { ImportExportButtons } from './ImportExportButtons';
-import { saveCustomIndicator } from '../utils/customIndicatorStorage';
+import { CustomIndicatorList } from './CustomIndicatorList';
+import { saveCustomIndicator, removeCustomIndicator, MOCK_USER_ID } from '../utils/customIndicatorStorage';
 import type { CustomIndicator } from '../types/customIndicator';
 
 const { Text } = Typography;
@@ -30,7 +31,9 @@ const ConditionBuilder: React.FC = () => {
   const { collapsedPanels, filterTree, nextConditionOp, customIndicators } = state;
 
   // P3.1：自编指标创建/编辑抽屉状态
+  // P3.3 扩展：editing 字段区分"新建"与"编辑"模式
   const [showCustomModal, setShowCustomModal] = useState(false);
+  const [editingIndicator, setEditingIndicator] = useState<CustomIndicator | null>(null);
 
   const conditionCount = filterTree?.conditions.length || 0;
 
@@ -50,6 +53,52 @@ const ConditionBuilder: React.FC = () => {
       dispatch({ type: 'ADD_CUSTOM_INDICATOR', payload: saved });
       message.success(`自编指标"${saved.name}"已创建`);
       setShowCustomModal(false);
+      setEditingIndicator(null);
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
+
+  /**
+   * P3.3：编辑自编指标（保存）
+   * - 调用 saveCustomIndicator 持久化（带 id 会走更新分支）
+   * - dispatch UPDATE_CUSTOM_INDICATOR 更新 state
+   * - 关闭抽屉
+   */
+  const handleUpdateCustomIndicator = (data: Parameters<typeof saveCustomIndicator>[0]) => {
+    if (!editingIndicator) return;
+    try {
+      const updated = saveCustomIndicator({ ...data, id: editingIndicator.id });
+      dispatch({ type: 'UPDATE_CUSTOM_INDICATOR', payload: updated });
+      message.success(`自编指标"${updated.name}"已更新`);
+      setShowCustomModal(false);
+      setEditingIndicator(null);
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
+
+  /**
+   * P3.3：编辑入口
+   * - 列表项点击编辑按钮 → 设置 editingIndicator + 打开抽屉
+   */
+  const handleEditClick = (ind: CustomIndicator) => {
+    setEditingIndicator(ind);
+    setShowCustomModal(true);
+  };
+
+  /**
+   * P3.3：删除自编指标
+   * - 调用 removeCustomIndicator 软删除
+   * - dispatch REMOVE_CUSTOM_INDICATOR 更新 state（reducer 自动扫描 filterTree 标记失效）
+   */
+  const handleDeleteClick = (id: string) => {
+    const ind = customIndicators.find((i) => i.id === id);
+    if (!ind) return;
+    try {
+      removeCustomIndicator(id, MOCK_USER_ID);
+      dispatch({ type: 'REMOVE_CUSTOM_INDICATOR', payload: id });
+      message.success(`自编指标"${ind.name}"已删除`);
     } catch (e) {
       message.error((e as Error).message);
     }
@@ -215,7 +264,10 @@ const ConditionBuilder: React.FC = () => {
               type="dashed"
               size="small"
               icon={<CodeOutlined />}
-              onClick={() => setShowCustomModal(true)}
+              onClick={() => {
+                setEditingIndicator(null);
+                setShowCustomModal(true);
+              }}
               data-testid="condition-builder-create-custom"
               className="w-full text-color-accent"
             >
@@ -236,6 +288,13 @@ const ConditionBuilder: React.FC = () => {
               已有 {customIndicators.length} 条
             </Text>
           </div>
+
+          {/* P3.3：自编指标列表（编辑 / 删除入口） */}
+          <CustomIndicatorList
+            indicators={customIndicators}
+            onEdit={handleEditClick}
+            onDelete={handleDeleteClick}
+          />
 
           {/* 条件列表 / 空状态 */}
           {conditionCount === 0 ? (
@@ -282,13 +341,17 @@ const ConditionBuilder: React.FC = () => {
       </Panel>
     </Collapse>
 
-    {/* P3.1：自编指标创建/编辑抽屉（K 2026-06-17 决策升级：Modal → Drawer） */}
+    {/* P3.1：自编指标创建/编辑抽屉（K 2026-06-17 决策升级：Modal → Drawer）
+        P3.3 扩展：editing 非空时为编辑模式（按钮显示"保存"且 dispatch UPDATE） */}
     {showCustomModal && (
       <CustomIndicatorModal
-        title="新建自编指标"
-        editing={null}
-        onConfirm={handleSaveCustomIndicator}
-        onCancel={() => setShowCustomModal(false)}
+        title={editingIndicator ? '编辑自编指标' : '新建自编指标'}
+        editing={editingIndicator}
+        onConfirm={editingIndicator ? handleUpdateCustomIndicator : handleSaveCustomIndicator}
+        onCancel={() => {
+          setShowCustomModal(false);
+          setEditingIndicator(null);
+        }}
       />
     )}
   </>
