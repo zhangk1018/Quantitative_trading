@@ -1,5 +1,5 @@
-import React from 'react';
-import { Typography, Button, Collapse, Radio, Tooltip } from 'antd';
+import React, { useState } from 'react';
+import { Typography, Button, Collapse, Radio, Tooltip, message } from 'antd';
 import {
   ControlOutlined,
   ReloadOutlined,
@@ -7,9 +7,12 @@ import {
   EyeOutlined,
   CloseOutlined,
   BookOutlined,
+  CodeOutlined,
 } from '@ant-design/icons';
 import { useScreener } from '../context/ScreenerContext';
 import { FILTER_PRESETS, FilterOp } from '../types/filterTree';
+import { CustomIndicatorModal } from './CustomIndicatorModal';
+import { saveCustomIndicator } from '../utils/customIndicatorStorage';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
@@ -24,10 +27,30 @@ const ConditionBuilder: React.FC = () => {
   const { state, dispatch } = useScreener();
   const { collapsedPanels, filterTree, nextConditionOp } = state;
 
+  // P3.1：自编指标创建/编辑抽屉状态
+  const [showCustomModal, setShowCustomModal] = useState(false);
+
   const conditionCount = filterTree?.conditions.length || 0;
 
   const handleReset = () => {
     dispatch({ type: 'CLEAR_CONDITIONS' });
+  };
+
+  /**
+   * P3.1：保存自编指标
+   * - 调用 storage API 持久化
+   * - dispatch ADD_CUSTOM_INDICATOR 更新 state
+   * - 关闭抽屉
+   */
+  const handleSaveCustomIndicator = (data: Parameters<typeof saveCustomIndicator>[0]) => {
+    try {
+      const saved = saveCustomIndicator(data);
+      dispatch({ type: 'ADD_CUSTOM_INDICATOR', payload: saved });
+      message.success(`自编指标"${saved.name}"已创建`);
+      setShowCustomModal(false);
+    } catch (e) {
+      message.error((e as Error).message);
+    }
   };
 
   const handleApplyPreset = (presetIndex: number) => {
@@ -63,6 +86,7 @@ const ConditionBuilder: React.FC = () => {
   const activeKey = collapsedPanels.condition ? [] : ['condition'];
 
   return (
+    <>
     <Collapse
       activeKey={activeKey}
       ghost
@@ -174,6 +198,20 @@ const ConditionBuilder: React.FC = () => {
             </Button>
           </div>
 
+          {/* P3.1：新建自编指标按钮（K 2026-06-17 决策集成点） */}
+          <div>
+            <Button
+              type="dashed"
+              size="small"
+              icon={<CodeOutlined />}
+              onClick={() => setShowCustomModal(true)}
+              data-testid="condition-builder-create-custom"
+              className="w-full text-color-accent"
+            >
+              新建自编指标（Monaco 公式）
+            </Button>
+          </div>
+
           {/* 条件列表 / 空状态 */}
           {conditionCount === 0 ? (
             <div
@@ -218,7 +256,18 @@ const ConditionBuilder: React.FC = () => {
         </div>
       </Panel>
     </Collapse>
-  );
+
+    {/* P3.1：自编指标创建/编辑抽屉（K 2026-06-17 决策升级：Modal → Drawer） */}
+    {showCustomModal && (
+      <CustomIndicatorModal
+        title="新建自编指标"
+        editing={null}
+        onConfirm={handleSaveCustomIndicator}
+        onCancel={() => setShowCustomModal(false)}
+      />
+    )}
+  </>
+);
 };
 
 export default ConditionBuilder;

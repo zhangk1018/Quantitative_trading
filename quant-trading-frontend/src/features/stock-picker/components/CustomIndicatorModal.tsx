@@ -1,6 +1,21 @@
-import React, { useState, useEffect } from 'react';
+/**
+ * 自编指标创建/编辑抽屉（K 2026-06-17 决策升级）
+ *
+ * 升级要点（vs V1.0 Modal 版）：
+ * - Modal → Drawer（更宽布局适合 8 字段表单 + Monaco 编辑器）
+ * - TextArea → Monaco Editor（@monaco-editor/react 懒加载，TDX/Python 高亮）
+ * - onChange 实时校验 → onBlur 校验（避免输入过程中频繁报错干扰）
+ * - 新增"字段插入"按钮（一键插入参数名/股票字段到公式光标位置）
+ *
+ * 设计原则（沿用 K 2026-06-16 偏好）：
+ * - 抽屉内部维护 temp 表单状态，仅在用户点击"确定"时回写父级
+ * - 取消不回滚（内部状态独立于父级）
+ * - 参数名唯一性校验（防止公式引用歧义）
+ */
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Modal,
+  Drawer,
   Form,
   Input,
   Select,
@@ -10,12 +25,16 @@ import {
   InputNumber,
   Tooltip,
   Alert,
+  message,
 } from 'antd';
 import {
   PlusOutlined,
   DeleteOutlined,
   QuestionCircleOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
+import Editor, { OnMount } from '@monaco-editor/react';
+import type { editor as MonacoEditor } from 'monaco-editor';
 import {
   CustomIndicator,
   CustomIndicatorParam,
@@ -29,10 +48,8 @@ import {
 } from '../types/customIndicator';
 import { isNameTaken, MOCK_USER_ID } from '../utils/customIndicatorStorage';
 
-const { TextArea } = Input;
-
 interface CustomIndicatorModalProps {
-  /** 弹窗标题 */
+  /** 抽屉标题 */
   title: string;
   /** 编辑时传入已有指标（创建时为 null） */
   editing?: CustomIndicator | null;
@@ -69,12 +86,44 @@ const defaultFormState: FormState = {
   visibility: 'private',
 };
 
+// 字段插入候选项（用于"插入字段"按钮）
+interface FieldCandidate {
+  key: string;
+  label: string;
+  /** 插入时的文本（光标位置替换为该文本） */
+  insertText: string;
+  group: 'params' | 'quote' | 'indicator';
+}
+
 /**
- * 自编指标创建/编辑弹窗
- * - 8 字段表单：名称 / 分类 / 公式语法 / 公式 / 动态参数 / 默认运算符 / 说明 / 可见范围
- *   （默认阈值嵌在运算符下方动态显示，单值或双值）
- * - 弹窗内部维护 form state，仅在用户点击"确定"时回写父级（K 偏好：取消不回滚）
- * - width=480（K 偏好：弹窗整体缩小至少五分之一，原默认 520px）
+ * V1.0 公式中可引用的"股票字段候选"
+ *  - 行情字段：CLOSE / OPEN / HIGH / LOW / VOL / AMOUNT
+ *  - 指标字段：MA / EMA / RSI / MACD / BOLL / KDJ
+ *  注：V1.0 公式解析层尚未实现（仅做基础非空 + 危险字符检查），
+ *     此处候选列表用于编辑器辅助，不做沙箱执行。
+ */
+const QUOTE_FIELDS: FieldCandidate[] = [
+  { key: 'CLOSE', label: 'CLOSE 收盘价', insertText: 'CLOSE', group: 'quote' },
+  { key: 'OPEN', label: 'OPEN 开盘价', insertText: 'OPEN', group: 'quote' },
+  { key: 'HIGH', label: 'HIGH 最高价', insertText: 'HIGH', group: 'quote' },
+  { key: 'LOW', label: 'LOW 最低价', insertText: 'LOW', group: 'quote' },
+  { key: 'VOL', label: 'VOL 成交量', insertText: 'VOL', group: 'quote' },
+  { key: 'AMOUNT', label: 'AMOUNT 成交额', insertText: 'AMOUNT', group: 'quote' },
+  { key: 'MA', label: 'MA 均线', insertText: 'MA(CLOSE, 5)', group: 'indicator' },
+  { key: 'EMA', label: 'EMA 指数均线', insertText: 'EMA(CLOSE, 12)', group: 'indicator' },
+  { key: 'RSI', label: 'RSI 相对强弱', insertText: 'RSI(CLOSE, 12)', group: 'indicator' },
+  { key: 'MACD', label: 'MACD 异同移动平均', insertText: 'MACD(CLOSE, 12, 26, 9)', group: 'indicator' },
+  { key: 'BOLL', label: 'BOLL 布林带', insertText: 'BOLL(CLOSE, 20, 2)', group: 'indicator' },
+  { key: 'KDJ', label: 'KDJ 随机指标', insertText: 'KDJ(9, 3, 3)', group: 'indicator' },
+];
+
+// Monaco editor 配置：使用 @monaco-editor/react 默认 CDN loader（unpkg.com）
+// - 首屏不加载（@monaco-editor/react 内部 useEffect 按需加载）
+// - 抽屉打开时下载 ~500KB gzip（vs 静态 TextArea 多 ~600ms 加载）
+// - V1.0 暂不打包 monaco-editor 到 bundle（避免首屏体积膨胀）
+
+/**
+ * 自编指标创建/编辑抽屉
  */
 export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
   title,
@@ -83,12 +132,15 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
   onConfirm,
   onCancel,
 }) => {
-  // 弹窗内部维护 temp 表单状态
+  // 抽屉内部维护 temp 表单状态
   const [formState, setFormState] = useState<FormState>(() => buildFromEditing(editing));
   const [nameError, setNameError] = useState<string | null>(null);
   const [formulaError, setFormulaError] = useState<string | null>(null);
 
-  // 弹窗打开时同步
+  // Monaco editor 实例引用
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+
+  // 抽屉打开时同步 editing 状态
   useEffect(() => {
     setFormState(buildFromEditing(editing));
     setNameError(null);
@@ -98,13 +150,21 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
   const currentOperatorMode = getOperatorMode(formState.operator);
 
   // 字段更新辅助
-  const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) => {
+  const updateField = useCallback(<K extends keyof FormState>(key: K, value: FormState[K]) => {
     setFormState((s) => ({ ...s, [key]: value }));
-  };
+  }, []);
 
-  // 名称实时校验
-  const handleNameChange = (v: string) => {
-    updateField('name', v);
+  /**
+   * 名称 OnBlur 校验
+   * - 校验格式（2-30 字符 + 合法字符集）
+   * - 校验唯一性（同一用户下指标名称不能重复）
+   */
+  const handleNameBlur = () => {
+    const v = formState.name.trim();
+    if (!v) {
+      setNameError(null); // 空值不报错（让"必填"在提交时检查）
+      return;
+    }
     const err = validateIndicatorName(v);
     if (err) {
       setNameError(err);
@@ -115,21 +175,76 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
     }
   };
 
-  // 公式实时校验
-  const handleFormulaChange = (v: string) => {
-    updateField('formula', v);
+  /**
+   * 公式 OnBlur 校验（K 2026-06-17 决策：OnBlur 而非 onChange）
+   * - 非空校验
+   * - 长度限制（≤ 2000 字符）
+   * - 危险关键字检测（import/exec/eval 等）
+   * - 字符集校验（TDX 仅允许 A-Z 0-9 _ ( ) + - * / 等）
+   */
+  const handleFormulaBlur = () => {
+    const v = formState.formula;
+    if (!v || !v.trim()) {
+      setFormulaError(null); // 空值不报错（让"必填"在提交时检查）
+      return;
+    }
     const result = validateFormula(v, formState.syntax);
-    setFormulaError(result.valid ? null : result.errors[0] || '公式无效');
+    if (!result.valid) {
+      setFormulaError(result.errors[0] || '公式无效');
+    } else if (result.warnings.length > 0) {
+      setFormulaError(null);
+      message.warning(result.warnings[0]);
+    } else {
+      setFormulaError(null);
+    }
   };
 
-  // 切换语法时重算公式错误
-  useEffect(() => {
-    if (formState.formula) {
-      const result = validateFormula(formState.formula, formState.syntax);
-      setFormulaError(result.valid ? null : result.errors[0] || '公式无效');
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formState.syntax]);
+  /**
+   * Monaco 挂载回调：保存 editor 实例
+   */
+  /**
+   * Monaco 挂载回调：
+   * - 保存 editor 实例到 ref（用于字段插入）
+   * - 绑定 onDidBlurEditorWidget 事件做 OnBlur 校验（K 2026-06-17 决策）
+   *   @monaco-editor/react v4.6.0 不支持 onBlur prop，必须通过 editor.onDidBlurEditorWidget 手动绑定
+   */
+  const handleEditorMount: OnMount = (editor) => {
+    editorRef.current = editor;
+    editor.onDidBlurEditorWidget(() => {
+      handleFormulaBlur();
+    });
+  };
+
+  /**
+   * 在 Monaco 光标位置插入文本
+   * - 字段插入按钮调用此函数
+   * - 插入后自动聚焦 editor
+   */
+  const insertAtCursor = (text: string) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const position = editor.getPosition();
+    if (!position) return;
+    editor.executeEdits('custom-indicator-insert', [
+      {
+        range: {
+          startLineNumber: position.lineNumber,
+          startColumn: position.column,
+          endLineNumber: position.lineNumber,
+          endColumn: position.column,
+        },
+        text,
+        forceMoveMarkers: true,
+      },
+    ]);
+    // 插入后将光标移动到文本末尾
+    const lines = text.split('\n');
+    const newColumn =
+      lines.length === 1 ? position.column + text.length : lines[lines.length - 1].length + 1;
+    const newLine = position.lineNumber + lines.length - 1;
+    editor.setPosition({ lineNumber: newLine, column: newColumn });
+    editor.focus();
+  };
 
   // 动态参数增删
   const handleAddParam = () => {
@@ -162,13 +277,23 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
 
   // 提交前最终校验
   const handleSubmit = () => {
-    const nameErr = validateIndicatorName(formState.name);
+    const trimmedName = formState.name.trim();
+    if (!trimmedName) {
+      setNameError('指标名称不能为空');
+      return;
+    }
+    const nameErr = validateIndicatorName(trimmedName);
     if (nameErr) {
       setNameError(nameErr);
       return;
     }
-    if (isNameTaken(formState.name, editing?.id ?? null, userId)) {
-      setNameError(`指标名称"${formState.name}"已存在`);
+    if (isNameTaken(trimmedName, editing?.id ?? null, userId)) {
+      setNameError(`指标名称"${trimmedName}"已存在`);
+      return;
+    }
+    const trimmedFormula = formState.formula.trim();
+    if (!trimmedFormula) {
+      setFormulaError('公式不能为空');
       return;
     }
     const formulaResult = validateFormula(formState.formula, formState.syntax);
@@ -179,24 +304,20 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
     for (let i = 0; i < formState.params.length; i++) {
       const pn = validateParamName(formState.params[i].name);
       if (pn) {
-        Modal.error({ title: '参数名校验失败', content: `第 ${i + 1} 个参数：${pn}` });
+        message.error(`第 ${i + 1} 个参数：${pn}`);
         return;
       }
     }
     // K 2026-06-16 代码审阅建议 4b：参数名唯一性校验
-    // 重复参数名会导致公式引用歧义（MA(p1) 不知用哪个 p1）
     const paramNames = formState.params.map((p) => p.name).filter((n) => n);
     const duplicate = paramNames.find((n, idx) => paramNames.indexOf(n) !== idx);
     if (duplicate) {
-      Modal.error({
-        title: '参数名重复',
-        content: `参数名"${duplicate}"重复，请使用唯一参数名（公式中通过参数名引用）`,
-      });
+      message.error(`参数名"${duplicate}"重复，请使用唯一参数名（公式中通过参数名引用）`);
       return;
     }
 
     onConfirm({
-      name: formState.name,
+      name: trimmedName,
       category: formState.category,
       syntax: formState.syntax,
       formula: formState.formula,
@@ -209,18 +330,47 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
   };
 
   const isEdit = !!editing;
-  const submitDisabled = !!nameError || !!formulaError || !formState.name || !formState.formula;
+  const submitDisabled =
+    !formState.name.trim() || !formState.formula.trim() || !!nameError || !!formulaError;
+
+  // Monaco 语言选择：TDX 用 cpp（C-like 高亮），Python 用 python
+  const monacoLanguage = formState.syntax === 'python_talib' ? 'python' : 'cpp';
+
+  // 字段插入候选项：参数名 + 行情字段 + 指标字段
+  const paramCandidates: FieldCandidate[] = formState.params
+    .filter((p) => p.name.trim())
+    .map((p) => ({
+      key: `param_${p.name}`,
+      label: `${p.name} (参数)`,
+      insertText: p.name,
+      group: 'params',
+    }));
 
   return (
-    <Modal
+    <Drawer
       open
       title={title}
-      onCancel={onCancel}
-      footer={null}
-      width={480}
-      centered
+      onClose={onCancel}
+      width={720}
       destroyOnHidden
       maskClosable={false}
+      // K 2026-06-17 反馈：取消/创建按钮移至 Drawer 顶部右侧（extra 区域）
+      extra={
+        <Space size="small" data-testid="custom-indicator-modal-extra">
+          <Button size="small" onClick={onCancel} data-testid="custom-indicator-modal-cancel">
+            取消
+          </Button>
+          <Button
+            size="small"
+            type="primary"
+            disabled={submitDisabled}
+            onClick={handleSubmit}
+            data-testid="custom-indicator-modal-confirm"
+          >
+            {isEdit ? '保存' : '创建'}
+          </Button>
+        </Space>
+      }
       data-testid="custom-indicator-modal"
     >
       <Form layout="vertical" size="small" className="py-1">
@@ -233,57 +383,156 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
         >
           <Input
             value={formState.name}
-            onChange={(e) => handleNameChange(e.target.value)}
+            onChange={(e) => {
+              updateField('name', e.target.value);
+              // OnBlur 校验：清空错误显示（输入过程中不打扰）
+              if (nameError) setNameError(null);
+            }}
+            onBlur={handleNameBlur}
             placeholder="如：RSI 自定义"
             maxLength={30}
             data-testid="custom-indicator-modal-name"
           />
         </Form.Item>
 
-        {/* 2. 指标分类 */}
-        <Form.Item label="指标分类" required>
-          <Select
-            value={formState.category}
-            onChange={(v) => updateField('category', v)}
-            options={INDICATOR_CATEGORIES.map((c) => ({ value: c.value, label: c.label }))}
-            data-testid="custom-indicator-modal-category"
-          />
-        </Form.Item>
+        {/* 2. 指标分类 + 公式语法（同行布局节省空间） */}
+        <div className="grid grid-cols-2 gap-3">
+          <Form.Item label="指标分类" required>
+            <Select
+              value={formState.category}
+              onChange={(v) => updateField('category', v)}
+              options={INDICATOR_CATEGORIES.map((c) => ({ value: c.value, label: c.label }))}
+              data-testid="custom-indicator-modal-category"
+            />
+          </Form.Item>
 
-        {/* 3. 公式语法 */}
-        <Form.Item label="公式语法" required>
-          <Select
-            value={formState.syntax}
-            onChange={(v) => updateField('syntax', v)}
-            options={INDICATOR_SYNTAXES}
-            data-testid="custom-indicator-modal-syntax"
-          />
-        </Form.Item>
+          <Form.Item label="公式语法" required>
+            <Select
+              value={formState.syntax}
+              onChange={(v) => updateField('syntax', v)}
+              options={INDICATOR_SYNTAXES}
+              data-testid="custom-indicator-modal-syntax"
+            />
+          </Form.Item>
+        </div>
 
-        {/* 4. 指标公式 */}
+        {/* 3. 指标公式 + 字段插入按钮 */}
         <Form.Item
           label={
-            <span>
-              指标公式{' '}
-              <Tooltip title="支持通达信公式或 Python Ta-Lib 表达式，禁止 import/exec/eval 等危险关键字">
-                <QuestionCircleOutlined className="text-text-secondary" />
-              </Tooltip>
+            <span className="flex items-center justify-between w-full">
+              <span>
+                指标公式{' '}
+                <Tooltip title="支持通达信公式或 Python Ta-Lib 表达式，禁止 import/exec/eval 等危险关键字">
+                  <QuestionCircleOutlined className="text-text-secondary" />
+                </Tooltip>
+              </span>
+              <span className="text-text-secondary text-xs font-normal">
+                Monaco · {formState.syntax === 'python_talib' ? 'Python' : '通达信'}
+              </span>
             </span>
           }
           required
           validateStatus={formulaError ? 'error' : ''}
-          help={formulaError || ''}
+          help={formulaError || 'OnBlur 时校验（输入过程中不打扰）'}
         >
-          <TextArea
-            value={formState.formula}
-            onChange={(e) => handleFormulaChange(e.target.value)}
-            placeholder="如：CLOSE > MA(CLOSE, N)"
-            autoSize={{ minRows: 2, maxRows: 5 }}
-            data-testid="custom-indicator-modal-formula"
-          />
+          {/* Monaco Editor（懒加载，Drawer 打开时才下载） */}
+          <div
+            className="border border-border-color rounded overflow-hidden bg-bg-elevated"
+            data-testid="custom-indicator-modal-formula-editor"
+          >
+            <Editor
+              height="180px"
+              language={monacoLanguage}
+              value={formState.formula}
+              onChange={(v) => {
+                updateField('formula', v ?? '');
+                if (formulaError) setFormulaError(null);
+              }}
+              onMount={handleEditorMount}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 13,
+                lineNumbers: 'on',
+                scrollBeyondLastLine: false,
+                wordWrap: 'on',
+                tabSize: 2,
+                automaticLayout: true,
+                renderLineHighlight: 'gutter',
+                folding: true,
+                lineDecorationsWidth: 6,
+                lineNumbersMinChars: 3,
+              }}
+              // K 2026-06-17 反馈：vs 主题白底黑字与深色 Drawer 冲突，改为 vs-dark
+              // 配合 bg-bg-elevated 容器底色与 Antd 主题色协调（深灰底 + 浅色语法高亮）
+              theme="vs-dark"
+              loading={
+                <div className="p-3 text-text-secondary text-sm bg-bg-elevated">
+                  Monaco Editor 正在加载（~500KB gzip，首开抽屉时按需下载）...
+                </div>
+              }
+            />
+          </div>
+
+          {/* 字段插入按钮区（K 2026-06-17 决策：必带） */}
+          <div className="mt-2 space-y-1.5" data-testid="custom-indicator-modal-field-insert">
+            {paramCandidates.length > 0 && (
+              <div className="flex items-start gap-2 flex-wrap">
+                <span className="text-text-secondary text-xs mt-1 w-14 flex-shrink-0">参数：</span>
+                <Space size={4} wrap>
+                  {paramCandidates.map((c) => (
+                    <Button
+                      key={c.key}
+                      size="small"
+                      icon={<ThunderboltOutlined />}
+                      onClick={() => insertAtCursor(c.insertText)}
+                      data-testid={`custom-indicator-modal-insert-${c.key}`}
+                    >
+                      {c.label}
+                    </Button>
+                  ))}
+                </Space>
+              </div>
+            )}
+            <div className="flex items-start gap-2 flex-wrap">
+              <span className="text-text-secondary text-xs mt-1 w-14 flex-shrink-0">
+                行情字段：
+              </span>
+              <Space size={4} wrap>
+                {QUOTE_FIELDS.filter((c) => c.group === 'quote').map((c) => (
+                  <Button
+                    key={c.key}
+                    size="small"
+                    icon={<ThunderboltOutlined />}
+                    onClick={() => insertAtCursor(c.insertText)}
+                    data-testid={`custom-indicator-modal-insert-${c.key}`}
+                  >
+                    {c.label}
+                  </Button>
+                ))}
+              </Space>
+            </div>
+            <div className="flex items-start gap-2 flex-wrap">
+              <span className="text-text-secondary text-xs mt-1 w-14 flex-shrink-0">
+                指标函数：
+              </span>
+              <Space size={4} wrap>
+                {QUOTE_FIELDS.filter((c) => c.group === 'indicator').map((c) => (
+                  <Button
+                    key={c.key}
+                    size="small"
+                    icon={<ThunderboltOutlined />}
+                    onClick={() => insertAtCursor(c.insertText)}
+                    data-testid={`custom-indicator-modal-insert-${c.key}`}
+                  >
+                    {c.label}
+                  </Button>
+                ))}
+              </Space>
+            </div>
+          </div>
         </Form.Item>
 
-        {/* 5. 动态参数 */}
+        {/* 4. 动态参数 */}
         <Form.Item
           label={
             <span>
@@ -340,7 +589,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
           </Space>
         </Form.Item>
 
-        {/* 6. 默认运算符 + 阈值 */}
+        {/* 5. 默认运算符 + 阈值 */}
         <Form.Item label="默认运算符" required>
           <Select
             value={formState.operator}
@@ -386,9 +635,9 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
           </Form.Item>
         )}
 
-        {/* 7. 指标说明 */}
+        {/* 6. 指标说明 */}
         <Form.Item label="指标说明">
-          <TextArea
+          <Input.TextArea
             value={formState.description}
             onChange={(e) => updateField('description', e.target.value)}
             placeholder="如：自定义 RSI，超卖阈值 30，超买阈值 70"
@@ -397,7 +646,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
           />
         </Form.Item>
 
-        {/* 8. 可见范围 */}
+        {/* 7. 可见范围 */}
         <Form.Item label="可见范围" required>
           <Radio.Group
             value={formState.visibility}
@@ -430,21 +679,11 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
         )}
       </Form>
 
-      <div className="flex justify-end gap-2 pt-2 border-t border-border-color mt-2">
-        <Button size="small" onClick={onCancel} data-testid="custom-indicator-modal-cancel">
-          取消
-        </Button>
-        <Button
-          size="small"
-          type="primary"
-          disabled={submitDisabled}
-          onClick={handleSubmit}
-          data-testid="custom-indicator-modal-confirm"
-        >
-          {isEdit ? '保存' : '创建'}
-        </Button>
+      <div className="hidden">
+        {/* 底部按钮区已移至 Drawer extra（K 2026-06-17 反馈），
+            保留 hidden div 是为了不破坏后续扩展需要（如 sticky 提示） */}
       </div>
-    </Modal>
+    </Drawer>
   );
 };
 
@@ -488,14 +727,14 @@ function ensureDouble(
   return [0, 0];
 }
 
-/** K 2026-06-16 6c：取双值的第一个（区间下界 / 上穿线 A） */
+/** K 2026-06-16 6c：取双值的第一个 */
 function getMin(v: number | [number, number] | null | undefined): number {
   if (Array.isArray(v)) return v[0];
   if (typeof v === 'number') return v;
   return 0;
 }
 
-/** K 2026-06-16 6c：取双值的第二个（区间上界 / 上穿线 B） */
+/** K 2026-06-16 6c：取双值的第二个 */
 function getMax(v: number | [number, number] | null | undefined): number {
   if (Array.isArray(v)) return v[1];
   if (typeof v === 'number') return v;

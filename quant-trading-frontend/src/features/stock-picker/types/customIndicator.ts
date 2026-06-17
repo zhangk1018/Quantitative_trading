@@ -183,8 +183,10 @@ export function validateFormula(formula: string, syntax: IndicatorSyntax): Formu
     return { valid: false, errors, warnings };
   }
 
-  if (formula.length > 2000) {
-    errors.push('公式长度不能超过 2000 字符');
+  if (formula.length > 8000) {
+    // V1.0 限制说明：通达信公式常达 5000+ 字符（K 反馈：原 2000 太短）
+    // 8000 字符 ≈ 16KB JSON 序列化，可存储 300+ 条指标（localStorage 5MB 限制下）
+    errors.push('公式长度不能超过 8000 字符');
   }
 
   if (syntax === 'tdx') {
