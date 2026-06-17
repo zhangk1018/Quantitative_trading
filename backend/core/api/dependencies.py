@@ -8,6 +8,7 @@ FastAPI 依赖注入管理，提供全局单例服务实例。
 import re
 import os
 from contextlib import contextmanager
+from datetime import datetime
 from functools import lru_cache
 from typing import Annotated, Generator
 
@@ -236,3 +237,22 @@ def validate_signal_type(signal_type: str) -> str:
             detail=f"无效的信号类型: {signal_type}，支持的类型：{', '.join(VALID_SIGNAL_TYPES)}"
         )
     return signal_type
+
+
+def validate_date_range(start_date: str, end_date: str) -> None:
+    """校验日期范围是否合法 (start <= end)
+
+    Args:
+        start_date: 开始日期
+        end_date: 结束日期
+
+    Raises:
+        HTTPException: 日期范围非法
+    """
+    try:
+        start = datetime.strptime(start_date, '%Y-%m-%d')
+        end = datetime.strptime(end_date, '%Y-%m-%d')
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"日期格式错误: {e}")
+    if start > end:
+        raise HTTPException(status_code=400, detail=f"日期范围非法: {start_date} > {end_date}")

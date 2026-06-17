@@ -1,17 +1,27 @@
 #!/bin/bash
 set -eo pipefail
 # ============================================
-# 一键提交到 GitHub (V1.1.3 安全修复版)
-# 安全修复（V1.1.3）：
-#   1. SENSITIVE_PATTERNS 改用 word boundary 正则，精确匹配敏感文件名而非子串
-#   2. 新增 IGNORE_FILE_SUFFIXES（.bak/.backup/.old 等），过滤备份文件
-#   3. read 输入加 -n 长度限制 + -t 超时，防止极端输入破坏交互
-#   4. grep -iE 正则替代循环遍历，提升敏感文件检测性能
-# 用法: ./scripts/git_push.sh [commit message]
-# 提交者说明：通过 -c 临时指定提交人 K，仅用于本项目仓库标识，不修改本机全局Git配置
-# 可配置忽略目录：统一过滤临时/缓存目录，避免误提交
-# 安全能力：敏感密钥文件拦截、分支白名单校验、命令执行异常捕获、安全文件遍历
-# 规范能力：支持 Conventional Commit + Scope 标准化提交格式
+# git_push.sh - 一键提交到 GitHub（SSH 协议）
+# ============================================
+# 用法:
+#   bash scripts/git_push.sh                                    # 交互式选 commit 类型
+#   bash scripts/git_push.sh "feat: xxx"                        # 直接用命令行 commit message
+#   echo "y" | bash scripts/git_push.sh "feat: xxx"             # 非交互模式（CI/CD 用）
+#
+# 自动处理:
+#   - 忽略目录: temp/ logs/ data/cache/（在 IGNORE_DIRS 数组）
+#   - 备份后缀: .bak .backup .old .tmp .swp ~（在 IGNORE_FILE_SUFFIXES 数组）
+#   - 敏感文件: .env* .pem .key .pfx .rsa id_rsa credentials.json secrets.json
+#   - 分支白名单: main/master 之外需二次确认（在 ALLOW_PUSH_BRANCH 数组）
+#
+# 提交者: -c 临时指定 K 的 user.name/email，不修改本机全局 Git 配置
+# 协议: SSH（需 K 提前撤销暴露的 PAT + 切换 git remote 为 git@github.com:...）
+#
+# 变更历史:
+#   V1.1.4 fix(git): 修复中文文件名八进制转义（printf '%b' 解码）
+#   V1.1.3 chore(git): 敏感文件名 word boundary + 备份后缀过滤 + read 输入加固
+#   V1.1.2 fix(git): macOS BSD xargs 不支持 -d，改用 while read（POSIX 兼容）
+#   V1.1.1 chore(git): PAT 脱敏 + HTTPS 告警 + 空字符串判断 + 固定字符串匹配
 # ============================================
 
 # ===================== 可配置项 =====================
@@ -19,7 +29,7 @@ set -eo pipefail
 IGNORE_DIRS=("temp/" "logs/" "data/cache/")
 # 允许直接推送的主分支，其他分支需二次确认
 ALLOW_PUSH_BRANCH=("main" "master")
-# 敏感文件名完整匹配（用 | 分隔，支持 word boundary）
+# 敏感文件名完整匹配（word boundary 正则，精确匹配敏感文件而非子串）
 # .env.*: 拦截所有 .env 变体（含 .env.production、.env.local，不含 .bak/.old/.tmp/.swp 等备份后缀）
 # 扩展名：使用负向后顾 (?<!\.) 确保匹配的是文件扩展名而非子串
 SENSITIVE_PATTERNS_REGEX='(^|/)((\.env)(\.[a-z0-9_-]+)*|\.pem|\.key|\.pfx|\.rsa|id_rsa|credentials\.json|secrets\.json)$'
@@ -75,7 +85,7 @@ for suffix in "${IGNORE_FILE_SUFFIXES[@]}"; do
     NON_IGNORED_UNTRACKED=$(echo "$NON_IGNORED_UNTRACKED" | grep -v "$suffix" || true)
 done
 
-# 4. 前置安全检测：敏感密钥文件名拦截（问题1/4修复：word boundary 完整匹配）
+# 4. 前置安全检测：敏感密钥文件名拦截（word boundary 完整匹配）
 check_sensitive_file() {
     local file_list="$1"
     local matched
