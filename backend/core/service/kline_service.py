@@ -329,11 +329,15 @@ class KlineService:
                 ma10=safe_dec(row.get("ma10")),
                 ma20=safe_dec(row.get("ma20")),
                 
-                # MACD：注意数据库字段是 dif
-                macd=safe_dec(row.get("dif") or row.get("macd"), 4), 
+                # MACD
+                macd=safe_dec(row.get("macd"), 4),
+                diff=safe_dec(row.get("dif"), 4),
+                dea=safe_dec(row.get("dea"), 4),
                 
-                # RSI：注意数据库字段是 rsi6
+                # RSI
                 rsi_6=safe_dec(row.get("rsi6") or row.get("rsi_6")),
+                rsi_12=safe_dec(row.get("rsi12") or row.get("rsi_12")),
+                rsi_24=safe_dec(row.get("rsi24") or row.get("rsi_24")),
                 
                 # 布林带（如果数据库有则取，没有则为 None）
                 boll_upper=safe_dec(row.get("boll_upper")),

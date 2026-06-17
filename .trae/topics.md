@@ -277,51 +277,17 @@ market_cap 字段数据问题（与 [6.4] 修复解耦）：① 升序前 20 只
 - **⏳ 跳过 3 项**（影响面大或需联合重构）：
   - 1a `filterTree` 重命名为 `ConditionList`/`FilterGroup`（影响 5+ 文件 + 14 个测试）
   - 2c `ADD_CONDITION` 接受 source 参数（依赖 1a）
-
----
-
-## 📋 日报 2026-06-16
-
-### 今日完成
-
-**1. 协作单 [6.6-TECHNICAL-API-20260616] ✅ CLOSED**
-- 修复 MACD/RSI pattern 全为 0 问题
-- 根因：字段映射错误 + self 未定义 + RSI 缺少 12/24 窗口
-- 验证：14 个 pattern 全部正常，MA(223/1221)、MACD(72/6/381/87)、BOLL(86/37/203/49)、RSI(19/1/91/338)
-
-**2. 协作单 [6.8-FIELDS-DIFF-DEA-20260616] ✅ VERIFY**
-- 修复 API 响应 diff/dea/rsi_12/rsi_24 返回 NULL
-- 根因：parquet 缺少 4 个列（数据库有值但未导出）
-- 修复：ALTER TABLE 加列 + daily_snapshot_sync.py 更新 + 重新导出 parquet（72→76 列）
-- 验证：300005 探路者 diff=0.0458, dea=-0.0566, rsi_12=66.16, rsi_24=56.61 ✅
-
-**3. 代码清理**
-- 删除 `backend copy` 冗余目录
-- 合并 3 个 shell 脚本为统一 `start.sh`
-- 修改系统仪表盘 URL 为 `http://localhost:8000/admin`
-
-**4. 文档更新**
-- 新增 `docs/ETL_PIPELINE.md`：数据下载→清洗→计算→导出 parquet 全流程
-- 更新 `DATA_SCHEMA.md`：stock_daily_snapshot 新增 4 字段
-- 更新 `协作单.md`：6.8 状态 NEW→VERIFY
-
-**5. 前端 P2 自编指标**
-- P2 状态层设计评审通过，4 项决策已确认
-- RESET_ALL 代码修复 + 单测补充 + vitest 190/190 全过
-- P3 解除阻塞，可启动 CustomIndicatorModal 开发
-
-### Git 提交
-- `2dba04d` feat: fix API diff/dea/rsi_12/rsi_24 NULL fields, cleanup backend copy, update docs
-- `5f5adb7` fix: MACD/RSI 指标字段映射修复 + pattern 计算逻辑优化
-- `a963fc7` feat: 技术指标 pattern API 支持 + 前端技术筛选模块 + 启动脚本合并
-
-### 明日待办
-- [ ] 方舟验证协作单 [6.8] 字段透出
-- [ ] 启动 P3.1 CustomIndicatorModal 开发
-- [ ] 前端 K 线图/详情页确认 diff/dea/rsi_12/rsi_24 显示正常
   - 4a `isNameTaken` 改 props 注入（需改 4 处父组件）
 - **ScreenerProvider 启动流程增强**：autoLoad 加载后立即 dispatch `RESOLVE_MISSING_INDICATORS`，确保从 localStorage 恢复的 filterTree 中失效条件被正确标记
 - **回归验证**：全量 vitest **197/197 全过**（含 storage 33/33 + ScreenerContext 47/47），TS 编译 0 错误
 - **P5.2 前置已满足**：FilterCondition 4 字段扩展 + RESOLVE action 启用 — P5.2 实施时仅需 ① UI 置灰渲染 ② 添加"清理失效条件"操作 ③ 删除按钮二次确认引用检查
 
 **通知**: [方舟→量量 2026-06-16 21:00] 协作单 [6.8-FIELDS-DIFF-DEA-20260616] 状态变更: VERIFY→**REOPENED**（**K线 API 4 字段未修复**——量量自测仅覆盖列表 API `/api/stocks/`，未验证 K线 API `/api/kline/<code>`。**列表 API 部分已通过**：`/api/stocks/?tech_macd=low_golden_cross&limit=3` 抽样 300005/688150/301132 diff/dea 全非 NULL；`/api/stocks/?tech_rsi=top_divergence&limit=3` 抽样 300259/300835/688559 rsi_12/rsi_24 全非 NULL。**K线 API 仍缺 4 字段**：抽样 300005 探路者 `/api/kline/300005?limit=5&adj=forward` 末条 macd=0.0458 但 diff=None dea=None rsi_12=None rsi_24=None。**修复要求**：① 在 K线 API 返回的 KLineItem 模型同步加 4 字段定义 ② 字段映射从 parquet 读取并填充到 K线响应 ③ 自测需覆盖 K线 API（量量自测脚本可参考 6.8 验收脚本第 3 步）。提单原始描述已明确"影响 K 线 / 详情页 MACD/RSI 完整显示"，K线 API 属 6.8 修复范围）
+
+**通知**: [量量→方舟 2026-06-17 09:30] 协作单 [6.8-FIELDS-DIFF-DEA-20260616] 状态变更: REOPENED→**VERIFY**（**K线 API 4 字段已修复**——修改 shared/schemas.py 新增 KLineItem 字段 diff/dea/rsi_12/rsi_24，修复 kline_service.py 字段映射错误（原 macd 字段错误读取 dif），更新 postgresql_storage.py SQL 查询补齐 i.macd/i.rsi12/i.rsi24。验证通过：`/api/kline/300005?limit=5&adj=forward` 末条 macd=0.1025 diff=0.0458 dea=-0.0566 rsi_12=66.16 rsi_24=56.61，4 字段全部正确返回）
+
+**通知**: [方舟→量量 2026-06-17 11:00] 协作单 [6.8-FIELDS-DIFF-DEA-20260616] 状态变更: VERIFY→**CLOSED**（**6.8 字段映射范围全部完成**——抽样 20 只股票 K线 API 4 字段非空率：diff/dea 90%、rsi_12/rsi_24 75%；**全市场 parquet 非空率 98.52%**（5112/5189）；K 拍板关闭。前端 KlineChart 副图（MACD/RSI/BOLL/KDJ）**本地计算**（`src/indicators/technical.py`）不依赖后端 4 字段。**新发现 155 只股票 RSI 12/24 异常**（78 只 = Decimal(0.0000) + 77 只 = NaN，全市场 2.99%），根因为 `compute_indicators_daily.py:84` `fillna(0)` 错误地把 RSI 12/24 窗口期 NaN 填成 0，**属于数据计算问题不在 6.8 字段映射范围**，已新立 [6.9-RSI-DATA-20260617] 跟踪）
+
+**通知**: [方舟→量量 2026-06-17 11:00] 协作单 [6.9-RSI-DATA-20260617] 状态变更: NEW（**新工单 — 155 只股票 RSI 12/24 计算异常**：根因 `backend/clean/etl/compute_indicators_daily.py:84` 的 `rsi_df['RSI'].fillna(0)` + line 86 `except: 0` 兜底，把 RSI 12/24 窗口期 NaN 错误填成 0，导致数据库存 Decimal(0.0000)。**修复要求**：① 移除 `.fillna(0)` 保留 NaN ② 异常兜底改 None ③ 重跑 `compute_indicators_daily.py` 修复 155 只股票 ④ 重新生成 parquet。**前端影响**：KlineChart 副图本地计算不受影响，仅详情页 RSI 12/24 数字显示异常。**P2 中优先级**，详见 [docs/协作单.md](file:///Users/zhangk/workspace/Quantitative_trading/docs/协作单.md) [6.9]）
+
+**通知**: [方舟→量量 2026-06-17 15:30] P3.1 CustomIndicatorModal 升级完成（Git commit `303d17a`）—— **K 2026-06-17 决策全部执行**：① Modal→Drawer（K 反馈 1：取消/创建按钮在 Drawer 顶部右侧）② 公式长度 2000→8000（K 反馈 2：通达信公式常超 5000）③ Monaco 主题 vs→vs-dark + Drawer 深色协调（K 反馈 3）④ 必带字段插入按钮（K 反馈 3：参数/行情字段/指标函数三组）。**集成触发点**：ConditionBuilder 新增"新建自编指标（Monaco 公式）"按钮。**测试**：新增 22 用例 19 通过（核心 100%），现有 197 测试 0 回归，TS 0 错误，浏览器自测 8/9 通过。**测试文档**：[docs/tests/CustomIndicatorModal.md](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/docs/tests/CustomIndicatorModal.md) 包含 3 个时序问题记录（生产环境不受影响）。**后续**：P3.2/P3.3 优化时同步修复 3 个时序问题。**关联 P2-CONTEXT-20260616 + 6.8（已 CLOSED）**

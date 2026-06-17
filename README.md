@@ -73,10 +73,7 @@ Quantitative_trading/
 │   │   │   └── models/            #     兼容层（re-export shared）
 │   │   └── service/               #   业务服务层
 │   ├── utils/                     # 工具（logger / config / error_classifier）
-│   ├── tests/                     # 正式测试
-│   ├── temp/                      # 临时测试（.gitignore）
-│   ├── main.py                    # 后台入口
-│   └── PROJECT_RULES.md           # 后台开发规范
+│   └── main.py                    # 后台入口
 │
 ├── frontend/                      # 前端工作区
 │   ├── src/                       #   React + TS 主应用
@@ -85,10 +82,19 @@ Quantitative_trading/
 │   ├── analyzer/                  # 【新】绩效分析
 │   ├── dashboard/                 # 【新】Streamlit 看板
 │   ├── utils/                     # 【新】API 客户端
-│   ├── README.md                  #   前端工作区说明
 │   ├── PROJECT_DESIGN.md          #   前端设计文档
 │   ├── RUNNING_GUIDE.md           #   前端运行指南
-│   └── CODING_STANDARDS.md        #   前端编码规范
+│   ├── CODING_STANDARDS.md        #   前端编码规范
+│   └── README.md                  #   前端工作区说明
+│
+├── tests/                         # 正式测试（pytest）
+│   └── frontend/                  #   前端/跨端测试
+│
+├── tmp/                           # 临时脚本与调试文件（.gitignore）
+│   ├── scripts/                   #   诊断/修复脚本
+│   ├── browser_test/              #   前端浏览器测试截图
+│   ├── phase_6_1_d/              #   Phase 6.1d 调试文件
+│   └── [theme/jqka/kline/safari] #   专项调试资源
 │
 ├── .trae/                         # IDE 配置 + 工作规则
 ├── .env                           # 环境变量（PG / Tushare Token）
@@ -241,6 +247,13 @@ python backend/collector/etl/health_monitor.py --daemon
 ---
 
 ## 六、变更记录
+
+### v0.6.1 (2026-06-17) — 项目结构清理
+- 合并散落的诊断/调试脚本至 `tmp/scripts/`（11 个文件）
+- 清理 `frontend/temp/browser_test/` 至 `tmp/browser_test/`（55 个截图/脚本）
+- 整理 `tests/`：真实 pytest 测试保留，临时工具移入 `tmp/`
+- 将 `backend/tests/` 合并入根 `tests/frontend/`
+- 更新 README.md 目录结构，删除已清空的 `backend/temp/`、`backend/tests/`
 
 ### v0.6.0 (2026-06-06) — 架构重构
 - ✅ 新增 `shared/` 目录统一前后端数据契约

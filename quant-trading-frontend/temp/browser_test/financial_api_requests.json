@@ -1,6 +1,0 @@
-[
-  {
-    "url": "http://localhost:5173/api/stocks/?net_profit_min=1000&net_profit_max=5000&roe_min=5&roe_max=20&sort_by=change_pct&sort_asc=false&offset=0&limit=20",
-    "method": "GET"
-  }
-]

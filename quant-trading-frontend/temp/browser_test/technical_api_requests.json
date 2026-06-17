@@ -1,6 +1,0 @@
-[
-  {
-    "url": "http://localhost:5173/api/stocks/?tech_ma=long_align&tech_rsi=low_golden_cross&tech_boll=break_upper&sort_by=change_pct&sort_asc=false&offset=0&limit=20",
-    "method": "GET"
-  }
-]

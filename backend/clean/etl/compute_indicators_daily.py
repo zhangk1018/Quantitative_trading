@@ -81,8 +81,22 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
     for window, col_name in [(6, 'rsi6'), (12, 'rsi12'), (24, 'rsi24')]:
         try:
             rsi_df = TechnicalIndicator.calculate_rsi(quotes_df.copy(), window=window, require_adjust=False)
-            save_df[col_name] = rsi_df['RSI'].fillna(0) if 'RSI' in rsi_df.columns else 0
-        except Exception:
+            # 6.9 诊断埋点：统计 RSI 序列中 NaN 数量，定位 0 来源
+            if 'RSI' in rsi_df.columns:
+                nan_count = int(rsi_df['RSI'].isna().sum())
+                total_count = len(rsi_df)
+                logger.info(
+                    f"[6.9-DIAG] {db_code} RSI{window}: NaN={nan_count}/{total_count}, "
+                    f"末值={rsi_df['RSI'].iloc[-1] if total_count > 0 else 'N/A'}"
+                )
+                if nan_count > 0:
+                    logger.info(f"[6.9-DIAG] {db_code} RSI{window} -> fillna(0) 触发，NaN 行数={nan_count}")
+                save_df[col_name] = rsi_df['RSI'].fillna(0)
+            else:
+                logger.warning(f"[6.9-DIAG] {db_code} RSI{window}: 计算结果无 RSI 列，触发 except 分支")
+                save_df[col_name] = 0
+        except Exception as e:
+            logger.error(f"[6.9-DIAG] {db_code} RSI{window}: except 触发，异常={e}")
             save_df[col_name] = 0
 
     # trade_time / trade_datetime 必须在数值列之后

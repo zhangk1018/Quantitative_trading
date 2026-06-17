@@ -950,7 +950,7 @@ class PostgreSQLStorage(BaseStorage):
                 q.trade_date, q.open, q.high, q.low, q.close, q.volume, q.amount,
                 b.pe_ttm, b.pb, b.circ_mv, b.turnover_rate,
                 i.ma5, i.ma10, i.ma20, i.ma60,
-                i.dif, i.dea, i.rsi6
+                i.dif, i.dea, i.macd, i.rsi6, i.rsi12, i.rsi24
             FROM stock_quotes q
             LEFT JOIN stock_daily_basic b ON q.code = b.code AND q.trade_date = b.trade_date
             LEFT JOIN stock_indicators i ON q.code = i.code AND q.trade_date = i.trade_date AND q.cycle = i.cycle
