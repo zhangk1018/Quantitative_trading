@@ -164,6 +164,32 @@ export interface ScreenerPlan {
 // 8. 公式语法预校验（V1.0 仅做基础非空 + 长度 + 危险字符检查）
 // =====================================================================
 
+/**
+ * 通达信公式 V1.0 标准函数白名单（P3.2 增强）
+ * 覆盖 K 常用函数 + 公式编辑器插入候选项
+ */
+const STANDARD_FUNCS = new Set([
+  'REF', 'MA', 'EMA', 'SMA', 'WMA', 'DMA', 'AMA',
+  'HHV', 'LLV', 'HHVBARS', 'LLVBARS', 'SUM', 'ABS', 'MAX', 'MIN', 'IF', 'IIF',
+  'BARSLAST', 'BARSCOUNT', 'BARSLASTCOUNT', 'BARSSINCE',
+  'COUNT', 'EVERY', 'EXIST', 'FILTER', 'TFILTER',
+  'CROSS', 'LONGCROSS', 'NOT', 'AND', 'OR',
+  'STD', 'STDP', 'VAR', 'VARP',
+  'KDJ', 'MACD', 'RSI', 'BOLL', 'WR', 'BIAS', 'CCI', 'ATR', 'OBV', 'PSY', 'CR', 'DMI', 'ARBR', 'TRIX', 'VR', 'EMV', 'ROC', 'MFI',
+  'COST', 'WINNER', 'LWINNER', 'PWINNER',
+  'SAR', 'ZIG', 'PEAK', 'TROUGH',
+  'FINANCE', 'CAPITAL',
+]);
+
+/**
+ * 公式标准字段白名单（P3.2 增强）
+ * 兼容通达信字段简写（C/O/H/L/V/AMO）
+ */
+const STANDARD_FIELDS = new Set([
+  'CLOSE', 'OPEN', 'HIGH', 'LOW', 'VOL', 'VOLUME', 'AMOUNT', 'AMO',
+  'C', 'O', 'H', 'L', 'V',
+]);
+
 const DANGEROUS_KEYWORDS = [
   'import', 'from', 'exec', 'eval', 'os.', 'subprocess', '__', 'system', 'open(',
 ];
@@ -195,6 +221,24 @@ export function validateFormula(formula: string, syntax: IndicatorSyntax): Formu
     }
   }
 
+  // P3.2 增强 1：括号配对检查
+  const parenResult = checkParensBalance(formula);
+  if (!parenResult.ok) {
+    errors.push(parenResult.error!);
+  }
+
+  // P3.2 增强 2：未关闭函数检测（标识符后跟 ( 但没有对应 )）
+  const funcResult = checkUnclosedFunction(formula);
+  if (!funcResult.ok) {
+    errors.push(funcResult.error!);
+  }
+
+  // P3.2 增强 3：未知符号提示
+  const unknownResult = checkUnknownSymbols(formula);
+  if (unknownResult.warnings.length > 0) {
+    warnings.push(...unknownResult.warnings);
+  }
+
   for (const kw of DANGEROUS_KEYWORDS) {
     if (formula.toLowerCase().includes(kw)) {
       warnings.push(`公式包含潜在风险关键字"${kw}"，建议检查`);
@@ -202,6 +246,82 @@ export function validateFormula(formula: string, syntax: IndicatorSyntax): Formu
   }
 
   return { valid: errors.length === 0, errors, warnings };
+}
+
+/**
+ * 括号配对检查（P3.2 增强）
+ * 扫描 ( 和 )，统计未配对数量
+ * 不区分嵌套类型（通达信仅使用小括号）
+ */
+function checkParensBalance(formula: string): { ok: boolean; error?: string } {
+  let opens = 0;
+  for (let i = 0; i < formula.length; i++) {
+    if (formula[i] === '(') opens++;
+    else if (formula[i] === ')') {
+      opens--;
+      if (opens < 0) {
+        return { ok: false, error: `公式第 ${i + 1} 字符")"缺少对应"("` };
+      }
+    }
+  }
+  if (opens > 0) {
+    return { ok: false, error: `公式有 ${opens} 个"("未闭合` };
+  }
+  return { ok: true };
+}
+
+/**
+ * 未关闭函数检测（P3.2 增强）
+ * 检查形如 IDENTIFIER( 的模式 — 如果函数名后跟 ( 但缺少对应 )，视为未关闭
+ * 不同于 checkParensBalance：该函数精确定位"看起来是函数但参数未闭合"的情况
+ */
+function checkUnclosedFunction(formula: string): { ok: boolean; error?: string } {
+  // 匹配 字母数字下划线 后跟 ( 但内部 ( 数量不匹配的函数
+  const funcCallRegex = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  let match;
+  while ((match = funcCallRegex.exec(formula)) !== null) {
+    const startIdx = match.index + match[0].length; // ( 之后位置
+    // 统计从这个 ( 到公式末尾的 ( 和 ) 数量差
+    let depth = 1;
+    for (let i = startIdx; i < formula.length; i++) {
+      if (formula[i] === '(') depth++;
+      else if (formula[i] === ')') depth--;
+      if (depth === 0) break;
+    }
+    if (depth !== 0) {
+      return { ok: false, error: `函数"${match[1]}"参数未闭合（缺少")"）` };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * 未知符号提示（P3.2 增强）
+ * 提取所有连续字母数字下划线 token，检查是否在白名单中
+ * 不在白名单的 token 视为"未知符号"（warning 而非 error）
+ */
+function checkUnknownSymbols(formula: string): { warnings: string[] } {
+  const warnings: string[] = [];
+  // 提取 token（连续字母数字下划线，长度 >= 2 视为可能的标识符）
+  const tokens = new Set<string>();
+  const tokenRegex = /\b[A-Za-z_][A-Za-z0-9_]{1,}\b/g;
+  let m;
+  while ((m = tokenRegex.exec(formula)) !== null) {
+    tokens.add(m[0].toUpperCase());
+  }
+  const unknown: string[] = [];
+  for (const token of tokens) {
+    if (STANDARD_FUNCS.has(token) || STANDARD_FIELDS.has(token)) continue;
+    // 数字 / 关键字跳过（关键字如 AND/OR 已在 STANDARD_FUNCS）
+    if (/^\d+$/.test(token)) continue;
+    unknown.push(token);
+  }
+  if (unknown.length > 0) {
+    const preview = unknown.slice(0, 3).join('、');
+    const more = unknown.length > 3 ? ` 等 ${unknown.length} 个` : '';
+    warnings.push(`公式包含未识别的符号：${preview}${more}（请检查是否拼写错误）`);
+  }
+  return { warnings };
 }
 
 // =====================================================================

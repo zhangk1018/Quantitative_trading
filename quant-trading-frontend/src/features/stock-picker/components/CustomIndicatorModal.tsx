@@ -55,6 +55,11 @@ interface CustomIndicatorModalProps {
   editing?: CustomIndicator | null;
   /** 当前用户 ID（V1.0 用 MOCK_USER_ID） */
   userId?: string;
+  /**
+   * 名称唯一性校验函数（依赖注入，P3.2 4a）
+   * 不传时 fallback 到 storage 模块的 isNameTaken（向后兼容）
+   */
+  isNameTaken?: (name: string, excludeId: string | null) => boolean;
   /** 点击确定时回调，传入已校验通过的指标数据（不含 id/userId/dates） */
   onConfirm: (data: Omit<CustomIndicator, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'deleted' | 'deletedAt'>) => void;
   /** 点击取消或关闭时回调 */
@@ -129,9 +134,16 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
   title,
   editing = null,
   userId = MOCK_USER_ID,
+  isNameTaken: isNameTakenProp,
   onConfirm,
   onCancel,
 }) => {
+  // P3.2 4a：props 注入的 isNameTaken 优先；不传则用 storage 模块（向后兼容）
+  const checkNameTaken = useCallback(
+    (name: string, excludeId: string | null) =>
+      isNameTakenProp ? isNameTakenProp(name, excludeId) : isNameTaken(name, excludeId, userId),
+    [isNameTakenProp, userId],
+  );
   // 抽屉内部维护 temp 表单状态
   const [formState, setFormState] = useState<FormState>(() => buildFromEditing(editing));
   const [nameError, setNameError] = useState<string | null>(null);
@@ -264,13 +276,18 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
     updateField('params', formState.params.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
   };
 
-  // 切换运算符时重置阈值
+  // 切换运算符时根据新模式自动转换阈值类型（K 2026-06-18 任务 #17）
+  // 规则：
+  //   新 mode = single → ensureSingle（数字保留数字，数组取首个，null 兜底 0）
+  //   新 mode = double → ensureDouble（数组保留，数字复制为 [n, n]，null 兜底 [0, 0]）
+  // 旧逻辑仅在 `currentOperatorMode === 'double'` 时才 ensureDouble，遗漏
+  //   "double → single → double" 中第二次 mode 切换，导致阈值类型不匹配。
   const handleOperatorChange = (op: CustomIndicator['operator']) => {
     updateField('operator', op);
     const mode = getOperatorMode(op);
     if (mode === 'single') {
       updateField('defaultThreshold', ensureSingle(formState.defaultThreshold));
-    } else if (currentOperatorMode === 'double') {
+    } else {
       updateField('defaultThreshold', ensureDouble(formState.defaultThreshold));
     }
   };
@@ -287,7 +304,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
       setNameError(nameErr);
       return;
     }
-    if (isNameTaken(trimmedName, editing?.id ?? null, userId)) {
+    if (checkNameTaken(trimmedName, editing?.id ?? null)) {
       setNameError(`指标名称"${trimmedName}"已存在`);
       return;
     }

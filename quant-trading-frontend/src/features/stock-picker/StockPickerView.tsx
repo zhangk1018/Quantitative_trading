@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Typography, Button, Select, Divider, Spin, message } from 'antd';
 import { SaveOutlined, FolderOpenOutlined, ReloadOutlined, PlusCircleOutlined, DownloadOutlined, BlockOutlined, PlayCircleOutlined, LoadingOutlined, CaretUpOutlined, CaretDownOutlined } from '@ant-design/icons';
-import { ScreenerProvider, useScreener } from './context/ScreenerContext';
+import { ScreenerProvider, useScreener, ScreenerState } from './context/ScreenerContext';
 import RangeSelector from './components/RangeSelector';
 import IndicatorFilter from './components/IndicatorFilter';
 import FinancialFilter from './components/FinancialFilter';
@@ -13,6 +13,112 @@ import { useSettings } from '@/shared/contexts/SettingsContext';
 
 const { Text } = Typography;
 
+// =====================================================================
+// K 2026-06-18 反馈 #4：把 ScreenerState → fetchStocks params 的转换抽离为纯函数，
+// 便于单测 + 降低 runScreening 职责。
+// =====================================================================
+
+/**
+ * 把 ScreenerState 序列化为 fetchStocks 的 params（纯函数，无副作用）
+ * K 2026-06-18 反馈 #4：便于单元测试 + 降低 runScreening 的行数。
+ * K 2026-06-18 反馈 #1：显式解构 state 字段并在注释中列出依赖，
+ * 避免未来 ScreenerState 结构变化时本函数产生隐式依赖。
+ *
+ * 依赖的 ScreenerState 字段（变更时需同步检查本函数）：
+ * - selectedBoards: string[]   — 上市地过滤
+ * - stockRange: string         — 选股范围（watchlist / all）
+ * - marketIndicatorRanges: Record<string, IndicatorRange>  — 行情指标阈值（含单位转换）
+ * - financialIndicatorRanges: Record<string, IndicatorRange> — 财务指标阈值
+ * - selectedTechnicalIndicators: Record<string, string>    — 技术指标选项
+ * - filterGroup: FilterGroup | null  — 条件构建器
+ */
+export function buildScreeningParams(
+  state: ScreenerState,
+  sortBy: string,
+  sortAsc: boolean,
+  limit: number,
+): Record<string, unknown> {
+  // 显式解构 state 字段（K 反馈 #1）：列出所有依赖，未来调整时编译器会立即提示
+  const {
+    selectedBoards,
+    stockRange,
+    marketIndicatorRanges,
+    financialIndicatorRanges,
+    selectedTechnicalIndicators,
+    filterGroup,
+  } = state;
+  const params: Record<string, unknown> = {};
+
+  // 上市地（listed_board）
+  if (selectedBoards && !selectedBoards.includes('all')) {
+    const boards = selectedBoards.filter((b) => b !== 'all');
+    if (boards.length > 0) {
+      if (
+        boards.length === 2 &&
+        boards.includes('上海主板') &&
+        boards.includes('深圳主板')
+      ) {
+        params.listed_board = '主板';
+      } else {
+        params.listed_board = boards.join(',');
+      }
+    }
+  }
+
+  if (stockRange === 'watchlist') {
+    params.watchlist_only = true;
+  }
+
+  // 指标范围参数单位转换（前端用户输入单位 → 后端存储单位）
+  // market_cap: 用户输入"亿" → 后端"万元"，×10000
+  // amount: 用户输入"亿" → 后端"万元"，×10000
+  // volume: 用户输入"手" → 后端"手"，无需转换
+  const UNIT_CONVERSION: Record<string, number> = {
+    market_cap: 10000,  // 亿 → 万元
+    amount: 10000,      // 亿 → 万元
+  };
+
+  if (marketIndicatorRanges) {
+    Object.entries(marketIndicatorRanges).forEach(([key, range]) => {
+      const multiplier = UNIT_CONVERSION[key] || 1;
+      if (range.min) params[`${key}_min`] = Number(range.min) * multiplier;
+      if (range.max) params[`${key}_max`] = Number(range.max) * multiplier;
+    });
+  }
+
+  if (financialIndicatorRanges) {
+    Object.entries(financialIndicatorRanges).forEach(([key, range]) => {
+      if (range.min) params[`${key}_min`] = range.min;
+      if (range.max) params[`${key}_max`] = range.max;
+    });
+  }
+
+  // 技术指标选项：每个已选指标序列化为 `tech_{id}=option` 参数
+  // 例如：tech_ma=long_align&tech_rsi=low_golden_cross
+  if (selectedTechnicalIndicators) {
+    Object.entries(selectedTechnicalIndicators).forEach(([id, option]) => {
+      params[`tech_${id}`] = option;
+    });
+  }
+
+  // 条件构建器：filterGroup 序列化为 `cond_<fieldKey>=<op>` 多个 query 参数
+  // 例：cond_rsi_oversold=AND&cond_volume_breakout=AND
+  // 后端 router/stocks.py 的 _parse_condition_builder 识别该格式
+  // (K 2026-06-18 任务：把条件构建器接入选股)
+  if (filterGroup?.conditions) {
+    filterGroup.conditions.forEach((cond) => {
+      params[`cond_${cond.fieldKey}`] = cond.op;
+    });
+  }
+
+  params.sort_by = sortBy;
+  params.sort_asc = sortAsc;
+  params.offset = 0;
+  params.limit = limit;
+
+  return params;
+}
+
 const StockPickerContent: React.FC = () => {
   const { state, dispatch } = useScreener();
   const { colors: upDownColors } = useSettings();
@@ -22,12 +128,37 @@ const StockPickerContent: React.FC = () => {
   const [sortBy, setSortBy] = useState('change_pct');
   const [sortAsc, setSortAsc] = useState(false);
   const [limit, setLimit] = useState(20);
-  const [asOfDate, setAsOfDate] = useState<string>('');
+  // K 2026-06-18 反馈 #5：移除未使用的 asOfDate state（UI 无对应日期选择器）
+
+  // K 2026-06-18 任务 #11：用 AbortController 取消上一次未完成的选股请求，
+  // 防止用户快速多次点击时旧数据覆盖新数据。
+  // K 2026-06-18 反馈 #1：加 isMounted 保险，防止组件卸载后 setState 警告 + 旧 controller
+  // 的 finally 块在 abortRef 已指向新 controller 时不关 loading 的潜在 race。
+  // K 2026-06-18 反馈 #4：引入 requestIdRef 自增计数器作为"当前活跃请求"判断，
+  // 避免依赖引用比较（多个连续请求被 abort 时仍能准确识别"哪一次是最终活跃"）。
+  const abortRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      // 组件卸载时取消未完成的请求 + 清空 ref，避免内存泄漏 / setState after unmount
+      // K 2026-06-18 反馈 #6：同时把 abortRef.current 置 null，
+      // 防止 finally 块中 abortRef.current === controller 判断因引用变化失败导致 loading 未清理
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+    };
+  }, []);
 
   const totalFiltersCount =
     state.selectedMarketIndicators.length +
     state.selectedFinancialIndicators.length +
-    Object.keys(state.selectedTechnicalIndicators).length;
+    Object.keys(state.selectedTechnicalIndicators).length +
+    (state.filterGroup?.conditions.length || 0);
 
   const handleReset = () => {
     dispatch({ type: 'RESET_ALL' });
@@ -36,7 +167,6 @@ const StockPickerContent: React.FC = () => {
     setSortBy('change_pct');
     setSortAsc(false);
     setLimit(20);
-    setAsOfDate('');
   };
 
   const handleStartScreening = async () => {
@@ -61,117 +191,61 @@ const StockPickerContent: React.FC = () => {
   };
 
   // 点击表头排序：同列切换升/降序，不同列切换为该列（默认降序）
-  // 用一个 ref/标记延迟到 state 提交后再发起请求，避免拿到旧 state
+  // K 2026-06-18 反馈 #2：统一排序行为，无论是否已有数据，立即按新排序参数发起请求。
+  // 之前"无数据时只更新 state"会导致用户切换列后不立即生效，产生歧义。
   const handleSortByColumn = (column: string) => {
-    if (stockResults.length === 0 && !screenerLoading) {
-      // 还没查过数据，只更新 sortBy/sortAsc 状态，不发起请求
-      if (sortBy === column) {
-        setSortAsc(!sortAsc);
-      } else {
-        setSortBy(column);
-        setSortAsc(false);
-      }
-      return;
-    }
-    // 已有数据时，点击后立即更新状态并重新查询
     const nextSortAsc = sortBy === column ? !sortAsc : false;
     setSortBy(column);
     setSortAsc(nextSortAsc);
-    // 用 setTimeout 0 让 setState 提交后再发起请求（fetchStocks 内部读最新 state）
-    setTimeout(() => {
-      runScreening(column, nextSortAsc);
-    }, 0);
+    runScreening(column, nextSortAsc);
   };
 
   // 抽取查询逻辑，便于点击表头时复用
+  // K 2026-06-18 任务 #11：每次调用先 abort 上一次未完成的请求，避免旧数据覆盖
+  // K 2026-06-18 反馈 #4：参数构建已抽离到 buildScreeningParams 纯函数，
+  // 本函数仅关注 AbortController 生命周期 + 错误处理 + setState 分发
+  // K 2026-06-18 反馈 #4：用 requestIdRef 自增计数器判断"当前活跃请求"，
+  // 避免引用比较在多请求快速切换时失效导致 loading 卡住
   const runScreening = async (overrideSortBy?: string, overrideSortAsc?: boolean) => {
+    // 取消上一次未完成的请求（如果有）
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
+    // K 反馈 #4：自增 ID 标记本次请求
+    const myRequestId = ++requestIdRef.current;
+
     setScreenerLoading(true);
     try {
-      const params: Record<string, any> = {};
       const _sortBy = overrideSortBy ?? sortBy;
       const _sortAsc = overrideSortAsc ?? sortAsc;
+      const params = buildScreeningParams(state, _sortBy, _sortAsc, limit) as Record<string, any>;
 
-      // 上市地（listed_board）
-      if (state.selectedBoards && !state.selectedBoards.includes('all')) {
-        const boards = state.selectedBoards.filter((b) => b !== 'all');
-        if (boards.length > 0) {
-          if (
-            boards.length === 2 &&
-            boards.includes('上海主板') &&
-            boards.includes('深圳主板')
-          ) {
-            params.listed_board = '主板';
-          } else {
-            params.listed_board = boards.join(',');
-          }
-        }
+      const result = await fetchStocks(params, controller.signal);
+      // K 反馈 #4：仅当本次 requestId 仍是当前活跃的 + 组件未卸载才更新 state
+      if (requestIdRef.current !== myRequestId || !isMountedRef.current) {
+        return null;
       }
-
-      if (state.stockRange === 'watchlist') {
-        params.watchlist_only = true;
-      }
-
-      // 指标范围参数单位转换（前端用户输入单位 → 后端存储单位）
-      // market_cap: 用户输入"亿" → 后端"万元"，×10000
-      // amount: 用户输入"亿" → 后端"万元"，×10000
-      // volume: 用户输入"手" → 后端"手"，无需转换
-      const UNIT_CONVERSION: Record<string, number> = {
-        market_cap: 10000,  // 亿 → 万元
-        amount: 10000,      // 亿 → 万元
-      };
-
-      if (state.marketIndicatorRanges) {
-        Object.entries(state.marketIndicatorRanges).forEach(([key, range]) => {
-          const multiplier = UNIT_CONVERSION[key] || 1;
-          if (range.min) params[`${key}_min`] = Number(range.min) * multiplier;
-          if (range.max) params[`${key}_max`] = Number(range.max) * multiplier;
-        });
-      }
-
-      if (state.financialIndicatorRanges) {
-        Object.entries(state.financialIndicatorRanges).forEach(([key, range]) => {
-          if (range.min) params[`${key}_min`] = range.min;
-          if (range.max) params[`${key}_max`] = range.max;
-        });
-      }
-
-      // 技术指标选项：每个已选指标序列化为 `tech_{id}=option` 参数
-      // 例如：tech_ma=long_align&tech_rsi=low_golden_cross
-      if (state.selectedTechnicalIndicators) {
-        Object.entries(state.selectedTechnicalIndicators).forEach(([id, option]) => {
-          params[`tech_${id}`] = option;
-        });
-      }
-
-      // 条件构建器：filterTree 序列化为 `cond=<op>:<fieldKey>` 多个参数
-      // 例：cond=AND:rsi_oversold&cond=OR:volume_breakout
-      if (state.filterTree?.conditions) {
-        state.filterTree.conditions.forEach((cond) => {
-          params[`cond_${cond.fieldKey}`] = cond.op;
-        });
-      }
-
-      params.sort_by = _sortBy;
-      params.sort_asc = _sortAsc;
-      params.offset = 0;
-      params.limit = limit;
-
-      if (asOfDate) {
-        params.as_of_date = asOfDate.replace(/-/g, '');
-      }
-
-      const result = await fetchStocks(params);
       setStockResults(result.items || []);
       setTotalCount(result.total || 0);
       return result;
     } catch (error: any) {
+      // axios 取消请求会抛 AbortError，忽略（属于正常取消）
+      if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+        return null;
+      }
+      if (!isMountedRef.current) return null;
       console.error('选股失败:', error);
       message.error(`选股失败: ${error?.message || '请检查后端服务是否启动'}`);
       setStockResults([]);
       setTotalCount(0);
       return null;
     } finally {
-      setScreenerLoading(false);
+      // K 反馈 #4：仅当本次 requestId 仍是当前活跃的 + 组件未卸载才清 loading
+      if (requestIdRef.current === myRequestId && isMountedRef.current) {
+        setScreenerLoading(false);
+      }
     }
   };
 
@@ -180,6 +254,7 @@ const StockPickerContent: React.FC = () => {
     const isActive = sortBy === column;
     return (
       <th
+        data-testid={`sort-${column}`}
         className={`px-3 py-2 text-right cursor-pointer select-none hover:text-text-primary transition-colors ${
           isActive ? 'text-color-accent' : ''
         }`}
@@ -252,7 +327,7 @@ const StockPickerContent: React.FC = () => {
               <div className="flex items-center gap-2 text-text-secondary text-sm">
                 <span className="px-2 py-0.5 bg-bg-card rounded text-xs">筛选条件: {totalFiltersCount}个</span>
                 <span>共 {totalCount} 只</span>
-                <span>(截至 {asOfDate || '2026-06-10'})</span>
+                {/* K 2026-06-18 反馈 #5：移除 asOfDate 状态后，"截至 日期" 显示一并移除 */}
               </div>
             </div>
 

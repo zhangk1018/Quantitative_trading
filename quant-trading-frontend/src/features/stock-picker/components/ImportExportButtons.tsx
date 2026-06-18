@@ -29,6 +29,7 @@ import {
   exportCustomIndicators,
   parseImportFile,
   importCustomIndicators,
+  computeImportPreview,
   MOCK_USER_ID,
   ImportErrorType,
   ImportErrorDetail,
@@ -132,76 +133,33 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
       return;
     }
 
-    // 计算预览阶段的 added/skipped/errors（不实际写入）
-    const existingNames = new Set(customIndicators.map((i) => i.name));
-    let previewAdded = 0;
-    let previewSkipped = 0;
-    const errors: ImportErrorDetail[] = [];
-
-    parsed.indicators.forEach((ind, index) => {
-      // 字段缺失/类型错误
-      if (typeof ind !== 'object' || ind === null) {
-        errors.push({
-          type: 'field_invalid',
-          index,
-          message: '指标不是对象',
-        });
-        return;
-      }
-      if (!ind.name || typeof ind.name !== 'string') {
-        errors.push({
-          type: 'field_invalid',
-          index,
-          message: '字段 name 缺失或类型错误',
-        });
-        return;
-      }
-      if (existingNames.has(ind.name)) {
-        errors.push({
-          type: 'name_duplicate',
-          name: ind.name,
-          index,
-          message: `指标名称"${ind.name}"已存在，已跳过`,
-        });
-        previewSkipped += 1;
-      } else {
-        previewAdded += 1;
-      }
-    });
-
+    // K 2026-06-18 反馈 #5：直接调用 storage 的 computeImportPreview 函数，
+    // 与 importCustomIndicators 走同一套校验/去重逻辑，
+    // 彻底消除预览/实际导入数量可能不一致的问题。
+    const previewResult = computeImportPreview(parsed, userId);
     setPreview({
       visible: true,
       file: parsed,
-      errors,
-      previewAdded,
-      previewSkipped,
+      errors: previewResult.errors,
+      previewAdded: previewResult.added,
+      previewSkipped: previewResult.skipped,
     });
   };
 
   /**
    * 确认导入：写入 localStorage + 通知父组件 dispatch
+   * K 2026-06-18 反馈 #17：使用 importCustomIndicators 返回的 addedIndicators
+   * 直接拿到实际新增的指标列表（带新 id/createdAt/updatedAt），
+   * 不再依赖 localStorage 按 updatedAt 倒序推断（之前可能错拿其他操作的指标）。
+   * K 2026-06-18 反馈 #3：ImportResult 已统一包含 addedIndicators 字段，
+   * 调用方无需再断言或类型转换。
    */
   const handleConfirmImport = () => {
     if (!preview.file) return;
     setImporting(true);
     try {
-      const result = importCustomIndicators(preview.file, userId);
-      // 从写入后的 storage 取出实际新增的指标（带新 id/createdAt/updatedAt）
-      // K 决策：使用 listCustomIndicators 按 updatedAt 倒序取最新 N 条
-      // 但 IMPORT_CUSTOM_INDICATORS reducer 按 id 去重，需要"新写入"的子集
-      // 简单实现：取 result.added 条最新的即可
-      const allAfter = (window.localStorage.getItem(`qt_custom_indicators_v1_${userId}`) ?? '[]');
-      let stored: IndicatorExportFile['indicators'] = [];
-      try {
-        stored = JSON.parse(allAfter);
-      } catch {
-        stored = [];
-      }
-      // 按 updatedAt 倒序
-      stored.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-      // 取前 result.added 条（即刚导入的）
-      const newlyAdded = stored.slice(0, result.added);
-
+      const result: ImportResult = importCustomIndicators(preview.file, userId);
+      const newlyAdded = result.addedIndicators;
       onImportSuccess(newlyAdded);
       message.success(
         `导入完成：新增 ${result.added} 条，跳过 ${result.skipped} 条，错误 ${result.errors.length} 条`,

@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useReducer, ReactNode, useEffect } from 'react';
 import { MARKET_CONFIG, STOCK_RANGE_OPTIONS } from '../config/marketConfig';
 import { MARKET_INDICATORS, FINANCIAL_INDICATORS, TECHNICAL_INDICATORS, FACTOR_CONFIG } from '../config/indicatorConfig';
-import { FilterOp, FilterCondition, FilterTree, genConditionId } from '../types/filterTree';
+import { FilterOp, FilterCondition, FilterGroup, genConditionId } from '../types/filterTree';
 import { CustomIndicator } from '../types/customIndicator';
 import { listCustomIndicators as loadFromStorage } from '../utils/customIndicatorStorage';
 
@@ -26,8 +26,8 @@ export interface ScreenerState {
   /** 当前打开的技术指标配置弹窗（指标id） */
   openTechnicalModal: string | null;
   factorWeights: Record<string, number>;
-  /** 条件构建器：当前选股条件树（扁平无嵌套） */
-  filterTree: FilterTree | null;
+  /** 条件构建器：当前选股条件组（扁平无嵌套） — P3.2 重命名自 filterTree */
+  filterGroup: FilterGroup | null;
   /** 条件构建器：下一个待添加条件的关系（AND/OR/NOT） */
   nextConditionOp: FilterOp;
   collapsedPanels: Record<string, boolean>;
@@ -50,7 +50,7 @@ type ScreenerAction =
   | { type: 'SET_TECHNICAL_INDICATOR_OPTION'; payload: { indicatorId: string; option: string } }
   | { type: 'CLEAR_TECHNICAL_INDICATOR_OPTION'; payload: string }
   | { type: 'SET_FACTOR_WEIGHT'; payload: { factorId: string; weight: number } }
-  | { type: 'SET_CONDITION_TREE'; payload: FilterTree | null }
+  | { type: 'SET_CONDITION_GROUP'; payload: FilterGroup | null }
   | { type: 'SET_NEXT_CONDITION_OP'; payload: FilterOp }
   | { type: 'ADD_CONDITION'; payload: {
       fieldKey: FilterCondition['fieldKey'];
@@ -86,7 +86,7 @@ const initialState: ScreenerState = {
   selectedTechnicalIndicators: {},
   openTechnicalModal: null,
   factorWeights: FACTOR_CONFIG.reduce((acc, factor) => ({ ...acc, [factor.id]: factor.defaultWeight }), {}),
-  filterTree: null,
+  filterGroup: null,
   nextConditionOp: 'AND',
   collapsedPanels: {
     range: true,
@@ -114,7 +114,7 @@ function screenerReducer(state: ScreenerState, action: ScreenerAction): Screener
         financialIndicatorRanges: {},
         selectedTechnicalIndicators: {},
         openTechnicalModal: null,
-        filterTree: null,
+        filterGroup: null,
         nextConditionOp: 'AND',
       };
     }
@@ -211,10 +211,10 @@ function screenerReducer(state: ScreenerState, action: ScreenerAction): Screener
           [action.payload.factorId]: action.payload.weight,
         },
       };
-    case 'SET_CONDITION_TREE':
+    case 'SET_CONDITION_GROUP':
       return {
         ...state,
-        filterTree: action.payload,
+        filterGroup: action.payload,
       };
     case 'SET_NEXT_CONDITION_OP':
       return {
@@ -222,7 +222,7 @@ function screenerReducer(state: ScreenerState, action: ScreenerAction): Screener
         nextConditionOp: action.payload,
       };
     case 'ADD_CONDITION': {
-      const currentConditions = state.filterTree?.conditions || [];
+      const currentConditions = state.filterGroup?.conditions || [];
       // K 2026-06-16 代码审阅建议：空列表时首条件 op 强制 'AND'（无意义，但保证数据一致性）
       // 实际过滤逻辑中首条件前无连接符，其 op 应被忽略
       // K 2026-06-17 扩展：payload 可携带 op 覆盖（自编指标多选时按选择顺序确定 op）
@@ -239,31 +239,31 @@ function screenerReducer(state: ScreenerState, action: ScreenerAction): Screener
       };
       return {
         ...state,
-        filterTree: { conditions: [...currentConditions, newCond] },
+        filterGroup: { conditions: [...currentConditions, newCond] },
       };
     }
     case 'REMOVE_CONDITION': {
-      const currentConditions = state.filterTree?.conditions || [];
+      const currentConditions = state.filterGroup?.conditions || [];
       const nextConditions = currentConditions.filter((c) => c.id !== action.payload);
       return {
         ...state,
-        filterTree: nextConditions.length > 0 ? { conditions: nextConditions } : null,
+        filterGroup: nextConditions.length > 0 ? { conditions: nextConditions } : null,
       };
     }
     case 'UPDATE_CONDITION_OP': {
-      const currentConditions = state.filterTree?.conditions || [];
+      const currentConditions = state.filterGroup?.conditions || [];
       const nextConditions = currentConditions.map((c) =>
         c.id === action.payload.id ? { ...c, op: action.payload.op } : c
       );
       return {
         ...state,
-        filterTree: { conditions: nextConditions },
+        filterGroup: { conditions: nextConditions },
       };
     }
     case 'CLEAR_CONDITIONS':
       return {
         ...state,
-        filterTree: null,
+        filterGroup: null,
         nextConditionOp: 'AND',
       };
     case 'APPLY_PRESET': {
@@ -273,7 +273,7 @@ function screenerReducer(state: ScreenerState, action: ScreenerAction): Screener
       }));
       return {
         ...state,
-        filterTree: { conditions: presetConditions },
+        filterGroup: { conditions: presetConditions },
       };
     }
     case 'TOGGLE_PANEL':
@@ -325,22 +325,22 @@ function screenerReducer(state: ScreenerState, action: ScreenerAction): Screener
     case 'REMOVE_CUSTOM_INDICATOR': {
       const removedId = action.payload;
       const next = state.customIndicators.filter((i) => i.id !== removedId);
-      // K 2026-06-16 代码审阅建议 2a：删除自编指标时同步扫描 filterTree.conditions，
+      // K 2026-06-16 代码审阅建议 2a：删除自编指标时同步扫描 filterGroup.conditions，
       // 将引用该指标的条件标记为 invalid（避免 UI 重新加载时失效状态丢失）
-      let nextFilterTree = state.filterTree;
-      if (state.filterTree) {
+      let nextFilterGroup = state.filterGroup;
+      if (state.filterGroup) {
         const removedFieldKey = `custom_${removedId}`;
-        const nextConditions = state.filterTree.conditions.map((c) =>
+        const nextConditions = state.filterGroup.conditions.map((c) =>
           c.fieldKey === removedFieldKey
             ? { ...c, invalid: true, invalidReason: '引用的自编指标已被删除' }
             : c
         );
-        nextFilterTree = { conditions: nextConditions };
+        nextFilterGroup = { conditions: nextConditions };
       }
       return {
         ...state,
         customIndicators: next,
-        filterTree: nextFilterTree,
+        filterGroup: nextFilterGroup,
       };
     }
 
@@ -356,9 +356,9 @@ function screenerReducer(state: ScreenerState, action: ScreenerAction): Screener
       //   ① 自编条件引用的 sourceId 不在 state.customIndicators 中 → 标记 invalid
       //   ② 当前已标记 invalid 但引用的指标已恢复 → 清空 invalid 标记
       // 调用时机：ScreenerProvider 启动时 + 每次 LOAD_CUSTOM_INDICATORS / ADD / UPDATE / REMOVE 后
-      if (!state.filterTree) return state;
+      if (!state.filterGroup) return state;
       const customIds = new Set(state.customIndicators.map((i) => i.id));
-      const nextConditions = state.filterTree.conditions.map((c) => {
+      const nextConditions = state.filterGroup.conditions.map((c) => {
         if (c.source !== 'custom' || !c.sourceId) return c;
         if (customIds.has(c.sourceId)) {
           // 引用恢复 → 清除失效标记
@@ -374,7 +374,7 @@ function screenerReducer(state: ScreenerState, action: ScreenerAction): Screener
       });
       return {
         ...state,
-        filterTree: { conditions: nextConditions },
+        filterGroup: { conditions: nextConditions },
       };
     }
 
@@ -426,7 +426,7 @@ export function ScreenerProvider({ children, autoLoad = true }: {
         const indicators = loadFromStorage();
         dispatch({ type: 'LOAD_CUSTOM_INDICATORS', payload: indicators });
         // K 2026-06-16 代码审阅建议：启动后调用 RESOLVE_MISSING_INDICATORS，
-        // 确保从 localStorage 恢复的 filterTree 中失效条件被正确标记
+        // 确保从 localStorage 恢复的 filterGroup 中失效条件被正确标记
         // （避免 UI 重新加载时失效状态丢失）
         dispatch({ type: 'RESOLVE_MISSING_INDICATORS' });
       } catch (e) {

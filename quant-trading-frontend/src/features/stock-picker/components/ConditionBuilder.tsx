@@ -35,12 +35,12 @@ const PATTERN_PRESETS = FILTER_PRESETS.filter(
 const ConditionBuilder: React.FC = () => {
   const navigate = useNavigate();
   const { state, dispatch } = useScreener();
-  const { collapsedPanels, filterTree, customIndicators } = state;
+  const { collapsedPanels, filterGroup, customIndicators } = state;
 
   // K 2026-06-17 新增：K线形态全局回看天数
   const [lookbackDays, setLookbackDays] = useState<number>(DEFAULT_LOOKBACK_DAYS);
 
-  const conditions = filterTree?.conditions || [];
+  const conditions = filterGroup?.conditions || [];
   const conditionCount = conditions.length;
 
   // 自编指标可用列表（过滤已删除）

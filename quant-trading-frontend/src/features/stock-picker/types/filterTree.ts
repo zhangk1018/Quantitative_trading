@@ -1,7 +1,9 @@
 /**
  * 条件构建器（ConditionBuilder）数据模型
- * 设计原则：扁平无嵌套，FilterTree.conditions[] 是有序列表
+ * 设计原则：扁平无嵌套，FilterGroup.conditions[] 是有序列表
  * 关系（op）由"下一个待添加"决定，已添加的条件关系不会随后续选择改变
+ *
+ * P3.2 重命名：FilterTree → FilterGroup（更准确表达"分组/组"语义，扁平但有顺序）
  */
 
 /** 条件关系（3 种互斥单选） */
@@ -74,8 +76,8 @@ export interface FilterCondition {
   lookbackDays?: number;
 }
 
-/** 整棵树（扁平无嵌套） */
-export interface FilterTree {
+/** 整组（扁平无嵌套） — P3.2 重命名自 FilterTree */
+export interface FilterGroup {
   conditions: FilterCondition[];
 }
 

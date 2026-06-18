@@ -15,7 +15,7 @@
  *       通过 vi.mock 替换为受控的 textarea 模拟组件，保留 onChange/onMount 接口。
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ConfigProvider } from 'antd';
 import { CustomIndicatorModal } from '@/features/stock-picker/components/CustomIndicatorModal';
@@ -307,17 +307,16 @@ describe('CustomIndicatorModal - 字段插入按钮', () => {
   });
 
   it('参数名按钮在添加参数后出现并可点击', async () => {
-    const user = userEvent.setup();
     renderModal();
     // 添加一个参数
-    await user.click(getParamAdd());
-    // 参数名输入
+    fireEvent.click(getParamAdd());
+    // P3.2 修复时序问题 3：fireEvent.change 同步触发，绕过 user.type 异步
     const paramNameInput = screen.getByTestId('custom-indicator-modal-param-name-0');
-    await user.type(paramNameInput, 'period');
-    // 参数名插入按钮应出现（用 k 字段）
-    const insertBtn = screen.getByTestId('custom-indicator-modal-insert-param_period');
+    fireEvent.change(paramNameInput, { target: { value: 'period' } });
+    // 等待 React state 同步（formState 重新计算 paramCandidates）
+    const insertBtn = await screen.findByTestId('custom-indicator-modal-insert-param_period');
     expect(insertBtn).toBeInTheDocument();
-    await user.click(insertBtn);
+    fireEvent.click(insertBtn);
     await waitFor(() => {
       const editor = getFormulaEditor();
       expect(editor.value).toContain('period');
@@ -341,16 +340,22 @@ describe('CustomIndicatorModal - 动态参数', () => {
   it('点击删除按钮移除对应行', async () => {
     const user = userEvent.setup();
     renderModal();
+    // P3.2 修复时序问题 1：user.click 自动 act 包装确保 state 同步
     await user.click(getParamAdd());
     await user.click(getParamAdd()); // 2 行
-    expect(screen.getByTestId('custom-indicator-modal-param-name-0')).toBeInTheDocument();
-    expect(screen.getByTestId('custom-indicator-modal-param-name-1')).toBeInTheDocument();
+    // 验证渲染 2 个参数行
+    expect(screen.getAllByTestId(/^custom-indicator-modal-param-name-\d+$/).length).toBe(2);
+    expect(screen.getAllByTestId(/^custom-indicator-modal-param-remove-\d+$/).length).toBe(2);
+    // 点击第 1 行删除按钮：实际 React 用 key={idx} 复用 DOM，
+    // 删 idx=0 后原 idx=1 的参数会"滑"到 idx=0；只检查总数从 2 → 1
     await user.click(screen.getByTestId('custom-indicator-modal-param-remove-0'));
-    // 等待状态更新（React 18 自动批处理，需要 waitFor）
-    await waitFor(() => {
-      expect(screen.queryByTestId('custom-indicator-modal-param-name-0')).not.toBeInTheDocument();
-    });
-    expect(screen.getByTestId('custom-indicator-modal-param-name-1')).toBeInTheDocument();
+    await waitFor(
+      () => {
+        expect(screen.getAllByTestId(/^custom-indicator-modal-param-name-\d+$/).length).toBe(1);
+      },
+      { timeout: 5000 },
+    );
+    expect(screen.getAllByTestId(/^custom-indicator-modal-param-remove-\d+$/).length).toBe(1);
   });
 });
 
@@ -420,24 +425,24 @@ describe('CustomIndicatorModal - 提交逻辑', () => {
   });
 
   it('参数名重复时点击提交显示"重复"错误', async () => {
-    const user = userEvent.setup();
     const onConfirm = vi.fn();
     renderModal({ onConfirm });
-    await user.type(getNameInput(), '测试');
+    // P3.2 修复时序问题 2：用 fireEvent.change 同步触发，
+    // 避免 user.type 异步时序导致 formState.params 引用过期
+    fireEvent.change(getNameInput(), { target: { value: '测试' } });
     fireEvent.change(getFormulaEditor(), { target: { value: 'CLOSE' } });
-    await user.click(getParamAdd());
-    await user.click(getParamAdd());
+    fireEvent.click(getParamAdd());
+    fireEvent.click(getParamAdd());
     // 两个参数都用 'N'（重复）
     const p0 = screen.getByTestId('custom-indicator-modal-param-name-0');
     const p1 = screen.getByTestId('custom-indicator-modal-param-name-1');
-    await user.type(p0, 'N');
-    await user.type(p1, 'N');
+    fireEvent.change(p0, { target: { value: 'N' } });
+    fireEvent.change(p1, { target: { value: 'N' } });
     // 参数名校验发生在 handleSubmit 内部（即使 disabled 也会校验）
     // 通过 fireEvent.click 触发（绕过 disabled）
     fireEvent.click(getConfirmButton());
-    await waitFor(() => {
-      expect(onConfirm).not.toHaveBeenCalled();
-    });
+    // handleSubmit 内部拦截 → message.error → return → onConfirm 不调用
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 });
 

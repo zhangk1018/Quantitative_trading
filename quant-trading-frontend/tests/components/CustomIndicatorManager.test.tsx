@@ -151,15 +151,19 @@ describe('CustomIndicatorManager - 基础渲染', () => {
     expect(screen.getByTestId('custom-list-empty')).toHaveTextContent('暂无自编指标');
   });
 
-  it('渲染已加载的 customIndicators 列表', () => {
+  it('渲染已加载的 customIndicators 列表', async () => {
     // 预先写入 localStorage（名字必须 ≥ 2 字符，K 决策：避免与边界 case 混淆）
     const a = saveToStorage(makeIndicator({ name: '指标A' }));
     const b = saveToStorage(makeIndicator({ name: '指标B' }));
 
     renderManager();
+    // K 2026-06-18 反馈 #6：等待 ScreenerProvider autoLoad 从 localStorage 加载完成，
+    // 避免 useEffect 异步加载未完成时断言失败
+    await waitFor(() => {
+      expect(screen.getByTestId('custom-manager-count')).toHaveTextContent('已有 2 条');
+    });
     expect(screen.getByTestId(`custom-list-item-${a.id}`)).toBeInTheDocument();
     expect(screen.getByTestId(`custom-list-item-${b.id}`)).toBeInTheDocument();
-    expect(screen.getByTestId('custom-manager-count')).toHaveTextContent('已有 2 条');
   });
 });
 
@@ -239,14 +243,15 @@ describe('CustomIndicatorManager - 关闭弹窗', () => {
 // ============================================================================
 
 describe('CustomIndicatorManager - 编排逻辑', () => {
-  it('组件挂载时从 ScreenerContext 读取 customIndicators 并渲染列表', () => {
+  it('组件挂载时从 ScreenerContext 读取 customIndicators 并渲染列表', async () => {
     const saved = saveToStorage(makeIndicator({ name: '编排测试' }));
 
     renderManager();
 
-    // ScreenerProvider autoLoad 从 localStorage 加载 → state.customIndicators 有值
-    // 列表显示
-    expect(screen.getByTestId(`custom-list-item-${saved.id}`)).toBeInTheDocument();
+    // K 2026-06-18 反馈 #6：等待 ScreenerProvider autoLoad 从 localStorage 加载完成
+    await waitFor(() => {
+      expect(screen.getByTestId(`custom-list-item-${saved.id}`)).toBeInTheDocument();
+    });
     expect(readState().customIndicators).toHaveLength(1);
   });
 
@@ -270,9 +275,8 @@ describe('CustomIndicatorManager - 编排逻辑', () => {
     });
 
     const okButton = await waitFor(() => {
-      const ok = document.querySelector(
-        '.ant-popconfirm .ant-btn-primary, .ant-popover .ant-btn-primary',
-      ) as HTMLElement;
+      // K 2026-06-18 反馈 #9：改用 data-testid 避免依赖 Antd 内部类名
+      const ok = screen.queryByTestId(`custom-list-popconfirm-ok-${saved.id}`) as HTMLElement | null;
       if (!ok) throw new Error('Popconfirm OK not found');
       return ok;
     });

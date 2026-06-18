@@ -182,7 +182,52 @@ export function removeCustomIndicator(
     updatedAt: now,
   };
   writeAll(userId, all);
+  // K 2026-06-18 任务 #8：同步标记 plans_<userId> 中所有引用该 ID 的 condition 为 invalid
+  // （之前只标记了 filterGroup.conditions，遗漏了 ScreenerPlan 历史快照）
+  markPlanConditionsInvalid(id, userId);
   return true;
+}
+
+/**
+ * 标记 plans_<userId> 中所有引用 indicatorId 的 condition 为 invalid（K 2026-06-18 任务 #8）
+ *
+ * 纯函数式失效检测：被 removeCustomIndicator / 任何清理流程复用。
+ * 计划加载到 state 后由 UI 层（ConditionBuilder）显示失效提示。
+ */
+export function markPlanConditionsInvalid(
+  indicatorId: string,
+  userId: string = MOCK_USER_ID,
+): void {
+  if (typeof window === 'undefined') return;
+  const plansKey = `${STORAGE_KEY_PREFIX}plans_${userId}`;
+  const plansRaw = window.localStorage.getItem(plansKey);
+  if (!plansRaw) return;
+  try {
+    const plans = JSON.parse(plansRaw) as Array<{
+      conditions?: Array<{ sourceId?: string; invalid?: boolean; invalidReason?: string }>;
+    }>;
+    let changed = false;
+    const next = plans.map((p) => {
+      if (!p.conditions) return p;
+      const newConditions = p.conditions.map((c) => {
+        if (c.sourceId === indicatorId && !c.invalid) {
+          changed = true;
+          return {
+            ...c,
+            invalid: true,
+            invalidReason: '引用指标已删除',
+          };
+        }
+        return c;
+      });
+      return { ...p, conditions: newConditions };
+    });
+    if (changed) {
+      window.localStorage.setItem(plansKey, JSON.stringify(next));
+    }
+  } catch {
+    // 解析失败保留原值
+  }
 }
 
 /** 硬删除（仅供方案清理时使用） */
@@ -194,10 +239,40 @@ export function purgeCustomIndicator(
   const next = all.filter((i) => i.id !== id);
   if (next.length === all.length) return false;
   writeAll(userId, next);
+  // K 2026-06-18 反馈 #3：硬删除同样要标记 plans 中的失效引用，
+  // 否则已删除指标的方案条件会变成悬空引用导致选股结果错误。
+  markPlanConditionsInvalid(id, userId);
   return true;
 }
 
-/** 检查指标是否被方案引用（供删除二次确认） */
+/**
+ * 判断导入指标是否重复（K 2026-06-18 任务 #10 统一去重策略）
+ *
+ * 优先级：
+ * 1) 若导入数据带 id → 按 id 去重（O(1)）
+ * 2) 否则 → 按 name 去重（兼容手写/旧版 JSON）
+ *
+ * 由 importCustomIndicators 和 ImportExportButtons 预览逻辑复用，
+ * 确保预览 added/skipped 数量与实际导入一致。
+ */
+export function isDuplicateIndicator(
+  ind: CustomIndicator,
+  existingIds: Set<string>,
+  existingNames: Set<string>,
+): boolean {
+  const id = (ind as { id?: unknown }).id;
+  if (typeof id === 'string' && id.length > 0) {
+    return existingIds.has(id);
+  }
+  return existingNames.has(ind.name);
+}
+
+/** 检查指标是否被方案引用（供删除二次确认）
+ *
+ * K 2026-06-18 反馈 #4：保留作为 storage 层的 fallback 实现（无 React state 场景使用）。
+ * UI 层应优先用 isIndicatorReferencedByConditions(id, conditions) 从实时 state 计算，
+ * 避免 storage 读 localStorage 与 React 实时状态脱节（K 2026-06-18 任务 #9 已修）。
+ */
 export function isIndicatorReferenced(
   id: string,
   userId: string = MOCK_USER_ID,
@@ -211,6 +286,25 @@ export function isIndicatorReferenced(
   } catch {
     return false;
   }
+}
+
+/**
+ * 纯函数：从实时 condition 列表中检查指标是否被引用（K 2026-06-18 反馈 #4）
+ *
+ * 供 UI 层（CustomIndicatorList / CustomIndicatorManager）从 React state.filterGroup.conditions
+ * 实时计算引用关系，避免 storage 读 localStorage 滞后于 state 变化。
+ *
+ * 与 isIndicatorReferenced 的区别：
+ * - 本函数：从传入的 conditions 数组计算（实时）
+ * - isIndicatorReferenced：从 localStorage.plans_<userId> 读（可能滞后）
+ */
+export function isIndicatorReferencedByConditions(
+  indicatorId: string,
+  conditions: ReadonlyArray<{ source?: string; sourceId?: string }>,
+): boolean {
+  return conditions.some(
+    (c) => c.source === 'custom' && c.sourceId === indicatorId,
+  );
 }
 
 // =====================================================================
@@ -237,13 +331,44 @@ export interface ImportErrorDetail {
   message: string;
 }
 
-/** 导入结果（K 评审优化 1：分类型统计） */
+/** 导入结果（K 2026-06-18 反馈 #3：统一类型，computeImportPreview 与 importCustomIndicators 共享）
+ *
+ * 字段语义：
+ * - added: 通过校验 + 不重复 的指标数（预览与实际导入一致）
+ * - skipped: 因 id/name 重复被跳过的指标数
+ * - errors: 校验失败明细（按类型区分）
+ * - errorSummary: 错误按类型分组统计
+ * - addedIndicators: 实际写入的指标列表（预览时为 []，实际导入时填充；K 反馈 #3 统一字段）
+ * - _validationCache: 内部缓存，预览阶段每条指标的校验结果，供 importCustomIndicators 复用
+ *   （K 反馈 #2：避免双重校验耗时翻倍）。下划线前缀约定为 internal，不应被 UI 层读取。
+ */
 export interface ImportResult {
   added: number;
   skipped: number;
   errors: ImportErrorDetail[];
   /** 错误按类型分组统计 */
   errorSummary: Record<ImportErrorType, number>;
+  /** 实际写入的指标列表（预览时为 []，实际导入时按 file.indicators 顺序填充） */
+  addedIndicators: CustomIndicator[];
+  /**
+   * 内部缓存：file.indicators 索引 → 校验结果（K 反馈 #2）
+   * @internal UI 层不应读取此字段
+   */
+  _validationCache: Map<number, ValidationResult>;
+}
+
+/**
+ * 创建一个空的 ImportResult（含 emptyCache）
+ */
+function createEmptyImportResult(): ImportResult {
+  return {
+    added: 0,
+    skipped: 0,
+    errors: [],
+    errorSummary: emptyErrorSummary(),
+    addedIndicators: [],
+    _validationCache: new Map<number, ValidationResult>(),
+  };
 }
 
 function emptyErrorSummary(): Record<ImportErrorType, number> {
@@ -327,82 +452,205 @@ function validateIndicatorFields(ind: unknown, index: number): string | null {
   return null;
 }
 
-/** 导入自编指标到当前用户（按名称去重，已存在则跳过） */
-export function importCustomIndicators(
+/**
+ * 单条指标导入的完整校验结果（K 2026-06-18 反馈 #1）
+ *
+ * 用途：统一预览阶段与实际导入阶段的校验逻辑，避免两套重复代码导致
+ * 规则更新时不同步（K 反馈 #1 明确指出此风险）。
+ */
+export type ValidationResult =
+  | { ok: true; duplicate: boolean }
+  | { ok: false; error: ImportErrorDetail };
+
+/**
+ * 单条导入指标的完整校验（K 2026-06-18 反馈 #1）
+ *
+ * 串联三步校验：
+ * 1) 字段合法性（validateIndicatorFields）
+ * 2) 名称格式（validateIndicatorName）
+ * 3) 去重（isDuplicateIndicator，id 优先 / name 兜底）
+ *
+ * 单一来源：computeImportPreview 和 importCustomIndicators 的写入阶段都调用此函数，
+ * 保证预览 added/skipped 与实际导入 added/skipped 完全一致。
+ */
+export function validateIndicatorData(
+  ind: unknown,
+  index: number,
+  existingIds: ReadonlySet<string>,
+  existingNames: ReadonlySet<string>,
+): ValidationResult {
+  // 1) 字段合法性校验
+  const fieldErr = validateIndicatorFields(ind, index);
+  if (fieldErr) {
+    return {
+      ok: false,
+      error: {
+        type: 'field_invalid',
+        name: typeof (ind as { name?: unknown })?.name === 'string'
+          ? (ind as { name: string }).name
+          : undefined,
+        index,
+        message: fieldErr,
+      },
+    };
+  }
+
+  // 此时 ind 已被 validateIndicatorFields 验证为合法对象
+  const obj = ind as CustomIndicator;
+
+  // 2) 名称格式校验
+  const nameError = validateIndicatorName(obj.name);
+  if (nameError) {
+    return {
+      ok: false,
+      error: {
+        type: 'name_invalid',
+        name: obj.name,
+        index,
+        message: nameError,
+      },
+    };
+  }
+
+  // 3) 去重判断（K 2026-06-18 任务 #10 统一策略：id 优先 / name 兜底）
+  if (isDuplicateIndicator(obj, existingIds, existingNames)) {
+    return { ok: true, duplicate: true };
+  }
+
+  return { ok: true, duplicate: false };
+}
+
+/**
+ * 计算导入预览（纯函数，不写入）
+ * K 2026-06-18 反馈 #5：preview 和 importCustomIndicators 复用同一套校验/去重逻辑，
+ * 确保预览 previewAdded/previewSkipped 数量与实际导入 result.added/result.skipped 一致。
+ * K 2026-06-18 反馈 #1：进一步抽离 validateIndicatorData 纯函数，让预览/实际导入
+ * 共享同一份校验源（字段+名称+去重三步），避免未来新增校验规则时漏改。
+ * K 2026-06-18 反馈 #2：缓存每条指标的校验结果到 result._validationCache，
+ * 供 importCustomIndicators 复用，避免双重校验耗时翻倍。
+ * K 2026-06-18 反馈 #3：返回 ImportResult（与 importCustomIndicators 类型统一，含 addedIndicators 字段）。
+ *
+ * 写入步骤不执行（留给 importCustomIndicators 实际落库）。
+ */
+export function computeImportPreview(
   file: IndicatorExportFile,
   userId: string = MOCK_USER_ID,
 ): ImportResult {
-  const result: ImportResult = {
-    added: 0,
-    skipped: 0,
-    errors: [],
-    errorSummary: emptyErrorSummary(),
-  };
+  const result = createEmptyImportResult();
   const all = readAll(userId);
+  const existingIds = new Set(all.filter((i) => i.id).map((i) => i.id));
+  const existingNames = new Set(all.filter((i) => !i.deleted).map((i) => i.name));
 
   file.indicators.forEach((ind, index) => {
-    // 1) 字段合法性校验
-    const fieldErr = validateIndicatorFields(ind, index);
-    if (fieldErr) {
-      result.errors.push({
-        type: 'field_invalid',
-        name: typeof (ind as { name?: unknown })?.name === 'string' ? (ind as { name: string }).name : undefined,
-        index,
-        message: fieldErr,
-      });
-      result.errorSummary.field_invalid += 1;
+    // 单一校验源：K 反馈 #1
+    const validation = validateIndicatorData(ind, index, existingIds, existingNames);
+    // 缓存校验结果供 importCustomIndicators 复用：K 反馈 #2
+    result._validationCache.set(index, validation);
+
+    if (!validation.ok) {
+      result.errors.push(validation.error);
+      result.errorSummary[validation.error.type] += 1;
       return;
     }
 
-    // 2) 名称格式校验
-    const nameError = validateIndicatorName(ind.name);
-    if (nameError) {
-      result.errors.push({
-        type: 'name_invalid',
-        name: ind.name,
-        index,
-        message: nameError,
-      });
-      result.errorSummary.name_invalid += 1;
-      return;
-    }
-
-    // 3) 名称去重
-    if (isNameTaken(ind.name, null, userId)) {
+    if (validation.duplicate) {
+      const obj = ind as CustomIndicator;
+      const isIdDup = typeof (obj as { id?: string }).id === 'string' && existingIds.has((obj as { id: string }).id);
       result.errors.push({
         type: 'name_duplicate',
-        name: ind.name,
+        name: obj.name,
         index,
-        message: `指标名称"${ind.name}"已存在，已跳过`,
+        message: `指标${isIdDup ? 'ID' : '名称'}"${isIdDup ? (obj as { id: string }).id : obj.name}"已存在，已跳过`,
       });
       result.errorSummary.name_duplicate += 1;
       result.skipped += 1;
       return;
     }
 
-    // 4) 写入
-    try {
-      all.push({
-        ...ind,
-        id: generateId(),
-        userId,
-        deleted: false,
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
-      });
-      result.added += 1;
-    } catch (e) {
-      result.errors.push({
-        type: 'parse_error',
-        name: ind.name,
+    // 通过校验 + 去重 → 计入 added
+    result.added += 1;
+  });
+
+  return result;
+}
+
+/** 导入自编指标到当前用户（按 ID/名称去重，K 2026-06-18 任务 #10 统一去重策略）
+ *
+ * 去重优先级（K 2026-06-18 决策）：
+ * 1) 若导入数据带 id（'id' in ind 且为非空字符串）→ 按 id 去重
+ * 2) 否则 → 按 name 去重（兼容手写/旧版 JSON）
+ *
+ * 预览与实际导入使用同一套 isDuplicateIndicator（K 反馈 #1：进一步抽离为
+ * validateIndicatorData 纯函数），避免预览/实际数量不符。
+ * K 2026-06-18 反馈 #2：复用 computeImportPreview 的 _validationCache，避免重复校验。
+ * K 2026-06-18 反馈 #3：返回 ImportResult 类型（与 computeImportPreview 统一）。
+ */
+export function importCustomIndicators(
+  file: IndicatorExportFile,
+  userId: string = MOCK_USER_ID,
+): ImportResult {
+  // 1) 复用预览的校验/去重逻辑（K 反馈 #5）— cache 也一并复用（K 反馈 #2）
+  const result = computeImportPreview(file, userId);
+  if (result.added === 0) {
+    // 全部失败/重复，无需写入；同时也无新增指标
+    return result;
+  }
+
+  // 2) 写入阶段：仅对通过校验的指标落库
+  // K 反馈 #2：复用 _validationCache，不再调 validateIndicatorData。
+  // 防御性 fallback：若 cache 中没有（理论上不会发生），则现场计算并补填 cache。
+  const all = readAll(userId);
+  const existingIds = new Set(all.filter((i) => i.id).map((i) => i.id));
+  const existingNames = new Set(all.filter((i) => !i.deleted).map((i) => i.name));
+  const addedIndicators: CustomIndicator[] = [];
+
+  file.indicators.forEach((ind, index) => {
+    let validation = result._validationCache.get(index);
+    if (!validation) {
+      // 防御性 fallback：cache miss 时现场计算（理论上不会发生，computeImportPreview
+      // 必然先于 importCustomIndicators 内部调用并填好 cache）
+      console.warn(
+        '[customIndicatorStorage] _validationCache miss at index',
         index,
-        message: (e as Error).message,
-      });
-      result.errorSummary.parse_error += 1;
+        '— 现场补算 validateIndicatorData',
+      );
+      validation = validateIndicatorData(ind, index, existingIds, existingNames);
+      result._validationCache.set(index, validation);
     }
+    if (!validation.ok) {
+      // 理论上预览已拦截，errors 已计入 result.errors；此处不再重复 push，
+      // 仅 console.warn 供排查（避免 errors 数量翻倍导致与预览不一致）
+      console.warn(
+        '[customIndicatorStorage] 写入阶段发现校验失败（应已被预览拦截）:',
+        validation.error,
+      );
+      return;
+    }
+    if (validation.duplicate) {
+      // 重复指标在预览阶段已计入 skipped + name_duplicate error；
+      // 写入阶段直接跳过即可，保持 result.skipped 不变。
+      return;
+    }
+
+    // 通过校验 + 去重 → 写入
+    const obj = ind as CustomIndicator;
+    const created: CustomIndicator = {
+      ...obj,
+      id: generateId(),
+      userId,
+      deleted: false,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    all.push(created);
+    addedIndicators.push(created);
+    // 同步更新去重集合，防止同一批次内重复添加
+    existingIds.add(created.id);
+    existingNames.add(created.name);
   });
 
   writeAll(userId, all);
+  result.addedIndicators = addedIndicators;
   return result;
 }
 

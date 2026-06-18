@@ -4,14 +4,15 @@
  * 设计要点（K 2026-06-17 决策）：
  * - 显示当前 customIndicators 列表，每行：名称 + 分类 + 运算符/阈值 + 公式预览 + 编辑/删除按钮
  * - 编辑按钮 → 父组件 onEdit 回调（打开 CustomIndicatorModal with editing）
- * - 删除按钮 → Popconfirm 二次确认（基于 isIndicatorReferenced 区分未引用/已引用提示）
+ * - 删除按钮 → Popconfirm 二次确认（基于 isReferenced 区分未引用/已引用提示）
  *
  * 复用约束：
  * - 不修改 storage / reducer / types（仅消费既有 API）
- * - 删除二次确认文案基于 storage.isIndicatorReferenced 实时判断
+ * - 删除二次确认文案基于 props.isReferenced 实时判断（K 2026-06-18 任务 #9：
+ *   之前直接调 storage.isIndicatorReferenced 读 localStorage，与 React 实时状态脱节）
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Button, Popconfirm, Tag, Tooltip, Typography } from 'antd';
 import { EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import {
@@ -19,7 +20,7 @@ import {
   INDICATOR_OPERATORS,
   getCategoryMeta,
 } from '../types/customIndicator';
-import { isIndicatorReferenced, MOCK_USER_ID } from '../utils/customIndicatorStorage';
+import { MOCK_USER_ID } from '../utils/customIndicatorStorage';
 
 const { Text } = Typography;
 
@@ -28,6 +29,12 @@ interface CustomIndicatorListProps {
   indicators: ReadonlyArray<CustomIndicator>;
   /** 当前 user_id（V1.0 mock） */
   userId?: string;
+  /**
+   * 已引用的指标 ID 集合（K 2026-06-18 任务 #9：props 注入替代 localStorage 直读）。
+   * 父组件基于 state.filterGroup.conditions 实时计算后传入，
+   * 避免删除二次确认时 localStorage 与 React state 不一致。
+   */
+  referencedIds?: ReadonlySet<string>;
   /** 点击编辑按钮回调 */
   onEdit: (indicator: CustomIndicator) => void;
   /** 点击删除确认回调 */
@@ -59,9 +66,13 @@ function previewFormula(formula: string, max = 40): string {
 export const CustomIndicatorList: React.FC<CustomIndicatorListProps> = ({
   indicators,
   userId = MOCK_USER_ID,
+  referencedIds,
   onEdit,
   onDelete,
 }) => {
+  // 兜底：未传 referencedIds 时构造空 Set（视为全部未引用）
+  const refs = useMemo(() => referencedIds ?? new Set<string>(), [referencedIds]);
+
   if (indicators.length === 0) {
     return (
       <div
@@ -77,7 +88,7 @@ export const CustomIndicatorList: React.FC<CustomIndicatorListProps> = ({
     <div className="space-y-1" data-testid="custom-list">
       {indicators.map((ind) => {
         const category = getCategoryMeta(ind.category);
-        const referenced = isIndicatorReferenced(ind.id, userId);
+        const referenced = refs.has(ind.id);
         return (
           <div
             key={ind.id}
@@ -133,8 +144,19 @@ export const CustomIndicatorList: React.FC<CustomIndicatorListProps> = ({
                     : '此操作不可撤销（仅标记软删除）。'
                 }
                 okText="删除"
-                okButtonProps={{ danger: true }}
+                okButtonProps={{
+                  danger: true,
+                  // K 2026-06-18 反馈 #9：通过 okButtonProps 注入 data-testid，
+                  // 避免测试依赖 Antd 内部类名 .ant-popconfirm .ant-btn-primary
+                  // K 2026-06-18 反馈 #7：Antd ButtonProps 已原生支持 data-testid（继承自 HTMLAttributes），
+                  // 无需 React.ComponentProps 断言
+                  'data-testid': `custom-list-popconfirm-ok-${ind.id}`,
+                }}
                 cancelText="取消"
+                cancelButtonProps={{
+                  // K 2026-06-18 反馈 #9+#7：同上
+                  'data-testid': `custom-list-popconfirm-cancel-${ind.id}`,
+                }}
                 onConfirm={() => onDelete(ind.id)}
                 data-testid={`custom-list-delete-popconfirm-${ind.id}`}
               >

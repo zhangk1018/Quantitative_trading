@@ -25,7 +25,7 @@ const getInitialState = (): ScreenerState => ({
     (acc, f) => ({ ...acc, [f.id]: f.defaultWeight }),
     {} as Record<string, number>
   ),
-  filterTree: null,
+  filterGroup: null,
   nextConditionOp: 'AND',
   collapsedPanels: {
     range: true,
@@ -243,7 +243,7 @@ describe('screenerReducer', () => {
     });
   });
 
-  // ============ 条件构建器 filterTree 相关测试 ============
+  // ============ 条件构建器 filterGroup 相关测试 ============
   describe('条件构建器 actions', () => {
     it('SET_NEXT_CONDITION_OP 改变 nextConditionOp', () => {
       const state = getInitialState();
@@ -262,11 +262,11 @@ describe('screenerReducer', () => {
         type: 'ADD_CONDITION',
         payload: { fieldKey: 'rsi_oversold', label: 'RSI超卖' },
       });
-      expect(after.filterTree?.conditions).toHaveLength(1);
-      expect(after.filterTree?.conditions[0].op).toBe('AND');
-      expect(after.filterTree?.conditions[0].fieldKey).toBe('rsi_oversold');
-      expect(after.filterTree?.conditions[0].label).toBe('RSI超卖');
-      expect(after.filterTree?.conditions[0].id).toMatch(/^cond_/);
+      expect(after.filterGroup?.conditions).toHaveLength(1);
+      expect(after.filterGroup?.conditions[0].op).toBe('AND');
+      expect(after.filterGroup?.conditions[0].fieldKey).toBe('rsi_oversold');
+      expect(after.filterGroup?.conditions[0].label).toBe('RSI超卖');
+      expect(after.filterGroup?.conditions[0].id).toMatch(/^cond_/);
     });
 
     it('ADD_CONDITION 非空列表时新条件 op 来自 nextConditionOp', () => {
@@ -281,8 +281,8 @@ describe('screenerReducer', () => {
         type: 'ADD_CONDITION',
         payload: { fieldKey: 'volume_breakout', label: '放量突破' },
       });
-      expect(after.filterTree?.conditions).toHaveLength(2);
-      expect(after.filterTree?.conditions[1].op).toBe('NOT');
+      expect(after.filterGroup?.conditions).toHaveLength(2);
+      expect(after.filterGroup?.conditions[1].op).toBe('NOT');
     });
 
     it('ADD_CONDITION 追加：多次添加时新 condition 接在末尾', () => {
@@ -296,10 +296,10 @@ describe('screenerReducer', () => {
         type: 'ADD_CONDITION',
         payload: { fieldKey: 'volume_breakout', label: '放量突破' },
       });
-      expect(state.filterTree?.conditions).toHaveLength(2);
-      expect(state.filterTree?.conditions[0].fieldKey).toBe('rsi_oversold');
-      expect(state.filterTree?.conditions[1].fieldKey).toBe('volume_breakout');
-      expect(state.filterTree?.conditions[1].op).toBe('OR');
+      expect(state.filterGroup?.conditions).toHaveLength(2);
+      expect(state.filterGroup?.conditions[0].fieldKey).toBe('rsi_oversold');
+      expect(state.filterGroup?.conditions[1].fieldKey).toBe('volume_breakout');
+      expect(state.filterGroup?.conditions[1].op).toBe('OR');
     });
 
     it('REMOVE_CONDITION 删除指定 id 的 condition', () => {
@@ -312,27 +312,27 @@ describe('screenerReducer', () => {
         type: 'ADD_CONDITION',
         payload: { fieldKey: 'b', label: 'B' },
       });
-      const targetId = state.filterTree!.conditions[0].id;
+      const targetId = state.filterGroup!.conditions[0].id;
       const after = screenerReducer(state, {
         type: 'REMOVE_CONDITION',
         payload: targetId,
       });
-      expect(after.filterTree?.conditions).toHaveLength(1);
-      expect(after.filterTree?.conditions[0].fieldKey).toBe('b');
+      expect(after.filterGroup?.conditions).toHaveLength(1);
+      expect(after.filterGroup?.conditions[0].fieldKey).toBe('b');
     });
 
-    it('REMOVE_CONDITION 删完最后一个时 filterTree 回到 null', () => {
+    it('REMOVE_CONDITION 删完最后一个时 filterGroup 回到 null', () => {
       let state = getInitialState();
       state = screenerReducer(state, {
         type: 'ADD_CONDITION',
         payload: { fieldKey: 'a', label: 'A' },
       });
-      const targetId = state.filterTree!.conditions[0].id;
+      const targetId = state.filterGroup!.conditions[0].id;
       const after = screenerReducer(state, {
         type: 'REMOVE_CONDITION',
         payload: targetId,
       });
-      expect(after.filterTree).toBeNull();
+      expect(after.filterGroup).toBeNull();
     });
 
     it('UPDATE_CONDITION_OP 修改指定 id 的 op（不影响其他）', () => {
@@ -345,16 +345,16 @@ describe('screenerReducer', () => {
         type: 'ADD_CONDITION',
         payload: { fieldKey: 'b', label: 'B' },
       });
-      const targetId = state.filterTree!.conditions[0].id;
+      const targetId = state.filterGroup!.conditions[0].id;
       const after = screenerReducer(state, {
         type: 'UPDATE_CONDITION_OP',
         payload: { id: targetId, op: 'OR' },
       });
-      expect(after.filterTree?.conditions[0].op).toBe('OR');
-      expect(after.filterTree?.conditions[1].op).toBe('AND'); // 不变
+      expect(after.filterGroup?.conditions[0].op).toBe('OR');
+      expect(after.filterGroup?.conditions[1].op).toBe('AND'); // 不变
     });
 
-    it('CLEAR_CONDITIONS 清空 filterTree 并重置 nextConditionOp', () => {
+    it('CLEAR_CONDITIONS 清空 filterGroup 并重置 nextConditionOp', () => {
       let state = getInitialState();
       state = screenerReducer(state, {
         type: 'ADD_CONDITION',
@@ -362,7 +362,7 @@ describe('screenerReducer', () => {
       });
       state = screenerReducer(state, { type: 'SET_NEXT_CONDITION_OP', payload: 'OR' });
       const after = screenerReducer(state, { type: 'CLEAR_CONDITIONS' });
-      expect(after.filterTree).toBeNull();
+      expect(after.filterGroup).toBeNull();
       expect(after.nextConditionOp).toBe('AND');
     });
 
@@ -381,12 +381,12 @@ describe('screenerReducer', () => {
           { op: 'AND', fieldKey: 'macd_golden_cross', label: 'MACD金叉' },
         ],
       });
-      expect(after.filterTree?.conditions).toHaveLength(2);
-      expect(after.filterTree?.conditions[0].fieldKey).toBe('volume_breakout');
-      expect(after.filterTree?.conditions[1].fieldKey).toBe('macd_golden_cross');
+      expect(after.filterGroup?.conditions).toHaveLength(2);
+      expect(after.filterGroup?.conditions[0].fieldKey).toBe('volume_breakout');
+      expect(after.filterGroup?.conditions[1].fieldKey).toBe('macd_golden_cross');
     });
 
-    it('SET_MARKET 联动清空 filterTree 和 nextConditionOp', () => {
+    it('SET_MARKET 联动清空 filterGroup 和 nextConditionOp', () => {
       let state = getInitialState();
       state = screenerReducer(state, {
         type: 'ADD_CONDITION',
@@ -394,7 +394,7 @@ describe('screenerReducer', () => {
       });
       state = screenerReducer(state, { type: 'SET_NEXT_CONDITION_OP', payload: 'OR' });
       const after = screenerReducer(state, { type: 'SET_MARKET', payload: 'hk' });
-      expect(after.filterTree).toBeNull();
+      expect(after.filterGroup).toBeNull();
       expect(after.nextConditionOp).toBe('AND');
     });
   });
@@ -494,13 +494,13 @@ describe('screenerReducer - V1.0 自编指标', () => {
     expect(after.customIndicators[0].id).toBe('ind_2');
   });
 
-  it('REMOVE_CUSTOM_INDICATOR 自动标记 filterTree 中引用该指标的条件为 invalid（K 2026-06-16 决策 2a）', () => {
+  it('REMOVE_CUSTOM_INDICATOR 自动标记 filterGroup 中引用该指标的条件为 invalid（K 2026-06-16 决策 2a）', () => {
     const state = getInitialState();
     state.customIndicators = [
       makeIndicator({ id: 'ind_1', name: 'A' }),
       makeIndicator({ id: 'ind_2', name: 'B' }),
     ];
-    state.filterTree = {
+    state.filterGroup = {
       conditions: [
         {
           id: 'c1',
@@ -523,21 +523,21 @@ describe('screenerReducer - V1.0 自编指标', () => {
     };
     const after = screenerReducer(state, { type: 'REMOVE_CUSTOM_INDICATOR', payload: 'ind_1' });
     // 引用 ind_1 的 c1 被标记 invalid
-    expect(after.filterTree?.conditions[0].invalid).toBe(true);
+    expect(after.filterGroup?.conditions[0].invalid).toBe(true);
     // K 2026-06-16 修复：toContain 是子串匹配，用 toBe + 完整字符串
-    expect(after.filterTree?.conditions[0].invalidReason).toBe('引用的自编指标已被删除');
+    expect(after.filterGroup?.conditions[0].invalidReason).toBe('引用的自编指标已被删除');
     // 引用 ind_2 的 c2 不受影响
-    expect(after.filterTree?.conditions[1].invalid).toBeFalsy();
+    expect(after.filterGroup?.conditions[1].invalid).toBeFalsy();
     // 系统预设 c3 不受影响
-    expect(after.filterTree?.conditions[2].invalid).toBeFalsy();
+    expect(after.filterGroup?.conditions[2].invalid).toBeFalsy();
   });
 
-  it('REMOVE_CUSTOM_INDICATOR filterTree 为 null 时不影响', () => {
+  it('REMOVE_CUSTOM_INDICATOR filterGroup 为 null 时不影响', () => {
     const state = getInitialState();
     state.customIndicators = [makeIndicator({ id: 'ind_1', name: 'A' })];
-    state.filterTree = null;
+    state.filterGroup = null;
     const after = screenerReducer(state, { type: 'REMOVE_CUSTOM_INDICATOR', payload: 'ind_1' });
-    expect(after.filterTree).toBeNull();
+    expect(after.filterGroup).toBeNull();
   });
 
   it('SET_INDICATOR_TAB 切换到 custom', () => {
@@ -557,7 +557,7 @@ describe('screenerReducer - V1.0 自编指标', () => {
   it('RESOLVE_MISSING_INDICATORS 自编条件引用的 sourceId 存在则无 invalid', () => {
     const state = getInitialState();
     state.customIndicators = [makeIndicator({ id: 'ind_1', name: 'A' })];
-    state.filterTree = {
+    state.filterGroup = {
       conditions: [
         {
           id: 'c1',
@@ -570,14 +570,14 @@ describe('screenerReducer - V1.0 自编指标', () => {
       ],
     };
     const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
-    expect(after.filterTree?.conditions[0].invalid).toBeFalsy();
-    expect(after.filterTree?.conditions[0].invalidReason).toBeUndefined();
+    expect(after.filterGroup?.conditions[0].invalid).toBeFalsy();
+    expect(after.filterGroup?.conditions[0].invalidReason).toBeUndefined();
   });
 
   it('RESOLVE_MISSING_INDICATORS 自编条件引用的 sourceId 缺失则标记 invalid', () => {
     const state = getInitialState();
     // customIndicators 为空，sourceId='ind_missing' 找不到
-    state.filterTree = {
+    state.filterGroup = {
       conditions: [
         {
           id: 'c1',
@@ -590,26 +590,26 @@ describe('screenerReducer - V1.0 自编指标', () => {
       ],
     };
     const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
-    expect(after.filterTree?.conditions[0].invalid).toBe(true);
-    expect(after.filterTree?.conditions[0].invalidReason).toBe('引用的自编指标已被删除');
+    expect(after.filterGroup?.conditions[0].invalid).toBe(true);
+    expect(after.filterGroup?.conditions[0].invalidReason).toBe('引用的自编指标已被删除');
   });
 
   it('RESOLVE_MISSING_INDICATORS 系统预设条件不参与失效检测', () => {
     const state = getInitialState();
-    state.filterTree = {
+    state.filterGroup = {
       conditions: [
         { id: 'c1', op: 'AND', fieldKey: 'rsi_oversold', label: 'RSI超卖' },
       ],
     };
     const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
-    expect(after.filterTree?.conditions[0].invalid).toBeFalsy();
+    expect(after.filterGroup?.conditions[0].invalid).toBeFalsy();
   });
 
-  it('RESOLVE_MISSING_INDICATORS filterTree 为 null 时直接返回原 state', () => {
+  it('RESOLVE_MISSING_INDICATORS filterGroup 为 null 时直接返回原 state', () => {
     const state = getInitialState();
-    state.filterTree = null;
+    state.filterGroup = null;
     const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
-    expect(after.filterTree).toBeNull();
+    expect(after.filterGroup).toBeNull();
   });
 
   it('IMPORT_CUSTOM_INDICATORS 合并新指标（去重 id）', () => {

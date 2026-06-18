@@ -161,28 +161,21 @@ describe('CustomIndicatorList - 编辑按钮', () => {
 // 5. 删除按钮 - 未引用
 // ============================================================================
 
-/** 等待 Popconfirm 弹窗出现并返回 OK 按钮（class 包含 ant-btn-primary） */
-async function waitForPopconfirmOk() {
-  return waitFor(() => {
-    const ok = document.querySelector(
-      '.ant-popconfirm .ant-btn-primary, .ant-popover .ant-btn-primary',
-    ) as HTMLElement;
-    if (!ok) throw new Error('Popconfirm OK 按钮未出现');
-    return ok;
-  });
+/** 等待 Popconfirm OK 按钮出现（K 2026-06-18 反馈 #9+#7）
+ *  - 用 screen.getByTestId 找 Popconfirm 内部 button（K 反馈 #7 偏好）
+ *  - Antd v5 Popconfirm 实际支持 okButtonProps.data-testid 透传到内部 button DOM
+ *    （组件层 153 行的 `data-testid: \`custom-list-popconfirm-ok-${ind.id}\`` 已正确注入）
+ *  - debug 实测：button DOM 含 data-testid="custom-list-popconfirm-ok-a"
+ *  - 注意：button 文本是 "删 除"（中间有空格），不能用 getByRole('button', {name: '删除'})
+ *  - 不依赖 Antd 内部 class（如 .ant-popconfirm），避免样式耦合
+ */
+async function waitForPopconfirmOk(id: string) {
+  return waitFor(() => screen.getByTestId(`custom-list-popconfirm-ok-${id}`));
 }
 
-/** 等待 Popconfirm 弹窗出现并返回 Cancel 按钮（第一个非 primary 按钮） */
-async function waitForPopconfirmCancel() {
-  return waitFor(() => {
-    const all = document.querySelectorAll(
-      '.ant-popconfirm .ant-btn, .ant-popover .ant-btn',
-    );
-    // 第一个是 Cancel（OK 是第二个含 ant-btn-primary）
-    const cancel = all[0] as HTMLElement;
-    if (!cancel) throw new Error('Popconfirm Cancel 按钮未出现');
-    return cancel;
-  });
+/** 等待 Popconfirm Cancel 按钮出现（同上） */
+async function waitForPopconfirmCancel(id: string) {
+  return waitFor(() => screen.getByTestId(`custom-list-popconfirm-cancel-${id}`));
 }
 
 describe('CustomIndicatorList - 删除未引用指标', () => {
@@ -200,7 +193,7 @@ describe('CustomIndicatorList - 删除未引用指标', () => {
       expect(screen.getByText('确认删除该自编指标？')).toBeInTheDocument();
     });
     // 找到 OK 按钮并点击
-    const okButton = await waitForPopconfirmOk();
+    const okButton = await waitForPopconfirmOk('a');
     await user.click(okButton);
 
     expect(onDelete).toHaveBeenCalledTimes(1);
@@ -218,7 +211,7 @@ describe('CustomIndicatorList - 删除未引用指标', () => {
       expect(screen.getByText('确认删除该自编指标？')).toBeInTheDocument();
     });
     // 点击 Cancel 按钮
-    const cancelButton = await waitForPopconfirmCancel();
+    const cancelButton = await waitForPopconfirmCancel('a');
     await user.click(cancelButton);
 
     expect(onDelete).not.toHaveBeenCalled();
@@ -234,12 +227,9 @@ describe('CustomIndicatorList - 删除已引用指标', () => {
     const user = userEvent.setup();
     const onDelete = vi.fn();
     const ind = makeIndicator({ id: 'a' });
-    // 模拟 plans 中有引用此 id
-    window.localStorage.setItem(
-      'qt_custom_indicators_v1_plans_mock_user_default',
-      JSON.stringify([{ conditions: [{ sourceId: 'a' }] }]),
-    );
-    renderList({ indicators: [ind], onDelete });
+    // K 2026-06-18 任务 #9：引用关系从 localStorage 改为 props 注入，
+    // 测试通过 referencedIds={{ 'a' }} 显式告知组件被引用（不再依赖 localStorage）
+    renderList({ indicators: [ind], referencedIds: new Set(['a']), onDelete });
 
     await user.click(screen.getByTestId('custom-list-delete-a'));
     await waitFor(() => {
@@ -248,7 +238,7 @@ describe('CustomIndicatorList - 删除已引用指标', () => {
     expect(screen.getByText(/删除后引用该指标的条件将自动标记为失效/)).toBeInTheDocument();
 
     // 确认删除
-    const okButton = await waitForPopconfirmOk();
+    const okButton = await waitForPopconfirmOk('a');
     await user.click(okButton);
     expect(onDelete).toHaveBeenCalledWith('a');
   });

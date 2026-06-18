@@ -113,9 +113,18 @@ const api = axios.create({ baseURL: '/api' });
 /**
  * 获取股票列表（选股接口）
  * 响应路径：json.data.items + json.data.total
+ *
+ * K 2026-06-18 任务 #11：可选 signal 参数用于取消上次未完成的请求，
+ * 防止用户快速多次点击"开始选股"时旧数据覆盖新数据。
  */
-export const fetchStocks = async (params: StockListParams = {}): Promise<StockListResponse> => {
-  const { data } = await api.get<ApiResponse<StockListResponse>>('/stocks/', { params });
+export const fetchStocks = async (
+  params: StockListParams = {},
+  signal?: AbortSignal,
+): Promise<StockListResponse> => {
+  const { data } = await api.get<ApiResponse<StockListResponse>>('/stocks/', {
+    params,
+    ...(signal ? { signal } : {}),
+  });
   return unwrap(data);
 };
 

@@ -12,7 +12,7 @@
  * - CustomIndicatorModal/List/ImportExportButtons 不修改（P3.1/3.2/3.3 已完成）
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Button, message, Space, Typography, Card } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
@@ -31,8 +31,25 @@ const { Text } = Typography;
 
 export const CustomIndicatorManager: React.FC = () => {
   const { state, dispatch } = useScreener();
-  const { customIndicators } = state;
+  const { customIndicators, filterGroup } = state;
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // K 2026-06-18 任务 #9：从 state.filterGroup.conditions 实时计算已引用的指标 ID
+  // （替代之前 CustomIndicatorList 内直接调 storage.isIndicatorReferenced 读 localStorage）
+  // K 2026-06-18 反馈 #4：使用 isIndicatorReferencedByConditions 纯函数从内存计算，
+  // 不再依赖 localStorage 读 plans_<userId>，避免 React state 与 storage 脱节
+  // K 2026-06-18 反馈 #5：过滤掉 invalid 条件，避免失效引用触发"被方案引用"提示
+  const referencedIds = useMemo(() => {
+    const ids = new Set<string>();
+    const conds = filterGroup?.conditions ?? [];
+    conds.forEach((c) => {
+      // 失效条件不再视为"被方案引用"（指标已删除后条件标记 invalid，
+      // 删除时不应再提示"被引用"风险）
+      if (c.invalid) return;
+      if (c.source === 'custom' && c.sourceId) ids.add(c.sourceId);
+    });
+    return ids;
+  }, [filterGroup?.conditions]);
 
   // 弹窗状态
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -109,7 +126,7 @@ export const CustomIndicatorManager: React.FC = () => {
   /**
    * P3.3：删除自编指标
    * - 调用 removeCustomIndicator 软删除
-   * - dispatch REMOVE_CUSTOM_INDICATOR 更新 state（reducer 自动扫描 filterTree 标记失效）
+   * - dispatch REMOVE_CUSTOM_INDICATOR 更新 state（reducer 自动扫描 filterGroup 标记失效）
    */
   const handleDelete = (id: string) => {
     const ind = customIndicators.find((i) => i.id === id);
@@ -165,6 +182,7 @@ export const CustomIndicatorManager: React.FC = () => {
       {/* 指标列表 */}
       <CustomIndicatorList
         indicators={customIndicators}
+        referencedIds={referencedIds}
         onEdit={handleEdit}
         onDelete={handleDelete}
       />
