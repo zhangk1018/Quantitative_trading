@@ -18,15 +18,21 @@ export type FilterOp = 'AND' | 'OR' | 'NOT';
  */
 export type FilterSource = 'system' | 'custom';
 
-/** 6 个预设 + 自定义的可选 fieldKey */
+/** 6 个预设 + 5 个 K线形态 + 自定义的可选 fieldKey */
 export type ConditionFieldKey =
-  | 'rsi_oversold'          // RSI超卖
-  | 'volume_breakout'       // 放量突破
-  | 'macd_golden_cross'     // MACD金叉
-  | 'bottom_volume_macd'    // 底部放量+MACD金叉
-  | 'consecutive_up'        // 连续上涨
-  | 'low_valuation'         // 低估值
-  | 'custom';               // 自定义（预留）
+  | 'rsi_oversold'               // RSI超卖
+  | 'volume_breakout'            // 放量突破
+  | 'macd_golden_cross'          // MACD金叉
+  | 'bottom_volume_macd'         // 底部放量（= 放量突破 + MACD金叉）
+  | 'consecutive_up'             // 连续上涨
+  | 'low_valuation'              // 低估值
+  // K 2026-06-17 新增：5 个 K线形态（V1.0 暂未落 ETL，UI 先接入）
+  | 'pattern_morning_star'       // 早晨之星
+  | 'pattern_evening_star'       // 黄昏之星
+  | 'pattern_bullish_engulfing'  // 看涨吞没
+  | 'pattern_bearish_engulfing'  // 看跌吞没
+  | 'pattern_hammer'             // 锤子线
+  | 'custom';                    // 自定义（预留）
 
 /** 自定义指标 fieldKey 命名约定：`custom_<id>`（K 2026-06-16 约定） */
 export const CUSTOM_FIELD_KEY_PREFIX = 'custom_';
@@ -60,6 +66,12 @@ export interface FilterCondition {
   invalid?: boolean;
   /** 失效原因（仅 invalid=true 时有值） */
   invalidReason?: string;
+  /**
+   * K 2026-06-17 新增：K线形态回看天数（1/3/5/10）。
+   * 仅 K线形态（5 个 pattern_*）使用；其他条件忽略该字段。
+   * 语义：近 N 天内任一天触发即命中（包含今天）。
+   */
+  lookbackDays?: number;
 }
 
 /** 整棵树（扁平无嵌套） */
@@ -110,7 +122,59 @@ export const FILTER_PRESETS: FilterPreset[] = [
     label: '低估值',
     conditions: [{ op: 'AND', fieldKey: 'low_valuation', label: '低估值' }],
   },
+  // K 2026-06-17 新增：5 个 K线形态 preset（带默认 lookbackDays=3）
+  {
+    fieldKey: 'pattern_morning_star',
+    label: '早晨之星',
+    conditions: [{
+      op: 'AND', fieldKey: 'pattern_morning_star', label: '早晨之星', lookbackDays: 3,
+    }],
+  },
+  {
+    fieldKey: 'pattern_evening_star',
+    label: '黄昏之星',
+    conditions: [{
+      op: 'AND', fieldKey: 'pattern_evening_star', label: '黄昏之星', lookbackDays: 3,
+    }],
+  },
+  {
+    fieldKey: 'pattern_bullish_engulfing',
+    label: '看涨吞没',
+    conditions: [{
+      op: 'AND', fieldKey: 'pattern_bullish_engulfing', label: '看涨吞没', lookbackDays: 3,
+    }],
+  },
+  {
+    fieldKey: 'pattern_bearish_engulfing',
+    label: '看跌吞没',
+    conditions: [{
+      op: 'AND', fieldKey: 'pattern_bearish_engulfing', label: '看跌吞没', lookbackDays: 3,
+    }],
+  },
+  {
+    fieldKey: 'pattern_hammer',
+    label: '锤子线',
+    conditions: [{
+      op: 'AND', fieldKey: 'pattern_hammer', label: '锤子线', lookbackDays: 3,
+    }],
+  },
 ];
+
+/** K 2026-06-17 新增：K线形态 preset 分组（用于 ConditionBuilder 三组渲染） */
+export const PATTERN_PRESETS_GROUP = {
+  fieldKeyPrefix: 'pattern_',
+  label: 'K线形态',
+  count: 5,
+} as const;
+
+/** K 2026-06-17 新增：K线形态回看天数选项 */
+export const LOOKBACK_DAYS_OPTIONS = [
+  { value: 1, label: '1 天' },
+  { value: 3, label: '3 天' },
+  { value: 5, label: '5 天' },
+  { value: 10, label: '10 天' },
+] as const;
+export const DEFAULT_LOOKBACK_DAYS = 3;
 
 /** 简单的递增 id 生成器（避免引入 uuid 依赖） */
 let __idCounter = 0;

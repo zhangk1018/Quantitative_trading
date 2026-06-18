@@ -52,7 +52,14 @@ type ScreenerAction =
   | { type: 'SET_FACTOR_WEIGHT'; payload: { factorId: string; weight: number } }
   | { type: 'SET_CONDITION_TREE'; payload: FilterTree | null }
   | { type: 'SET_NEXT_CONDITION_OP'; payload: FilterOp }
-  | { type: 'ADD_CONDITION'; payload: { fieldKey: FilterCondition['fieldKey']; label: string } }
+  | { type: 'ADD_CONDITION'; payload: {
+      fieldKey: FilterCondition['fieldKey'];
+      label: string;
+      source?: FilterCondition['source'];
+      sourceId?: FilterCondition['sourceId'];
+      op?: FilterOp;
+      lookbackDays?: number;
+    } }
   | { type: 'REMOVE_CONDITION'; payload: string }
   | { type: 'UPDATE_CONDITION_OP'; payload: { id: string; op: FilterOp } }
   | { type: 'CLEAR_CONDITIONS' }
@@ -218,12 +225,17 @@ function screenerReducer(state: ScreenerState, action: ScreenerAction): Screener
       const currentConditions = state.filterTree?.conditions || [];
       // K 2026-06-16 代码审阅建议：空列表时首条件 op 强制 'AND'（无意义，但保证数据一致性）
       // 实际过滤逻辑中首条件前无连接符，其 op 应被忽略
-      const op: FilterOp = currentConditions.length === 0 ? 'AND' : state.nextConditionOp;
+      // K 2026-06-17 扩展：payload 可携带 op 覆盖（自编指标多选时按选择顺序确定 op）
+      const op: FilterOp = action.payload.op
+        ?? (currentConditions.length === 0 ? 'AND' : state.nextConditionOp);
       const newCond: FilterCondition = {
         id: genConditionId(),
         op,
         fieldKey: action.payload.fieldKey,
         label: action.payload.label,
+        source: action.payload.source,
+        sourceId: action.payload.sourceId,
+        lookbackDays: action.payload.lookbackDays,
       };
       return {
         ...state,

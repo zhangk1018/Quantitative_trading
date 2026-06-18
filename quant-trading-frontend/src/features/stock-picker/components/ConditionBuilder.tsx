@@ -1,71 +1,167 @@
-import React from 'react';
-import { Typography, Button, Collapse, Tooltip } from 'antd';
+import React, { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Typography, Button, Collapse, Tooltip, Select } from 'antd';
 import {
   ControlOutlined,
   ReloadOutlined,
-  PlusOutlined,
-  EyeOutlined,
   CloseOutlined,
   BookOutlined,
+  ThunderboltOutlined,
+  AppstoreAddOutlined,
+  PlusCircleOutlined,
 } from '@ant-design/icons';
 import { useScreener } from '../context/ScreenerContext';
-import { FILTER_PRESETS, FilterOp } from '../types/filterTree';
+import {
+  FILTER_PRESETS,
+  PATTERN_PRESETS_GROUP,
+  LOOKBACK_DAYS_OPTIONS,
+  DEFAULT_LOOKBACK_DAYS,
+  buildCustomFieldKey,
+  FilterCondition,
+} from '../types/filterTree';
+import { CustomIndicator } from '../types/customIndicator';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
 
-const RELATION_OPS: { value: FilterOp; label: string; color: string }[] = [
-  { value: 'AND', label: 'AND', color: 'bg-cyan-500' },
-  { value: 'OR', label: 'OR', color: 'bg-blue-500' },
-  { value: 'NOT', label: 'NOT', color: 'bg-red-500' },
-];
+/** K 2026-06-17 决策：按 fieldKey 区分三组 preset */
+const TECHNICAL_PRESETS = FILTER_PRESETS.filter(
+  (p) => !p.fieldKey.startsWith(PATTERN_PRESETS_GROUP.fieldKeyPrefix),
+);
+const PATTERN_PRESETS = FILTER_PRESETS.filter(
+  (p) => p.fieldKey.startsWith(PATTERN_PRESETS_GROUP.fieldKeyPrefix),
+);
 
 const ConditionBuilder: React.FC = () => {
+  const navigate = useNavigate();
   const { state, dispatch } = useScreener();
-  const { collapsedPanels, filterTree, nextConditionOp } = state;
+  const { collapsedPanels, filterTree, customIndicators } = state;
 
-  const conditionCount = filterTree?.conditions.length || 0;
+  // K 2026-06-17 新增：K线形态全局回看天数
+  const [lookbackDays, setLookbackDays] = useState<number>(DEFAULT_LOOKBACK_DAYS);
+
+  const conditions = filterTree?.conditions || [];
+  const conditionCount = conditions.length;
+
+  // 自编指标可用列表（过滤已删除）
+  const availableCustomIndicators = useMemo(
+    () => customIndicators.filter((i: CustomIndicator) => !i.deleted),
+    [customIndicators],
+  );
+
+  // 已添加的自编指标 fieldKey 集合
+  const addedCustomFieldKeys = useMemo(() => {
+    const keys = new Set<string>();
+    conditions.forEach((c) => {
+      if (c.source === 'custom' && c.sourceId) {
+        keys.add(c.sourceId);
+      }
+    });
+    return keys;
+  }, [conditions]);
+
+  // 已添加的 system preset fieldKey 集合（用于按钮高亮）
+  const selectedPresetFieldKeys = useMemo(() => {
+    const keys = new Set<string>();
+    conditions.forEach((c) => {
+      if (c.source !== 'custom' && !c.fieldKey.startsWith('custom_')) {
+        keys.add(c.fieldKey);
+      }
+    });
+    return keys;
+  }, [conditions]);
 
   const handleReset = () => {
     dispatch({ type: 'CLEAR_CONDITIONS' });
   };
 
-  // K 2026-06-17 决策：自编指标管理已迁移至 /config 页面
-  // K 2026-06-17 截图调整：ConditionBuilder 不再保留任何入口（避免 UI 拥挤）
-  // 用户通过侧边栏菜单"系统配置" → /config → 切到"自编指标" Tab 进入管理
-  // 详见 docs/architecture/P2-CustomIndicator-Context-Reducer.md
-
-  const handleApplyPreset = (presetIndex: number) => {
-    const preset = FILTER_PRESETS[presetIndex];
-    if (!preset) return;
-    dispatch({ type: 'APPLY_PRESET', payload: preset.conditions });
+  // K 2026-06-17 决策：自编指标管理入口已迁移至 /config 页面
+  const handleGoToConfigCustom = () => {
+    navigate('/config?tab=custom');
   };
 
-  const handleAddCondition = () => {
-    // 默认添加一个"自定义"空条件
-    dispatch({
-      type: 'ADD_CONDITION',
-      payload: { fieldKey: 'custom', label: '自定义条件' },
-    });
+  /**
+   * K 2026-06-17 决策：三组平级 + 全部 AND 关系，preset 按钮改为 toggle 行为。
+   * - 点未选按钮 → 添加为新条件 (AND 关系)
+   * - 点已选按钮 → 从 conditions 中移除
+   * - K线形态 preset 自动带当前 lookbackDays
+   */
+  const handleTogglePreset = (preset: typeof FILTER_PRESETS[number]) => {
+    const isPattern = preset.fieldKey.startsWith(PATTERN_PRESETS_GROUP.fieldKeyPrefix);
+    const existing = conditions.find((c) => c.fieldKey === preset.fieldKey);
+    if (existing) {
+      dispatch({ type: 'REMOVE_CONDITION', payload: existing.id });
+      return;
+    }
+    const newCond: Omit<FilterCondition, 'id'> = {
+      op: 'AND',
+      fieldKey: preset.fieldKey,
+      label: preset.label,
+      ...(isPattern ? { lookbackDays } : {}),
+    };
+    dispatch({ type: 'ADD_CONDITION', payload: newCond });
   };
 
   const handleRemoveCondition = (id: string) => {
     dispatch({ type: 'REMOVE_CONDITION', payload: id });
   };
 
-  const handleCycleOp = (id: string, currentOp: FilterOp) => {
-    // 循环切换 AND → OR → NOT → AND
-    const cycle: FilterOp[] = ['AND', 'OR', 'NOT'];
-    const idx = cycle.indexOf(currentOp);
-    const next = cycle[(idx + 1) % cycle.length];
-    dispatch({ type: 'UPDATE_CONDITION_OP', payload: { id, op: next } });
-  };
-
-  const handleSetNextOp = (op: FilterOp) => {
-    dispatch({ type: 'SET_NEXT_CONDITION_OP', payload: op });
+  // K 2026-06-17 决策：自编指标下拉多选 onChange（同样是 toggle/平级 AND）
+  const handleCustomIndicatorChange = (selectedIds: string[]) => {
+    const newSelected = selectedIds.filter((id) => !addedCustomFieldKeys.has(id));
+    newSelected.forEach((id) => {
+      const ind = availableCustomIndicators.find((i: CustomIndicator) => i.id === id);
+      if (!ind) return;
+      dispatch({
+        type: 'ADD_CONDITION',
+        payload: {
+          op: 'AND',
+          fieldKey: buildCustomFieldKey(id),
+          label: `自编:${ind.name}`,
+          source: 'custom',
+          sourceId: id,
+        },
+      });
+    });
+    const removed = [...addedCustomFieldKeys].filter((id) => !selectedIds.includes(id));
+    if (removed.length > 0) {
+      const toRemove: string[] = [];
+      conditions.forEach((c) => {
+        if (c.source === 'custom' && c.sourceId && removed.includes(c.sourceId)) {
+          toRemove.push(c.id);
+        }
+      });
+      toRemove.forEach((cid) => dispatch({ type: 'REMOVE_CONDITION', payload: cid }));
+    }
   };
 
   const activeKey = collapsedPanels.condition ? [] : ['condition'];
+
+  // 单个 preset 按钮渲染（已选高亮 + toggle 行为）
+  const renderPresetButton = (preset: typeof FILTER_PRESETS[number]) => {
+    const isSelected = selectedPresetFieldKeys.has(preset.fieldKey);
+    return (
+      <Button
+        key={preset.fieldKey}
+        size="small"
+        type={isSelected ? 'primary' : 'default'}
+        onClick={() => handleTogglePreset(preset)}
+        data-testid={`condition-preset-${preset.fieldKey}`}
+        data-selected={isSelected}
+        className="text-text-primary"
+      >
+        {preset.label}
+      </Button>
+    );
+  };
+
+  // K线形态 preset 在已添加条件中显示时附加"近N天"后缀
+  const formatCondLabel = (label: string, fieldKey: string, days?: number): string => {
+    if (fieldKey.startsWith(PATTERN_PRESETS_GROUP.fieldKeyPrefix) && days) {
+      return `${label} (近${days}天)`;
+    }
+    return label;
+  };
 
   return (
     <Collapse
@@ -109,74 +205,99 @@ const ConditionBuilder: React.FC = () => {
         }
         key="condition"
       >
-        <div className="space-y-3">
-          {/* 预设区（6 个预设） */}
+        <div className="space-y-4">
+          {/* ============== 第一组：技术指标 (6) ============== */}
           <div>
             <div className="flex items-center gap-2 mb-2">
               <BookOutlined className="text-text-secondary" />
-              <Text className="text-text-secondary text-sm">预设：</Text>
+              <Text className="text-text-secondary text-sm">
+                技术指标 ({TECHNICAL_PRESETS.length})
+              </Text>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {FILTER_PRESETS.map((preset, index) => (
-                <Button
-                  key={preset.fieldKey}
-                  size="small"
-                  onClick={() => handleApplyPreset(index)}
-                  data-testid={`condition-preset-${preset.fieldKey}`}
-                  className="text-text-primary"
-                >
-                  {preset.label}
-                </Button>
-              ))}
+              {TECHNICAL_PRESETS.map((preset) => renderPresetButton(preset))}
             </div>
           </div>
 
-          {/* 关系选择器 */}
+          {/* ============== 第二组：K线形态 (5) ============== */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="flex items-center gap-2">
+                <ThunderboltOutlined className="text-text-secondary" />
+                <Text className="text-text-secondary text-sm">
+                  K线形态 ({PATTERN_PRESETS.length})
+                </Text>
+              </span>
+              <span className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                <Text className="text-text-secondary text-xs">近</Text>
+                <Select
+                  size="small"
+                  value={lookbackDays}
+                  onChange={setLookbackDays}
+                  data-testid="condition-lookback-days"
+                  style={{ width: 70 }}
+                  options={LOOKBACK_DAYS_OPTIONS.map((o) => ({
+                    value: o.value,
+                    label: `${o.value} 天`,
+                  }))}
+                />
+                <Text className="text-text-secondary text-xs">内出现</Text>
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {PATTERN_PRESETS.map((preset) => renderPresetButton(preset))}
+            </div>
+          </div>
+
+          {/* ============== 第三组：自编指标（下拉多选） ============== */}
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <Text className="text-text-secondary text-sm">关系：</Text>
-              <div className="flex gap-1">
-                {RELATION_OPS.map((op) => {
-                  const isActive = nextConditionOp === op.value;
-                  return (
-                    <Button
-                      key={op.value}
-                      size="small"
-                      type={isActive ? 'primary' : 'default'}
-                      onClick={() => handleSetNextOp(op.value)}
-                      data-testid={`condition-op-${op.value.toLowerCase()}`}
-                      data-active={isActive}
-                      className={isActive ? '' : 'text-text-secondary'}
-                    >
-                      {op.label}
-                    </Button>
-                  );
-                })}
-              </div>
-              <Tooltip title="查看关系说明">
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EyeOutlined />}
-                  data-testid="condition-op-help"
-                  className="text-text-secondary ml-1"
-                />
-              </Tooltip>
+              <AppstoreAddOutlined className="text-text-secondary" />
+              <Text className="text-text-secondary text-sm">自编指标</Text>
+              <Text className="text-text-secondary text-xs">
+                ({addedCustomFieldKeys.size}/{availableCustomIndicators.length} 已添加)
+              </Text>
             </div>
-          </div>
-
-          {/* 添加条件按钮 */}
-          <div>
-            <Button
-              type="dashed"
-              size="small"
-              icon={<PlusOutlined />}
-              onClick={handleAddCondition}
-              data-testid="condition-add"
-              className="w-full"
-            >
-              条件
-            </Button>
+            {availableCustomIndicators.length === 0 ? (
+              <div
+                className="text-text-secondary text-sm text-center py-2 border border-dashed border-border-color rounded cursor-pointer hover:border-color-accent"
+                data-testid="condition-custom-empty"
+                onClick={handleGoToConfigCustom}
+              >
+                暂无自编指标，<span className="text-color-accent">去配置页新建</span>
+              </div>
+            ) : (
+              <Select
+                mode="multiple"
+                size="small"
+                placeholder="选择自编指标"
+                value={[...addedCustomFieldKeys]}
+                onChange={handleCustomIndicatorChange}
+                data-testid="condition-custom-select"
+                className="w-full"
+                optionFilterProp="label"
+                options={availableCustomIndicators.map((i: CustomIndicator) => ({
+                  value: i.id,
+                  label: i.name,
+                }))}
+                popupRender={(menu) => (
+                  <div>
+                    {menu}
+                    <div
+                      className="border-t border-border-color p-1 text-center cursor-pointer hover:bg-bg-elevated"
+                      data-testid="condition-custom-goto-config"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        handleGoToConfigCustom();
+                      }}
+                    >
+                      <PlusCircleOutlined className="mr-1" />
+                      <span className="text-color-accent text-sm">去配置页新建</span>
+                    </div>
+                  </div>
+                )}
+              />
+            )}
           </div>
 
           {/* 条件列表 / 空状态 */}
@@ -185,29 +306,19 @@ const ConditionBuilder: React.FC = () => {
               className="text-text-secondary text-sm text-center py-3"
               data-testid="condition-empty"
             >
-              — 暂无条件，点击"+ 条件"添加 —
+              — 暂无条件，点击上方 preset 添加 —
             </div>
           ) : (
             <div className="space-y-1" data-testid="condition-list">
-              {filterTree?.conditions.map((cond) => (
+              {conditions.map((cond) => (
                 <div
                   key={cond.id}
                   className="flex items-center justify-between bg-bg-elevated rounded px-2 py-1"
                   data-testid={`condition-item-${cond.id}`}
                 >
-                  <div className="flex items-center gap-2">
-                    <Button
-                      type="text"
-                      size="small"
-                      onClick={() => handleCycleOp(cond.id, cond.op)}
-                      data-testid={`condition-item-op-${cond.id}`}
-                      data-op={cond.op}
-                      className="text-color-accent font-mono text-xs px-2"
-                    >
-                      {cond.op}
-                    </Button>
-                    <Text className="text-text-primary text-sm">{cond.label}</Text>
-                  </div>
+                  <Text className="text-text-primary text-sm">
+                    {formatCondLabel(cond.label, cond.fieldKey, cond.lookbackDays)}
+                  </Text>
                   <Button
                     type="text"
                     size="small"
