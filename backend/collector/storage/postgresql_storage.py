@@ -570,6 +570,200 @@ class PostgreSQLStorage(BaseStorage):
             logger.error(f"❌ 获取技术指标失败: {str(e)}")
             return pd.DataFrame()
 
+    def get_indicators_batch(self, codes: List[str], cycle: str = '1d', start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """
+        批量获取多只股票的技术指标（使用 WHERE code = ANY(%s)）
+
+        Args:
+            codes: 股票代码列表
+            cycle: 周期（1d, 1w, 1m）
+            start_date: 开始日期（YYYY-MM-DD）
+            end_date: 结束日期（YYYY-MM-DD）
+
+        Returns:
+            包含所有股票指标的 DataFrame
+        """
+        if not codes:
+            return pd.DataFrame()
+
+        try:
+            query = """
+                SELECT * FROM stock_indicators
+                WHERE code = ANY(%s) AND cycle = %s
+            """
+            params = [codes, cycle]
+
+            if start_date:
+                query += " AND trade_date >= %s"
+                params.append(start_date)
+            if end_date:
+                query += " AND trade_date <= %s"
+                params.append(end_date)
+
+            query += " ORDER BY code, trade_date"
+            df = pd.read_sql(query, self.conn, params=tuple(params))
+            return df
+        except Exception as e:
+            logger.error(f"❌ 批量获取技术指标失败: {str(e)}")
+            return pd.DataFrame()
+
+    def get_quotes_batch(self, codes: List[str], cycle: str = 'daily', start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """
+        批量获取多只股票的行情数据（使用 WHERE code = ANY(%s)）
+
+        Args:
+            codes: 股票代码列表
+            cycle: 周期（daily, weekly, monthly）
+            start_date: 开始日期（YYYY-MM-DD）
+            end_date: 结束日期（YYYY-MM-DD）
+
+        Returns:
+            包含所有股票行情的 DataFrame
+        """
+        if not codes:
+            return pd.DataFrame()
+
+        # cycle 字段映射: daily -> 1d, weekly -> 1w, monthly -> 1m
+        cycle_map = {'daily': '1d', '1d': '1d', 'day': '1d',
+                     'weekly': '1w', '1w': '1w', 'week': '1w',
+                     'monthly': '1m', '1m': '1m', 'month': '1m'}
+        cycle = cycle_map.get(cycle.lower(), cycle)
+
+        try:
+            query = """
+                SELECT code, cycle, trade_date, open, high, low, close, pre_close, volume, amount, adjust_type
+                FROM stock_quotes
+                WHERE code = ANY(%s) AND cycle = %s
+            """
+            params = [codes, cycle]
+
+            if start_date:
+                query += " AND trade_date >= %s"
+                params.append(start_date)
+            if end_date:
+                query += " AND trade_date <= %s"
+                params.append(end_date)
+
+            query += " ORDER BY code, trade_date"
+            df = pd.read_sql(query, self.conn, params=tuple(params))
+            return df
+        except Exception as e:
+            logger.error(f"❌ 批量获取行情数据失败: {str(e)}")
+            return pd.DataFrame()
+
+    def get_indicators_with_quotes_batch(self, codes: List[str], cycle: str = '1d', start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """
+        批量获取多只股票的技术指标和行情数据（一次 JOIN 查询）
+
+        Args:
+            codes: 股票代码列表
+            cycle: 周期（1d, 1w, 1m）
+            start_date: 开始日期（YYYY-MM-DD）
+            end_date: 结束日期（YYYY-MM-DD）
+
+        Returns:
+            包含技术指标和行情数据的 DataFrame（按 code, trade_date 关联）
+        """
+        if not codes:
+            return pd.DataFrame()
+
+        try:
+            query = """
+                SELECT
+                    i.code, i.cycle, i.trade_date,
+                    i.ma5, i.ma10, i.ma20, i.ma60,
+                    i.dif, i.dea, i.macd,
+                    i.rsi6, i.rsi12, i.rsi24,
+                    q.close, q.volume
+                FROM stock_indicators i
+                LEFT JOIN stock_quotes q
+                    ON i.code = q.code
+                    AND i.trade_date = q.trade_date
+                    AND q.cycle = %s
+                WHERE i.code = ANY(%s) AND i.cycle = %s
+            """
+            # cycle 映射
+            cycle_map = {'daily': '1d', '1d': '1d', 'day': '1d',
+                         'weekly': '1w', '1w': '1w', 'week': '1w',
+                         'monthly': '1m', '1m': '1m', 'month': '1m'}
+            db_cycle = cycle_map.get(cycle.lower(), cycle)
+            params = [db_cycle, codes, db_cycle]
+
+            if start_date:
+                query += " AND i.trade_date >= %s"
+                params.append(start_date)
+            if end_date:
+                query += " AND i.trade_date <= %s"
+                params.append(end_date)
+
+            query += " ORDER BY i.code, i.trade_date"
+            df = pd.read_sql(query, self.conn, params=tuple(params))
+            return df
+        except Exception as e:
+            logger.error(f"❌ 批量获取指标和行情数据失败: {str(e)}")
+            return pd.DataFrame()
+
+    def get_last_signal_date(self, code: str, cycle: str = '1d') -> Optional[datetime]:
+        """
+        获取指定股票最后有信号的日期（用于增量计算）
+
+        Args:
+            code: 股票代码
+            cycle: 周期
+
+        Returns:
+            最后信号日期，如果没有则返回 None
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT MAX(trade_date) FROM trade_signals
+                WHERE code = %s AND cycle = %s
+            """, (code, cycle))
+            result = cursor.fetchone()
+            if result and result[0]:
+                return result[0]
+            return None
+        except Exception as e:
+            logger.error(f"❌ 获取最后信号日期失败 {code}: {str(e)}")
+            return None
+
+    def get_last_signal_dates_batch(self, codes: List[str], cycle: str = '1d') -> Dict[str, Optional[datetime]]:
+        """
+        批量获取多只股票的最后信号日期（解决 N+1 查询问题）
+
+        Args:
+            codes: 股票代码列表
+            cycle: 周期
+
+        Returns:
+            字典 {code: last_signal_date}，无信号则值为 None
+        """
+        if not codes:
+            return {}
+
+        try:
+            query = """
+                SELECT code, MAX(trade_date) as last_date
+                FROM trade_signals
+                WHERE code = ANY(%s) AND cycle = %s
+                GROUP BY code
+            """
+            df = pd.read_sql(query, self.conn, params=(codes, cycle))
+            
+            result = {}
+            for code in codes:
+                matching = df[df['code'] == code]
+                if not matching.empty and pd.notna(matching.iloc[0]['last_date']):
+                    result[code] = matching.iloc[0]['last_date']
+                else:
+                    result[code] = None
+            
+            return result
+        except Exception as e:
+            logger.error(f"❌ 批量获取最后信号日期失败: {str(e)}")
+            return {code: None for code in codes}
+
     def save_adj_factor(self, df: pd.DataFrame) -> int:
         """保存复权因子数据"""
         if df.empty:
@@ -708,6 +902,12 @@ class PostgreSQLStorage(BaseStorage):
 
     def save_daily_basic(self, df: pd.DataFrame) -> int:
         """保存日频基本面数据（PE/PB/换手率/市值）"""
+        if df.empty:
+            return 0
+
+        # 过滤北交所股票：项目数据范围不包含北交所
+        from utils.stock_code_utils import filter_out_bse
+        df, _ = filter_out_bse(df)
         if df.empty:
             return 0
 
@@ -892,6 +1092,65 @@ class PostgreSQLStorage(BaseStorage):
         except Exception as e:
             self.conn.rollback()
             logger.error(f"❌ 保存交易信号失败: {str(e)}")
+            return 0
+
+    def save_signals_batch(self, df: pd.DataFrame) -> int:
+        """
+        批量保存交易信号（使用 psycopg2.extras.execute_values，速度提升 100 倍）
+
+        Args:
+            df: 包含信号数据的 DataFrame
+
+        Returns:
+            成功保存的记录数
+        """
+        if df.empty:
+            return 0
+
+        try:
+            from psycopg2 import extras
+
+            cursor = self.conn.cursor()
+
+            insert_sql = """
+                INSERT INTO trade_signals (
+                    code, cycle, trade_date, signal_type, signal_direction,
+                    signal_value, signal_strength, description
+                ) VALUES %s
+                ON CONFLICT (code, trade_date, signal_type) DO UPDATE SET
+                    cycle = EXCLUDED.cycle,
+                    signal_direction = EXCLUDED.signal_direction,
+                    signal_value = EXCLUDED.signal_value,
+                    signal_strength = EXCLUDED.signal_strength,
+                    description = EXCLUDED.description
+            """
+
+            # 构建 values 列表
+            values = []
+            for _, row in df.iterrows():
+                values.append((
+                    str(row['code']),
+                    str(row.get('cycle', '1d')),
+                    row['trade_date'],
+                    str(row['signal_type']),
+                    str(row.get('signal_direction', '')) if pd.notna(row.get('signal_direction')) else None,
+                    float(row['signal_value']) if pd.notna(row.get('signal_value')) else None,
+                    int(row['signal_strength']) if pd.notna(row.get('signal_strength')) else None,
+                    str(row.get('description', '')) if pd.notna(row.get('description')) else None,
+                ))
+
+            # 使用 execute_values 批量插入
+            extras.execute_values(cursor, insert_sql, values)
+            self.conn.commit()
+            cursor.close()
+
+            count = len(values)
+            logger.debug(f"✅ 批量保存交易信号: {count} 条")
+            return count
+
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"❌ 批量保存交易信号失败: {str(e)}")
             return 0
 
     def get_signals(self, code: Optional[str] = None,

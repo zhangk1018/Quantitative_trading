@@ -263,6 +263,12 @@ class ScreenerService:
         mask = pd.Series(True, index=df.index)
 
         for field, condition in filters.items():
+            # K 2026-06-18：条件构建器复合条件（rsi_oversold/volume_breakout/low_valuation）
+            # field 形如 `__cond_<fieldKey>`，condition 是 dict {kind, field, op, value/conditions}
+            if field.startswith("__cond_") and isinstance(condition, dict):
+                mask &= self._apply_cond_special(df, condition)
+                continue
+
             col = self.to_parquet_col(field)
             if col not in df.columns:
                 continue
@@ -315,6 +321,50 @@ class ScreenerService:
             if field in group:
                 return group[field].get("type", "binary")
         return "binary"
+
+    def _apply_cond_special(self, df: pd.DataFrame, condition: Dict[str, Any]) -> pd.Series:
+        """条件构建器复合条件特判（K 2026-06-18 任务）。
+
+        支持两种 kind：
+        - threshold：单字段阈值（{field, op, value}）
+        - multi_threshold：多字段阈值 AND（{conditions: [{field, op, value}, ...]}）
+
+        op 支持：<, <=, >, >=, ==, !=
+        """
+        import operator as op_mod
+
+        op_map = {
+            "<": op_mod.lt,
+            "<=": op_mod.le,
+            ">": op_mod.gt,
+            ">=": op_mod.ge,
+            "==": op_mod.eq,
+            "!=": op_mod.ne,
+        }
+        kind = condition.get("kind")
+        if kind == "threshold":
+            sub_list = [{
+                "field": condition["field"],
+                "op": condition["op"],
+                "value": condition["value"],
+            }]
+        elif kind == "multi_threshold":
+            sub_list = condition.get("conditions", [])
+        else:
+            return pd.Series(True, index=df.index)
+
+        mask = pd.Series(True, index=df.index)
+        for sub in sub_list:
+            field = sub.get("field")
+            op_str = sub.get("op")
+            value = sub.get("value")
+            col = self.to_parquet_col(field)
+            op_func = op_map.get(op_str)
+            if col not in df.columns or op_func is None:
+                continue
+            # NaN 视为不命中（避免假阳性）
+            mask &= op_func(df[col], value) & df[col].notna()
+        return mask
 
     def _apply_sorting(self, df: pd.DataFrame, sort_by: str, sort_order: str) -> pd.DataFrame:
         col = self.to_parquet_col(sort_by)

@@ -50,7 +50,7 @@ button { background: var(--card); color: var(--text); border: 1px solid var(--bo
 
 <div class="header">
   <div><h1>📊 系统状态及数据监控</h1></div>
-  <div><button onclick="refreshAll()">🔄 手动刷新</button></div>
+  <div><button id="manualRefreshBtn" onclick="refreshAll()">🔄 手动刷新</button></div>
 </div>
 
 <div class="card">
@@ -552,38 +552,63 @@ function toggleDiff(el, id) {
 
 // 主刷新函数 - 从真实 API 获取数据
 async function refreshAll() {
-  // 更新按钮状态
-  const btn = document.querySelector('button');
-  const originalText = btn.innerHTML;
-  btn.innerHTML = '🔄 刷新中...';
-  btn.disabled = true;
+  // 更新按钮状态（用 id 精准定位，避免选中页面其他 button）
+  const btn = document.getElementById('manualRefreshBtn');
+  if (btn) {
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '🔄 刷新中...';
+    btn.disabled = true;
 
-  try {
-    // 并行获取所有数据
-    const [summary, trend, taskChain, health, fieldCompleteness, consistency, anomaly] = await Promise.all([
-      fetchAPI('/api/monitor/data-summary/'),
-      fetchAPI('/api/monitor/coverage-trend/'),
-      fetchAPI('/api/monitor/task-chain/'),
-      fetchAPI('/api/monitor/health-check/'),
-      fetchAPI('/api/monitor/field-completeness/'),
-      fetchAPI('/api/monitor/consistency-check/'),
-      fetchAPI('/api/monitor/anomaly-detection/'),
-    ]);
+    // 确保按钮可恢复（每个端点超时不影响按钮状态）
+    const restore = () => {
+      btn.innerHTML = originalText;
+      btn.disabled = false;
+    };
 
-    // 缓存数据
-    cacheData = { summary, trend, taskChain, health, fieldCompleteness, consistency, anomaly };
+    try {
+      // 并行获取所有数据（用 allSettled 避免一个失败拖死全部）
+      const [summary, trend, taskChain, health, fieldCompleteness, consistency, anomaly] = await Promise.allSettled([
+        fetchAPI('/api/monitor/data-summary/'),
+        fetchAPI('/api/monitor/coverage-trend/'),
+        fetchAPI('/api/monitor/task-chain/'),
+        fetchAPI('/api/monitor/health-check/'),
+        fetchAPI('/api/monitor/field-completeness/'),
+        fetchAPI('/api/monitor/consistency-check/'),
+        fetchAPI('/api/monitor/anomaly-detection/'),
+      ]).then(results => results.map(r => r.status === 'fulfilled' ? r.value : null));
 
-    // 渲染所有模块
-    renderSummary(summary, trend);
-    renderTaskChain(taskChain);
-    renderHealth(health);
-    renderDataQualityDeep({ fieldCompleteness, consistency, anomaly });
+      // 缓存数据
+      cacheData = { summary, trend, taskChain, health, fieldCompleteness, consistency, anomaly };
 
-  } finally {
-    // 恢复按钮状态
-    btn.innerHTML = originalText;
-    btn.disabled = false;
+      // 渲染所有模块
+      renderSummary(summary, trend);
+      renderTaskChain(taskChain);
+      renderHealth(health);
+      renderDataQualityDeep({ fieldCompleteness, consistency, anomaly });
+    } catch (e) {
+      console.error('refreshAll 异常:', e);
+    } finally {
+      restore();
+    }
+    return;
   }
+
+  // 兜底：如果按钮没找到，至少执行数据加载
+  const [summary, trend, taskChain, health, fieldCompleteness, consistency, anomaly] = await Promise.allSettled([
+    fetchAPI('/api/monitor/data-summary/'),
+    fetchAPI('/api/monitor/coverage-trend/'),
+    fetchAPI('/api/monitor/task-chain/'),
+    fetchAPI('/api/monitor/health-check/'),
+    fetchAPI('/api/monitor/field-completeness/'),
+    fetchAPI('/api/monitor/consistency-check/'),
+    fetchAPI('/api/monitor/anomaly-detection/'),
+  ]).then(results => results.map(r => r.status === 'fulfilled' ? r.value : null));
+
+  cacheData = { summary, trend, taskChain, health, fieldCompleteness, consistency, anomaly };
+  renderSummary(summary, trend);
+  renderTaskChain(taskChain);
+  renderHealth(health);
+  renderDataQualityDeep({ fieldCompleteness, consistency, anomaly });
 }
 
 // 页面加载时初始化

@@ -32,10 +32,71 @@ INDICATOR_FIELD_MAP = {
     "turnover": "turnover_rate",
 }
 
+# 条件构建器 preset fieldKey → 后端 filter_dict 特殊键（复合条件，
+# 需在 _apply_filters 中特判；其余 fieldKey 与 parquet 列名同名）
+# 命名规则：键以 `__cond_` 开头避免与普通列名冲突
+_COND_SPECIAL_PREFIX = "__cond_"
+
+# preset fieldKey → filter_dict 特殊条件映射（值是 dict 形式，
+# 后续在 screener_service._apply_cond_special 中处理）
+COND_SPECIAL_MAP = {
+    "rsi_oversold": {
+        # 6 日 RSI < 30 视为超卖
+        "kind": "threshold",
+        "field": "rsi_6",
+        "op": "<",
+        "value": 30,
+    },
+    "volume_breakout": {
+        # 量比 ≥ 1.5 视为放量
+        "kind": "threshold",
+        "field": "volume_ratio",
+        "op": ">=",
+        "value": 1.5,
+    },
+    "low_valuation": {
+        # K 2026-06-18 决策：pe_ttm<30 且 pb<3 且非负
+        "kind": "multi_threshold",
+        "conditions": [
+            {"field": "pe_ttm", "op": ">", "value": 0},
+            {"field": "pe_ttm", "op": "<", "value": 30},
+            {"field": "pb", "op": "<", "value": 3},
+        ],
+    },
+    "consecutive_up": {
+        # K 2026-06-18 决策：parquet 只有 consec_up_days（int64），
+        # 连涨 3 天及以上 = consec_up_days >= 3
+        "kind": "threshold",
+        "field": "consec_up_days",
+        "op": ">=",
+        "value": 3,
+    },
+}
+
+# K 2026-06-18 决策：5 个 K线形态 parquet 暂无对应列，标记为不支持
+# 后端收到这些 fieldKey 写入 logger.warning 并跳过（前端 UI 仍保留，
+# 等后续 ETL 接入后从该集合移除即可生效）
+COND_UNSUPPORTED_FIELD_KEYS = {
+    "pattern_morning_star",
+    "pattern_evening_star",
+    "pattern_bullish_engulfing",
+    "pattern_bearish_engulfing",
+    "pattern_hammer",
+}
+
+# 条件构建器 preset fieldKey → 真实 parquet 列名（同名的 fieldKey 走这条路径）
+# 业务：K 2026-06-18 任务，仅保留与 parquet 列名 1:1 映射的 preset。
+# 其余复杂/不支持的 preset 见 COND_SPECIAL_MAP / COND_UNSUPPORTED_FIELD_KEYS。
+COND_DIRECT_FIELD_KEYS = {
+    # MACD pattern（preset fieldKey 简写 → parquet 全称）
+    "macd_golden_cross": "macd_low_golden_cross",
+    "bottom_volume_macd": None,  # 组合 preset，下面特殊处理
+}
+
 
 def _parse_indicator_ranges(query_params) -> dict:
     """解析 query 参数中的 ${id}_min / ${id}_max，通过映射表转换为 filter_dict 范围条件。
-    
+
     返回格式: {"field_name": {"min": 1.0, "max": 2.0}, ...}
     """
     ranges = {}
@@ -58,6 +119,66 @@ def _parse_indicator_ranges(query_params) -> dict:
         else:
             ranges[field]["max"] = val
     return ranges
+
+
+def _parse_condition_builder(query_params) -> dict:
+    """解析 query 参数中的 cond_<fieldKey>=<op>，转换为 filter_dict。
+
+    K 2026-06-18 任务：把"条件构建器"中的筛选条件接入选股。
+
+    三种 preset 落地方案：
+    1. 复合条件（如 rsi_oversold/volume_breakout/low_valuation）：
+       写入 filter_dict[`__cond_<fieldKey>`] = {kind, field/op/value/...}，
+       后续由 screener_service._apply_cond_special 处理。
+    2. 1:1 映射的 preset（如 consecutive_up → consec_up_3、5 个 K线形态）：
+       写入 filter_dict[<parquet_col>] = True（二进制列 =1 即命中）。
+    3. 组合 preset（如 bottom_volume_macd = volume_breakout AND macd_golden_cross）：
+       展开为两个条件。
+
+    自编指标（fieldKey 以 `custom_` 开头）后端暂无 ETL 支持，跳过。
+
+    返回: dict（写入到 filter_dict 的子集）
+    """
+    result = {}
+    for param_name, param_value in query_params.items():
+        if not param_name.startswith("cond_"):
+            continue
+        field_key = param_name[len("cond_"):]
+        if not field_key:
+            continue
+        # 自编指标：后端暂无 ETL 支持，跳过（前端会兜底）
+        if field_key.startswith("custom_"):
+            continue
+
+        # 0. 不支持的 preset（K 2026-06-18 决策：写 warning 后跳过）
+        if field_key in COND_UNSUPPORTED_FIELD_KEYS:
+            logger.warning(
+                "条件构建器 preset %r 当前无 parquet 数据支持（K 2026-06-18 决策 ignore），已跳过",
+                field_key,
+            )
+            continue
+
+        # 1. 复合条件（需特判）
+        if field_key in COND_SPECIAL_MAP:
+            result[f"{_COND_SPECIAL_PREFIX}{field_key}"] = COND_SPECIAL_MAP[field_key]
+            continue
+
+        # 2. 组合 preset：展开
+        if field_key == "bottom_volume_macd":
+            result[f"{_COND_SPECIAL_PREFIX}volume_breakout"] = COND_SPECIAL_MAP["volume_breakout"]
+            result["macd_low_golden_cross"] = True
+            continue
+
+        # 3. 1:1 映射 preset
+        parquet_col = COND_DIRECT_FIELD_KEYS.get(field_key)
+        if parquet_col:
+            result[parquet_col] = True
+            continue
+
+        # 未识别的 fieldKey：忽略（不抛错，保持兼容性）
+        logger.warning("条件构建器忽略未识别的 fieldKey: %s", field_key)
+
+    return result
 
 
 @router.get("/", summary="股票列表（支持筛选、排序、分页）")
@@ -104,6 +225,10 @@ def get_stocks(
         indicator_ranges = _parse_indicator_ranges(request.query_params)
         for field, range_cond in indicator_ranges.items():
             filter_dict[field] = range_cond
+
+        # 解析条件构建器 cond_<fieldKey>=<op>（K 2026-06-18 任务）
+        cond_filters = _parse_condition_builder(request.query_params)
+        filter_dict.update(cond_filters)
 
         # 解析技术指标 pattern 筛选参数（2026-06-16 新增）
         tech_pattern_map = {

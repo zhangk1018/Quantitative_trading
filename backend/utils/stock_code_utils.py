@@ -279,3 +279,58 @@ def is_a_stock(code: str) -> bool:
     ]
     
     return prefix in a_stock_prefixes
+
+
+# 北交所股票代码前缀正则（6位格式）
+# - 920xxx: 北交所（9开头，3位前缀920）
+# - 8xxxxx: 北交所（8开头，6位）
+BSE_CODE_PATTERN = r'^(8[0-9]{5}|920[0-9]{3})$'
+
+
+def is_bse_code(code: str) -> bool:
+    """
+    判断是否为北交所股票代码
+
+    Args:
+        code: 股票代码（支持纯数字或带市场前缀格式）
+
+    Returns:
+        True 表示是北交所代码，False 表示不是
+    """
+    normalized = normalize_code(code)
+    if not normalized:
+        return False
+    return bool(__import__('re').match(BSE_CODE_PATTERN, normalized))
+
+
+def filter_out_bse(df, code_column: str = 'code') -> tuple:
+    """
+    从 DataFrame 中过滤掉北交所股票（统一入口）
+
+    Args:
+        df: 包含股票代码列的 DataFrame
+        code_column: 代码列的列名，默认 'code'
+
+    Returns:
+        (filtered_df, removed_count): 过滤后的 DataFrame 和被移除的记录数
+
+    注意:
+        - 项目数据范围不包含北交所，所有 ETL 入库程序必须调用此函数
+        - 代码必须先 normalize_code 标准化后再过滤
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    if df is None or df.empty:
+        return df, 0
+
+    import re
+    codes = df[code_column].astype(str)
+    bse_mask = codes.str.match(BSE_CODE_PATTERN)
+    bse_count = int(bse_mask.sum())
+
+    if bse_count > 0:
+        logger.warning(f"过滤 {bse_count} 条北交所数据（{list(codes[bse_mask].unique()[:5])}{'...' if bse_count > 5 else ''}）")
+        return df[~bse_mask], bse_count
+
+    return df, 0

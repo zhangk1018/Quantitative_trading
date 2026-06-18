@@ -126,6 +126,10 @@ class DailyDataImporter(BaseDataImporter):
         price_cols = ['open', 'high', 'low', 'close']
         mask = (df[price_cols] > 0).all(axis=1) & df['volume'].notna() & (df['volume'] > 0)
         df = df[mask]
+
+        # 过滤北交所股票（8xxxxx/920xxx）：项目数据范围不包含北交所
+        from utils.stock_code_utils import filter_out_bse
+        df, _ = filter_out_bse(df)
         
         # 转换 volume 为 Int64 类型：先四舍五入到整数，再转换
         df['volume'] = df['volume'].round().astype('Int64')

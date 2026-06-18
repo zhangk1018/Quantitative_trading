@@ -78,6 +78,13 @@ def sync_tushare_daily_basic(target_date: str = None, db_session=None) -> int:
     # trade_date 转为 date 类型
     df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
 
+    # 过滤北交所股票：项目数据范围不包含北交所
+    from utils.stock_code_utils import filter_out_bse
+    df, _ = filter_out_bse(df)
+    if df.empty:
+        logger.info("过滤北交所后无数据")
+        return 0
+
     # 转换为字典列表
     records = df.to_dict('records')
 

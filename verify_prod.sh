@@ -41,23 +41,23 @@ section()   { echo ""; echo "═════════════════
 # ============================================================
 section "1. 容器健康状态"
 
-# 检查容器是否在运行
-for svc in postgres backend; do
-    state=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q "$svc" 2>/dev/null)
+# 检查容器是否在运行（使用实际容器名匹配）
+for container in "quant-postgres" "quant-backend"; do
+    state=$(docker ps -q --filter "name=^/${container}$")
     if [ -n "$state" ]; then
         status=$(docker inspect --format='{{.State.Status}}' "$state" 2>/dev/null)
         health=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$state" 2>/dev/null)
         if [ "$status" = "running" ]; then
             if [ "$health" = "healthy" ] || [ "$health" = "no-healthcheck" ]; then
-                log_pass "容器 $svc: running, health=$health"
+                log_pass "容器 $container: running, health=$health"
             else
-                log_warn "容器 $svc: running, health=$health（等待健康中...）"
+                log_warn "容器 $container: running, health=$health（等待健康中...）"
             fi
         else
-            log_fail "容器 $svc: $status"
+            log_fail "容器 $container: $status"
         fi
     else
-        log_fail "容器 $svc: 不存在（未启动？）"
+        log_fail "容器 $container: 不存在（未启动？）"
     fi
 done
 
@@ -92,19 +92,21 @@ check_api "/api/kline/000001.SZ" "K线数据 API"
 # ============================================================
 section "3. 数据库连通性"
 
-# 通过 docker exec 连接 postgres
-pg_result=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+# 通过 docker exec 连接 postgres（使用容器名）
+pg_result=$(docker exec quant-postgres \
     psql -U "${PG_USER:-quant_user}" -d "${PG_DATABASE:-quant_trading}" -t -c \
     "SELECT COUNT(*) FROM stock_quotes LIMIT 1;" 2>/dev/null | tr -d '[:space:]')
 
 if [ -n "$pg_result" ] && [ "$pg_result" -gt 0 ] 2>/dev/null; then
     log_pass "PostgreSQL 连通性: stock_quotes 表有数据（$pg_result 条）"
+elif [ "$pg_result" = "0" ]; then
+    log_warn "PostgreSQL 连通性正常: stock_quotes 表为空（数据未导入）"
 else
-    log_fail "PostgreSQL 连通性: 查询失败或无数据"
+    log_fail "PostgreSQL 连通性: 查询失败"
 fi
 
 # 检查 stock_indicators 表
-ind_result=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+ind_result=$(docker exec quant-postgres \
     psql -U "${PG_USER:-quant_user}" -d "${PG_DATABASE:-quant_trading}" -t -c \
     "SELECT COUNT(*) FROM stock_indicators LIMIT 1;" 2>/dev/null | tr -d '[:space:]')
 
@@ -128,13 +130,11 @@ docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
 # ============================================================
 section "5. 近期日志错误扫描（最后 200 行）"
 
-# 扫描 backend 日志中的 ERROR
-backend_errors=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
-    logs --tail=200 backend 2>/dev/null | grep -ci "error" || true)
+# 扫描 backend 日志中的 ERROR（使用容器名）
+backend_errors=$(docker logs --tail=200 quant-backend 2>/dev/null | grep -ci "error" || true)
 if [ "$backend_errors" -gt 0 ]; then
     log_warn "Backend 日志中发现 $backend_errors 处 ERROR 关键字"
-    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
-        logs --tail=200 backend 2>/dev/null | grep -i "error" | tail -5 | \
+    docker logs --tail=200 quant-backend 2>/dev/null | grep -i "error" | tail -5 | \
         sed 's/^/       /'
 else
     log_pass "Backend 日志无 ERROR（最近 200 行）"

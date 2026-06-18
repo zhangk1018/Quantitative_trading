@@ -31,170 +31,133 @@ class SignalPrecompute:
     def __init__(self, storage: PostgreSQLStorage):
         self.storage = storage
 
-    def detect_macd_cross(self, df: pd.DataFrame) -> pd.DataFrame:
+    def detect_all_signals_vectorized(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        检测 MACD 金叉死叉信号
+        统一向量化检测所有信号类型（一次遍历，提升缓存命中率）
 
-        金叉：MACD 上穿 MACD_SIGNAL（从负变正）
-        死叉：MACD 下穿 MACD_SIGNAL（从正变负）
+        包含：MACD金叉死叉、RSI超买超卖、布林带突破
 
         Returns:
-            包含 macd_cross 信号的 DataFrame
+            包含所有信号的 DataFrame
         """
-        if df.empty or 'macd' not in df.columns or 'dif' not in df.columns or 'dea' not in df.columns:
-            logger.warning("⚠️ MACD 数据不完整，跳过信号检测")
+        if df.empty:
             return pd.DataFrame()
 
-        signals = []
-        df = df.sort_values('trade_date')
+        df = df.sort_values('trade_date').copy()
+        all_signals = []
 
-        # MACD 金叉死叉检测（dif 上穿/下穿 dea）
-        for i in range(1, len(df)):
-            prev_macd_diff = df.iloc[i-1]['dif'] - df.iloc[i-1]['dea']
-            curr_macd_diff = df.iloc[i]['dif'] - df.iloc[i]['dea']
+        # MACD 信号
+        if 'dif' in df.columns and 'dea' in df.columns:
+            diff = df['dif'] - df['dea']
+            prev_diff = diff.shift(1)
 
-            # 金叉：MACD 从负变正
-            if prev_macd_diff <= 0 and curr_macd_diff > 0:
-                signals.append({
-                    'code': df.iloc[i]['code'],
+            # 金叉
+            golden_mask = (prev_diff <= 0) & (diff > 0)
+            if golden_mask.any():
+                df_golden = df[golden_mask]
+                all_signals.append(pd.DataFrame({
+                    'code': df_golden['code'],
                     'cycle': '1d',
-                    'trade_date': df.iloc[i]['trade_date'],
+                    'trade_date': df_golden['trade_date'],
                     'signal_type': 'macd_cross',
                     'signal_direction': 'buy',
-                    'signal_value': float(df.iloc[i]['dif']),
-                    'signal_strength': abs(float(curr_macd_diff)) * 100,
-                    'description': f'MACD金叉: DIF={df.iloc[i]["dif"]:.2f}, DEA={df.iloc[i]["dea"]:.2f}'
-                })
+                    'signal_value': df_golden['dif'].astype(float),
+                    'signal_strength': (diff[golden_mask].abs() * 100).astype(int),
+                    'description': 'MACD金叉'
+                }))
 
-            # 死叉：MACD 从正变负
-            elif prev_macd_diff >= 0 and curr_macd_diff < 0:
-                signals.append({
-                    'code': df.iloc[i]['code'],
+            # 死叉
+            death_mask = (prev_diff >= 0) & (diff < 0)
+            if death_mask.any():
+                df_death = df[death_mask]
+                all_signals.append(pd.DataFrame({
+                    'code': df_death['code'],
                     'cycle': '1d',
-                    'trade_date': df.iloc[i]['trade_date'],
+                    'trade_date': df_death['trade_date'],
                     'signal_type': 'macd_cross',
                     'signal_direction': 'sell',
-                    'signal_value': float(df.iloc[i]['dif']),
-                    'signal_strength': abs(float(curr_macd_diff)) * 100,
-                    'description': f'MACD死叉: DIF={df.iloc[i]["dif"]:.2f}, DEA={df.iloc[i]["dea"]:.2f}'
-                })
+                    'signal_value': df_death['dif'].astype(float),
+                    'signal_strength': (diff[death_mask].abs() * 100).astype(int),
+                    'description': 'MACD死叉'
+                }))
 
-        return pd.DataFrame(signals)
-
-    def detect_rsi_signals(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        检测 RSI 超买超卖信号
-
-        超卖：RSI < 30（买入信号）
-        超买：RSI > 70（卖出信号）
-
-        Returns:
-            包含 rsi_oversold/rsi_overbought 信号的 DataFrame
-        """
-        if df.empty or 'rsi6' not in df.columns:
-            logger.warning("⚠️ RSI 数据不完整，跳过信号检测")
-            return pd.DataFrame()
-
-        signals = []
-        df = df.sort_values('trade_date')
-
-        for i in range(len(df)):
-            rsi_value = df.iloc[i]['rsi6']
-
-            # 超卖信号：RSI < 30
-            if rsi_value < 30:
-                signals.append({
-                    'code': df.iloc[i]['code'],
+        # RSI 信号
+        if 'rsi6' in df.columns:
+            # 超卖
+            oversold_mask = df['rsi6'] < 30
+            if oversold_mask.any():
+                df_oversold = df[oversold_mask]
+                all_signals.append(pd.DataFrame({
+                    'code': df_oversold['code'],
                     'cycle': '1d',
-                    'trade_date': df.iloc[i]['trade_date'],
+                    'trade_date': df_oversold['trade_date'],
                     'signal_type': 'rsi_oversold',
                     'signal_direction': 'buy',
-                    'signal_value': float(rsi_value),
-                    'signal_strength': int((30 - float(rsi_value)) / 30 * 100),
-                    'description': f'RSI超卖: RSI={float(rsi_value):.2f}, Close={float(df.iloc[i]["close"]):.2f}'
-                })
+                    'signal_value': df_oversold['rsi6'].astype(float),
+                    'signal_strength': ((30 - df_oversold['rsi6']) / 30 * 100).astype(int),
+                    'description': 'RSI超卖'
+                }))
 
-            # 超买信号：RSI > 70
-            elif rsi_value > 70:
-                signals.append({
-                    'code': df.iloc[i]['code'],
+            # 超买
+            overbought_mask = df['rsi6'] > 70
+            if overbought_mask.any():
+                df_overbought = df[overbought_mask]
+                all_signals.append(pd.DataFrame({
+                    'code': df_overbought['code'],
                     'cycle': '1d',
-                    'trade_date': df.iloc[i]['trade_date'],
+                    'trade_date': df_overbought['trade_date'],
                     'signal_type': 'rsi_overbought',
                     'signal_direction': 'sell',
-                    'signal_value': float(rsi_value),
-                    'signal_strength': int((float(rsi_value) - 70) / 30 * 100),
-                    'description': f'RSI超买: RSI={float(rsi_value):.2f}, Close={float(df.iloc[i]["close"]):.2f}'
-                })
+                    'signal_value': df_overbought['rsi6'].astype(float),
+                    'signal_strength': ((df_overbought['rsi6'] - 70) / 30 * 100).astype(int),
+                    'description': 'RSI超买'
+                }))
 
-        return pd.DataFrame(signals)
+        # 布林带信号
+        if 'close' in df.columns:
+            # 计算布林带（如不存在）
+            if 'boll_upper' not in df.columns or 'boll_lower' not in df.columns:
+                window = 20
+                df['boll_mid'] = df['close'].rolling(window=window).mean()
+                std = df['close'].rolling(window=window).std()
+                df['boll_upper'] = df['boll_mid'] + 2 * std
+                df['boll_lower'] = df['boll_mid'] - 2 * std
 
-    def detect_bollinger_breakout(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        检测布林带突破信号
-
-        上轨突破：价格突破上轨（买入信号）
-        下轨突破：价格突破下轨（卖出信号）
-
-        注意：需要从 stock_quotes 表获取 close 价格，因为 stock_indicators 表可能不包含价格数据
-
-        Returns:
-            包含 bollinger_breakout 信号的 DataFrame
-        """
-        if df.empty or 'close' not in df.columns:
-            logger.warning("⚠️ 价格数据不完整，跳过 BOLL 突破检测")
-            return pd.DataFrame()
-
-        signals = []
-        df = df.sort_values('trade_date')
-
-        # 布林带突破检测（需要先计算布林带）
-        # 这里假设 df 已经包含 BOLL_MID, BOLL_UPPER, BOLL_LOWER 列
-        # 如果没有，需要先计算
-        if 'BOLL_UPPER' not in df.columns or 'BOLL_LOWER' not in df.columns:
-            # 简化版：使用 20 日移动平均线 + 2 倍标准差
-            window = 20
-            df['BOLL_MID'] = df['close'].rolling(window=window).mean()
-            std = df['close'].rolling(window=window).std()
-            df['BOLL_UPPER'] = df['BOLL_MID'] + 2 * std
-            df['BOLL_LOWER'] = df['BOLL_MID'] - 2 * std
-
-        for i in range(window, len(df)):
-            close_price = float(df.iloc[i]['close'])
-            upper = float(df.iloc[i]['BOLL_UPPER'])
-            lower = float(df.iloc[i]['BOLL_LOWER'])
-
-            # 上轨突破：价格突破上轨
-            if close_price > upper:
-                signals.append({
-                    'code': df.iloc[i]['code'],
+            # 上轨突破（卖出）
+            upper_break_mask = df['close'] > df['boll_upper']
+            if upper_break_mask.any():
+                df_upper = df[upper_break_mask]
+                all_signals.append(pd.DataFrame({
+                    'code': df_upper['code'],
                     'cycle': '1d',
-                    'trade_date': df.iloc[i]['trade_date'],
+                    'trade_date': df_upper['trade_date'],
                     'signal_type': 'bollinger_breakout',
                     'signal_direction': 'sell',
-                    'signal_value': round(close_price - upper, 2),
-                    'signal_strength': int((close_price - upper) / upper * 100),
-                    'description': f'突破BOLL上轨: Price={close_price:.2f}, Upper={upper:.2f}'
-                })
+                    'signal_value': (df_upper['close'] - df_upper['boll_upper']).round(2),
+                    'signal_strength': ((df_upper['close'] - df_upper['boll_upper']) / df_upper['boll_upper'] * 100).astype(int),
+                    'description': '突破BOLL上轨'
+                }))
 
-            # 下轨突破：价格突破下轨
-            elif close_price < lower:
-                signals.append({
-                    'code': df.iloc[i]['code'],
+            # 下轨突破（买入）
+            lower_break_mask = df['close'] < df['boll_lower']
+            if lower_break_mask.any():
+                df_lower = df[lower_break_mask]
+                all_signals.append(pd.DataFrame({
+                    'code': df_lower['code'],
                     'cycle': '1d',
-                    'trade_date': df.iloc[i]['trade_date'],
+                    'trade_date': df_lower['trade_date'],
                     'signal_type': 'bollinger_breakout',
                     'signal_direction': 'buy',
-                    'signal_value': round(lower - close_price, 2),
-                    'signal_strength': int((lower - close_price) / lower * 100),
-                    'description': f'跌破BOLL下轨: Price={close_price:.2f}, Lower={lower:.2f}'
-                })
+                    'signal_value': (df_lower['boll_lower'] - df_lower['close']).round(2),
+                    'signal_strength': ((df_lower['boll_lower'] - df_lower['close']) / df_lower['boll_lower'] * 100).astype(int),
+                    'description': '突破BOLL下轨'
+                }))
 
-        return pd.DataFrame(signals)
+        return pd.concat(all_signals, ignore_index=True) if all_signals else pd.DataFrame()
 
     def precompute_signals_for_stock(self, code: str, start_date: str = None, end_date: str = None) -> int:
         """
-        为指定股票预计算所有信号
+        为指定股票预计算所有信号（使用向量化检测）
 
         Args:
             code: 股票代码
@@ -221,50 +184,39 @@ class SignalPrecompute:
         # 合并数据
         combined_df = pd.merge(indicators_df, quotes_df[['trade_date', 'close', 'volume']], on='trade_date', how='left')
         combined_df['code'] = code
+        combined_df = combined_df.reset_index(drop=True)
 
-        # 3. 检测各类信号
-        all_signals = []
+        # 3. 使用向量化函数检测所有信号（一次遍历）
+        try:
+            signals_df = self.detect_all_signals_vectorized(combined_df)
+        except Exception as e:
+            logger.error(f"  ⚠️ {code} 信号检测异常: {e}")
+            return 0
 
-        # MACD 金叉死叉
-        macd_signals = self.detect_macd_cross(combined_df)
-        if not macd_signals.empty:
-            all_signals.append(macd_signals)
-
-        # RSI 超买超卖
-        rsi_signals = self.detect_rsi_signals(combined_df)
-        if not rsi_signals.empty:
-            all_signals.append(rsi_signals)
-
-        # BOLL 突破
-        boll_signals = self.detect_bollinger_breakout(combined_df)
-        if not boll_signals.empty:
-            all_signals.append(boll_signals)
-
-        # 4. 合并所有信号
-        if not all_signals:
+        # 4. 保存到数据库
+        if signals_df.empty:
             logger.debug(f"  {code}: 无信号")
             return 0
 
-        signals_df = pd.concat(all_signals, ignore_index=True)
-
-        # 5. 保存到数据库
         count = self.storage.save_signals(signals_df)
         logger.debug(f"  {code}: 保存 {count} 条信号")
         return count
 
-    def precompute_all_signals(self, start_date: str = None, end_date: str = None) -> Dict[str, int]:
+    def precompute_all_signals_batch(self, start_date: str = None, end_date: str = None, incremental: bool = True) -> Dict[str, int]:
         """
-        为所有股票预计算信号
+        批量预计算所有股票信号（使用批量查询和向量化处理，支持增量计算）
 
         Args:
-            start_date: 开始日期
+            start_date: 开始日期（如果 incremental=True 则忽略）
             end_date: 结束日期
+            incremental: 是否增量计算（只计算最新缺失日期的数据）
 
         Returns:
             统计信息 {'total_stocks': int, 'success_stocks': int, 'total_signals': int}
         """
         logger.info("=" * 60)
-        logger.info("开始预计算全市场交易信号...")
+        logger.info("开始批量预计算全市场交易信号...")
+        logger.info(f"  增量模式: {'开启' if incremental else '关闭'}")
         logger.info("=" * 60)
 
         # 获取所有股票代码
@@ -275,38 +227,123 @@ class SignalPrecompute:
 
         codes = stocks_df['code'].tolist()
         total_stocks = len(codes)
-        success_stocks = 0
         total_signals = 0
+        processed_codes = set()  # 使用集合统计成功处理的股票
 
         logger.info(f"📊 待处理股票: {total_stocks} 只")
 
-        for i, code in enumerate(codes):
-            try:
-                # 转换代码格式：SZ.000001 -> 000001
-                db_code = code.split('.')[-1] if '.' in code else code
-                count = self.precompute_signals_for_stock(db_code, start_date, end_date)
-                if count > 0:
-                    success_stocks += 1
-                    total_signals += count
+        # 分块处理，每批 200 只股票
+        chunk_size = 200
+        total_chunks = (len(codes) + chunk_size - 1) // chunk_size
 
-                if (i + 1) % 100 == 0:
-                    logger.info(f"  进度: {i+1}/{total_stocks} ({(i+1)/total_stocks*100:.1f}%)")
+        # 如果增量模式，批量获取每只股票的最后信号日期
+        last_signal_dates = {}
+        if incremental:
+            db_codes = [c.split('.')[-1] if '.' in c else c for c in codes]
+            last_signal_dates = self.storage.get_last_signal_dates_batch(db_codes, '1d')
 
-            except Exception as e:
-                logger.warning(f"⚠️ {code} 信号预计算失败: {e}")
+            # 计算需要处理的日期范围
+            if end_date is None:
+                from datetime import datetime, timedelta
+                end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+
+        for chunk_idx in range(total_chunks):
+            # 获取当前批次的股票代码
+            start_idx = chunk_idx * chunk_size
+            end_idx = min((chunk_idx + 1) * chunk_size, len(codes))
+            chunk_codes = codes[start_idx:end_idx]
+            db_chunk_codes = [c.split('.')[-1] if '.' in c else c for c in chunk_codes]
+
+            logger.info(f"  处理批次 {chunk_idx + 1}/{total_chunks} ({len(db_chunk_codes)} 只股票)")
+
+            # 确定该批次的日期范围（增量模式下取最早的最后信号日期）
+            batch_start_date = start_date
+            if incremental:
+                # 回退 5 天确保交叉检测完整
+                min_last_date = None
+                for code in db_chunk_codes:
+                    ld = last_signal_dates.get(code)
+                    if ld is not None:
+                        if min_last_date is None or ld < min_last_date:
+                            min_last_date = ld
+
+                if min_last_date is not None:
+                    from datetime import timedelta
+                    batch_start_date = (min_last_date - timedelta(days=5)).strftime('%Y-%m-%d')
+                else:
+                    batch_start_date = '2010-01-01'  # 无信号则全量
+
+            # 批量查询技术指标和行情数据（一次 JOIN 查询，减少网络往返）
+            merged_df = self.storage.get_indicators_with_quotes_batch(
+                db_chunk_codes, cycle='1d',
+                start_date=batch_start_date, end_date=end_date
+            )
+
+            if merged_df.empty:
+                logger.warning(f"    该批次无数据")
                 continue
 
+            # 按股票代码分组处理
+            all_signals = []
+            for code, group in merged_df.groupby('code'):
+                group = group.reset_index(drop=True)
+                try:
+                    signals = self.detect_all_signals_vectorized(group)
+                    if not signals.empty:
+                        # 增量模式下，只保留新日期的信号
+                        if incremental:
+                            last_date = last_signal_dates.get(code)
+                            if last_date is not None:
+                                # 统一为 pd.Timestamp 进行比较，避免类型不一致
+                                last_ts = pd.Timestamp(last_date)
+                                # signals['trade_date'] 可能是 date 或 Timestamp，统一转换
+                                signals = signals.copy()
+                                signals['trade_date'] = pd.to_datetime(signals['trade_date'])
+                                signals = signals[signals['trade_date'] > last_ts]
+                        all_signals.append(signals)
+                except Exception as e:
+                    logger.error(f"    ⚠️ {code} 信号检测异常: {e}")
+                    continue
+
+            # 批量写入
+            if all_signals:
+                final_df = pd.concat(all_signals, ignore_index=True)
+                count = self.storage.save_signals_batch(final_df)
+                processed_codes.update(final_df['code'].tolist())
+                total_signals += count
+                logger.info(f"    批次完成: 保存 {count} 条信号")
+            else:
+                logger.debug(f"    批次完成: 无新信号")
+
         logger.info("=" * 60)
-        logger.info(f"✅ 信号预计算完成")
-        logger.info(f"  处理股票: {success_stocks}/{total_stocks}")
+        logger.info(f"✅ 批量信号预计算完成")
+        logger.info(f"  生成新信号股票: {len(processed_codes)}/{total_stocks}")
         logger.info(f"  生成信号: {total_signals} 条")
         logger.info("=" * 60)
 
         return {
             'total_stocks': total_stocks,
-            'success_stocks': success_stocks,
+            'success_stocks': len(processed_codes),
             'total_signals': total_signals
         }
+
+    def precompute_all_signals(self, start_date: str = None, end_date: str = None, force_full: bool = False) -> Dict[str, int]:
+        """
+        为所有股票预计算信号
+
+        Args:
+            start_date: 开始日期（仅在 force_full=True 时生效）
+            end_date: 结束日期
+            force_full: 是否强制全量重算（默认 False，即增量计算）
+
+        Returns:
+            统计信息 {'total_stocks': int, 'success_stocks': int, 'total_signals': int}
+        """
+        return self.precompute_all_signals_batch(
+            start_date=start_date,
+            end_date=end_date,
+            incremental=not force_full
+        )
 
 
 def main():
@@ -340,5 +377,5 @@ def main():
 if __name__ == '__main__':
     stats = main()
     print(f"\n📊 统计信息:")
-    print(f"  处理股票: {stats['success_stocks']}/{stats['total_stocks']}")
+    print(f"  生成新信号股票: {stats['success_stocks']}/{stats['total_stocks']}")
     print(f"  生成信号: {stats['total_signals']} 条")

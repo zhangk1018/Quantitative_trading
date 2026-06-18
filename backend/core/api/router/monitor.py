@@ -6,9 +6,12 @@ router/monitor.py - 数据监控看板 API 路由
 """
 
 import os
+import re
 import sys
+import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, Query
@@ -26,8 +29,44 @@ router = APIRouter(tags=["数据监控"])
 
 
 # ============================================
+# 监控阈值配置（统一管理，便于不同市场/环境调整）
+# ============================================
+
+
+class MonitorConfig:
+    """监控阈值配置 - 可通过环境变量覆盖"""
+    # 覆盖数：低于此值视为"数据不足"
+    MIN_COVERAGE_COUNT = int(os.getenv("MONITOR_MIN_COVERAGE_COUNT", "3000"))
+    # 各任务最低数据条数
+    TASK_MIN_COUNTS = {
+        "daily_import":      int(os.getenv("MONITOR_MIN_DAILY_IMPORT", "4000")),
+        "daily_sync":        int(os.getenv("MONITOR_MIN_DAILY_SYNC", "4000")),
+        "daily_basic_sync":  int(os.getenv("MONITOR_MIN_BASIC_SYNC", "4000")),
+        "adj_factor_sync":   int(os.getenv("MONITOR_MIN_ADJ_FACTOR", "4000")),
+        "indicators_compute": int(os.getenv("MONITOR_MIN_INDICATORS", "4000")),
+        "signal_precompute": int(os.getenv("MONITOR_MIN_SIGNALS", "100")),
+    }
+    # 2年活跃窗口（覆盖新数据准确性的时间范围）
+    ACTIVE_DAYS = int(os.getenv("MONITOR_ACTIVE_DAYS", "730"))
+    # 覆盖率阈值（成功/部分/失败的分界）
+    COVERAGE_SUCCESS = float(os.getenv("MONITOR_COVERAGE_SUCCESS", "95"))  # >=95% 视为成功
+    COVERAGE_FAIL = float(os.getenv("MONITOR_COVERAGE_FAIL", "50"))        # <50% 视为失败
+    # 异常端点错误码
+    ERR_QUERY_FAILED = 503  # 数据库查询失败
+
+
+# ============================================
 # 数据库连接辅助
 # ============================================
+
+# 北京时区（统一时区基准，监控数据按北京时间归集）
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def _now_beijing() -> datetime:
+    """返回带时区标记的当前北京时间"""
+    return datetime.now(BEIJING_TZ)
+
 
 def _get_db_conn():
     """获取数据库连接"""
@@ -40,16 +79,48 @@ def _get_db_conn():
     )
 
 
+def _execute_query(as_dict: bool = True):
+    """
+    查询执行上下文管理器（统一处理连接/游标生命周期和异常）
+
+    用法:
+        with _execute_query() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+    Args:
+        as_dict: 是否返回字典（RealDictCursor）；False 时返回元组
+    """
+    class _Ctx:
+        def __enter__(inner):
+            inner.conn = _get_db_conn()
+            inner.cur = inner.conn.cursor(
+                cursor_factory=psycopg2.extras.RealDictCursor if as_dict else None
+            )
+            return inner.cur
+
+        def __exit__(inner, exc_type, exc, tb):
+            try:
+                if inner.cur is not None:
+                    inner.cur.close()
+            except Exception:
+                pass
+            try:
+                if inner.conn is not None:
+                    inner.conn.close()
+            except Exception:
+                pass
+            return False  # 不吞异常
+
+    return _Ctx()
+
+
 def _query_dict(sql: str, params: tuple = None) -> List[Dict[str, Any]]:
-    """执行查询并以字典列表返回"""
+    """执行查询并以字典列表返回（异常时返回空列表）"""
     try:
-        conn = _get_db_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(sql, params or ())
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return [dict(r) for r in rows]
+        with _execute_query(as_dict=True) as cur:
+            cur.execute(sql, params or ())
+            return [dict(r) for r in cur.fetchall()]
     except Exception as e:
         logger.error(f"数据库查询失败: {e}")
         return []
@@ -61,15 +132,12 @@ def _query_one(sql: str, params: tuple = None) -> Optional[Dict[str, Any]]:
 
 
 def _query_scalar(sql: str, params: tuple = None):
-    """查询单值"""
+    """查询单值（异常时返回 None）"""
     try:
-        conn = _get_db_conn()
-        cur = conn.cursor()
-        cur.execute(sql, params or ())
-        val = cur.fetchone()
-        cur.close()
-        conn.close()
-        return val[0] if val else None
+        with _execute_query(as_dict=False) as cur:
+            cur.execute(sql, params or ())
+            val = cur.fetchone()
+            return val[0] if val else None
     except Exception as e:
         logger.error(f"数据库查询失败: {e}")
         return None
@@ -101,7 +169,7 @@ def get_data_summary():
                 "stock_count": row["stock_count"] or 0,
             }
 
-    # 最新交易日：优先取MAX(trade_date)，但验证覆盖数是否合理（>3000）
+    # 最新交易日：优先取MAX(trade_date)，但验证覆盖数是否合理（>MIN_COVERAGE_COUNT）
     # 如果MAX日期只有少量数据，说明可能是单只股票提前入库，使用前一个交易日
     latest_quote = _query_scalar(
         "SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'"
@@ -112,7 +180,7 @@ def get_data_summary():
             "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1d' AND trade_date = %s",
             (latest_quote,)
         ) or 0
-        if covered_count < 3000:
+        if covered_count < MonitorConfig.MIN_COVERAGE_COUNT:
             # 覆盖数太少，使用前一个交易日
             latest_quote = _query_scalar(
                 """
@@ -123,6 +191,11 @@ def get_data_summary():
                 (latest_quote,)
             )
     if latest_quote:
+        # 看板口径：仅统计「最近 ACTIVE_DAYS 天内有行情」的股票为分母。
+        # 退市/停牌超过 ACTIVE_DAYS 天的老股票自动不计入，简化覆盖率计算。
+        active_cutoff_date = _now_beijing() - timedelta(days=MonitorConfig.ACTIVE_DAYS)
+        active_cutoff = active_cutoff_date.strftime("%Y-%m-%d")
+
         # stock_basic 和 stock_quotes 已统一为纯数字格式（如 600027）
         # 直接等值匹配
         covered = _query_scalar(
@@ -131,26 +204,36 @@ def get_data_summary():
             FROM stock_quotes q
             WHERE q.cycle = '1d' AND q.trade_date = %s
               AND EXISTS (
-                SELECT 1 FROM stock_basic b
-                WHERE b.code = q.code
+                SELECT 1 FROM stock_quotes q2
+                WHERE q2.cycle = '1d' AND q2.code = q.code
+                  AND q2.trade_date >= %s
               )
             """,
-            (latest_quote,),
+            (latest_quote, active_cutoff_date),
         ) or 0
-        total = _query_scalar("SELECT COUNT(*) FROM stock_basic") or 0
+        total = _query_scalar(
+            """
+            SELECT COUNT(DISTINCT code) FROM stock_quotes
+            WHERE cycle = '1d' AND trade_date >= %s
+            """,
+            (active_cutoff_date,),
+        ) or 0
         coverage_rate = round(covered / total * 100, 2) if total else 0
 
         # 计算缺失和多余的股票
         missing_in_quote = _query_scalar(
             """
-            SELECT COUNT(*) FROM stock_basic b
+            SELECT COUNT(*) FROM (
+                SELECT DISTINCT code FROM stock_quotes
+                WHERE cycle = '1d' AND trade_date >= %s
+            ) active_t
             WHERE NOT EXISTS (
                 SELECT 1 FROM stock_quotes q
                 WHERE q.cycle = '1d' AND q.trade_date = %s
-                  AND b.code = q.code
+                  AND q.code = active_t.code
             )
             """,
-            (latest_quote,),
+            (active_cutoff_date, latest_quote),
         ) or 0
 
         extra_in_quote = _query_scalar(
@@ -158,31 +241,40 @@ def get_data_summary():
             SELECT COUNT(DISTINCT q.code) FROM stock_quotes q
             WHERE q.cycle = '1d' AND q.trade_date = %s
               AND NOT EXISTS (
-                SELECT 1 FROM stock_basic b
-                WHERE b.code = q.code
+                SELECT 1 FROM stock_quotes q2
+                WHERE q2.cycle = '1d' AND q2.code = q.code AND q2.trade_date >= %s
               )
             """,
-            (latest_quote,),
+            (latest_quote, active_cutoff_date),
         ) or 0
 
         # 缺失股票分类：退市、ST/停牌、真正缺失
+        # 2 年口径下退市股基本已被 2 年活跃条件过滤掉，这里继续保留名称模糊匹配作为二次过滤
         missing_delisted = _query_scalar(
             """
             SELECT COUNT(*) FROM stock_basic b
-            WHERE NOT EXISTS (
+            WHERE EXISTS (
+                SELECT 1 FROM stock_quotes q2
+                WHERE q2.cycle = '1d' AND q2.code = b.code AND q2.trade_date >= %s
+            )
+            AND NOT EXISTS (
                 SELECT 1 FROM stock_quotes q
                 WHERE q.cycle = '1d' AND q.trade_date = %s
                   AND b.code = q.code
             )
             AND (b.name LIKE '%%退%%' OR b.delist_date IS NOT NULL)
             """,
-            (latest_quote,),
+            (active_cutoff_date, latest_quote),
         ) or 0
 
         missing_suspended = _query_scalar(
             """
             SELECT COUNT(*) FROM stock_basic b
-            WHERE NOT EXISTS (
+            WHERE EXISTS (
+                SELECT 1 FROM stock_quotes q2
+                WHERE q2.cycle = '1d' AND q2.code = b.code AND q2.trade_date >= %s
+            )
+            AND NOT EXISTS (
                 SELECT 1 FROM stock_quotes q
                 WHERE q.cycle = '1d' AND q.trade_date = %s
                   AND b.code = q.code
@@ -190,13 +282,17 @@ def get_data_summary():
             AND (b.name LIKE 'ST%%' OR b.name LIKE '*ST%%' OR b.name LIKE 'S%%ST%%' OR b.name LIKE 'S*ST%%')
             AND b.delist_date IS NULL AND b.name NOT LIKE '%%退%%'
             """,
-            (latest_quote,),
+            (active_cutoff_date, latest_quote),
         ) or 0
 
         missing_merged = _query_scalar(
             """
             SELECT COUNT(*) FROM stock_basic b
-            WHERE NOT EXISTS (
+            WHERE EXISTS (
+                SELECT 1 FROM stock_quotes q2
+                WHERE q2.cycle = '1d' AND q2.code = b.code AND q2.trade_date >= %s
+            )
+            AND NOT EXISTS (
                 SELECT 1 FROM stock_quotes q
                 WHERE q.cycle = '1d' AND q.trade_date = %s
                   AND b.code = q.code
@@ -210,17 +306,18 @@ def get_data_summary():
                 WHERE q2.code = b.code AND q2.trade_date >= %s - INTERVAL '30 days'
             )
             """,
-            (latest_quote, latest_quote),
+            (active_cutoff_date, latest_quote, latest_quote),
         ) or 0
 
-        # 近期停牌：非ST/退市，但在最新交易日无数据，且最近5个交易日内有数据但最近2个交易日无数据
-        # 这类股票很可能是临时停牌，不是数据下载遗漏
-        # 近期停牌：在最新交易日没有数据，但之前有数据
-        # 扩展定义：只要在最新交易日没有数据，且最近30天内有数据，就视为近期停牌
+        # 近期停牌：非ST/退市，但在最新交易日无数据，且最近30天内有数据
         missing_suspended_recent = _query_scalar(
             """
             SELECT COUNT(*) FROM stock_basic b
-            WHERE NOT EXISTS (
+            WHERE EXISTS (
+                SELECT 1 FROM stock_quotes q2
+                WHERE q2.cycle = '1d' AND q2.code = b.code AND q2.trade_date >= %s
+            )
+            AND NOT EXISTS (
                 SELECT 1 FROM stock_quotes q
                 WHERE q.cycle = '1d' AND q.trade_date = %s
                   AND b.code = q.code
@@ -235,7 +332,7 @@ def get_data_summary():
                 AND q2.trade_date < %s
             )
             """,
-            (latest_quote, latest_quote, latest_quote),
+            (active_cutoff_date, latest_quote, latest_quote, latest_quote),
         ) or 0
 
         missing_real = missing_in_quote - missing_delisted - missing_suspended - missing_merged - missing_suspended_recent
@@ -247,7 +344,11 @@ def get_data_summary():
             missing_rows = _query_dict(
                 """
                 SELECT b.code, b.name FROM stock_basic b
-                WHERE NOT EXISTS (
+                WHERE EXISTS (
+                    SELECT 1 FROM stock_quotes q2
+                    WHERE q2.cycle = '1d' AND q2.code = b.code AND q2.trade_date >= %s
+                )
+                AND NOT EXISTS (
                     SELECT 1 FROM stock_quotes q
                     WHERE q.cycle = '1d' AND q.trade_date = %s AND b.code = q.code
                 )
@@ -261,7 +362,7 @@ def get_data_summary():
                 )
                 LIMIT 20
                 """,
-                (latest_quote, latest_quote, latest_quote),
+                (active_cutoff_date, latest_quote, latest_quote, latest_quote),
             )
             real_missing_codes = [f"{r['code']} {r['name']}" for r in missing_rows]
 
@@ -276,6 +377,7 @@ def get_data_summary():
             "coverage_rate": coverage_rate,
             "effective_coverage_rate": effective_coverage_rate,
             "active_stocks": active_stocks,
+            "scope_note": f"仅统计最近 2 年（{active_cutoff} 以来）有行情的 {total} 只活跃股票",
             "missing_stocks": missing_in_quote,  # 应该有但没数据
             "extra_stocks": extra_in_quote,      # 有数据但不该有
             "missing_breakdown": {
@@ -316,7 +418,6 @@ def get_data_summary():
             })
         
         # 检查是否是周末或节假日
-        from datetime import datetime
         trade_date = latest_quote if isinstance(latest_quote, datetime) else datetime.fromisoformat(str(latest_quote))
         if trade_date.weekday() >= 5:  # 周六或周日
             result["warnings"].append({
@@ -413,10 +514,8 @@ def _get_stage_status(stage, year, month, day):
 @router.get("/monitor/pipeline-status/", summary="管道执行状态（今日）")
 def get_pipeline_status():
     """返回今日管道各阶段的执行状态"""
-    # 使用北京时间（UTC+8）的日期
-    from datetime import timezone, timedelta
-    beijing_tz = timezone(timedelta(hours=8))
-    today_beijing = datetime.now(beijing_tz).strftime("%Y-%m-%d")
+    # 统一使用全局 BEIJING_TZ（避免重复定义）
+    today_beijing = _now_beijing().strftime("%Y-%m-%d")
     year, month, day = map(int, today_beijing.split('-'))
     
     stages = []
@@ -461,9 +560,140 @@ def get_pipeline_status():
 
 
 # ============================================
-# 每日任务链 A→F（从日志文件读取状态）
+# 每日任务链 A→F（数据库状态优先，日志兜底）
 # ============================================
-import re
+
+def _check_task_from_db(task_key: str) -> Dict[str, Any]:
+    """
+    从数据库直接检查任务的数据状态，不依赖日志文件。
+
+    关键判断：必须"今日"有执行才算成功；仅历史数据不能冒充今日成功
+    - 今日已执行且数据正常 → success
+    - 今日已执行但数据覆盖率<COVERAGE_SUCCESS% → partial
+    - 今日未执行（无今日日志/无今日数据） → pending（待执行）
+    - 数据库无任何数据 → pending
+
+    Returns:
+        dict: {status: success|partial|pending|unknown, message, data_date, data_count, ...}
+    """
+    # 各任务对应的表和检查条件（min_count 从 MonitorConfig 读取，可通过环境变量调整）
+    TASK_DB_CONFIG = {
+        "daily_import": {           # A: 行情导入
+            "table": "stock_quotes",
+            "date_col": "trade_date",
+            "cycle_col": "cycle",
+            "cycle_val": "1d",
+        },
+        "daily_sync": {             # B: 宽表同步
+            "table": "stock_daily_snapshot",
+            "date_col": "trade_date",
+        },
+        "daily_basic_sync": {       # C: 基本面同步
+            "table": "stock_daily_basic",
+            "date_col": "trade_date",
+        },
+        "adj_factor_sync": {        # D: 复权因子同步
+            "table": "stock_adj_factor",
+            "date_col": "trade_date",
+        },
+        "indicators_compute": {      # E: 技术指标计算
+            "table": "stock_indicators",
+            "date_col": "trade_date",
+            "cycle_col": "cycle",
+            "cycle_val": "1d",
+        },
+        "signal_precompute": {      # F: 信号预计算
+            "table": "trade_signals",
+            "date_col": "trade_date",
+        },
+    }
+
+    cfg = TASK_DB_CONFIG.get(task_key)
+    if not cfg:
+        return {"status": "unknown", "message": "未知任务"}
+
+    table = cfg["table"]
+    date_col = cfg["date_col"]
+
+    # 查最新有数据的日期
+    latest_date = _query_scalar(f"SELECT MAX({date_col}) FROM {table}")
+    if not latest_date:
+        return {"status": "pending", "message": "无数据"}
+
+    latest_str = str(latest_date)
+
+    # ========== 关键：判断今日是否已执行 ==========
+    # 业务规则：仅当数据日期 == 今天（北京时间）时，才视为"今日已执行"
+    # 否则即使有历史数据，也只能算"待执行"，不能冒充今日成功
+    today_beijing = _now_beijing().strftime("%Y-%m-%d")
+    if str(latest_date) != today_beijing:
+        return {
+            "status": "pending",
+            "message": f"今日未执行（最新数据 {latest_str}）",
+            "data_date": latest_str,
+            "data_count": None,
+        }
+
+    # 构建 WHERE 条件
+    where_parts = [f"{date_col} = %s"]
+    params = [latest_date]
+    if cfg.get("cycle_col"):
+        where_parts.append(f"{cfg['cycle_col']} = %s")
+        params.append(cfg["cycle_val"])
+
+    where_clause = " AND ".join(where_parts)
+    count = _query_scalar(f"SELECT COUNT(*) FROM {table} WHERE {where_clause}", tuple(params)) or 0
+
+    # 动态计算 min_count：
+    # - daily_import（stock_quotes 1d）：直接用 count 自身作为成功判定（>0 即有数据）
+    # - 其他任务：用 stock_quotes 当日股票数作为动态基准（节假日不会误报 partial）
+    #   若 stock_quotes 查不到则回退到配置默认值
+    if task_key == "daily_import":
+        min_count = max(1, count)  # 有数据就算成功
+    else:
+        dynamic_min = _query_scalar(
+            "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle = '1d'",
+            (latest_date,),
+        )
+        min_count = dynamic_min if dynamic_min and dynamic_min > 0 else MonitorConfig.TASK_MIN_COUNTS.get(task_key, 1000)
+    coverage = count / min_count * 100 if min_count > 0 else 0
+
+    if count >= min_count:
+        # 数据充足，检查完整性（覆盖率）
+        # 以 stock_quotes 为基准算覆盖率
+        if task_key == "daily_sync":
+            quote_count = _query_scalar(
+                "SELECT COUNT(*) FROM stock_quotes WHERE trade_date=%s AND cycle='1d'",
+                (latest_date,)
+            ) or 0
+            if quote_count > 0:
+                coverage = count / quote_count * 100
+                if coverage < MonitorConfig.COVERAGE_SUCCESS:
+                    return {
+                        "status": "partial",
+                        "message": f"覆盖率 {coverage:.1f}%（{count}/{quote_count}）",
+                        "data_date": latest_str,
+                        "data_count": count,
+                    }
+
+        return {
+            "status": "success",
+            "message": f"共 {count} 条",
+            "data_date": latest_str,
+            "data_count": count,
+        }
+    elif count > 0:
+        return {
+            "status": "partial",
+            "message": f"数据不足 {count}/{min_count} 条",
+            "data_date": latest_str,
+            "data_count": count,
+        }
+    else:
+        return {"status": "pending", "message": "今日无数据"}
+
+
+
 
 TASK_CHAIN = [
     {"id": "A", "name": "增量导入行情", "key": "daily_import", "desc": "import_daily_data"},
@@ -475,13 +705,13 @@ TASK_CHAIN = [
 ]
 
 # 日志目录（项目根目录下的 logs/cron）
-_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))), "logs", "cron")
+_LOG_DIR = Path(__file__).parents[4] / "logs" / "cron"
 
 
 def _parse_task_log(task_key: str) -> Dict[str, Any]:
     """解析单个任务的日志文件，返回状态信息"""
-    log_path = os.path.join(_LOG_DIR, f"{task_key}.log")
-    if not os.path.exists(log_path):
+    log_path = _LOG_DIR / f"{task_key}.log"
+    if not log_path.exists():
         return {"status": "pending", "message": "无执行记录"}
 
     try:
@@ -491,7 +721,7 @@ def _parse_task_log(task_key: str) -> Dict[str, Any]:
         return {"status": "unknown", "message": "日志读取失败"}
 
     # 查找今日的执行记录
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = _now_beijing().strftime("%Y-%m-%d")
 
     # 策略：找到所有执行块，优先返回有明确结果的块（success/failed）
     # 日志格式: ===== 2026-06-09 14:26:30 开始执行 daily_import =====
@@ -510,7 +740,7 @@ def _parse_task_log(task_key: str) -> Dict[str, Any]:
         block_content = content[block_start:]
         if ('SUCCESS' in block_content or '执行成功' in block_content or '完成' in block_content[-500:]
                 or ('FAILED' in block_content and '=====' in block_content)
-                or ('EXCEPTION' in block_content and '=====' in block_content)):
+                or ('EXCEPTION' in block_content and ('=====' in block_content or 'Traceback' in block_content))):
             selected_block = block_match
             break
 
@@ -551,7 +781,10 @@ def _parse_task_log(task_key: str) -> Dict[str, Any]:
         }
 
     # 失败检测：用字符串包含判断，避免正则边界问题
-    if ('FAILED' in block_content and '=====' in block_content) or ('EXCEPTION' in block_content and '=====' in block_content):
+    # 注意：EXCEPTION 可能没有闭合 ===== 分隔符（程序崩溃时不会输出结束标记）
+    if ('EXCEPTION' in block_content and '=====' in block_content) or \
+       ('EXCEPTION' in block_content and 'Traceback' in block_content) or \
+       ('FAILED' in block_content and '=====' in block_content):
         return {
             "status": "failed",
             "message": _extract_error_msg(block_content),
@@ -565,7 +798,7 @@ def _parse_task_log(task_key: str) -> Dict[str, Any]:
 
     # 如果最后修改时间在5分钟内，认为正在运行
     try:
-        mtime = os.path.getmtime(log_path)
+        mtime = log_path.stat().st_mtime
         age_seconds = time.time() - mtime
         if age_seconds < 300:  # 5分钟内有更新
             return {"status": "running", "message": "执行中...", "start_time": block_date}
@@ -578,7 +811,13 @@ def _parse_task_log(task_key: str) -> Dict[str, Any]:
 def _extract_error_msg(content: str) -> str:
     """从日志中提取错误信息"""
     # 找 FAILED 或 EXCEPTION 行附近的内容
-    for pattern in [r'(FAILED.*?)(?:\n=====|\Z)', r'(EXCEPTION:.*?)(?:\n=====|\Z)', r'(失败[^\n]*)']:
+    # 兼容有/无闭合分隔符两种情况
+    for pattern in [
+        r'(FAILED.*?)(?:\n=====|\Z)',
+        r'(EXCEPTION:.*?)(?:\n=====|\Z)',
+        r'(Traceback \(most recent call last\):.*?)(?:\n=====|\Z)',
+        r'(失败[^\n]*)'
+    ]:
         match = re.search(pattern, content, re.DOTALL)
         if match:
             msg = match.group(1).strip()
@@ -588,46 +827,61 @@ def _extract_error_msg(content: str) -> str:
 
 @router.get("/monitor/task-chain/", summary="每日任务链 A→F 状态")
 def get_task_chain_status():
-    """返回每日盘后任务链的执行状态（从日志文件读取）"""
-    import time
+    """
+    返回每日盘后任务链的执行状态。
 
+    数据源：仅以数据库为准（用户硬性要求）。
+    - 今日对应表有数据且条数达标 → success
+    - 今日有数据但条数不达标 → partial
+    - 今日对应表无数据（最新数据日期 != 今日）→ pending（待执行）
+    - 数据库完全无该表数据 → pending
+
+    注意：日志文件不再参与业务判断，仅保留 _parse_task_log 供 debug 端点使用。
+    """
     tasks = []
-    all_success = True
-    has_running = False
+    has_success = False
+    has_pending = False
+    has_partial = False
     has_failed = False
 
     for task in TASK_CHAIN:
-        info = _parse_task_log(task["key"])
+        # 唯一数据源：数据库
+        db_info = _check_task_from_db(task["key"])
+        status = db_info.get("status", "pending")
+
         tasks.append({
             "id": task["id"],
             "name": task["name"],
             "key": task["key"],
-            "status": info.get("status", "pending"),
-            "message": info.get("message", ""),
-            "start_time": info.get("start_time"),
-            "duration_seconds": info.get("duration_seconds"),
+            "status": status,
+            "message": db_info.get("message", ""),
+            "data_count": db_info.get("data_count"),
+            "data_date": db_info.get("data_date"),
+            "start_time": None,
+            "duration_seconds": None,
         })
 
-        if info.get("status") == "failed":
+        if status == "failed":
             has_failed = True
-            all_success = False
-        elif info.get("status") != "success":
-            all_success = False
-        if info.get("status") == "running":
-            has_running = True
+        elif status == "partial":
+            has_partial = True
+        elif status == "pending":
+            has_pending = True
+        elif status == "success":
+            has_success = True
 
-    # 整体状态
+    # 整体状态优先级：failed > partial > pending > success
     if has_failed:
         overall = "failed"
-    elif has_running:
-        overall = "running"
-    elif all_success:
-        overall = "success"
-    else:
+    elif has_partial:
+        overall = "partial"
+    elif has_pending:
         overall = "pending"
+    else:
+        overall = "success"
 
     return ApiResponse(code=200, message="success", data={
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": _now_beijing().strftime("%Y-%m-%d"),
         "overall": overall,
         "tasks": tasks,
     })
@@ -683,7 +937,6 @@ def get_download_progress():
     msg = row["message"] or ""
     progress_data = {"current": 0, "total": 0, "success": 0, "failed": 0, "skipped": 0}
 
-    import re
     m = re.search(r'成功\s*(\d+)', msg)
     if m:
         progress_data["success"] = int(m.group(1))
@@ -708,52 +961,6 @@ def get_download_progress():
         "start_time": str(row["start_time"]) if row["start_time"] else None,
         "detail": progress_data,
     })
-
-
-# ============================================
-# 端点 6：数据质量统计
-# ============================================
-
-@router.get("/monitor/data-quality/", summary="数据质量统计")
-def get_data_quality():
-    """返回脏数据统计、错误类型分布等"""
-    result = {}
-
-    # 脏数据统计
-    result["dirty"] = {}
-    dirty_total = _query_scalar("SELECT COUNT(*) FROM stock_quotes_dirty")
-    dirty_pending = _query_scalar("SELECT COUNT(*) FROM stock_quotes_dirty WHERE status = 'pending'")
-    result["dirty"]["total"] = dirty_total or 0
-    result["dirty"]["pending"] = dirty_pending or 0
-
-    # 错误类型分布
-    type_rows = _query_dict(
-        "SELECT error_type, COUNT(*) AS cnt FROM stock_quotes_dirty GROUP BY error_type ORDER BY cnt DESC"
-    )
-    result["dirty"]["by_type"] = [{"type": r["error_type"], "count": r["cnt"]} for r in type_rows]
-
-    # 同步失败记录
-    failed_checkpoints = _query_scalar(
-        "SELECT COUNT(*) FROM sync_checkpoints WHERE sync_status = 'failed'"
-    )
-    result["sync_failed"] = failed_checkpoints or 0
-
-    # 最近错误日志
-    recent_errors = _query_dict(
-        "SELECT code, trade_date, error_type, error_message, created_at FROM data_error_log ORDER BY created_at DESC LIMIT 20"
-    )
-    result["recent_errors"] = [
-        {
-            "code": r.get("code"),
-            "trade_date": str(r["trade_date"]) if r.get("trade_date") else None,
-            "error_type": r["error_type"],
-            "error_message": (r["error_message"] or "")[:100],
-            "created_at": str(r["created_at"]),
-        }
-        for r in recent_errors
-    ]
-
-    return ApiResponse(code=200, message="success", data=result)
 
 
 # ============================================
@@ -792,8 +999,6 @@ def get_sync_checkpoints(
 # ============================================
 # 端点 8：系统健康状态
 # ============================================
-
-_DATA_SOURCE_CACHE = {"tushare": None, "baostock": None}
 
 
 @router.get("/monitor/health-check/", summary="系统健康状态")
@@ -873,9 +1078,16 @@ def standardize_codes():
     - 处理 stock_quotes 中因格式不同导致的重复记录
 
     实现策略：分批小事务提交，避免长事务锁表
+
+    去重规则说明（PARTITION BY code, trade_date, cycle, adjust_type ORDER BY id DESC）：
+    - 业务键：(code, trade_date, cycle, adjust_type) 必须唯一
+    - 冲突时保留 id 最大者（id 是 PostgreSQL serial 主键，monotonically increasing，
+      与"最新插入"等价；旧数据来自不同数据源时取最新一份，符合"以最新数据为准"原则）
+    - 替代方案：保留 trade_date 更晚者，但因业务键已含 trade_date 维度，相同 trade_date
+      下的多份记录实际是冗余的，按 id DESC 保留"最后写入"即可保证不丢新增数据
     """
     result = {
-        "started_at": datetime.now().isoformat(),
+        "started_at": _now_beijing().isoformat(),
         "steps": [],
     }
     conn = _get_db_conn()
@@ -883,34 +1095,67 @@ def standardize_codes():
     try:
         cur = conn.cursor()
 
-        # ========== Step 1: 删除 stock_quotes 中带后缀的记录 ==========
-        # 关键优化：使用 code >= '999999' 范围扫描
-        # 字典序：'000001.SZ' > '999999'，因此所有带后缀的 code 都 > '999999'
-        # 这样可以利用 btree(code) 索引，避免全表扫描
-        logger.info("开始删除 stock_quotes 中带后缀的记录（范围扫描优化）...")
-        deleted = 0
+        # ========== Step 1: 标准化 stock_quotes（UPDATE 转换，不删除） ==========
+        # 关键安全：将带后缀的 code（如 '000001.SZ'）改为纯数字 '000001'
+        # 不会丢数据：转换后若与原纯数字记录产生主键冲突，再去重保留较新记录
+        logger.info("开始标准化 stock_quotes 中带后缀的记录（UPDATE 转换）...")
+        updated = 0
         batch = 5000
         max_iter = 50  # 安全上限
         for i in range(max_iter):
-            try:
-                cur.execute("""
-                    DELETE FROM stock_quotes
-                    WHERE ctid IN (
-                        SELECT ctid FROM stock_quotes
-                        WHERE code >= '999999'
-                        LIMIT %s
-                    )
-                """, (batch,))
-                n = cur.rowcount or 0
-            except Exception as e:
-                logger.warning(f"批量删除异常: {e}")
-                n = 0
-            deleted += n
+            cur.execute(
+                """
+                UPDATE stock_quotes
+                SET code = SPLIT_PART(code, '.', 1)
+                WHERE (code, trade_date, cycle, adjust_type) IN (
+                    SELECT code, trade_date, cycle, adjust_type FROM stock_quotes
+                    WHERE code LIKE '%%.%%'
+                    LIMIT %s
+                )
+                """,
+                (batch,),
+            )
+            n = cur.rowcount or 0
+            updated += n
             if n == 0 or n < batch:
                 break
             if i % 5 == 0:
-                logger.info(f"已删除 {deleted} 条带后缀记录...")
-        result["steps"].append({"table": "stock_quotes", "action": "delete_suffix", "rows": deleted})
+                logger.info(f"已转换 {updated} 条带后缀记录...")
+        result["steps"].append({"table": "stock_quotes", "action": "update_suffix", "rows": updated})
+
+        # ========== Step 1.5: 转换后若产生主键冲突，保留 id 最大者（最新插入） ==========
+        # 冲突场景：'000001.SZ' → '000001' 后与已有的 '000001' 记录重复
+        # 仅在确实存在冲突时执行（避免无谓全表扫描）
+        cur.execute("""
+            WITH dups AS (
+                SELECT code, trade_date, cycle, adjust_type,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY code, trade_date, cycle, adjust_type
+                         ORDER BY id DESC   -- 见 docstring 去重规则说明
+                       ) AS rn
+                FROM stock_quotes
+            ),
+            dup_count AS (
+                SELECT COUNT(*) AS n FROM dups WHERE rn > 1
+            )
+            SELECT n FROM dup_count
+        """)
+        dup_n = cur.fetchone()[0] if cur.rowcount else 0
+        if dup_n and dup_n > 0:
+            cur.execute("""
+                DELETE FROM stock_quotes sq
+                USING (
+                    SELECT ctid, ROW_NUMBER() OVER (
+                        PARTITION BY code, trade_date, cycle, adjust_type
+                        ORDER BY id DESC
+                    ) AS rn
+                    FROM stock_quotes
+                ) d
+                WHERE sq.ctid = d.ctid AND d.rn > 1
+            """)
+            result["steps"].append({"table": "stock_quotes", "action": "dedup_after_update", "rows": cur.rowcount or 0})
+        else:
+            result["steps"].append({"table": "stock_quotes", "action": "dedup_after_update", "rows": 0})
 
         # ========== Step 2: 标准化 stock_basic ==========
         cur.execute("""
@@ -950,8 +1195,11 @@ def standardize_codes():
         result["error"] = str(e)
         logger.exception("股票代码标准化失败")
     finally:
-        conn.close()
-    result["finished_at"] = datetime.now().isoformat()
+        try:
+            conn.close()
+        except Exception:
+            pass
+    result["finished_at"] = _now_beijing().isoformat()
     return ApiResponse(code=200, message="success", data=result)
 
 

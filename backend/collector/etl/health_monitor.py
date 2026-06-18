@@ -128,6 +128,13 @@ def query_db_snapshot() -> dict:
     """查询数据库当前快照"""
     snapshot = {'stock_quotes': {}, 'stock_daily_snapshot': {}, 'error': None}
     try:
+        # psql 命令路径（兼容不同安装位置）
+        psql_path = '/usr/local/opt/postgresql@18/bin/psql'
+        if not os.path.exists(psql_path):
+            psql_path = '/usr/bin/psql'
+        if not os.path.exists(psql_path):
+            psql_path = 'psql'  # 最后尝试 PATH 中的 psql
+
         # 使用子进程执行简短 SQL 查询，避免长连接
         sql = """
             SELECT 'stock_quotes' as tbl, trade_date, COUNT(*) as cnt
@@ -136,7 +143,7 @@ def query_db_snapshot() -> dict:
         """
         result = subprocess.run(
             [
-                'psql', '-h', 'localhost', '-p', '5432',
+                psql_path, '-h', 'localhost', '-p', '5432',
                 '-d', 'quant_trading', '-U', 'quant_user',
                 '-t', '-A', '-F', '|',
                 '-c', sql
@@ -158,7 +165,7 @@ def query_db_snapshot() -> dict:
         """
         result2 = subprocess.run(
             [
-                'psql', '-h', 'localhost', '-p', '5432',
+                psql_path, '-h', 'localhost', '-p', '5432',
                 '-d', 'quant_trading', '-U', 'quant_user',
                 '-t', '-A', '-F', '|',
                 '-c', sql2
