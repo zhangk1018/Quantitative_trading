@@ -51,6 +51,10 @@ data/backup/
 # Temp files
 tmp/
 *.tmp
+# Temporary working directories (selftest scripts, debug scratch files) — never committed
+temp/
+**/temp/
+**/temp/**
 
 # Debug/test scripts (one-off tools, not part of the project)
 backend/debug_fill.py
