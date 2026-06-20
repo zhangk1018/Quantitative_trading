@@ -60,6 +60,10 @@ temp/
 **/temp/
 **/temp/**
 
+# Do not commit to GitHub
+.trae/
+docs/
+
 # Debug/test scripts (one-off tools, not part of the project)
 backend/debug_fill.py
 backend/check_and_fill.py

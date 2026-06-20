@@ -8,6 +8,10 @@
 4. bollinger_breakout: BOLL 突破信号（价格突破上轨/下轨）
 """
 import sys
+import os
+
+# Add the backend directory to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import gc
 import pandas as pd
 import numpy as np
@@ -37,7 +41,17 @@ class SignalPrecompute:
         if not mask.any():
             return pd.DataFrame()
         df_hit = df_src[mask].copy()
-        strength = signal_strength.fillna(0).clip(0, 100).astype(int)
+        
+        # 过滤无效数据：NaN 的 code 或 NaT 的 trade_date
+        valid_mask = df_hit["code"].notna() & df_hit["code"].astype(str).str.lower().ne('nan')
+        valid_mask &= df_hit["trade_date"].notna()
+        if not valid_mask.any():
+            return pd.DataFrame()
+        
+        # 使用 numpy 数组避免索引对齐问题
+        df_hit = df_hit[valid_mask].reset_index(drop=True)
+        strength_values = signal_strength[mask].values[valid_mask.values]
+        strength = pd.Series(strength_values).fillna(0).clip(0, 100).astype(int)
         sig_df = pd.DataFrame({
             "code": df_hit["code"],
             "cycle": "1d",
@@ -290,11 +304,20 @@ class SignalPrecompute:
                         pass
 
                 if not chunk_signal_df.empty:
-                    insert_count = self.storage.save_signals_batch(chunk_signal_df)
-                    total_write_signals += insert_count
-                    hit_stocks = chunk_signal_df["code"].unique().tolist()
-                    stock_with_signal.update(hit_stocks)
-                    logger.info(f"批次完成｜入库信号:{insert_count}条｜产生信号股票:{len(hit_stocks)}只")
+                    # 去重：确保 (code, trade_date, signal_type, signal_direction) 唯一，保留第一条
+                    chunk_signal_df = chunk_signal_df.drop_duplicates(
+                        subset=['code', 'trade_date', 'signal_type', 'signal_direction'],
+                        keep='first'
+                    ).reset_index(drop=True)
+                    
+                    if chunk_signal_df.empty:
+                        logger.info("当前批次信号去重后为空")
+                    else:
+                        insert_count = self.storage.save_signals_batch(chunk_signal_df)
+                        total_write_signals += insert_count
+                        hit_stocks = chunk_signal_df["code"].unique().tolist()
+                        stock_with_signal.update(hit_stocks)
+                        logger.info(f"批次完成｜入库信号:{insert_count}条｜产生信号股票:{len(hit_stocks)}只")
                 else:
                     logger.info("当前批次无新信号（过滤后为空）")
             else:
