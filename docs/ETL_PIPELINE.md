@@ -90,6 +90,9 @@ SELECT MAX(update_date) FROM stock_basic;
 # 增量导入（推荐，每日使用）
 ./venv/bin/python backend/collector/etl/import_daily_data.py --incremental
 
+# 增量Tushare下载（推荐每日使用）
+./venv/bin/python backend/collector/etl/import_daily_data.py --data-source tushare --incremental
+
 # 全量导入（首次使用）
 ./venv/bin/python backend/collector/etl/import_daily_data.py
 
@@ -344,6 +347,55 @@ WHERE trade_date = (SELECT MAX(trade_date) FROM stock_daily_snapshot);
 - **SQL 执行超时**：拆分为多个 UPDATE 语句，避免单次查询过于复杂
 
 ---
+### 3.3 交易信号生成
+**脚本**：`backend/clean/etl/signal_precompute.py`  
+**功能**：  
+- 基于 `stock_indicators` 表中的技术指标（如 MACD、RSI、BOLL）  
+- 计算交易信号（如 MACD 金叉/死叉、RSI 超买超卖、BOLL 突破）  
+- 将结果写入 `trade_signals` 表  
+
+**执行**：
+```bash
+# 全市场批量计算（推荐）
+./venv/bin/python backend/clean/etl/signal_precompute.py
+
+# 强制全量重算（覆盖所有历史数据）
+./venv/bin/python backend/clean/etl/signal_precompute.py --force-full
+
+# 手工补某天（如2024-03-15）
+export END_DATE=2024-03-15 && ./venv/bin/python backend/clean/etl/signal_precompute.py
+```
+
+**验证**：
+```sql
+-- 检查最新信号日期
+SELECT MAX(trade_date) FROM trade_signals;
+
+-- 检查关键信号类型
+SELECT signal_type, COUNT(*) 
+FROM trade_signals 
+WHERE trade_date = (SELECT MAX(trade_date) FROM trade_signals)
+GROUP BY signal_type;
+-- 预期：至少包含 macd_cross、rsi_oversold、rsi_overbought、bollinger_breakout 四种类型
+
+-- 验证单只股票信号
+SELECT * FROM trade_signals 
+WHERE code = '000001' 
+ORDER BY trade_date DESC 
+LIMIT 10;
+```
+
+**常见问题**：
+- **`stock_indicators` 字段缺失**：  
+  检查 `compute_indicators_daily.py` 是否成功运行，确保 `dif`/`dea`/`rsi6` 等字段存在
+- **信号未生成**：  
+  确认输入数据满足条件（如 MACD 金叉需 `DIF > DEA` 且前一日 `DIF ≤ DEA`）
+- **内存不足**：  
+  调整 `precompute_all_signals_batch` 的 `chunk_batch_size` 参数（默认 200）
+
+
+---
+
 
 ## 阶段 4：数据导出
 
@@ -377,7 +429,7 @@ df = pd.read_parquet('data/price/daily/latest_quotes.parquet')
 print(f'记录数: {len(df)}')
 print(f'列数: {len(df.columns)}')
 print(f'交易日期: {df.trade_date.iloc[0]}')
-print(f'Pattern 列: {[c for c in df.columns if "macd_" in c or "rsi_" in c or "boll_" in c or "ma_" in c]}')
+print(f'Pattern 列: {[c for c in df.columns if 'macd_' in c or 'rsi_' in c or 'boll_' in c or 'ma_' in c]}')
 "
 # 预期：5000+ 条，76 列，pattern 列存在
 ```
@@ -447,13 +499,17 @@ echo "=== 6. 缺失数据补全（可选）==="
 echo "=== 7. 技术指标计算 ==="
 ./venv/bin/python backend/clean/etl/compute_indicators_daily.py
 
-echo "=== 8. 宽表同步 ==="
+echo "=== 8. 生成交易信号 ==="
+./venv/bin/python backend/clean/etl/signal_precompute.py
+
+# 调整宽表同步顺序（需等待信号生成完成）
+echo "=== 9. 宽表同步 ==="
 ./venv/bin/python backend/collector/etl/daily_snapshot_sync.py --latest
 
-echo "=== 9. 导出 Parquet ==="
+echo "=== 10. 导出 Parquet ==="
 ./venv/bin/python backend/clean/enrich/export_parquet.py
 
-echo "=== 10. 重启后端服务 ==="
+echo "=== 11. 重启后端服务 ==="
 pkill -f "uvicorn backend.core.api.main:app" || true
 sleep 2
 ./venv/bin/uvicorn backend.core.api.main:app --host 0.0.0.0 --port 8000 --reload &

@@ -5,7 +5,9 @@ import logging
 import pandas as pd
 import psycopg2
 from psycopg2 import OperationalError, IntegrityError
-from typing import Optional, Dict, Any
+# from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from datetime import datetime          # ← 添加这一行
 from .base_storage import BaseStorage
 logger = logging.getLogger(__name__)
 

@@ -42,6 +42,10 @@ dist/
 build/
 *.egg
 
+# Python virtual environment
+venv/
+.venv/
+
 # Data & database files
 data/*.db
 data/backup/

@@ -157,7 +157,13 @@ def sync_daily_snapshot(target_date: str, batch_size: int = 10000):
                 SELECT pe, pe_ttm, pb, total_mv, circ_mv, turnover_rate, volume_ratio,
                        dv_ratio, dv_ttm, ps, ps_ttm, float_share
                 FROM stock_daily_basic db2
-                WHERE SPLIT_PART(db2.code, '.', 2) = q.code AND db2.trade_date <= q.trade_date
+                -- 2026-06-18 修复: 之前写的是 SPLIT_PART(db2.code, '.', 2) = q.code，
+                --   但 stock_daily_basic.code 和 stock_quotes.code 实际都是无后缀格式（如 '000001'），
+                --   SPLIT_PART(2) 永远得到空字符串，等号永假，导致:
+                --     1) LATERAL JOIN 拿不到 daily_basic 估值（pe/pb/market_cap 全 NULL）
+                --     2) LATERAL 必须全表扫 stock_daily_basic × 5000 行 = 6.4 亿行比较，单次 6/16 同步卡 43 分钟不返回
+                --   修复: 直接等值匹配 (code, trade_date) 上的 (code, trade_date) 主键索引
+                WHERE db2.code = q.code AND db2.trade_date <= q.trade_date
                 ORDER BY db2.trade_date DESC LIMIT 1
             ) db ON TRUE
             ON CONFLICT (code, trade_date) DO UPDATE SET
