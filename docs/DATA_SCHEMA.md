@@ -30,47 +30,159 @@ Quantitative_trading/
 ├── requirements.txt            # Python 依赖（仅根级公共依赖）
 │
 ├── backend/                    # 后端代码主目录
-│   ├── main.py                 # FastAPI 主入口
+│   ├── main.py                 # 主程序入口（命令行工具）
 │   ├── pipeline.yaml           # 核心配置文件（数据源/存储/定时任务/缓存）
 │   ├── requirements.txt        # 后端 Python 依赖
 │   ├── requirements_api.txt    # API 服务 Python 依赖
 │   ├── task_scheduler.py       # 定时任务调度器（APScheduler）
-│   ├── test_scheduler.py       # 调度器测试
-│   ├── test_service.py         # 服务测试
+│   ├── minute_data_flow.py     # 分钟数据流程
 │   │
 │   ├── collector/              # 数据采集模块
-│   │   ├── datasource/         # 多数据源（baostock/akshare/sina/tencent）
-│   │   ├── db/                 # 数据库操作（models/loader/meta/repository）
+│   │   ├── datasource/         # 多数据源适配器
+│   │   │   ├── base.py         # 数据源基类
+│   │   │   ├── baostock.py     # Baostock 数据源
+│   │   │   ├── akshare.py      # Akshare 数据源
+│   │   │   ├── sina.py         # 新浪财经数据源
+│   │   │   ├── tencent.py      # 腾讯财经数据源
+│   │   │   ├── tushare.py      # Tushare 数据源
+│   │   │   └── pywencai_ds.py  # 问财数据源
+│   │   ├── db/                 # 数据库操作层
+│   │   │   ├── models.py       # SQLAlchemy 模型
+│   │   │   ├── loader.py       # 数据加载器
+│   │   │   ├── repository.py   # 数据仓库
+│   │   │   ├── database.py     # 数据库连接管理
+│   │   │   ├── db_loader.py    # 数据库加载器
+│   │   │   ├── meta.py         # 元数据管理
 │   │   │   └── sql/            # SQL 脚本（建表/分区/迁移/索引）
-│   │   ├── etl/                # ETL 流程（导入/同步/分区/监控）
-│   │   ├── scheduler/          # 智能调度系统（SmartScheduler/熔断/告警）
-│   │   ├── storage/            # 存储层（PostgreSQL/SQLite）
+│   │   ├── etl/                # ETL 流程
+│   │   │   ├── import_daily_data.py        # 日线数据导入
+│   │   │   ├── import_minute_data.py       # 分钟线数据导入
+│   │   │   ├── daily_snapshot_sync.py      # 每日快照同步
+│   │   │   ├── sync_daily_basic.py         # 基本面数据同步
+│   │   │   ├── sync_adj_factor.py          # 复权因子同步
+│   │   │   ├── sync_stock_list_baostock.py # 股票列表同步
+│   │   │   ├── sync_tushare_daily_basic.py # Tushare 基本面同步
+│   │   │   ├── fill_missing_data.py        # 填充缺失数据
+│   │   │   ├── fix_missing_stocks.py       # 修复缺失股票
+│   │   │   ├── synthesize_cycle_data.py    # 合成周期数据
+│   │   │   ├── partition_scheduler.py      # 分区调度器
+│   │   │   ├── health_monitor.py           # 健康监控
+│   │   │   ├── pipeline_health_check.py    # 流程健康检查
+│   │   │   ├── launchd_plists/             # launchd 定时任务配置
+│   │   │   └── README.md                   # ETL 文档
+│   │   ├── scheduler/          # 智能调度系统
+│   │   │   ├── smart_scheduler.py # 智能调度器
+│   │   │   ├── smart_dsm.py       # 智能数据源管理
+│   │   │   ├── circuit_breaker.py # 熔断器
+│   │   │   ├── alert.py          # 告警引擎
+│   │   │   └── config.py         # 调度配置
+│   │   ├── storage/            # 存储层
+│   │   │   ├── base_storage.py     # 存储基类
+│   │   │   ├── postgresql_storage.py # PostgreSQL 存储
+│   │   │   └── sqlite_storage.py     # SQLite 存储
 │   │   └── check_programs.py   # 程序健康检查
 │   │
 │   ├── clean/                  # 数据清洗与补全模块
-│   │   ├── enrich/             # 数据补全（基本面/行业/技术指标/新高突破）
-│   │   ├── processor/          # 核心处理（导入器/缺口处理/质量检查/技术指标）
-│   │   ├── quality/            # 数据质量检查（完整性/重复/模式校验）
-│   │   └── tools/              # 工具脚本（信号预计算/数据管道/清理/对比）
+│   │   ├── enrich/             # 数据补全
+│   │   │   ├── calculate_highs.py        # 计算新高突破
+│   │   │   ├── export_parquet.py         # 导出 Parquet
+│   │   │   └── run_data_complete.py      # 运行数据补全
+│   │   ├── etl/                # ETL 处理
+│   │   │   ├── compute_indicators_daily.py # 技术指标计算
+│   │   │   ├── pattern_precompute.py      # 技术形态预计算
+│   │   │   ├── signal_precompute.py       # 交易信号预计算
+│   │   │   └── standardize_stock_codes.py  # 标准化股票代码
+│   │   ├── processor/          # 核心处理
+│   │   │   ├── base_importer.py          # 基础导入器
+│   │   │   ├── data_processor.py          # 数据处理器
+│   │   │   ├── data_quality_checker.py    # 数据质量检查
+│   │   │   ├── data_validator.py         # 数据验证器
+│   │   │   ├── data_gap_handler.py       # 数据缺口处理
+│   │   │   ├── data_version_manager.py   # 数据版本管理
+│   │   │   └── technical_indicator.py    # 技术指标计算
+│   │   ├── quality/            # 质量检查
+│   │   │   ├── check_data_quality.py      # 数据质量检查
+│   │   │   ├── check_duplicates.py        # 重复数据检查
+│   │   │   ├── check_quotes_data.py       # 行情数据检查
+│   │   │   ├── check_stock_basic.py       # 基本信息检查
+│   │   │   ├── check_stocks.py            # 股票检查
+│   │   │   ├── check_table_schema.py      # 表结构检查
+│   │   │   ├── validate_minute_data.py    # 分钟数据验证
+│   │   │   └── verify_data_quality.py     # 数据质量验证
+│   │   └── tools/              # 工具脚本
+│   │       ├── backfill_daily_basic.py           # 回填基本面数据
+│   │       ├── calc_additional_indicators.py     # 计算额外指标
+│   │       ├── calc_additional_indicators_fast.py # 快速计算额外指标
+│   │       ├── calculate_minute_indicators.py    # 计算分钟指标
+│   │       ├── data_pipeline.py                # 数据管道
+│   │       ├── fetch_daily_basic_from_tushare.py # 获取 Tushare 基本面
+│   │       ├── fix_adj_factor_full.py            # 修复复权因子
+│   │       ├── precompute_signals.py             # 预计算信号
+│   │       ├── update_fundamental_from_sina.py   # 更新浪财经基本面
+│   │       └── verify_stock_data.py              # 验证股票数据
 │   │
 │   ├── core/                   # 核心服务层
-│   │   ├── api/                # FastAPI 路由
-│   │   │   ├── main.py         # FastAPI 应用入口
-│   │   │   ├── config.py       # API 配置
-│   │   │   ├── dependencies.py # 依赖注入
-│   │   │   ├── models/         # Pydantic 模型（schemas.py）
-│   │   │   └── router/         # 路由（kline/signals/stocks/meta）
-│   │   └── service/            # 业务服务（kline/signal/screener/data_service）
+│   │   ├── api/                # FastAPI 服务
+│   │   │   ├── main.py              # FastAPI 应用入口
+│   │   │   ├── start_server.py      # 服务器启动
+│   │   │   ├── config.py            # API 配置
+│   │   │   ├── dependencies.py      # 依赖注入
+│   │   │   ├── models/              # Pydantic 模型
+│   │   │   │   └── schemas.py       # 数据模型
+│   │   │   └── router/              # 路由
+│   │   │       ├── kline.py         # K线数据
+│   │   │       ├── signals.py       # 交易信号
+│   │   │       ├── stocks.py        # 股票筛选
+│   │   │       ├── meta.py          # 元数据
+│   │   │       ├── monitor.py       # 监控
+│   │   │       └── watchlist.py     # 自选股
+│   │   └── service/            # 业务服务
+│   │       ├── data_service.py       # 数据服务
+│   │       ├── kline_service.py      # K线服务
+│   │       ├── signal_service.py     # 信号服务
+│   │       ├── screener_service.py   # 筛选器服务
+│   │       └── feature_service.py    # 特征服务
 │   │
-│   ├── utils/                  # 工具模块（配置/日志/监控/错误分类/存储工厂）
-│   └── logs/                   # 日志目录
-│       ├── daily_import.log    # 日线导入日志
-│       ├── minute_import.log   # 分钟线导入日志
-│       ├── base_importer.log   # 导入器日志
-│       ├── data_quality_checker.log  # 数据质量检查日志
-│       ├── technical_indicator.log   # 技术指标计算日志
-│       ├── datasource_manager.log    # 数据源管理日志
-│       └── *.log               # 其它模块日志
+│   ├── imputer/               # 数据补全模块
+│   │   ├── adjuster.py            # 数据调整器
+│   │   ├── incomplete_handler.py  # 不完整数据处理器
+│   │   └── missing_handler.py     # 缺失数据处理器
+│   │
+│   ├── monitoring/            # 监控模块
+│   │   ├── system_monitor.py       # 系统监控
+│   │   ├── data_quality_monitor.py # 数据质量监控
+│   │   ├── download_monitor.py     # 下载监控
+│   │   └── monitor_download.py     # 监控下载
+│   │
+│   ├── scheduler/             # 调度模块
+│   │   ├── launchd/               # launchd 配置
+│   │   ├── install_cron.sh        # 安装 cron
+│   │   ├── run_daily_pipeline.sh  # 运行每日流程
+│   │   └── quant_crontab.active   # crontab 配置
+│   │
+│   ├── utils/                 # 工具模块
+│   │   ├── config.py             # 配置管理
+│   │   ├── logger.py             # 日志管理
+│   │   ├── storage_factory.py    # 存储工厂
+│   │   ├── error_classifier.py   # 错误分类
+│   │   ├── alert_engine.py       # 告警引擎
+│   │   ├── metrics.py            # 指标收集
+│   │   ├── monitor.py            # 监控工具
+│   │   ├── data_sync_utils.py    # 数据同步工具
+│   │   └── stock_code_utils.py   # 股票代码工具
+│   │
+│   ├── static/                # 静态文件
+│   │   └── monitor.html          # 监控页面
+│   │
+│   ├── tools/                 # 工具
+│   │   └── draw_kline.py          # 绘制K线
+│   │
+│   ├── ops/                   # 运维脚本
+│   │   └── 2026-06-17_indicators_cleanup.sql  # 指标清理脚本
+│   │
+│   ├── Backend_AI_Assistant_Prompt.md  # AI 助手提示
+│   ├── PROJECT_RULES.md             # 项目规则
+│   └── logs/                        # 日志目录
 │
 ├── data/                       # 数据目录
 │   ├── metadata/               # 元数据文件
