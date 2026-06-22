@@ -28,9 +28,9 @@ logger = setup_logger('indicator_compute')
 def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
     """为指定股票计算技术指标（全量）"""
     db_code = code.split('.')[-1] if '.' in code else code
-    # 2026-06-09: 扩展为 2025-01-01 以确保 MA60/RSI24 等长窗口指标有充足历史，
-    # 提升信号预计算命中率（任务 5 验收：信号覆盖股票 ≥ 1000 只）
-    start_date = '2025-01-01'
+    # 动态计算起始日期：往前推 300 个自然日，确保 MA60/RSI24 等长窗口指标有充足历史
+    # 300 天 ≈ 220 个交易日，覆盖 MA60(60天) + RSI24(24天) 的预热期
+    start_date = (datetime.now() - pd.Timedelta(days=300)).strftime('%Y-%m-%d')
     end_date = datetime.now().strftime('%Y-%m-%d')
 
     quotes_df = storage.get_quotes(code=db_code, cycle='daily', start_date=start_date, end_date=end_date)
@@ -51,9 +51,9 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
         return 0
 
     # --- 准备入库数据 ---
-    # 列顺序必须与 save_indicators 的 copy_from 一致：
-    #   code, cycle, trade_date, ma5, ma10, ma20, ma60, macd, dif, dea, rsi6, rsi12, rsi24, trade_time, trade_datetime
-    # TechnicalIndicator.calculate_all 返回列名为大写：MA5, MA10, MACD, MACD_SIGNAL, MACD_HIST, RSI 等
+    # 列顺序必须与 save_indicators 一致：
+    #   code, cycle, trade_date, ma5, ma10, ma20, ma60, macd, dif, dea, rsi6, rsi12, rsi24
+    # 2026-06-22 修复 [6.9]：移除 trade_time/trade_datetime（表结构无此列，ON CONFLICT 修正为 code,cycle,trade_date）
     # 2026-06-16 修复：MACD 字段映射错误 + RSI12/RSI24 未计算
     # 标准 MACD 定义：DIF = EMA12-EMA26, DEA = DIF 的 9 日 EMA, MACD 柱 = (DIF-DEA)*2
     # 代码计算：MACD = EMA12-EMA26 = DIF, MACD_SIGNAL = DEA, MACD_HIST = 柱状图
@@ -72,34 +72,33 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
 
     for src_col, dst_col in indicator_mapping.items():
         if src_col in indicators_df.columns:
-            save_df[dst_col] = indicators_df[src_col].fillna(0)
+            save_df[dst_col] = indicators_df[src_col]
         else:
-            save_df[dst_col] = 0
+            save_df[dst_col] = None
 
     # 2026-06-16 修复：RSI 需要分别计算 6/12/24 三个窗口
     # calculate_all 默认 RSI window=14，不符合 RSI6 要求
+    # 2026-06-22 修复 [6.9]：移除 fillna(0)，保留 NaN 为 NULL，避免窗口期不足时错误存 0
+    # 2026-06-22 修复 [#4]：按 trade_date 对齐合并，避免行顺序不一致导致错位
     for window, col_name in [(6, 'rsi6'), (12, 'rsi12'), (24, 'rsi24')]:
         try:
             rsi_df = TechnicalIndicator.calculate_rsi(quotes_df.copy(), window=window, require_adjust=False)
-            # 6.9 诊断埋点：统计 RSI 序列中 NaN 数量，定位 0 来源
             if 'RSI' in rsi_df.columns:
-                nan_count = int(rsi_df['RSI'].isna().sum())
-                total_count = len(rsi_df)
-                logger.info(
-                    f"[6.9-DIAG] {db_code} RSI{window}: NaN={nan_count}/{total_count}, "
-                    f"末值={rsi_df['RSI'].iloc[-1] if total_count > 0 else 'N/A'}"
-                )
-                if nan_count > 0:
-                    logger.info(f"[6.9-DIAG] {db_code} RSI{window} -> fillna(0) 触发，NaN 行数={nan_count}")
-                save_df[col_name] = rsi_df['RSI'].fillna(0)
+                rsi_series = rsi_df.set_index('trade_date')['RSI']
+                save_df[col_name] = save_df['trade_date'].map(rsi_series)
             else:
-                logger.warning(f"[6.9-DIAG] {db_code} RSI{window}: 计算结果无 RSI 列，触发 except 分支")
-                save_df[col_name] = 0
+                logger.warning(f"{db_code} RSI{window}: 计算结果无 RSI 列")
+                save_df[col_name] = None
         except Exception as e:
-            logger.error(f"[6.9-DIAG] {db_code} RSI{window}: except 触发，异常={e}")
-            save_df[col_name] = 0
+            logger.warning(f"{db_code} RSI{window} 计算失败: {e}")
+            save_df[col_name] = None
 
-    # trade_time / trade_datetime 必须在数值列之后
+    # 2026-06-22 修复 [#7]：indicators_df 为空时提前返回
+    if save_df.empty:
+        logger.debug(f"{code} 计算结果为空，跳过")
+        return 0
+
+    # trade_time / trade_datetime 用于唯一约束 (code, cycle, trade_date, trade_datetime)
     save_df['trade_time'] = save_df['trade_date'].apply(
         lambda x: f"{x.strftime('%Y-%m-%d')} 15:00:00" if hasattr(x, 'strftime') else f"{str(x)[:10]} 15:00:00"
     )

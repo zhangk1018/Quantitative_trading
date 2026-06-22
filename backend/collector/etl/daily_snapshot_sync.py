@@ -6,6 +6,17 @@ daily_snapshot_sync.py - 每日快照宽表增量同步脚本
 stock_daily_snapshot 宽表，支持首次全量同步和每日增量同步。
 
 可通过 Airflow/Cron 调度执行。
+
+【必需的数据库索引】
+CREATE INDEX idx_quotes_cycle_date_code ON stock_quotes(cycle, trade_date DESC, code);
+CREATE INDEX idx_indicators_code_cycle_date ON stock_indicators(code, cycle, trade_date DESC);
+CREATE UNIQUE INDEX idx_snapshot_code_date ON stock_daily_snapshot(code, trade_date);
+CREATE INDEX idx_basic_code ON stock_basic(code);
+CREATE INDEX idx_daily_basic_code_date ON stock_daily_basic(code, trade_date);
+
+【依赖说明】
+- stock_indicators 表需预先计算并存储 MA5/MA10/MA20/V_MA5/BOLL 等指标。
+- 本脚本从该表直接读取这些指标，避免重复计算。
 """
 
 import os
@@ -13,42 +24,31 @@ import sys
 import argparse
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 
-# 添加项目路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 from collector.db.models import StockDailySnapshot, Base
 
 logger = logging.getLogger(__name__)
 
+# 2026-06-22 修复：涨跌停阈值使用精确值（考虑浮点误差，使用略低于理论阈值）
+# 理论阈值：主板10%，创业板/科创板20%，北交所30%
+# 实际判断：>=9.95/>=19.95/>=29.95，避免浮点误差导致漏判
+LIMIT_THRESHOLDS = {
+    'main_board': 9.95,  # 主板涨停阈值（理论10%）
+    'gem': 19.95,        # 创业板/科创板涨停阈值（理论20%）
+    'beijing': 29.95,    # 北交所涨停阈值（理论30%）
+}
 
-def get_db_engine():
-    """获取数据库引擎"""
-    from collector.db.database import DATABASE_URL
-    return create_engine(DATABASE_URL)
 
-
-def sync_daily_snapshot(target_date: str, batch_size: int = 10000):
-    """
-    同步指定日期的宽表数据
-    
-    Args:
-        target_date: 目标日期（格式：YYYY-MM-DD）
-        batch_size: 批量处理大小
-    """
-    engine = get_db_engine()
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    
+def sync_daily_snapshot(session: Session, target_date: str):
+    """同步指定日期的宽表数据"""
     try:
         logger.info(f"🔄 开始同步 {target_date} 的宽表数据...")
-        
-        # 1. 使用 SQL 计算并插入/更新（利用数据库计算能力）
-        # PostgreSQL UPSERT 语法：INSERT ... ON CONFLICT DO UPDATE
-        # 2026-06-10: 扩展 SELECT 增加 boll/break_high/consec_up_days/vol_ratio_5/v_ma5/area
-        # 2026-06-16: 新增 14 个技术指标 pattern 列（ma/macd/boll/rsi 筛选 pattern）
+
         upsert_sql = text("""
             INSERT INTO stock_daily_snapshot (
                 code, stock_name, listed_board, industry, sub_industry, area,
@@ -65,11 +65,7 @@ def sync_daily_snapshot(target_date: str, batch_size: int = 10000):
                 SELECT code, trade_date, open, high, low, close, pre_close, volume, amount, adjust_type
                 FROM stock_quotes
                 WHERE cycle = '1d' AND trade_date = :target_date
-                  AND code NOT LIKE '92%'
-                  AND code NOT LIKE '8%'
-                  AND code NOT LIKE '43%'
             ),
-            -- 拉取 70 天窗口
             win AS (
                 SELECT code, trade_date, close, high, volume
                 FROM stock_quotes
@@ -85,26 +81,28 @@ def sync_daily_snapshot(target_date: str, batch_size: int = 10000):
             ),
             stats AS (
                 SELECT code,
-                       AVG(close) FILTER (WHERE rn BETWEEN 6 AND 10)  AS ma5,
-                       AVG(close) FILTER (WHERE rn BETWEEN 11 AND 20) AS ma10,
-                       AVG(close) FILTER (WHERE rn BETWEEN 21 AND 40) AS ma20,
-                       AVG(volume) FILTER (WHERE rn BETWEEN 2 AND 6)  AS v_ma5,
-                       AVG(close) FILTER (WHERE rn BETWEEN 2 AND 21)  AS boll_mid,
-                       STDDEV_SAMP(close) FILTER (WHERE rn BETWEEN 2 AND 21) AS boll_std,
-                       AVG(close) FILTER (WHERE rn BETWEEN 2 AND 21) + 2 * STDDEV_SAMP(close) FILTER (WHERE rn BETWEEN 2 AND 21) AS boll_upper,
-                       AVG(close) FILTER (WHERE rn BETWEEN 2 AND 21) - 2 * STDDEV_SAMP(close) FILTER (WHERE rn BETWEEN 2 AND 21) AS boll_lower,
-                       MAX(high)   FILTER (WHERE rn BETWEEN 21 AND 40) AS high_20,
-                       MAX(high)   FILTER (WHERE rn BETWEEN 2 AND 61)  AS high_60,
-                       AVG(volume) FILTER (WHERE rn BETWEEN 2 AND 6)  AS vol_5_avg
+                       MAX(high) FILTER (WHERE rn BETWEEN 2 AND 21) AS high_20,
+                       MAX(high) FILTER (WHERE rn BETWEEN 2 AND 61) AS high_60,
+                       AVG(volume) FILTER (WHERE rn BETWEEN 2 AND 6) AS vol_5_avg
                 FROM ranked
                 GROUP BY code
             ),
+            -- 【修复】先计算LEAD，再计算SUM，避免窗口函数嵌套
+            lead_calc AS (
+                SELECT code, close, rn,
+                       LEAD(close) OVER (PARTITION BY code ORDER BY rn) AS prev_close
+                FROM ranked
+            ),
             consec AS (
-                SELECT a.code, COUNT(*) AS consec_up_days
-                FROM ranked a
-                JOIN ranked b ON a.code = b.code AND b.rn = a.rn - 1
-                WHERE a.high > b.high
-                GROUP BY a.code
+                SELECT code, COUNT(*) AS consec_up_days
+                FROM (
+                    SELECT code,
+                           SUM(CASE WHEN close > prev_close THEN 0 ELSE 1 END)
+                               OVER (PARTITION BY code ORDER BY rn) AS grp
+                    FROM lead_calc
+                ) flagged
+                WHERE grp = 0
+                GROUP BY code
             )
             SELECT
                 q.code,
@@ -128,44 +126,66 @@ def sync_daily_snapshot(target_date: str, batch_size: int = 10000):
                 db.total_mv AS market_cap,
                 db.circ_mv, db.turnover_rate, db.volume_ratio,
                 db.dv_ratio, db.dv_ttm, db.ps, db.ps_ttm, db.float_share,
-                ROUND(s.ma5::numeric, 2) AS ma5,
-                ROUND(s.ma10::numeric, 2) AS ma10,
-                ROUND(s.ma20::numeric, 2) AS ma20,
-                s.v_ma5::bigint AS v_ma5,
+                ROUND(i.ma5::numeric, 2) AS ma5,
+                ROUND(i.ma10::numeric, 2) AS ma10,
+                ROUND(i.ma20::numeric, 2) AS ma20,
+                s.vol_5_avg::bigint AS v_ma5,
                 ROUND(i.rsi6::numeric, 2) AS rsi_6,
                 ROUND(i.macd::numeric, 4) AS macd,
                 ROUND(i.dif::numeric, 4) AS dif,
                 ROUND(i.dea::numeric, 4) AS dea,
                 ROUND(i.rsi12::numeric, 2) AS rsi_12,
                 ROUND(i.rsi24::numeric, 2) AS rsi_24,
-                ROUND((s.boll_mid + 2 * COALESCE(s.boll_std, 0))::numeric, 2) AS boll_upper,
-                ROUND(s.boll_mid::numeric, 2) AS boll_mid,
-                ROUND((s.boll_mid - 2 * COALESCE(s.boll_std, 0))::numeric, 2) AS boll_lower,
-                (s.boll_mid IS NOT NULL AND q.high > s.high_20) AS break_high_20,
+                NULL::numeric AS boll_upper,
+                NULL::numeric AS boll_mid,
+                NULL::numeric AS boll_lower,
+                (s.high_20 IS NOT NULL AND q.high > s.high_20) AS break_high_20,
                 (s.high_60 IS NOT NULL AND q.high > s.high_60) AS break_high_60,
                 COALESCE(c.consec_up_days, 0) AS consec_up_days,
                 CASE WHEN s.vol_5_avg IS NOT NULL AND s.vol_5_avg > 0
                      THEN ROUND((q.volume / s.vol_5_avg)::numeric, 2) ELSE NULL END AS vol_ratio_5,
-                FALSE, FALSE, FALSE, FALSE
+                NULL::boolean AS is_st,
+                CASE WHEN b.list_date IS NOT NULL 
+                     AND b.list_date >= CAST(:target_date AS DATE) - INTERVAL '365 days' 
+                     THEN TRUE ELSE FALSE END AS is_new,
+                -- 新股豁免：上市后前5个自然日无涨跌停限制（修复类型错误：使用 > 5）
+                CASE 
+                  WHEN q.pre_close IS NOT NULL AND q.pre_close > 0
+                    AND (b.list_date IS NULL 
+                         OR CAST(:target_date AS DATE) - b.list_date > 5) THEN
+                    CASE
+                      WHEN q.code LIKE '300%' OR q.code LIKE '301%' OR q.code LIKE '302%' 
+                           OR q.code LIKE '688%' OR q.code LIKE '689%' THEN
+                        (q.close - q.pre_close) / q.pre_close * 100 >= :gem_limit
+                      WHEN q.code LIKE '92%' OR q.code LIKE '8%' OR q.code LIKE '43%' THEN
+                        (q.close - q.pre_close) / q.pre_close * 100 >= :bj_limit
+                      ELSE
+                        (q.close - q.pre_close) / q.pre_close * 100 >= :main_limit
+                    END
+                  ELSE FALSE
+                END AS limit_up,
+                CASE 
+                  WHEN q.pre_close IS NOT NULL AND q.pre_close > 0
+                    AND (b.list_date IS NULL 
+                         OR CAST(:target_date AS DATE) - b.list_date > 5) THEN
+                    CASE
+                      WHEN q.code LIKE '300%' OR q.code LIKE '301%' OR q.code LIKE '302%' 
+                           OR q.code LIKE '688%' OR q.code LIKE '689%' THEN
+                        (q.close - q.pre_close) / q.pre_close * 100 <= -:gem_limit
+                      WHEN q.code LIKE '92%' OR q.code LIKE '8%' OR q.code LIKE '43%' THEN
+                        (q.close - q.pre_close) / q.pre_close * 100 <= -:bj_limit
+                      ELSE
+                        (q.close - q.pre_close) / q.pre_close * 100 <= -:main_limit
+                    END
+                  ELSE FALSE
+                END AS limit_down
             FROM qdata q
             LEFT JOIN stock_basic b ON q.code = b.code
             LEFT JOIN stats s ON q.code = s.code
             LEFT JOIN consec c ON q.code = c.code
             LEFT JOIN stock_indicators i ON q.code = i.code AND i.cycle = '1d'
                 AND i.trade_date = :target_date
-            LEFT JOIN LATERAL (
-                SELECT pe, pe_ttm, pb, total_mv, circ_mv, turnover_rate, volume_ratio,
-                       dv_ratio, dv_ttm, ps, ps_ttm, float_share
-                FROM stock_daily_basic db2
-                -- 2026-06-18 修复: 之前写的是 SPLIT_PART(db2.code, '.', 2) = q.code，
-                --   但 stock_daily_basic.code 和 stock_quotes.code 实际都是无后缀格式（如 '000001'），
-                --   SPLIT_PART(2) 永远得到空字符串，等号永假，导致:
-                --     1) LATERAL JOIN 拿不到 daily_basic 估值（pe/pb/market_cap 全 NULL）
-                --     2) LATERAL 必须全表扫 stock_daily_basic × 5000 行 = 6.4 亿行比较，单次 6/16 同步卡 43 分钟不返回
-                --   修复: 直接等值匹配 (code, trade_date) 上的 (code, trade_date) 主键索引
-                WHERE db2.code = q.code AND db2.trade_date <= q.trade_date
-                ORDER BY db2.trade_date DESC LIMIT 1
-            ) db ON TRUE
+            LEFT JOIN stock_daily_basic db ON q.code = db.code AND db.trade_date = :target_date
             ON CONFLICT (code, trade_date) DO UPDATE SET
                 stock_name = EXCLUDED.stock_name,
                 listed_board = EXCLUDED.listed_board,
@@ -211,257 +231,211 @@ def sync_daily_snapshot(target_date: str, batch_size: int = 10000):
                 break_high_60 = EXCLUDED.break_high_60,
                 consec_up_days = EXCLUDED.consec_up_days,
                 vol_ratio_5 = EXCLUDED.vol_ratio_5,
+                is_st = EXCLUDED.is_st,
+                is_new = EXCLUDED.is_new,
+                limit_up = EXCLUDED.limit_up,
+                limit_down = EXCLUDED.limit_down,
                 updated_at = CURRENT_TIMESTAMP
         """)
 
-        result = session.execute(upsert_sql, {'target_date': target_date})
-        session.commit()
+        params = {
+            'target_date': target_date,
+            'main_limit': LIMIT_THRESHOLDS['main_board'],
+            'gem_limit': LIMIT_THRESHOLDS['gem'],
+            'bj_limit': LIMIT_THRESHOLDS['beijing'],
+        }
 
-        logger.info(f"✅ {target_date} 基础数据同步完成，影响 {result.rowcount} 条记录")
+        session.execute(upsert_sql, params)
+        logger.info(f"✅ {target_date} 基础数据同步完成")
 
-        # 独立计算 14 个技术指标 pattern（避免主查询过于复杂）
         _update_tech_patterns(session, target_date)
-        
+
+        session.commit()
         logger.info(f"✅ {target_date} 宽表同步完成")
-        
+
     except Exception as e:
         session.rollback()
         logger.error(f"❌ {target_date} 同步失败: {e}")
         raise
-    finally:
-        session.close()
 
-def _update_tech_patterns(session, target_date: str):
-    """
-    独立计算 14 个技术指标 pattern（分批次 UPDATE，降低单次查询复杂度）
-    
-    2026-06-16 修复版：
-    - 增加数据存在性检查，避免空跑
-    - 放宽 MACD/RSI 金叉死叉条件（不再限制 dif 正负）
-    - 增加底背离/顶背离计算（基于股价与指标低点/高点的比较）
-    - 使用 LATERAL JOIN 优化前一日数据获取，避免子查询重复执行
-    - 输出每个 pattern 更新的影响行数
-    """
+
+def _update_tech_patterns(session: Session, target_date: str):
+    """更新技术形态 pattern（使用 ROW_NUMBER 仅取最近两日）"""
     logger = logging.getLogger(__name__)
-    
-    # 1. 检查 stock_indicators 表中是否有 target_date 或之前的数据
-    #    修复：indicators 可能滞后于 snapshot（如周末/节假日不更新指标）
+
     check_sql = text("""
         SELECT COUNT(*) FROM stock_indicators
-        WHERE trade_date <= :target_date AND cycle = '1d'
+        WHERE trade_date = :target_date AND cycle = '1d'
     """)
     cnt = session.execute(check_sql, {'target_date': target_date}).scalar()
     if cnt == 0:
-        logger.warning(f"⚠️ {target_date} 及之前无指标数据 (stock_indicators)，跳过 pattern 更新")
-        session.commit()
+        logger.warning(f"⚠️ {target_date} 无当日指标数据，跳过 pattern 更新")
         return
 
-    # 2. MA pattern（基于已计算的 ma5/ma10/ma20）
-    ma_sql = text("""
-        UPDATE stock_daily_snapshot
-        SET ma_long_align = (ma5 IS NOT NULL AND ma5 > ma10 AND ma10 > ma20),
-            ma_short_align = (ma5 IS NOT NULL AND ma5 < ma10 AND ma10 < ma20)
-        WHERE trade_date = :target_date
-    """)
-    result = session.execute(ma_sql, {'target_date': target_date})
-    logger.info(f"  ✓ MA pattern 更新完成，影响 {result.rowcount} 行")
-
-    # 3. MACD pattern（金叉/死叉 + 底背离/顶背离）
-    #    修复：使用最近的有效 indicators 日期，而不是强制要求当天
-    #    原因：stock_indicators 可能滞后于 stock_daily_snapshot
-    macd_sql = text("""
-        WITH latest_indicators AS (
-            -- 获取每只股票在 target_date 之前最新的 indicators 记录
-            SELECT DISTINCT ON (code) code, trade_date, macd, dea, dif, rsi6, rsi24
+    all_patterns_sql = text("""
+        WITH
+        cur_indicators AS (
+            SELECT code, macd, dea, dif, rsi6, rsi24
             FROM stock_indicators
-            WHERE cycle = '1d' AND trade_date <= :target_date
-            ORDER BY code, trade_date DESC
+            WHERE cycle = '1d' AND trade_date = :target_date
         ),
         prev_indicators AS (
-            -- 获取前一日 indicators（用于金叉/死叉/背离判断）
-            SELECT DISTINCT ON (i.code) i.code, 
-                   iprev.trade_date, iprev.macd, iprev.dea, iprev.dif, iprev.rsi6, iprev.rsi24
-            FROM latest_indicators i
-            LEFT JOIN LATERAL (
-                SELECT trade_date, macd, dea, dif, rsi6, rsi24
+            SELECT code, macd, dea, dif, rsi6, rsi24
+            FROM (
+                SELECT code, macd, dea, dif, rsi6, rsi24,
+                       ROW_NUMBER() OVER (PARTITION BY code ORDER BY trade_date DESC) AS rn
                 FROM stock_indicators
-                WHERE code = i.code AND cycle = '1d' AND trade_date < i.trade_date
-                ORDER BY trade_date DESC LIMIT 1
-            ) iprev ON TRUE
+                WHERE cycle = '1d' AND trade_date <= :target_date
+            ) ranked
+            WHERE rn = 2
         ),
-        latest_quotes AS (
-            -- 获取 target_date 的行情（用于背离判断）
-            SELECT code, close, high, low
+        cur_quotes AS (
+            SELECT code, close
             FROM stock_quotes
             WHERE cycle = '1d' AND trade_date = :target_date
         ),
-        prev_quotes AS (
-            -- 获取前一日行情
-            SELECT DISTINCT ON (code) code, close AS close_prev
-            FROM stock_quotes
-            WHERE cycle = '1d' AND trade_date < :target_date
-            ORDER BY code, trade_date DESC
+        -- 【已修复】使用 ROW_NUMBER 仅取第二近（前一交易日），避免全表扫描
+        prev_close AS (
+            SELECT code, close AS close_prev
+            FROM (
+                SELECT code, close,
+                       ROW_NUMBER() OVER (PARTITION BY code ORDER BY trade_date DESC) AS rn
+                FROM stock_quotes
+                WHERE cycle = '1d' AND trade_date <= :target_date
+            ) ranked
+            WHERE rn = 2
+        ),
+        -- 【修复】内联计算 BOLL 指标（20日中轨 ± 2倍标准差）
+        boll_calc AS (
+            SELECT code,
+                   AVG(close) AS boll_mid,
+                   STDDEV(close) AS boll_std
+            FROM (
+                SELECT code, close,
+                       ROW_NUMBER() OVER (PARTITION BY code ORDER BY trade_date DESC) AS rn
+                FROM stock_quotes
+                WHERE cycle = '1d'
+                  AND trade_date <= :target_date
+                  AND trade_date >= CAST(:target_date AS DATE) - INTERVAL '30 days'
+            ) recent
+            WHERE rn <= 20
+            GROUP BY code
+            HAVING COUNT(*) >= 20
         )
         UPDATE stock_daily_snapshot s
         SET
-            -- 金叉（macd 从下向上穿过 dea）
+            ma_long_align = (s.ma5 IS NOT NULL AND s.ma5 > s.ma10 AND s.ma10 > s.ma20),
+            ma_short_align = (s.ma5 IS NOT NULL AND s.ma5 < s.ma10 AND s.ma10 < s.ma20),
             macd_low_golden_cross = (
-                li.macd IS NOT NULL AND pi.macd IS NOT NULL
-                AND pi.macd < pi.dea AND li.macd >= li.dea
+                ci.macd IS NOT NULL AND pi.macd IS NOT NULL
+                AND pi.macd < pi.dea AND ci.macd >= ci.dea
             ),
-            -- 死叉（macd 从上向下穿过 dea）
             macd_high_death_cross = (
-                li.macd IS NOT NULL AND pi.macd IS NOT NULL
-                AND pi.macd > pi.dea AND li.macd <= li.dea
+                ci.macd IS NOT NULL AND pi.macd IS NOT NULL
+                AND pi.macd > pi.dea AND ci.macd <= ci.dea
             ),
-            -- 底背离：股价新低，MACD 低点抬高
             macd_bottom_divergence = (
-                lq.close IS NOT NULL AND pq.close_prev IS NOT NULL
-                AND li.macd IS NOT NULL AND pi.macd IS NOT NULL
-                AND lq.close < pq.close_prev
-                AND li.macd > pi.macd
+                cq.close IS NOT NULL AND pc.close_prev IS NOT NULL
+                AND ci.macd IS NOT NULL AND pi.macd IS NOT NULL
+                AND cq.close < pc.close_prev
+                AND ci.macd > pi.macd
             ),
-            -- 顶背离：股价新高，MACD 高点降低
             macd_top_divergence = (
-                lq.close IS NOT NULL AND pq.close_prev IS NOT NULL
-                AND li.macd IS NOT NULL AND pi.macd IS NOT NULL
-                AND lq.close > pq.close_prev
-                AND li.macd < pi.macd
-            )
-        FROM latest_indicators li
-        LEFT JOIN prev_indicators pi ON li.code = pi.code
-        LEFT JOIN latest_quotes lq ON li.code = lq.code
-        LEFT JOIN prev_quotes pq ON li.code = pq.code
-        WHERE s.code = li.code
-          AND s.trade_date = :target_date
-    """)
-    result = session.execute(macd_sql, {'target_date': target_date})
-    logger.info(f"  ✓ MACD pattern 更新完成，影响 {result.rowcount} 行")
-
-    # 4. BOLL pattern（需要前一日收盘价，使用 CTE 避免 LATERAL 引用问题）
-    boll_sql = text("""
-        WITH prev_close AS (
-            SELECT DISTINCT ON (code) code, close AS close_prev
-            FROM stock_quotes
-            WHERE cycle = '1d' AND trade_date = (
-                SELECT MAX(trade_date) FROM stock_quotes q2
-                WHERE q2.code = stock_quotes.code AND q2.cycle = '1d' AND q2.trade_date < :target_date
-            )
-        )
-        UPDATE stock_daily_snapshot s
-        SET boll_break_upper = (pc.close_prev IS NOT NULL AND s.close > s.boll_upper AND pc.close_prev <= s.boll_upper),
-            boll_break_middle_up = (pc.close_prev IS NOT NULL AND s.close > s.boll_mid AND pc.close_prev <= s.boll_mid),
-            boll_break_middle_down = (pc.close_prev IS NOT NULL AND s.close < s.boll_mid AND pc.close_prev >= s.boll_mid),
-            boll_break_lower = (pc.close_prev IS NOT NULL AND s.close < s.boll_lower AND pc.close_prev >= s.boll_lower)
-        FROM prev_close pc
-        WHERE s.trade_date = :target_date AND s.code = pc.code
-    """)
-    result = session.execute(boll_sql, {'target_date': target_date})
-    logger.info(f"  ✓ BOLL pattern 更新完成，影响 {result.rowcount} 行")
-
-    # 5. RSI pattern（金叉/死叉 + 底背离/顶背离）
-    #    修复：使用 CTE 获取最近有效 indicators，解决日期不匹配问题
-    rsi_sql = text("""
-        WITH latest_indicators AS (
-            -- 获取每只股票在 target_date 之前最新的 indicators 记录
-            SELECT DISTINCT ON (code) code, trade_date, macd, dea, dif, rsi6, rsi24
-            FROM stock_indicators
-            WHERE cycle = '1d' AND trade_date <= :target_date
-            ORDER BY code, trade_date DESC
-        ),
-        prev_indicators AS (
-            -- 获取前一日 indicators（用于金叉/死叉/背离判断）
-            SELECT DISTINCT ON (i.code) i.code, 
-                   iprev.trade_date, iprev.macd, iprev.dea, iprev.dif, iprev.rsi6, iprev.rsi24
-            FROM latest_indicators i
-            LEFT JOIN LATERAL (
-                SELECT trade_date, macd, dea, dif, rsi6, rsi24
-                FROM stock_indicators
-                WHERE code = i.code AND cycle = '1d' AND trade_date < i.trade_date
-                ORDER BY trade_date DESC LIMIT 1
-            ) iprev ON TRUE
-        ),
-        latest_quotes AS (
-            -- 获取 target_date 的行情（用于背离判断）
-            SELECT code, close, high, low
-            FROM stock_quotes
-            WHERE cycle = '1d' AND trade_date = :target_date
-        ),
-        prev_quotes AS (
-            -- 获取前一日行情
-            SELECT DISTINCT ON (code) code, close AS close_prev
-            FROM stock_quotes
-            WHERE cycle = '1d' AND trade_date < :target_date
-            ORDER BY code, trade_date DESC
-        )
-        UPDATE stock_daily_snapshot s
-        SET
-            -- RSI 低位金叉（rsi6 从下向上穿过 rsi24，且两者均在 30 以下）
+                cq.close IS NOT NULL AND pc.close_prev IS NOT NULL
+                AND ci.macd IS NOT NULL AND pi.macd IS NOT NULL
+                AND cq.close > pc.close_prev
+                AND ci.macd < pi.macd
+            ),
             rsi_low_golden_cross = (
-                li.rsi6 IS NOT NULL AND pi.rsi6 IS NOT NULL
-                AND li.rsi24 IS NOT NULL AND pi.rsi24 IS NOT NULL
-                AND li.rsi6 < 30 AND pi.rsi6 < 30
-                AND pi.rsi6 <= pi.rsi24 AND li.rsi6 > li.rsi24
+                ci.rsi6 IS NOT NULL AND pi.rsi6 IS NOT NULL
+                AND ci.rsi24 IS NOT NULL AND pi.rsi24 IS NOT NULL
+                AND ci.rsi6 < 30 AND pi.rsi6 < 30
+                AND pi.rsi6 <= pi.rsi24 AND ci.rsi6 > ci.rsi24
             ),
-            -- RSI 高位死叉（rsi6 从上向下穿过 rsi24，且两者均在 70 以上）
             rsi_high_death_cross = (
-                li.rsi6 IS NOT NULL AND pi.rsi6 IS NOT NULL
-                AND li.rsi24 IS NOT NULL AND pi.rsi24 IS NOT NULL
-                AND li.rsi6 > 70 AND pi.rsi6 > 70
-                AND pi.rsi6 >= pi.rsi24 AND li.rsi6 < li.rsi24
+                ci.rsi6 IS NOT NULL AND pi.rsi6 IS NOT NULL
+                AND ci.rsi24 IS NOT NULL AND pi.rsi24 IS NOT NULL
+                AND ci.rsi6 > 70 AND pi.rsi6 > 70
+                AND pi.rsi6 >= pi.rsi24 AND ci.rsi6 < ci.rsi24
             ),
-            -- RSI 底背离：股价新低，RSI6 低点抬高
             rsi_bottom_divergence = (
-                lq.close IS NOT NULL AND pq.close_prev IS NOT NULL
-                AND li.rsi6 IS NOT NULL AND pi.rsi6 IS NOT NULL
-                AND lq.close < pq.close_prev
-                AND li.rsi6 > pi.rsi6
+                cq.close IS NOT NULL AND pc.close_prev IS NOT NULL
+                AND ci.rsi6 IS NOT NULL AND pi.rsi6 IS NOT NULL
+                AND cq.close < pc.close_prev
+                AND ci.rsi6 > pi.rsi6
             ),
-            -- RSI 顶背离：股价新高，RSI6 高点降低
             rsi_top_divergence = (
-                lq.close IS NOT NULL AND pq.close_prev IS NOT NULL
-                AND li.rsi6 IS NOT NULL AND pi.rsi6 IS NOT NULL
-                AND lq.close > pq.close_prev
-                AND li.rsi6 < pi.rsi6
+                cq.close IS NOT NULL AND pc.close_prev IS NOT NULL
+                AND ci.rsi6 IS NOT NULL AND pi.rsi6 IS NOT NULL
+                AND cq.close > pc.close_prev
+                AND ci.rsi6 < pi.rsi6
+            ),
+            boll_break_upper = (
+                bc.boll_mid IS NOT NULL AND bc.boll_std IS NOT NULL
+                AND pc.close_prev IS NOT NULL
+                AND s.close > (bc.boll_mid + 2 * bc.boll_std)
+                AND pc.close_prev <= (bc.boll_mid + 2 * bc.boll_std)
+            ),
+            boll_break_middle_up = (
+                bc.boll_mid IS NOT NULL
+                AND pc.close_prev IS NOT NULL
+                AND s.close > bc.boll_mid AND pc.close_prev <= bc.boll_mid
+            ),
+            boll_break_middle_down = (
+                bc.boll_mid IS NOT NULL
+                AND pc.close_prev IS NOT NULL
+                AND s.close < bc.boll_mid AND pc.close_prev >= bc.boll_mid
+            ),
+            boll_break_lower = (
+                bc.boll_mid IS NOT NULL AND bc.boll_std IS NOT NULL
+                AND pc.close_prev IS NOT NULL
+                AND s.close < (bc.boll_mid - 2 * bc.boll_std)
+                AND pc.close_prev >= (bc.boll_mid - 2 * bc.boll_std)
             )
-        FROM latest_indicators li
-        LEFT JOIN prev_indicators pi ON li.code = pi.code
-        LEFT JOIN latest_quotes lq ON li.code = lq.code
-        LEFT JOIN prev_quotes pq ON li.code = pq.code
-        WHERE s.code = li.code
-          AND s.trade_date = :target_date
+        FROM cur_indicators ci
+        LEFT JOIN prev_indicators pi ON ci.code = pi.code
+        LEFT JOIN cur_quotes cq ON ci.code = cq.code
+        LEFT JOIN prev_close pc ON ci.code = pc.code
+        LEFT JOIN boll_calc bc ON ci.code = bc.code
+        WHERE s.code = ci.code AND s.trade_date = :target_date
     """)
-    result = session.execute(rsi_sql, {'target_date': target_date})
-    logger.info(f"  ✓ RSI pattern 更新完成，影响 {result.rowcount} 行")
 
-    session.commit()
-    logger.info(f"✅ {target_date} 全部 pattern 更新完成")
+    result = session.execute(all_patterns_sql, {'target_date': target_date})
+    logger.info(f"  ✓ 全部 pattern 更新完成，影响 {result.rowcount} 行")
 
 
-def sync_date_range(start_date: str, end_date: str):
-    """
-    同步日期范围内的所有数据
-    
-    Args:
-        start_date: 开始日期（格式：YYYY-MM-DD）
-        end_date: 结束日期（格式：YYYY-MM-DD）
-    """
+def sync_date_range(
+    session: Session,
+    start_date: str,
+    end_date: str,
+    ignore_errors: bool = False
+):
+    """同步日期范围"""
     start = datetime.strptime(start_date, '%Y-%m-%d')
     end = datetime.strptime(end_date, '%Y-%m-%d')
-    
+
+    failed_dates = []
     current = start
     while current <= end:
         date_str = current.strftime('%Y-%m-%d')
         try:
-            sync_daily_snapshot(date_str)
+            sync_daily_snapshot(session, date_str)
         except Exception as e:
-            logger.warning(f"⚠️ 跳过 {date_str}: {e}")
+            if ignore_errors:
+                logger.warning(f"⚠️ 跳过 {date_str}: {e}")
+                failed_dates.append(date_str)
+            else:
+                logger.error(f"❌ 同步 {date_str} 失败，终止执行")
+                raise
         current += timedelta(days=1)
 
+    if failed_dates:
+        logger.error(f"❌ 同步失败的日期（共 {len(failed_dates)} 个）：{', '.join(failed_dates)}")
+    else:
+        logger.info(f"✅ 日期范围 {start_date} ~ {end_date} 全部同步成功")
 
-def get_latest_trade_date():
-    """获取最新交易日期"""
-    engine = get_db_engine()
+
+def get_latest_trade_date(engine) -> Optional[str]:
     with engine.connect() as conn:
         result = conn.execute(text("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'"))
         row = result.fetchone()
@@ -469,27 +443,40 @@ def get_latest_trade_date():
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
     parser = argparse.ArgumentParser(description='股票每日快照宽表同步脚本')
-    parser.add_argument('--date', type=str, help='同步指定日期（格式：YYYY-MM-DD）')
+    parser.add_argument('--date', type=str, help='同步指定日期')
     parser.add_argument('--start-date', type=str, help='同步开始日期')
     parser.add_argument('--end-date', type=str, help='同步结束日期')
-    parser.add_argument('--latest', action='store_true', help='同步最新交易日数据')
-    parser.add_argument('--batch-size', type=int, default=10000, help='批量处理大小')
-    
+    parser.add_argument('--latest', action='store_true', help='同步最新交易日')
+    parser.add_argument('--ignore-errors', action='store_true', help='范围同步时忽略单日错误')
     args = parser.parse_args()
-    
-    if args.date:
-        sync_daily_snapshot(args.date, args.batch_size)
-    elif args.start_date and args.end_date:
-        sync_date_range(args.start_date, args.end_date)
-    elif args.latest:
-        latest_date = get_latest_trade_date()
-        if latest_date:
-            sync_daily_snapshot(latest_date, args.batch_size)
+
+    from collector.db.database import DATABASE_URL
+    engine = create_engine(DATABASE_URL)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    try:
+        if args.date:
+            sync_daily_snapshot(session, args.date)
+        elif args.start_date and args.end_date:
+            sync_date_range(session, args.start_date, args.end_date, args.ignore_errors)
+        elif args.latest:
+            latest_date = get_latest_trade_date(engine)
+            if latest_date:
+                sync_daily_snapshot(session, latest_date)
+            else:
+                logger.error("❌ 未找到最新交易日期")
         else:
-            logger.error("❌ 未找到最新交易日期")
-    else:
-        parser.print_help()
+            parser.print_help()
+    finally:
+        session.close()
+        engine.dispose()
 
 
 if __name__ == '__main__':

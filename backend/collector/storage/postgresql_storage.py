@@ -81,7 +81,9 @@ class PostgreSQLStorage(BaseStorage):
                     rsi12 NUMERIC(6, 2),
                     rsi24 NUMERIC(6, 2),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(code, cycle, trade_date)
+                    trade_time TIMESTAMP WITH TIME ZONE,
+                    trade_datetime TIMESTAMP WITH TIME ZONE,
+                    UNIQUE(code, cycle, trade_date, trade_datetime)
                 )
             """)
 
@@ -473,13 +475,18 @@ class PostgreSQLStorage(BaseStorage):
             return pd.DataFrame()
 
     def save_indicators(self, df: pd.DataFrame) -> int:
-        """保存技术指标（使用 INSERT ON CONFLICT DO UPDATE 覆盖旧值）"""
+        """保存技术指标（使用 INSERT ON CONFLICT DO UPDATE 覆盖旧值）
+
+        表结构: stock_indicators(code, cycle, trade_date, ma5, ma10, ma20, ma60,
+                                 macd, dif, dea, rsi6, rsi12, rsi24,
+                                 trade_time, trade_datetime, ...)
+        唯一约束: (code, cycle, trade_date, trade_datetime)
+        """
         if df.empty:
             return 0
 
         try:
             cursor = self.conn.cursor()
-            import_count = 0
 
             insert_sql = """
                 INSERT INTO stock_indicators (
@@ -487,7 +494,7 @@ class PostgreSQLStorage(BaseStorage):
                     macd, dif, dea, rsi6, rsi12, rsi24,
                     trade_time, trade_datetime
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (code, cycle, trade_date, trade_time) DO UPDATE SET
+                ON CONFLICT (code, cycle, trade_date, trade_datetime) DO UPDATE SET
                     ma5 = EXCLUDED.ma5,
                     ma10 = EXCLUDED.ma10,
                     ma20 = EXCLUDED.ma20,
@@ -497,13 +504,11 @@ class PostgreSQLStorage(BaseStorage):
                     dea = EXCLUDED.dea,
                     rsi6 = EXCLUDED.rsi6,
                     rsi12 = EXCLUDED.rsi12,
-                    rsi24 = EXCLUDED.rsi24,
-                    trade_datetime = EXCLUDED.trade_datetime
+                    rsi24 = EXCLUDED.rsi24
             """
 
             params_list = []
             for _, row in df.iterrows():
-                # trade_time 带时区 (Asia/Shanghai) 避免 timezone mismatch
                 trade_time_ts = pd.Timestamp(row['trade_time']).tz_localize('Asia/Shanghai') \
                     if pd.notna(row.get('trade_time')) else None
                 trade_dt_ts = pd.Timestamp(row['trade_datetime']).tz_localize('Asia/Shanghai') \
@@ -512,28 +517,23 @@ class PostgreSQLStorage(BaseStorage):
                     str(row['code']),
                     str(row['cycle']),
                     row['trade_date'],
-                    float(row['ma5']) if pd.notna(row['ma5']) else 0.0,
-                    float(row['ma10']) if pd.notna(row['ma10']) else 0.0,
-                    float(row['ma20']) if pd.notna(row['ma20']) else 0.0,
-                    float(row['ma60']) if pd.notna(row['ma60']) else 0.0,
-                    float(row['macd']) if pd.notna(row['macd']) else 0.0,
-                    float(row['dif']) if pd.notna(row['dif']) else 0.0,
-                    float(row['dea']) if pd.notna(row['dea']) else 0.0,
-                    float(row['rsi6']) if pd.notna(row['rsi6']) else 0.0,
-                    float(row['rsi12']) if pd.notna(row['rsi12']) else 0.0,
-                    float(row['rsi24']) if pd.notna(row['rsi24']) else 0.0,
+                    float(row['ma5']) if pd.notna(row['ma5']) else None,
+                    float(row['ma10']) if pd.notna(row['ma10']) else None,
+                    float(row['ma20']) if pd.notna(row['ma20']) else None,
+                    float(row['ma60']) if pd.notna(row['ma60']) else None,
+                    float(row['macd']) if pd.notna(row['macd']) else None,
+                    float(row['dif']) if pd.notna(row['dif']) else None,
+                    float(row['dea']) if pd.notna(row['dea']) else None,
+                    float(row['rsi6']) if pd.notna(row['rsi6']) else None,
+                    float(row['rsi12']) if pd.notna(row['rsi12']) else None,
+                    float(row['rsi24']) if pd.notna(row['rsi24']) else None,
                     trade_time_ts,
                     trade_dt_ts,
                 ))
 
-            # execute_batch 不会累加 rowcount，需要每条单独 execute 并累加
-            import_count = 0
-            for params in params_list:
-                cursor.execute(insert_sql, params)
-                # ON CONFLICT DO UPDATE 时 rowcount=1 (update) 或 1 (insert)
-                # 唯一不变：失败时为 0
-                if cursor.rowcount > 0:
-                    import_count += 1
+            from psycopg2.extras import execute_batch
+            execute_batch(cursor, insert_sql, params_list, page_size=500)
+            import_count = len(params_list)
             self.conn.commit()
             cursor.close()
 
@@ -545,10 +545,23 @@ class PostgreSQLStorage(BaseStorage):
             logger.error(f"❌ 保存技术指标失败: {str(e)}")
             return 0
 
-    def get_indicators(self, code: str, cycle: str = 'daily',
+    def get_indicators(self, code: str, cycle: str = '1d',
                        start_date: Optional[str] = None,
                        end_date: Optional[str] = None) -> pd.DataFrame:
-        """获取技术指标"""
+        """获取技术指标
+
+        Args:
+            code: 股票代码
+            cycle: 周期，支持 '1d'/'daily'/'1w'/'weekly'/'1m'/'monthly'，内部统一映射为 '1d'/'1w'/'1m'
+            start_date: 开始日期
+            end_date: 结束日期
+        """
+        # cycle 映射：与 get_quotes 保持一致
+        cycle_map = {'daily': '1d', '1d': '1d', 'day': '1d',
+                     'weekly': '1w', '1w': '1w', 'week': '1w',
+                     'monthly': '1m', '1m': '1m', 'month': '1m'}
+        cycle = cycle_map.get(cycle.lower(), cycle)
+
         query = """
             SELECT code, cycle, trade_date, ma5, ma10, ma20, ma60, macd, dif, dea, rsi6, rsi12, rsi24
             FROM stock_indicators
@@ -578,7 +591,7 @@ class PostgreSQLStorage(BaseStorage):
 
         Args:
             codes: 股票代码列表
-            cycle: 周期（1d, 1w, 1m）
+            cycle: 周期，支持 '1d'/'daily'/'1w'/'weekly'/'1m'/'monthly'，内部统一映射
             start_date: 开始日期（YYYY-MM-DD）
             end_date: 结束日期（YYYY-MM-DD）
 
@@ -587,6 +600,12 @@ class PostgreSQLStorage(BaseStorage):
         """
         if not codes:
             return pd.DataFrame()
+
+        # cycle 映射：与 get_quotes 保持一致
+        cycle_map = {'daily': '1d', '1d': '1d', 'day': '1d',
+                     'weekly': '1w', '1w': '1w', 'week': '1w',
+                     'monthly': '1m', '1m': '1m', 'month': '1m'}
+        cycle = cycle_map.get(cycle.lower(), cycle)
 
         try:
             query = """
@@ -659,7 +678,7 @@ class PostgreSQLStorage(BaseStorage):
 
         Args:
             codes: 股票代码列表
-            cycle: 周期（1d, 1w, 1m）
+            cycle: 周期，支持 '1d'/'daily'/'1w'/'weekly'/'1m'/'monthly'，内部统一映射
             start_date: 开始日期（YYYY-MM-DD）
             end_date: 结束日期（YYYY-MM-DD）
 
@@ -668,6 +687,12 @@ class PostgreSQLStorage(BaseStorage):
         """
         if not codes:
             return pd.DataFrame()
+
+        # cycle 映射：与 get_quotes 保持一致
+        cycle_map = {'daily': '1d', '1d': '1d', 'day': '1d',
+                     'weekly': '1w', '1w': '1w', 'week': '1w',
+                     'monthly': '1m', '1m': '1m', 'month': '1m'}
+        cycle = cycle_map.get(cycle.lower(), cycle)
 
         try:
             query = """
