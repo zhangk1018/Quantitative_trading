@@ -12,7 +12,7 @@
  * 实现方式：vi.mock 替换 useScreener + fetchStocks，构造可控的并发场景。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, act, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, act, cleanup, waitFor, fireEvent } from '@testing-library/react';
 
 // 直接 mock useSettings 返回 stub，避免 useSettings 必须包裹 SettingsProvider
 // 但保留 SettingsProvider 真实实现以渲染 children
@@ -55,6 +55,30 @@ const mockState = {
 
 vi.mock('@/features/stock-picker/context/ScreenerContext', () => ({
   useScreener: () => ({ state: mockState, dispatch: vi.fn() }),
+}));
+
+// Mock useWatchlist（StockPickerView 现在通过它批量加入自选）
+// 默认实现：addMany 返回空统计（不影响原有选股/排序测试）
+const mockAddMany = vi.fn(async () => ({ added: 0, skipped: 0, failed: 0, errors: [] }));
+const mockAddOne = vi.fn(async () => null);
+const mockRemoveOne = vi.fn(async () => true);
+const mockRefresh = vi.fn(async () => undefined);
+const mockClearBatchSummary = vi.fn(() => undefined);
+const mockWatchlistState = {
+  items: [],
+  loading: false,
+  lastError: null,
+  lastBatchSummary: null,
+};
+vi.mock('@/features/watchlist/store', () => ({
+  useWatchlist: () => ({
+    state: mockWatchlistState,
+    refresh: mockRefresh,
+    addOne: mockAddOne,
+    removeOne: mockRemoveOne,
+    addMany: mockAddMany,
+    clearBatchSummary: mockClearBatchSummary,
+  }),
 }));
 
 // Mock 内部用 useNavigate / useLocation / 复杂依赖的子组件
@@ -366,5 +390,140 @@ describe('K 2026-06-18 反馈 #2：排序点击统一发请求', () => {
     expect(secondToLast.sort_asc).toBe(true);
     expect(lastCall.sort_by).toBe('change_pct');
     expect(lastCall.sort_asc).toBe(false);
+  });
+});
+
+/**
+ * 2026-06-22 方舟任务：添加自选 + 导出结果
+ *
+ * 行为契约：
+ * - 复选框选中股票后点击"添加自选"→ 弹 Modal 让用户输入分组名 → 确认后调 addMany(codes, group)
+ * - 无选中时点击"添加自选" → 弹 Modal.info 提示"请先勾选股票"，不调 addMany
+ * - 点击"导出结果" → 触发浏览器下载，文件名含日期戳（用 jsdom URL.createObjectURL 验证 a.download）
+ */
+describe('2026-06-22 添加自选 + 导出结果', () => {
+  it('复选框选中后点击"添加自选"调 addMany 传入 codes + 分组名', async () => {
+    mockAddMany.mockClear();
+    renderStockPickerView();
+
+    // 准备数据：让表格有 3 行可勾选
+    await act(async () => {
+      screen.getByTestId('start-screener').click();
+    });
+    await resolveInitialFetch([
+      { stock_code: '000001', stock_name: '平安银行', close: 10, change_pct: 1.0 },
+      { stock_code: '000002', stock_name: '万科A', close: 20, change_pct: 2.0 },
+      { stock_code: '600000', stock_name: '浦发银行', close: 8, change_pct: 0.5 },
+    ]);
+    await waitFor(() => {
+      expect(screen.getByTestId('row-checkbox-000001')).toBeInTheDocument();
+    });
+
+    // 勾选 2 行
+    await act(async () => {
+      screen.getByTestId('row-checkbox-000001').click();
+      screen.getByTestId('row-checkbox-600000').click();
+    });
+
+    // 点击"添加自选" → 弹 Modal
+    await act(async () => {
+      screen.getByTestId('add-to-watchlist-btn').click();
+    });
+
+    // Modal 应出现（标题含选中数）
+    const modal = await waitFor(() => screen.getByTestId('add-to-watchlist-modal'));
+    expect(modal).toBeInTheDocument();
+
+    // 输入分组名（用 fireEvent.change 触发 antd 受控 Input 状态更新）
+    const input = screen.getByTestId('add-to-watchlist-group-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '测试分组' } });
+
+    // 点击"确认添加"（Modal 的 ok 按钮文案是"确认添加"）
+    const okButton = screen.getByText('确认添加');
+    await act(async () => {
+      okButton.click();
+    });
+
+    // 验证 addMany 被以正确的 codes + group_name 调用
+    await waitFor(() => {
+      expect(mockAddMany).toHaveBeenCalledTimes(1);
+    });
+    const [codes, groupName] = mockAddMany.mock.calls[0];
+    expect([...codes].sort()).toEqual(['000001', '600000']);
+    expect(groupName).toBe('测试分组');
+  });
+
+  it('无选中点击"添加自选"弹 Modal.info 提示，不调 addMany', async () => {
+    mockAddMany.mockClear();
+    renderStockPickerView();
+
+    // 触发选股 + resolve（让底部按钮可点击）
+    await act(async () => {
+      screen.getByTestId('start-screener').click();
+    });
+    await resolveInitialFetch([{ stock_code: '000001', stock_name: 'X', close: 1, change_pct: 0 }]);
+    await waitFor(() => {
+      expect(screen.getByTestId('row-checkbox-000001')).toBeInTheDocument();
+    });
+
+    // 不勾选任何行，直接点"添加自选"
+    await act(async () => {
+      screen.getByTestId('add-to-watchlist-btn').click();
+    });
+
+    // addMany 不应被调用
+    expect(mockAddMany).not.toHaveBeenCalled();
+    // Modal 不应出现
+    expect(screen.queryByTestId('add-to-watchlist-modal')).not.toBeInTheDocument();
+  });
+
+  it('点击"导出结果"触发下载，文件名含 screener-result 与日期戳', async () => {
+    renderStockPickerView();
+
+    // 准备数据
+    await act(async () => {
+      screen.getByTestId('start-screener').click();
+    });
+    await resolveInitialFetch([
+      { stock_code: '000001', stock_name: '平安银行', close: 10, change_pct: 1.0, market_cap: 1000000, amount: 50000, pe: 5, pb: 0.8, turnover_rate: 1.5, listed_board: '深圳主板' },
+    ]);
+    await waitFor(() => {
+      expect(screen.getByTestId('export-result-btn')).toBeInTheDocument();
+    });
+
+    // spy URL.createObjectURL + createElement('a') 验证下载行为
+    const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
+    const createElementSpy = vi.spyOn(document, 'createElement');
+
+    try {
+      await act(async () => {
+        screen.getByTestId('export-result-btn').click();
+      });
+
+      // 验证：创建 Blob URL + 触发 a.click() + a.download 含 "screener-result-"
+      expect(createObjectURLSpy).toHaveBeenCalledTimes(1);
+      // 找创建的 <a> 元素（最后创建的一个）
+      const aElement = createElementSpy.mock.results
+        .map((r) => r.value as HTMLAnchorElement)
+        .find((el) => el && el.tagName === 'A' && el.download);
+      expect(aElement).toBeDefined();
+      expect(aElement!.download).toMatch(/^screener-result-\d{8}-\d{4}\.csv$/);
+      // 验证 MIME
+      const blobArg = createObjectURLSpy.mock.calls[0][0] as Blob;
+      expect(blobArg.type).toBe('text/csv;charset=utf-8');
+    } finally {
+      createObjectURLSpy.mockRestore();
+      createElementSpy.mockRestore();
+    }
+  });
+
+  it('无选股结果时"导出结果"按钮 disabled', async () => {
+    renderStockPickerView();
+    // 不点开始选股，直接看底部
+    await waitFor(() => {
+      expect(screen.getByTestId('export-result-btn')).toBeInTheDocument();
+    });
+    const exportBtn = screen.getByTestId('export-result-btn') as HTMLButtonElement;
+    expect(exportBtn.disabled).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Typography, Button, Select, Divider, Spin, message } from 'antd';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Typography, Button, Select, Divider, Spin, message, Checkbox, Modal, Input } from 'antd';
 import { SaveOutlined, FolderOpenOutlined, ReloadOutlined, PlusCircleOutlined, DownloadOutlined, BlockOutlined, PlayCircleOutlined, LoadingOutlined, CaretUpOutlined, CaretDownOutlined } from '@ant-design/icons';
 import { ScreenerProvider, useScreener, ScreenerState } from './context/ScreenerContext';
 import RangeSelector from './components/RangeSelector';
@@ -10,6 +10,7 @@ import ConditionBuilder from './components/ConditionBuilder';
 import FactorScoringConfig from './components/FactorScoringConfig';
 import { fetchStocks } from '../stock-detail/api';
 import { useSettings } from '@/shared/contexts/SettingsContext';
+import { useWatchlist } from '../watchlist/store';
 
 const { Text } = Typography;
 
@@ -88,8 +89,8 @@ export function buildScreeningParams(
 
   if (financialIndicatorRanges) {
     Object.entries(financialIndicatorRanges).forEach(([key, range]) => {
-      if (range.min) params[`${key}_min`] = range.min;
-      if (range.max) params[`${key}_max`] = range.max;
+      if (range.min) params[`${key}_min`] = Number(range.min);
+      if (range.max) params[`${key}_max`] = Number(range.max);
     });
   }
 
@@ -122,12 +123,19 @@ export function buildScreeningParams(
 const StockPickerContent: React.FC = () => {
   const { state, dispatch } = useScreener();
   const { colors: upDownColors } = useSettings();
+  const { addMany } = useWatchlist();
   const [screenerLoading, setScreenerLoading] = useState(false);
   const [stockResults, setStockResults] = useState<any[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [sortBy, setSortBy] = useState('change_pct');
   const [sortAsc, setSortAsc] = useState(false);
   const [limit, setLimit] = useState(20);
+  // 选股结果中的复选框选中项（key 为股票 code）
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
+  // 批量加入自选：自定义分组名（空 → 走后端默认分组）
+  const [addToWatchlistOpen, setAddToWatchlistOpen] = useState(false);
+  const [groupNameInput, setGroupNameInput] = useState('');
+  const [addingToWatchlist, setAddingToWatchlist] = useState(false);
   // K 2026-06-18 反馈 #5：移除未使用的 asOfDate state（UI 无对应日期选择器）
 
   // K 2026-06-18 任务 #11：用 AbortController 取消上一次未完成的选股请求，
@@ -161,12 +169,19 @@ const StockPickerContent: React.FC = () => {
     (state.filterGroup?.conditions.length || 0);
 
   const handleReset = () => {
+    // K 2026-06-22 反馈：重置时取消进行中的请求，避免旧响应覆盖空状态
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    requestIdRef.current += 1;
     dispatch({ type: 'RESET_ALL' });
     setStockResults([]);
     setTotalCount(0);
     setSortBy('change_pct');
     setSortAsc(false);
     setLimit(20);
+    setSelectedCodes(new Set());
   };
 
   const handleStartScreening = async () => {
@@ -188,6 +203,157 @@ const StockPickerContent: React.FC = () => {
   const formatNumber = (value: number | null | undefined, decimals = 2): string => {
     if (value === null || value === undefined) return '-';
     return Number(value).toFixed(decimals);
+  };
+
+  // ============================================================
+  // 复选框：单行 toggle / 全选 / 反选 / 清空
+  // 选股结果切换（重新选股 / 重置）时自动清空选中集，避免悬空引用
+  // ============================================================
+  const allCodes = useMemo(
+    () => stockResults.map((s) => s.stock_code).filter(Boolean) as string[],
+    [stockResults],
+  );
+  const selectedCount = selectedCodes.size;
+  const allSelected = allCodes.length > 0 && selectedCount === allCodes.length;
+  const indeterminate = selectedCount > 0 && !allSelected;
+
+  const toggleOne = (code: string) => {
+    setSelectedCodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) {
+        next.delete(code);
+      } else {
+        next.add(code);
+      }
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedCodes(new Set());
+    } else {
+      setSelectedCodes(new Set(allCodes));
+    }
+  };
+
+  // ============================================================
+  // 导出 CSV：导出当前 stockResults 全部行（不分选中/未选中，保持简单）
+  // 文件名格式：screener-result-YYYYMMDD-HHmm.csv
+  // ============================================================
+  const handleExportCsv = () => {
+    if (stockResults.length === 0) {
+      message.warning('暂无可导出的数据，请先选股');
+      return;
+    }
+    // CSV 表头（中文 + 英文别名）
+    const headers = [
+      '#', '代码', '名称', '收盘价', '涨跌幅(%)', '换手率(%)',
+      '市盈率(PE)', '市净率(PB)', '总市值(亿)', '成交额(亿)', '板块',
+    ];
+    // CSV 单元格：含逗号/引号/换行的字段加引号包裹，引号转义为 ""
+    const escape = (v: unknown): string => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      if (/[",\n\r]/.test(s)) {
+        return `"${s.replace(/"/g, '""')}"`;
+      }
+      return s;
+    };
+    const rows = stockResults.map((s, idx) => {
+      const changePct = Number(s.change_pct) || 0;
+      return [
+        idx + 1,
+        s.stock_code,
+        s.stock_name,
+        Number(s.close ?? 0).toFixed(2),
+        changePct.toFixed(2),
+        s.turnover_rate === null || s.turnover_rate === undefined ? '' : Number(s.turnover_rate).toFixed(2),
+        s.pe ?? s.pe_ttm ?? '',
+        s.pb ?? '',
+        // market_cap/amount 字段为万元，导出"亿"对用户更直观
+        s.market_cap === null || s.market_cap === undefined ? '' : (Number(s.market_cap) / 10000).toFixed(2),
+        s.amount === null || s.amount === undefined ? '' : (Number(s.amount) / 10000).toFixed(2),
+        s.listed_board ?? '',
+      ];
+    });
+    // Excel 友好：UTF-8 BOM
+    const BOM = '\uFEFF';
+    const csv = BOM + [headers, ...rows]
+      .map((row) => row.map(escape).join(','))
+      .join('\r\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const filename = `screener-result-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.csv`;
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    message.success(`已导出 ${stockResults.length} 只股票到 ${filename}`);
+  };
+
+  // ============================================================
+  // 添加自选：弹窗让用户选分组 → 批量 POST /api/watchlist
+  // - 无选中：弹 Modal 提示用户勾选
+  // - 已选中：弹分组名输入框（可留空走后端默认）
+  // ============================================================
+  const handleAddToWatchlistClick = () => {
+    if (selectedCount === 0) {
+      Modal.info({
+        title: '请先勾选股票',
+        content: '点击表格左侧复选框选择要加入自选股的股票',
+        okText: '我知道了',
+      });
+      return;
+    }
+    setAddToWatchlistOpen(true);
+  };
+
+  const handleConfirmAddToWatchlist = async () => {
+    if (addingToWatchlist) return;
+    setAddingToWatchlist(true);
+    try {
+      const codes = Array.from(selectedCodes);
+      const result = await addMany(
+        codes,
+        groupNameInput.trim() || undefined,
+      );
+      // 汇总结果：成功/跳过/失败分类提示（K 偏好：覆盖率异常必须显示原因）
+      const parts: string[] = [];
+      if (result.added > 0) parts.push(`新增 ${result.added}`);
+      if (result.skipped > 0) parts.push(`跳过 ${result.skipped}（已在自选）`);
+      if (result.failed > 0) parts.push(`失败 ${result.failed}`);
+      const summary = parts.length > 0 ? parts.join('，') : '无变化';
+      if (result.failed > 0) {
+        message.warning(
+          `添加自选完成：${summary}。失败股票：${result.errors.join(', ')}`,
+        );
+      } else {
+        message.success(`添加自选完成：${summary}`);
+      }
+      // 操作成功后清空选中（避免重复点击）
+      setSelectedCodes(new Set());
+      setAddToWatchlistOpen(false);
+      setGroupNameInput('');
+    } catch (e: any) {
+      message.error(`添加自选失败: ${e?.message || '未知错误'}`);
+    } finally {
+      setAddingToWatchlist(false);
+    }
+  };
+
+  const handleCancelAddToWatchlist = () => {
+    if (addingToWatchlist) return;
+    setAddToWatchlistOpen(false);
+    setGroupNameInput('');
   };
 
   // 点击表头排序：同列切换升/降序，不同列切换为该列（默认降序）
@@ -229,6 +395,8 @@ const StockPickerContent: React.FC = () => {
       }
       setStockResults(result.items || []);
       setTotalCount(result.total || 0);
+      // K 2026-06-22 反馈 #5：选股结果变化时清空选中集（旧的 stock_code 不再有效）
+      setSelectedCodes(new Set());
       return result;
     } catch (error: any) {
       // axios 取消请求会抛 AbortError，忽略（属于正常取消）
@@ -361,7 +529,17 @@ const StockPickerContent: React.FC = () => {
                 <table className="w-full text-sm border-collapse">
                   <thead className="sticky top-0 z-10 bg-bg-panel">
                     <tr className="text-text-secondary text-xs border-b border-border-color">
-                      <th className="px-3 py-2 text-center w-12">#</th>
+                      <th className="px-3 py-2 text-center w-12">
+                        {stockResults.length > 0 && (
+                          <Checkbox
+                            indeterminate={indeterminate}
+                            checked={allSelected}
+                            onChange={toggleAll}
+                            data-testid="select-all-checkbox"
+                          />
+                        )}
+                      </th>
+                      <th className="px-3 py-2 text-center text-text-secondary text-xs">#</th>
                       <th className="px-3 py-2 text-left">代码</th>
                       <th className="px-3 py-2 text-left">名称</th>
                       <th className="px-3 py-2 text-right">收盘价</th>
@@ -381,8 +559,17 @@ const StockPickerContent: React.FC = () => {
                       return (
                         <tr
                           key={stock.stock_code || idx}
-                          className="border-b border-border-color hover:bg-bg-panel/60 transition-colors"
+                          className={`border-b border-border-color hover:bg-bg-panel/60 transition-colors ${
+                            selectedCodes.has(stock.stock_code) ? 'bg-color-accent/10' : ''
+                          }`}
                         >
+                          <td className="px-3 py-2 text-center">
+                            <Checkbox
+                              checked={selectedCodes.has(stock.stock_code)}
+                              onChange={() => toggleOne(stock.stock_code)}
+                              data-testid={`row-checkbox-${stock.stock_code}`}
+                            />
+                          </td>
                           <td className="px-3 py-2 text-center text-text-secondary text-xs">{idx + 1}</td>
                           <td className="px-3 py-2 text-text-primary font-mono">{stock.stock_code}</td>
                           <td className="px-3 py-2 text-text-primary">{stock.stock_name}</td>
@@ -437,14 +624,20 @@ const StockPickerContent: React.FC = () => {
               <Button
                 icon={<PlusCircleOutlined />}
                 className="bg-bg-card border-border-color text-text-secondary hover:text-text-primary text-sm"
+                onClick={handleAddToWatchlistClick}
+                disabled={screenerLoading}
+                data-testid="add-to-watchlist-btn"
               >
-                添加自选
+                添加自选{selectedCount > 0 ? `(${selectedCount})` : ''}
               </Button>
               <Button
                 icon={<DownloadOutlined />}
                 className="bg-bg-card border-border-color text-text-secondary hover:text-text-primary text-sm"
+                onClick={handleExportCsv}
+                disabled={screenerLoading || stockResults.length === 0}
+                data-testid="export-result-btn"
               >
-                导出结果
+                导出结果{stockResults.length > 0 ? `(${stockResults.length})` : ''}
               </Button>
               <Button
                 icon={<BlockOutlined />}
@@ -458,14 +651,51 @@ const StockPickerContent: React.FC = () => {
               <Button
                 icon={<ReloadOutlined />}
                 className="bg-bg-card border-border-color text-text-secondary hover:text-text-primary text-sm"
+                onClick={() => runScreening()}
+                disabled={screenerLoading || stockResults.length === 0}
+                data-testid="refresh-result-btn"
               >
                 刷新
               </Button>
-              <span className="text-text-secondary text-sm">未选中 (点击行查看详情, 勾选复选框多选)</span>
+              <span className="text-text-secondary text-sm">
+                {selectedCount > 0
+                  ? `已选中 ${selectedCount} 只`
+                  : '未选中（点击左侧复选框多选）'}
+              </span>
             </div>
           </div>
         </div>
       </div>
+
+      {/* 添加自选弹窗：分组名输入 + 提交 */}
+      <Modal
+        title={`添加 ${selectedCount} 只股票到自选股`}
+        open={addToWatchlistOpen}
+        onCancel={handleCancelAddToWatchlist}
+        onOk={handleConfirmAddToWatchlist}
+        confirmLoading={addingToWatchlist}
+        okText="确认添加"
+        cancelText="取消"
+        destroyOnHidden
+        maskClosable={false}
+        data-testid="add-to-watchlist-modal"
+      >
+        <div className="py-2">
+          <div className="text-text-secondary text-sm mb-2">
+            分组名（留空使用默认分组"默认分组"）
+          </div>
+          <Input
+            placeholder="例如：白马股 / 高股息 / 短期关注"
+            value={groupNameInput}
+            onChange={(e) => setGroupNameInput(e.target.value)}
+            maxLength={20}
+            data-testid="add-to-watchlist-group-input"
+          />
+          <div className="text-text-secondary text-xs mt-3">
+            重复股票会自动跳过，可在「自选股」页面查看与管理。
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

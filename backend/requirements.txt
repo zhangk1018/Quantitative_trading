@@ -1,5 +1,7 @@
 # 量化数据获取与清洗模块依赖
 pandas>=2.0.0
+# baostock 0.9.2 内部使用 df.append()（pandas 2.0 已移除），已 patch venv 中 resultset.py 改为 pd.concat
+# 补丁位置: venv/lib/python3.11/site-packages/baostock/data/resultset.py:141
 baostock>=0.9.1
 APScheduler>=3.10.0
 python-dotenv>=1.0.0

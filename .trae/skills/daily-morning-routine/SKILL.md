@@ -1,6 +1,6 @@
 ---
 name: "daily-morning-routine"
-description: "每日数据管道晨检：检查 stock_quotes 数据下载、stock_daily_snapshot 清洗同步、补全状态，以及 AI_COLLABORATION.md 待办任务。每天第一件事调用。"
+description: "每日数据管道晨检：检查 stock_quotes 数据下载、stock_daily_snapshot 清洗同步、补全状态，以及协作单待办任务。每天第一件事调用。"
 ---
 
 # 每日数据管道晨检
@@ -108,12 +108,19 @@ grep -c "ERROR\|失败\|❌" /Users/zhangk/workspace/Quantitative_trading/logs/c
 tail -5 /Users/zhangk/workspace/Quantitative_trading/logs/daily_import.log 2>/dev/null | grep "增量导入完成"
 ```
 
-### 6. 检查 AI_COLLABORATION.md 待办
+### 6. 检查协作单待办
 
-查看 [AI_COLLABORATION.md](file:///Users/zhangk/workspace/Quantitative_trading/docs/AI_COLLABORATION.md) 中的：
-- `🔴 数据管道当前状态` 章节（最新状态）
-- `📋 量量待办` 表格（待处理的任务）
-- 关注是否有新增的 P0（紧急）任务
+查看以下两个文件的待办任务：
+
+1. **[docs/协作单.md](file:///Users/zhangk/workspace/Quantitative_trading/docs/协作单.md)** — 活动工单区：
+   - 查找状态为 `NEW`（待认领）或 `REOPENED`（需重新处理）的工单
+   - 优先认领属于量量职责范围（backend）的 `NEW` 工单
+   - 优先跟进自己上次处理的 `REOPENED` 工单
+   - 关注 P0（紧急）任务
+
+2. **[.trae/topics.md](file:///Users/zhangk/workspace/Quantitative_trading/.trae/topics.md)** — 跨会话通知：
+   - 读取最新通知，确认是否有新的状态变更需要响应
+   - 特别关注 `→量量` 标记的通知（明确由量量接单）
 
 ## 报告格式
 
@@ -137,8 +144,9 @@ tail -5 /Users/zhangk/workspace/Quantitative_trading/logs/daily_import.log 2>/de
 - 状态: ✅ 正常 / ⚠️ 需关注
 
 ### 待办任务
-- AI_COLLABORATION.md 待处理: X 个任务
+- 协作单活动工单: X 个（NEW: X, REOPENED: X, VERIFY: X）
 - P0 任务: X 个 | P1 任务: X 个
+- topics.md 新通知: X 条需响应
 - 新/变化的重要事项: ...
 ```
 
@@ -155,7 +163,7 @@ tail -5 /Users/zhangk/workspace/Quantitative_trading/logs/daily_import.log 2>/de
    cd /Users/zhangk/workspace/Quantitative_trading && \
    PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/collector/etl/daily_snapshot_sync.py --latest
    ```
-3. **待办任务阻塞**：AI_COLLABORATION.md 中有 P0 未处理时，优先处理或提醒用户
+3. **待办任务阻塞**：协作单中有 P0 未处理时，优先处理或提醒用户
 
 ## 注意
 

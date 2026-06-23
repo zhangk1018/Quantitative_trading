@@ -32,6 +32,13 @@ if (typeof window !== 'undefined' && !window.ResizeObserver) {
   };
 }
 
+// URL.createObjectURL / revokeObjectURL polyfill（jsdom 不实现，
+// StockPickerView 的 CSV 导出测试需要用到）
+if (typeof URL.createObjectURL !== 'function') {
+  (URL as any).createObjectURL = vi.fn(() => 'blob:mock-url');
+  (URL as any).revokeObjectURL = vi.fn();
+}
+
 // 每个测试后清理 DOM + 重置 MSW handlers
 afterEach(() => {
   cleanup();

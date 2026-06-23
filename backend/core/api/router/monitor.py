@@ -68,6 +68,28 @@ def _now_beijing() -> datetime:
     return datetime.now(BEIJING_TZ)
 
 
+def _get_last_trade_date(ref_date: datetime) -> str:
+    """
+    计算最近一个交易日（跳过周末，简化处理不含节假日）。
+    - 周一~周五 15:30 之后：返回当天
+    - 周一~周五 15:30 之前：返回前一个工作日
+    - 周六/周日：返回周五
+    """
+    weekday = ref_date.weekday()  # 0=Mon, 6=Sun
+    hour = ref_date.hour
+
+    if weekday >= 5:  # Sat=5, Sun=6
+        delta = weekday - 4  # Sat->1, Sun->2 days back to Friday
+        target = ref_date - timedelta(days=delta)
+    elif hour < 15:  # 工作日 15:00 前，市场未收盘
+        # 周一回退到周五，其他工作日回退到前一天
+        delta = 3 if weekday == 0 else 1
+        target = ref_date - timedelta(days=delta)
+    else:
+        target = ref_date
+    return target.strftime("%Y-%m-%d")
+
+
 def _get_db_conn():
     """获取数据库连接"""
     return psycopg2.connect(
@@ -622,14 +644,15 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
 
     latest_str = str(latest_date)
 
-    # ========== 关键：判断今日是否已执行 ==========
-    # 业务规则：仅当数据日期 == 今天（北京时间）时，才视为"今日已执行"
+    # ========== 关键：判断最新数据是否已更新 ==========
+    # 业务规则：数据日期必须 >= 最近一个交易日（非周末/节假日的最近工作日）
     # 否则即使有历史数据，也只能算"待执行"，不能冒充今日成功
-    today_beijing = _now_beijing().strftime("%Y-%m-%d")
-    if str(latest_date) != today_beijing:
+    today_beijing = _now_beijing()
+    expected_trade_date = _get_last_trade_date(today_beijing)
+    if str(latest_date) < expected_trade_date:
         return {
             "status": "pending",
-            "message": f"今日未执行（最新数据 {latest_str}）",
+            "message": f"数据未更新（最新 {latest_str}，期望 >= {expected_trade_date}）",
             "data_date": latest_str,
             "data_count": None,
         }

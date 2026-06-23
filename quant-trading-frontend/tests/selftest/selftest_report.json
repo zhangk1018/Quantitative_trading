@@ -1,0 +1,104 @@
+{
+  "results": [
+    {
+      "status": "OK",
+      "name": "1. 打开 /picker 页面",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "2. 点击\"开始选股\"",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "2.2 表格渲染 20 行",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "3.1 单行勾选 → 按钮显示\"添加自选(1)\"",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "3.2 全选 → 按钮显示\"添加自选(20)\"",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "3.3 反选清空 → 按钮恢复\"添加自选\"",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "3.4 重新勾选 2 行",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "3.5 点击前按钮文本确认: 添加自选(2)",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "4.1 点击\"添加自选\" → Modal 弹出",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "4.2 输入分组名\"方舟自测分组\"",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "4.3 点击\"确认添加\"",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "4.4 捕获到 2 个 POST /api/watchlist 请求",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "4.5 POST 请求体含正确的 group_name",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "4.6 Modal 自动关闭",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "5.1 \"导出结果\" 按钮可用",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "5.2 下载文件名格式正确: screener-result-20260622-1554.csv",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "5.3 CSV 文件已保存到 selftest/selftest_export.csv",
+      "detail": ""
+    },
+    {
+      "status": "OK",
+      "name": "6.1 无选中时点\"添加自选\" → 弹出 Modal.info（无分组输入框）",
+      "detail": ""
+    },
+    {
+      "status": "WARN",
+      "name": "捕获 3 条 console.error",
+      "detail": ""
+    }
+  ],
+  "consoleErrors": [
+    "Warning: [rc-collapse] `children` will be removed in next major version. Please use `items` instead.",
+    "Warning: [antd: message] Static function can not consume context like dynamic theme. Please use 'App' component instead.",
+    "Warning: [antd: Modal] Static function can not consume context like dynamic theme. Please use 'App' component instead."
+  ]
+}

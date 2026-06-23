@@ -3,6 +3,7 @@ import { Layout, Typography, Space } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { DashboardOutlined, StockOutlined, StarOutlined, LineChartOutlined, SettingOutlined } from '@ant-design/icons';
 import { ScreenerProvider } from '@/features/stock-picker/context/ScreenerContext';
+import { WatchlistProvider } from '@/features/watchlist/store';
 
 const { Header, Content } = Layout;
 const { Text } = Typography;
@@ -23,7 +24,10 @@ const AppLayout: React.FC = () => {
   return (
     // K 2026-06-17 决策：ScreenerProvider 上移到 AppLayout 层，让 /config 和 /picker
     // 共享同一份 screener state（customIndicators 跨页面同步 + 不再需要事件桥接）
+    // K 2026-06-22 反馈 #1：WatchlistProvider 也必须包裹 Outlet，否则 StockPickerView
+    // 中 useWatchlist() 拿不到 Context（React 只向下查找）
     <ScreenerProvider>
+    <WatchlistProvider>
     <Layout style={{ minHeight: '100vh', background: '#131722' }}>
       {/* 顶部通栏：Logo + 菜单栏 */}
       <Header className="h-14 px-6 flex items-center justify-between bg-bg-panel border-b border-border-color !leading-none">
@@ -75,6 +79,7 @@ const AppLayout: React.FC = () => {
         </div>
       </Content>
     </Layout>
+    </WatchlistProvider>
     </ScreenerProvider>
   );
 };

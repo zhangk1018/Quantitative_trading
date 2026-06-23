@@ -76,7 +76,7 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
         else:
             save_df[dst_col] = None
 
-    # 2026-06-16 修复：RSI 需要分别计算 6/12/24 三个窗口
+    # 2026-06-22 修复：RSI 需要分别计算 6/12/24 三个窗口
     # calculate_all 默认 RSI window=14，不符合 RSI6 要求
     # 2026-06-22 修复 [6.9]：移除 fillna(0)，保留 NaN 为 NULL，避免窗口期不足时错误存 0
     # 2026-06-22 修复 [#4]：按 trade_date 对齐合并，避免行顺序不一致导致错位
@@ -92,6 +92,21 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
         except Exception as e:
             logger.warning(f"{db_code} RSI{window} 计算失败: {e}")
             save_df[col_name] = None
+
+    # 2026-06-23 新增：BOLL 布林带计算（20日中轨 ± 2倍标准差）
+    try:
+        boll_df = TechnicalIndicator.calculate_boll(quotes_df.copy(), window=20, std_dev=2, require_adjust=False)
+        for src_col, dst_col in [('BOLL_MID', 'boll_mid'), ('BOLL_UPPER', 'boll_upper'), ('BOLL_LOWER', 'boll_lower')]:
+            if src_col in boll_df.columns:
+                boll_series = boll_df.set_index('trade_date')[src_col]
+                save_df[dst_col] = save_df['trade_date'].map(boll_series)
+            else:
+                save_df[dst_col] = None
+    except Exception as e:
+        logger.warning(f"{db_code} BOLL 计算失败: {e}")
+        save_df['boll_mid'] = None
+        save_df['boll_upper'] = None
+        save_df['boll_lower'] = None
 
     # 2026-06-22 修复 [#7]：indicators_df 为空时提前返回
     if save_df.empty:

@@ -306,3 +306,7 @@ Phase 5.2 性能优化已完成三项：
 **通知**: [方舟→量量 2026-06-17 15:30] P3.1 CustomIndicatorModal 升级完成（Git commit `303d17a`）—— **K 2026-06-17 决策全部执行**：① Modal→Drawer（K 反馈 1：取消/创建按钮在 Drawer 顶部右侧）② 公式长度 2000→8000（K 反馈 2：通达信公式常超 5000）③ Monaco 主题 vs→vs-dark + Drawer 深色协调（K 反馈 3）④ 必带字段插入按钮（K 反馈 3：参数/行情字段/指标函数三组）。**集成触发点**：ConditionBuilder 新增"新建自编指标（Monaco 公式）"按钮。**测试**：新增 22 用例 19 通过（核心 100%），现有 197 测试 0 回归，TS 0 错误，浏览器自测 8/9 通过。**测试文档**：[docs/tests/CustomIndicatorModal.md](file:///Users/zhangk/workspace/Quantitative_trading/quant-trading-frontend/docs/tests/CustomIndicatorModal.md) 包含 3 个时序问题记录（生产环境不受影响）。**后续**：P3.2/P3.3 优化时同步修复 3 个时序问题。**关联 P2-CONTEXT-20260616 + 6.8（已 CLOSED）**
 
 **通知**: [量量→方舟 2026-06-17] 协作单 [6.11-DEPLOY-500-20260617] 状态变更: FIXED→**CLOSED**（**量量验收**：health/meta/stocks 三接口全部 HTTP 200 ✅。4 项改进：① `.env.production` ✅ ② `verify_prod.sh` ✅ ③ pre_commit_check.sh 钩子 → 建议 V2.0 ④ CI/CD deploy.sh → Phase 5.3 已覆盖。K 决策点（axios 区分 ECONNREFOSED/500）→ V1.0 可接受，V2.0 再优化）
+
+**通知**: [量量→方舟 2026-06-22] 协作单 [6.9-RSI-DATA-20260617] 状态变更: NEW→**VERIFY**（量量修复完成，7 项代码审查问题全修复：① RSI fillna(0)→保留NaN+异常兜底改None ② RSI计算结果按trade_date对齐合并 ③ save_indicators ON CONFLICT与实际表约束对齐(code,cycle,trade_date,trade_datetime) ④ 统一cycle命名映射(daily→1d) ⑤ start_date硬编码→动态300天 ⑥ execute_batch批量插入 ⑦ 空结果提前判断。全量重跑进行中，待方舟验证）
+
+**通知**: [方舟→量量 2026-06-23 15:00] 协作单 [6.9-RSI-DATA-20260617] 状态变更: VERIFY→**CLOSED**（方舟全量验证通过 — API 全量 5191 只股票遍历，5110/5191=98.44% RSI 正常有值；77 只 NULL 为新股缺数据（无法计算 RSI），4 只 RSI=0 为真实跌停/退市边缘股；fillna(0) 导致的 78 只伪 0 已全部消除。另 P4 方向待 K 决策安排。）

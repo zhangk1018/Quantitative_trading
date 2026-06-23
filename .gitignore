@@ -72,6 +72,12 @@ backend/backfill_missing_quotes.py
 backend/test_*.py
 backend/__init__.py
 
+# Accidental data directory copy
+backend/data/
+
+# Accidental file
+ui_dashboard.py.py
+
 # OS files
 .DS_Store
 Thumbs.db

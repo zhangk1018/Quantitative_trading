@@ -452,10 +452,9 @@ print(f'Pattern 列: {[c for c in df.columns if 'macd_' in c or 'rsi_' in c or '
 **执行**：
 ```bash
 # 停止服务
-pkill -f "uvicorn backend.core.api.main:app"
-
+./scripts/start.sh dev stop &
 # 启动服务
-./venv/bin/uvicorn backend.core.api.main:app --host 0.0.0.0 --port 8000 --reload
+./scripts/start.sh dev start &
 ```
 
 **验证**：
@@ -510,9 +509,7 @@ echo "=== 10. 导出 Parquet ==="
 ./venv/bin/python backend/clean/enrich/export_parquet.py
 
 echo "=== 11. 重启后端服务 ==="
-pkill -f "uvicorn backend.core.api.main:app" || true
-sleep 2
-./venv/bin/uvicorn backend.core.api.main:app --host 0.0.0.0 --port 8000 --reload &
+./scripts/start.sh dev restart &
 
 echo "✅ ETL 流程完成"
 ```

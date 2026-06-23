@@ -492,8 +492,9 @@ class PostgreSQLStorage(BaseStorage):
                 INSERT INTO stock_indicators (
                     code, cycle, trade_date, ma5, ma10, ma20, ma60,
                     macd, dif, dea, rsi6, rsi12, rsi24,
+                    boll_upper, boll_mid, boll_lower,
                     trade_time, trade_datetime
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (code, cycle, trade_date, trade_datetime) DO UPDATE SET
                     ma5 = EXCLUDED.ma5,
                     ma10 = EXCLUDED.ma10,
@@ -504,7 +505,10 @@ class PostgreSQLStorage(BaseStorage):
                     dea = EXCLUDED.dea,
                     rsi6 = EXCLUDED.rsi6,
                     rsi12 = EXCLUDED.rsi12,
-                    rsi24 = EXCLUDED.rsi24
+                    rsi24 = EXCLUDED.rsi24,
+                    boll_upper = EXCLUDED.boll_upper,
+                    boll_mid = EXCLUDED.boll_mid,
+                    boll_lower = EXCLUDED.boll_lower
             """
 
             params_list = []
@@ -527,6 +531,9 @@ class PostgreSQLStorage(BaseStorage):
                     float(row['rsi6']) if pd.notna(row['rsi6']) else None,
                     float(row['rsi12']) if pd.notna(row['rsi12']) else None,
                     float(row['rsi24']) if pd.notna(row['rsi24']) else None,
+                    float(row['boll_upper']) if pd.notna(row.get('boll_upper')) else None,
+                    float(row['boll_mid']) if pd.notna(row.get('boll_mid')) else None,
+                    float(row['boll_lower']) if pd.notna(row.get('boll_lower')) else None,
                     trade_time_ts,
                     trade_dt_ts,
                 ))

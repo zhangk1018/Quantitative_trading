@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 量化交易 - 每日盘后线性任务调度脚本
-任务顺序：A → B → C → D → E → F（前一个成功才执行下一个）
+任务顺序：A → B → C → D → E → F → G（前一个成功才执行下一个）
+数据依赖：行情/基本面/复权因子 → 技术指标 → 信号 → 宽表 → Parquet导出
 支持：断点续跑 + 自动重试（未全部成功则每15分钟重试，最多10次）
 """
 import os
@@ -32,34 +33,40 @@ TASKS = [
         "script": os.path.join("backend", "collector", "etl", "import_daily_data.py"),
         "args": []
     },
-    # B 宽表同步
-    {
-        "name": "daily_sync",
-        "script": os.path.join("backend", "collector", "etl", "daily_snapshot_sync.py"),
-        "args": ["--latest"]
-    },
-    # C 日频基本面同步
+    # B 日频基本面同步
     {
         "name": "daily_basic_sync",
         "script": os.path.join("backend", "collector", "etl", "sync_daily_basic.py"),
         "args": ["--latest"]
     },
-    # D 复权因子同步
+    # C 复权因子同步
     {
         "name": "adj_factor_sync",
         "script": os.path.join("backend", "collector", "etl", "sync_adj_factor.py"),
         "args": ["--incremental"]
     },
-    # E 技术指标计算
+    # D 技术指标计算
     {
         "name": "indicators_compute",
         "script": os.path.join("backend", "clean", "etl", "compute_indicators_daily.py"),
         "args": []
     },
-    # F 信号预计算
+    # E 信号预计算
     {
         "name": "signal_precompute",
         "script": os.path.join("backend", "clean", "etl", "signal_precompute.py"),
+        "args": []
+    },
+    # F 宽表同步（依赖 stock_indicators 和 trade_signals，必须最后执行）
+    {
+        "name": "daily_sync",
+        "script": os.path.join("backend", "collector", "etl", "daily_snapshot_sync.py"),
+        "args": ["--latest"]
+    },
+    # G Parquet 导出（依赖 stock_daily_snapshot 宽表，必须最后执行）
+    {
+        "name": "parquet_export",
+        "script": os.path.join("backend", "clean", "enrich", "export_parquet.py"),
         "args": []
     },
 ]
@@ -79,9 +86,9 @@ def check_task_status(task_name):
     except Exception:
         return "unknown"
 
-    # 找今日所有执行块
+    # 找今日的所有执行块（严格过滤日期）
     blocks = list(re.finditer(
-        rf'===== (\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}) 开始执行 {re.escape(task_name)} =====',
+        rf'===== ({re.escape(today_str)} \d{{2}}:\d{{2}}:\d{{2}}) 开始执行 {re.escape(task_name)} =====',
         content
     ))
     if not blocks:
