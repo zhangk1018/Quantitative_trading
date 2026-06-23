@@ -20,6 +20,7 @@ sync_daily_basic.py - 日频基本面数据同步脚本
 """
 import sys
 import os
+import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import argparse
@@ -45,12 +46,12 @@ class DailyBasicSync:
 
     def __init__(self):
         self.storage = PostgreSQLStorage(config.get('storage'))
-        # 数据源优先级：PyWenCai（主用，全市场~45s）→ Baostock（备用，逐只拉取）→ Tushare（Pro，全量基本面）
+        # 数据源优先级：Tushare（Pro，全量基本面）→ PyWenCai（全市场~45s）→ Baostock（兜底补差，逐只拉取）
         self.dsm = DataSourceManager(
             sources=[
-                {'source': PyWencaiDataSource(), 'weight': 1, 'priority': 0},
-                {'source': BaostockDataSource(), 'weight': 1, 'priority': 1},
-                {'source': TushareDataSource(), 'weight': 1, 'priority': 2},
+                {'source': TushareDataSource(), 'weight': 1, 'priority': 0},
+                {'source': PyWencaiDataSource(), 'weight': 1, 'priority': 1},
+                {'source': BaostockDataSource(), 'weight': 1, 'priority': 2},
             ],
             strategy=SwitchStrategy.FAILOVER,
             auto_recovery=True
@@ -114,22 +115,23 @@ class DailyBasicSync:
             logger.warning(f"⚠️ 同步 {trade_date} 日频基本面失败: {e}")
             return 0
 
-    def sync_latest(self):
-        """仅同步最新交易日"""
+    def sync_latest(self) -> int:
+        """仅同步最新交易日，返回同步条数"""
         dates = self.get_trading_dates()
         if not dates:
             logger.warning("⚠️ 无交易日期数据")
-            return
+            return 0
 
         latest_date = dates[0]
         logger.info(f"🔄 同步最新交易日: {latest_date}")
 
         count = self.sync_date(latest_date)
         logger.info(f"✅ {latest_date} 同步完成: {count} 条记录")
+        return count
 
     def sync_all(self, start_date: Optional[str] = None,
-                 end_date: Optional[str] = None):
-        """同步所有交易日的日频基本面（按日期遍历）"""
+                 end_date: Optional[str] = None) -> int:
+        """同步所有交易日的日频基本面（按日期遍历），返回总条数"""
         all_dates = self.get_trading_dates()
 
         if start_date:
@@ -153,16 +155,17 @@ class DailyBasicSync:
             total_records += count
 
         logger.info(f"✅ 日频基本面同步完成，共 {total_records} 条记录")
+        return total_records
 
-    def sync_incremental(self):
-        """增量同步：只同步 stock_daily_basic 中尚未存在的交易日"""
+    def sync_incremental(self) -> int:
+        """增量同步：只同步 stock_daily_basic 中尚未存在的交易日，返回总条数"""
         all_dates = self.get_trading_dates()
         existing = self.get_existing_trade_dates()
 
         missing_dates = [d for d in all_dates if d not in existing]
         if not missing_dates:
             logger.info("✅ 日频基本面数据已完整，无需增量同步")
-            return
+            return 0
 
         logger.info(f"📋 发现 {len(missing_dates)} 个待同步交易日")
 
@@ -172,6 +175,7 @@ class DailyBasicSync:
             total_records += count
 
         logger.info(f"✅ 增量同步完成，共 {total_records} 条记录")
+        return total_records
 
 
 def main():
@@ -188,16 +192,18 @@ def main():
     syncer.connect()
 
     try:
+        count = 0
         if args.incremental:
-            syncer.sync_incremental()
+            count = syncer.sync_incremental()
         elif args.start and args.end:
-            syncer.sync_all(start_date=args.start, end_date=args.end)
+            count = syncer.sync_all(start_date=args.start, end_date=args.end)
         elif args.date:
             count = syncer.sync_date(args.date)
             logger.info(f"✅ {args.date} 同步完成: {count} 条记录")
         else:
             # 默认：同步最近交易日
-            syncer.sync_latest()
+            count = syncer.sync_latest()
+        print(f'TASK_RESULT:{json.dumps({"rows_affected": count})}')
     finally:
         syncer.close()
 

@@ -9,6 +9,7 @@
 """
 import sys
 import os
+import json
 
 # Add the backend directory to Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -370,3 +371,4 @@ if __name__ == "__main__":
     print(f"全部股票总数: {stats['total_stocks']}")
     print(f"生成有效信号股票数: {stats['success_stocks']}")
     print(f"总交易信号入库条数: {stats['total_signals']}")
+    print(f'TASK_RESULT:{json.dumps({"rows_affected": stats["total_signals"], "extra_metrics": stats})}')

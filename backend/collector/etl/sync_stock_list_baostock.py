@@ -2,6 +2,7 @@
 """用 Baostock 获取完整股票列表并补充 stock_basic"""
 import os
 import sys
+import json
 import logging
 
 backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -267,6 +268,7 @@ def main():
         logger.info("\n" + "=" * 60)
         logger.info("同步完成")
         logger.info("=" * 60)
+        print(f'TASK_RESULT:{json.dumps({"rows_affected": len(stock_df), "extra_metrics": {"total_stocks": len(stock_df)}})}')
     finally:
         conn.close()
 

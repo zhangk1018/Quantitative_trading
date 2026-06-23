@@ -24,6 +24,7 @@ pipeline_health_check.py - 数据管道前置条件检查器
 
 import os
 import sys
+import json
 import argparse
 import subprocess
 from datetime import datetime, timedelta
@@ -320,6 +321,9 @@ def main():
         sys.exit(0)
     else:
         print('\n✅ 全部检查通过，可以继续执行 ETL 任务')
+        errors = sum(1 for c in result.checks if c[1] == HealthCheckResult.ERROR)
+        warnings = sum(1 for c in result.checks if c[1] == HealthCheckResult.WARN)
+        print(f'TASK_RESULT:{json.dumps({"rows_affected": len(result.checks), "extra_metrics": {"errors": errors, "warnings": warnings}})}')
         sys.exit(0)
 
 

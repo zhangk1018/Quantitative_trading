@@ -14,6 +14,7 @@ Baostock query_adjust_factor 是按股票查询的，因此采用逐股票遍历
 
 import sys
 import os
+import json
 import argparse
 
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -303,6 +304,7 @@ def sync_adj_factor(incremental: bool = False):
         logger.info(f"  已跳过(最新): {total_skipped} 只")
         logger.info(f"  总记录数: {total_saved} 条")
         logger.info(f"{'='*60}")
+        print(f'TASK_RESULT:{json.dumps({"rows_affected": total_saved, "extra_metrics": {"total_stocks": total_with_data, "skipped": total_skipped}})}')
 
     except Exception as e:
         logger.error(f"❌ 同步复权因子失败: {e}")

@@ -3,6 +3,7 @@
 
 import sys
 import os
+import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import pandas as pd
@@ -44,6 +45,7 @@ def export_to_parquet():
     print(f"✅ 导出完成: {output_path}")
     print(f"📊 导出记录数: {len(df)}")
     print(f"📋 列数: {len(df.columns)}")
+    print(f'TASK_RESULT:{json.dumps({"rows_affected": len(df), "extra_metrics": {"columns": len(df.columns)}})}')
     
     # 验证pattern列
     pattern_cols = [c for c in df.columns if any(x in c for x in ['ma_long', 'ma_short', 'macd_low', 'macd_high', 'boll_break', 'rsi_low', 'rsi_high'])]

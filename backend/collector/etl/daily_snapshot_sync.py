@@ -21,6 +21,7 @@ CREATE INDEX idx_daily_basic_code_date ON stock_daily_basic(code, trade_date);
 
 import os
 import sys
+import json
 import argparse
 import logging
 from datetime import datetime, timedelta
@@ -44,8 +45,8 @@ LIMIT_THRESHOLDS = {
 }
 
 
-def sync_daily_snapshot(session: Session, target_date: str):
-    """同步指定日期的宽表数据"""
+def sync_daily_snapshot(session: Session, target_date: str) -> int:
+    """同步指定日期的宽表数据，返回影响行数"""
     try:
         logger.info(f"🔄 开始同步 {target_date} 的宽表数据...")
 
@@ -246,12 +247,15 @@ def sync_daily_snapshot(session: Session, target_date: str):
         }
 
         session.execute(upsert_sql, params)
-        logger.info(f"✅ {target_date} 基础数据同步完成")
+        result = session.execute(text("SELECT COUNT(*) FROM stock_daily_snapshot WHERE trade_date = :d"), {"d": target_date})
+        row_count = result.scalar()
+        logger.info(f"✅ {target_date} 基础数据同步完成，共 {row_count} 条")
 
         _update_tech_patterns(session, target_date)
 
         session.commit()
         logger.info(f"✅ {target_date} 宽表同步完成")
+        return row_count
 
     except Exception as e:
         session.rollback()
@@ -409,17 +413,20 @@ def sync_date_range(
     start_date: str,
     end_date: str,
     ignore_errors: bool = False
-):
-    """同步日期范围"""
+) -> int:
+    """同步日期范围，返回总影响行数"""
     start = datetime.strptime(start_date, '%Y-%m-%d')
     end = datetime.strptime(end_date, '%Y-%m-%d')
 
     failed_dates = []
+    total_count = 0
     current = start
     while current <= end:
         date_str = current.strftime('%Y-%m-%d')
         try:
-            sync_daily_snapshot(session, date_str)
+            cnt = sync_daily_snapshot(session, date_str)
+            if cnt is not None:
+                total_count += cnt
         except Exception as e:
             if ignore_errors:
                 logger.warning(f"⚠️ 跳过 {date_str}: {e}")
@@ -432,7 +439,8 @@ def sync_date_range(
     if failed_dates:
         logger.error(f"❌ 同步失败的日期（共 {len(failed_dates)} 个）：{', '.join(failed_dates)}")
     else:
-        logger.info(f"✅ 日期范围 {start_date} ~ {end_date} 全部同步成功")
+        logger.info(f"✅ 日期范围 {start_date} ~ {end_date} 全部同步成功，共 {total_count} 条")
+    return total_count
 
 
 def get_latest_trade_date(engine) -> Optional[str]:
@@ -462,18 +470,21 @@ def main():
     session = Session()
 
     try:
+        count = 0
         if args.date:
-            sync_daily_snapshot(session, args.date)
+            count = sync_daily_snapshot(session, args.date)
         elif args.start_date and args.end_date:
-            sync_date_range(session, args.start_date, args.end_date, args.ignore_errors)
+            count = sync_date_range(session, args.start_date, args.end_date, args.ignore_errors)
         elif args.latest:
             latest_date = get_latest_trade_date(engine)
             if latest_date:
-                sync_daily_snapshot(session, latest_date)
+                count = sync_daily_snapshot(session, latest_date)
             else:
                 logger.error("❌ 未找到最新交易日期")
         else:
             parser.print_help()
+        if count > 0:
+            print(f'TASK_RESULT:{json.dumps({"rows_affected": count})}')
     finally:
         session.close()
         engine.dispose()

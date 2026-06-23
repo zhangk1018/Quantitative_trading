@@ -11,6 +11,7 @@
 """
 import sys
 import os
+import json
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, backend_dir)
 
@@ -171,6 +172,7 @@ def main():
             logger.info(f"进度: {i+1}/{total} ({(i+1)/total*100:.1f}%), 成功 {success}, 记录 {total_count}")
 
     logger.info(f"全市场技术指标计算完成: 成功 {success}/{total}, 总记录 {total_count}")
+    print(f'TASK_RESULT:{json.dumps({"rows_affected": total_count, "extra_metrics": {"success_stocks": success, "total_stocks": total}})}')
     storage.disconnect()
 
 

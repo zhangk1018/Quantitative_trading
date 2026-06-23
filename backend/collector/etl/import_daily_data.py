@@ -23,6 +23,7 @@
 """
 import sys
 import os
+import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import argparse
@@ -489,6 +490,7 @@ def main():
             logger.warning(f'⚠️  前置检查脚本不存在: {health_script}（跳过检查）')
 
     importer = None
+    total_imported = 0
     try:
         importer = DailyDataImporter()
         
@@ -498,8 +500,10 @@ def main():
             importer.create_task(task_name, {'mode': 'batch', 'date': args.date})
             logger.info(f"📅 使用批量模式导入 {args.date} 的日线数据...")
             total, fail, count = importer.import_by_trade_date(args.date)
+            total_imported = count
             importer.update_task_progress('completed', 100, f"批量导入完成: 总数 {total}, 失败 {fail}, 成功 {count} 条记录")
             logger.info(f"✅ 批量导入完成: {count} 条记录")
+            print(f'TASK_RESULT:{json.dumps({"rows_affected": count, "extra_metrics": {"total": total, "failed": fail}})}')
             return
             
         if args.incremental:
