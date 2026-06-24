@@ -60,6 +60,11 @@ temp/
 **/temp/
 **/temp/**
 
+# Test coverage reports
+coverage/
+**/coverage/
+**/coverage/**
+
 # Do not commit to GitHub
 .trae/
 docs/
