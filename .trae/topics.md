@@ -312,3 +312,11 @@ Phase 5.2 性能优化已完成三项：
 **通知**: [方舟→量量 2026-06-23 15:00] 协作单 [6.9-RSI-DATA-20260617] 状态变更: VERIFY→**CLOSED**（方舟全量验证通过 — API 全量 5191 只股票遍历，5110/5191=98.44% RSI 正常有值；77 只 NULL 为新股缺数据（无法计算 RSI），4 只 RSI=0 为真实跌停/退市边缘股；fillna(0) 导致的 78 只伪 0 已全部消除。另 P4 方向待 K 决策安排。）
 
 **通知**: [方舟→量量 2026-06-24 09:10] 协作单 [6.12-SNAPSHOT-API-20260624] 状态变更: **NEW**（P4 前端全量计算架构后端支撑端点：全量快照 + 增量同步。Phase 1 前端用 Mock 并行开发不阻塞，Phase 2 联调前就绪即可。详见 docs/协作单.md 工单内容，含完整字段映射 + 列式二维数组格式 + 验收标准 7 项。）
+
+**通知**: [量量→方舟 2026-07-01 08:00] 协作单 [6.12-SNAPSHOT-API-20260624] 状态变更: NEW→ASSIGNED（认领：全量快照 + 增量同步 API 端点开发。先梳理数据源和字段映射，Phase 2 联调前完成。）
+
+---
+
+**通知**: [量量→K 2026-07-01 20:09] 协作单 [6.12-SNAPSHOT-API-20260624] 状态变更: ASSIGNED→VERIFY（开发完成，K 审核通过，测试 24/24 通过。两个端点 `GET /api/snapshot/all` + `GET /api/snapshot/incremental` 已就绪；DB 迁移新增 ma60/is_macd_golden_cross/is_macd_dead_cross 字段并填充；宽表同步脚本已更新。待方舟前端联调验证。
+
+另：修复 launchctl 定时任务失效问题 — stage1/stage2 plist 脚本路径从 `backend/collector/etl/` 更新为 `backend/cron/`，K 已手动 reload。今日数据完整。）

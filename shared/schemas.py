@@ -360,3 +360,66 @@ class SignalResponse(BaseModel):
     end_date: Optional[str] = Field(None, description="结束日期")
     signals: List[SignalItem] = Field(..., description="信号列表")
     count: int = Field(..., description="信号数量")
+
+
+# ============================================
+# 快照 API 响应模型（/api/snapshot/all, /api/snapshot/incremental）
+# 工单: [6.12-SNAPSHOT-API-20260624]
+# ============================================
+
+class SnapshotIndicators(BaseModel):
+    """标准技术指标（嵌套在 SnapshotStock 内）"""
+
+    ma5: Optional[float] = Field(None, description="5日均线价")
+    ma10: Optional[float] = Field(None, description="10日均线价")
+    ma20: Optional[float] = Field(None, description="20日均线价")
+    ma60: Optional[float] = Field(None, description="60日均线价")
+    rsi_6: Optional[float] = Field(None, description="RSI6", ge=0, le=100)
+    rsi_12: Optional[float] = Field(None, description="RSI12", ge=0, le=100)
+    rsi_24: Optional[float] = Field(None, description="RSI24", ge=0, le=100)
+    macd_dif: Optional[float] = Field(None, description="MACD DIF（快线）")
+    macd_dea: Optional[float] = Field(None, description="MACD DEA（慢线）")
+    macd: Optional[float] = Field(None, description="MACD 柱状图（DIF-DEA）")
+    boll_upper: Optional[float] = Field(None, description="布林带上轨")
+    boll_mid: Optional[float] = Field(None, description="布林带中轨")
+    boll_lower: Optional[float] = Field(None, description="布林带下轨")
+    is_macd_golden_cross: bool = Field(False, description="MACD 通用金叉（DIF 上穿 DEA）")
+    is_macd_dead_cross: bool = Field(False, description="MACD 通用死叉（DIF 下穿 DEA）")
+
+
+class SnapshotStock(BaseModel):
+    """单只股票的全量快照数据（基础字段 + 指标 + OHLCV）"""
+
+    code: str = Field(..., description="股票代码，不带市场后缀", examples=["600519", "000001"])
+    name: str = Field(..., description="股票名称", examples=["贵州茅台", "平安银行"])
+    listed_board: str = Field(..., description="上市板块")
+    industry: str = Field("", description="行业分类")
+    trade_date: date = Field(..., description="最新交易日")
+    close: float = Field(..., description="最新收盘价", ge=0)
+    change_pct: Optional[float] = Field(None, description="涨跌幅（%）")
+    market_cap: Optional[float] = Field(None, description="总市值（万元）", ge=0)
+    turnover_rate: Optional[float] = Field(None, description="换手率（%）", ge=0)
+    pe_ttm: Optional[float] = Field(None, description="市盈率 TTM")
+    pb: Optional[float] = Field(None, description="市净率")
+    indicators: SnapshotIndicators = Field(..., description="标准技术指标（嵌套对象）")
+    ohlcv: List[List[float]] = Field(
+        ...,
+        description="OHLCV 列式二维数组：[[time, open, high, low, close, volume], ...]，time 为 Unix 时间戳（整数秒）",
+    )
+
+
+class SnapshotAllData(BaseModel):
+    """全量快照响应 data 部分"""
+
+    latest_trade_date: str = Field(..., description="最新交易日期（YYYY-MM-DD）")
+    total: int = Field(..., description="股票总数")
+    stocks: List[SnapshotStock] = Field(..., description="全市场股票快照列表")
+
+
+class SnapshotIncrementalData(BaseModel):
+    """增量同步响应 data 部分"""
+
+    since: str = Field(..., description="增量起始日期（YYYY-MM-DD，含当日）")
+    latest_trade_date: str = Field(..., description="最新交易日期（YYYY-MM-DD）")
+    days: int = Field(..., description="增量交易日天数")
+    stocks: List[SnapshotStock] = Field(..., description="增量股票数据列表")

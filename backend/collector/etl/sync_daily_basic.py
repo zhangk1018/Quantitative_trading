@@ -31,7 +31,6 @@ from collector.datasource.tushare import TushareDataSource
 from collector.datasource.baostock import BaostockDataSource
 from collector.datasource.pywencai_ds import PyWencaiDataSource
 from collector.storage.postgresql_storage import PostgreSQLStorage
-from clean.processor.base_importer import BaseDataImporter
 from utils.config import config
 from utils.logger import setup_logger
 
@@ -75,22 +74,22 @@ class DailyBasicSync:
 
     def get_trading_dates(self) -> List[str]:
         """从 stock_quotes 获取所有有数据的交易日期（降序）"""
-        cursor = self.storage.conn.cursor()
-        cursor.execute(
-            "SELECT DISTINCT trade_date FROM stock_quotes WHERE cycle='1d' ORDER BY trade_date DESC"
-        )
-        dates = [row[0].strftime('%Y-%m-%d') if hasattr(row[0], 'strftime') else str(row[0])
-                 for row in cursor.fetchall()]
-        cursor.close()
+        with self.storage.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT trade_date FROM stock_quotes WHERE cycle='1d' ORDER BY trade_date DESC"
+                )
+                dates = [row[0].strftime('%Y-%m-%d') if hasattr(row[0], 'strftime') else str(row[0])
+                         for row in cur.fetchall()]
         logger.info(f"📋 获取到 {len(dates)} 个交易日期")
         return dates
 
     def get_existing_trade_dates(self) -> set:
         """查询 stock_daily_basic 中已有的交易日期"""
-        cursor = self.storage.conn.cursor()
-        cursor.execute("SELECT DISTINCT trade_date FROM stock_daily_basic")
-        dates = {row[0] for row in cursor.fetchall()}
-        cursor.close()
+        with self.storage.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT trade_date FROM stock_daily_basic")
+                dates = {row[0] for row in cur.fetchall()}
         return dates
 
     def sync_date(self, trade_date: str) -> int:
@@ -142,7 +141,7 @@ class DailyBasicSync:
         total_dates = len(all_dates)
         if total_dates == 0:
             logger.info("⚠️ 无待同步交易日期")
-            return
+            return 0
 
         logger.info(f"🔄 开始按日期同步日频基本面: {total_dates} 个交易日")
 

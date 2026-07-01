@@ -56,10 +56,11 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                 trade_date, open, high, low, close, pre_close, volume, amount, adjust_type,
                 change, change_pct, pe, pe_ttm, pb, market_cap, circ_mv, turnover_rate, volume_ratio,
                 dv_ratio, dv_ttm, ps, ps_ttm, float_share,
-                ma5, ma10, ma20, v_ma5, rsi_6, macd, dif, dea, rsi_12, rsi_24,
+                ma5, ma10, ma20, ma60, v_ma5, rsi_6, macd, dif, dea, rsi_12, rsi_24,
                 boll_upper, boll_mid, boll_lower,
                 break_high_20, break_high_60, consec_up_days, vol_ratio_5,
-                is_st, is_new, limit_up, limit_down
+                is_st, is_new, limit_up, limit_down,
+                is_macd_golden_cross, is_macd_dead_cross
             )
             WITH
             qdata AS (
@@ -130,6 +131,7 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                 ROUND(i.ma5::numeric, 2) AS ma5,
                 ROUND(i.ma10::numeric, 2) AS ma10,
                 ROUND(i.ma20::numeric, 2) AS ma20,
+                ROUND(i.ma60::numeric, 2) AS ma60,
                 s.vol_5_avg::bigint AS v_ma5,
                 ROUND(i.rsi6::numeric, 2) AS rsi_6,
                 ROUND(i.macd::numeric, 4) AS macd,
@@ -179,7 +181,9 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                         (q.close - q.pre_close) / q.pre_close * 100 <= -:main_limit
                     END
                   ELSE FALSE
-                END AS limit_down
+                END AS limit_down,
+                FALSE AS is_macd_golden_cross,
+                FALSE AS is_macd_dead_cross
             FROM qdata q
             LEFT JOIN stock_basic b ON q.code = b.code
             LEFT JOIN stats s ON q.code = s.code
@@ -218,6 +222,7 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                 ma5 = EXCLUDED.ma5,
                 ma10 = EXCLUDED.ma10,
                 ma20 = EXCLUDED.ma20,
+                ma60 = EXCLUDED.ma60,
                 v_ma5 = EXCLUDED.v_ma5,
                 rsi_6 = EXCLUDED.rsi_6,
                 macd = EXCLUDED.macd,
@@ -236,6 +241,8 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                 is_new = EXCLUDED.is_new,
                 limit_up = EXCLUDED.limit_up,
                 limit_down = EXCLUDED.limit_down,
+                is_macd_golden_cross = EXCLUDED.is_macd_golden_cross,
+                is_macd_dead_cross = EXCLUDED.is_macd_dead_cross,
                 updated_at = CURRENT_TIMESTAMP
         """)
 
@@ -337,6 +344,16 @@ def _update_tech_patterns(session: Session, target_date: str):
             macd_high_death_cross = (
                 ci.macd IS NOT NULL AND pi.macd IS NOT NULL
                 AND pi.macd > pi.dea AND ci.macd <= ci.dea
+            ),
+            is_macd_golden_cross = (
+                ci.dif IS NOT NULL AND pi.dif IS NOT NULL
+                AND ci.dea IS NOT NULL AND pi.dea IS NOT NULL
+                AND pi.dif < pi.dea AND ci.dif > ci.dea
+            ),
+            is_macd_dead_cross = (
+                ci.dif IS NOT NULL AND pi.dif IS NOT NULL
+                AND ci.dea IS NOT NULL AND pi.dea IS NOT NULL
+                AND pi.dif > pi.dea AND ci.dif < ci.dea
             ),
             macd_bottom_divergence = (
                 cq.close IS NOT NULL AND pc.close_prev IS NOT NULL

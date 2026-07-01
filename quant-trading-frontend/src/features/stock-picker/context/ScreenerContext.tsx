@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useReducer, ReactNode, useEffect } from 'react';
 import { MARKET_CONFIG, STOCK_RANGE_OPTIONS } from '../config/marketConfig';
-import { MARKET_INDICATORS, FINANCIAL_INDICATORS, TECHNICAL_INDICATORS, FACTOR_CONFIG } from '../config/indicatorConfig';
+import { MARKET_INDICATORS, FINANCIAL_INDICATORS, TECHNICAL_INDICATORS, PATTERN_INDICATORS, FACTOR_CONFIG } from '../config/indicatorConfig';
 import { FilterOp, FilterCondition, FilterGroup, genConditionId } from '../types/filterTree';
 import { CustomIndicator } from '../types/customIndicator';
 import { listCustomIndicators as loadFromStorage } from '../utils/customIndicatorStorage';
@@ -35,6 +35,10 @@ export interface ScreenerState {
   customIndicators: CustomIndicator[];
   /** 当前激活的指标 Tab（系统预设 / 我的自编） */
   activeIndicatorTab: IndicatorTab;
+  /** K线形态已选项：形态id → 回溯天数（如 hammer → 3） */
+  selectedPatterns: Record<string, number>;
+  /** K线形态面板折叠状态 */
+  patternPanelCollapsed: boolean;
 }
 
 type ScreenerAction =
@@ -72,6 +76,9 @@ type ScreenerAction =
   | { type: 'UPDATE_CUSTOM_INDICATOR'; payload: CustomIndicator }
   | { type: 'REMOVE_CUSTOM_INDICATOR'; payload: string /* id */ }
   | { type: 'SET_INDICATOR_TAB'; payload: IndicatorTab }
+  | { type: 'TOGGLE_PATTERN'; payload: string }
+  | { type: 'SET_PATTERN_LOOKBACK'; payload: { patternId: string; lookbackDays: number } }
+  | { type: 'TOGGLE_PATTERN_PANEL' }
   | { type: 'RESOLVE_MISSING_INDICATORS' }
   | { type: 'IMPORT_CUSTOM_INDICATORS'; payload: CustomIndicator[] };
 
@@ -98,6 +105,8 @@ const initialState: ScreenerState = {
   },
   customIndicators: [],
   activeIndicatorTab: 'system',
+  selectedPatterns: {},
+  patternPanelCollapsed: true,
 };
 
 function screenerReducer(state: ScreenerState, action: ScreenerAction): ScreenerState {
@@ -291,6 +300,38 @@ function screenerReducer(state: ScreenerState, action: ScreenerAction): Screener
         ...initialState,
         customIndicators: state.customIndicators,
         activeIndicatorTab: state.activeIndicatorTab,
+      };
+
+    // ============================================================
+    // K 线形态 actions
+    // ============================================================
+
+    case 'TOGGLE_PATTERN': {
+      const { payload: patternId } = action;
+      const isSelected = patternId in state.selectedPatterns;
+      const config = PATTERN_INDICATORS.find((p) => p.id === patternId);
+      const next = { ...state.selectedPatterns };
+      if (isSelected) {
+        delete next[patternId];
+      } else {
+        next[patternId] = config?.defaultLookbackDays ?? 3;
+      }
+      return { ...state, selectedPatterns: next };
+    }
+
+    case 'SET_PATTERN_LOOKBACK':
+      return {
+        ...state,
+        selectedPatterns: {
+          ...state.selectedPatterns,
+          [action.payload.patternId]: action.payload.lookbackDays,
+        },
+      };
+
+    case 'TOGGLE_PATTERN_PANEL':
+      return {
+        ...state,
+        patternPanelCollapsed: !state.patternPanelCollapsed,
       };
 
     // ============================================================

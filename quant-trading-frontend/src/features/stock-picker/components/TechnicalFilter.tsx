@@ -1,7 +1,7 @@
 import React from 'react';
-import { Collapse, Button } from 'antd';
+import { Collapse, Button, Select, Tag } from 'antd';
 import { useScreener } from '../context/ScreenerContext';
-import { TECHNICAL_INDICATORS } from '../config/indicatorConfig';
+import { TECHNICAL_INDICATORS, PATTERN_INDICATORS, LOOKBACK_OPTIONS } from '../config/indicatorConfig';
 import { TechnicalIndicatorModal } from './TechnicalIndicatorModal';
 
 const { Panel } = Collapse;
@@ -30,8 +30,11 @@ export const TechnicalFilter: React.FC = () => {
     dispatch({ type: 'CLEAR_TECHNICAL_INDICATOR_OPTION', payload: indicatorId });
   };
 
+  const patternCount = Object.keys(state.selectedPatterns).length;
+
   return (
     <>
+      {/* 技术指标（原有） */}
       <Collapse
         activeKey={activeKey}
         ghost
@@ -80,6 +83,63 @@ export const TechnicalFilter: React.FC = () => {
           </div>
         </Panel>
       </Collapse>
+
+      {/* K 线形态（新增） */}
+      <div className="border-b border-border-color px-3 py-2">
+        <div
+          className="flex items-center justify-between cursor-pointer select-none"
+          onClick={() => dispatch({ type: 'TOGGLE_PATTERN_PANEL' })}
+          data-testid="pattern-filter-header"
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-text-primary font-semibold text-sm">K线形态</span>
+            {patternCount > 0 && (
+              <Tag color="blue" className="text-xs leading-none m-0">
+                {patternCount}
+              </Tag>
+            )}
+          </span>
+          <span className={`text-text-secondary text-xs transition-transform ${state.patternPanelCollapsed ? '' : 'rotate-180'}`}>
+            ▼
+          </span>
+        </div>
+        {!state.patternPanelCollapsed && (
+          <div className="mt-2 space-y-2">
+            {PATTERN_INDICATORS.map((pattern) => {
+              const selected = pattern.id in state.selectedPatterns;
+              const lookbackDays = state.selectedPatterns[pattern.id] ?? pattern.defaultLookbackDays;
+              return (
+                <div key={pattern.id} className="flex items-center gap-2" data-testid={`pattern-row-${pattern.id}`}>
+                  <Button
+                    size="small"
+                    onClick={() => dispatch({ type: 'TOGGLE_PATTERN', payload: pattern.id })}
+                    data-testid={`pattern-btn-${pattern.id}`}
+                    data-selected={selected}
+                    className={`text-xs flex-1 ${
+                      selected
+                        ? 'bg-color-accent border-color-accent text-white'
+                        : 'bg-bg-card border-border-color text-text-secondary'
+                    }`}
+                  >
+                    {pattern.label}
+                  </Button>
+                  {selected && (
+                    <Select
+                      size="small"
+                      value={lookbackDays}
+                      onChange={(v) => dispatch({ type: 'SET_PATTERN_LOOKBACK', payload: { patternId: pattern.id, lookbackDays: v } })}
+                      options={LOOKBACK_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                      className="w-16"
+                      data-testid={`pattern-lookback-${pattern.id}`}
+                      popupClassName="pattern-lookback-dropdown"
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {openModal && (
         <TechnicalIndicatorModal

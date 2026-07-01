@@ -66,8 +66,8 @@ SELECT COUNT(*) FROM stock_basic;
 -- 预期：5000+ 只
 
 -- 检查最新更新日期
-SELECT MAX(update_date) FROM stock_basic;
--- 预期：今天
+SELECT MAX(updated_at) FROM stock_basic;
+-- 预期：今天、
 ```
 
 **常见问题**：

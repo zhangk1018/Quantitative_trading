@@ -94,6 +94,32 @@ export interface FactorItem {
   color: string
 }
 
+// ==================== K 线形态配置 ====================
+
+export interface PatternIndicatorItem {
+  id: string;
+  label: string;
+  /** 对应的 PatternType 值 */
+  patternType: string;
+  /** 默认回溯天数 */
+  defaultLookbackDays: number;
+}
+
+export const PATTERN_INDICATORS: PatternIndicatorItem[] = [
+  { id: 'hammer', label: '锤子线', patternType: 'hammer', defaultLookbackDays: 3 },
+  { id: 'bullish_engulfing', label: '看涨吞没', patternType: 'bullish_engulfing', defaultLookbackDays: 3 },
+  { id: 'bearish_engulfing', label: '看跌吞没', patternType: 'bearish_engulfing', defaultLookbackDays: 3 },
+  { id: 'morning_star', label: '早晨之星', patternType: 'morning_star', defaultLookbackDays: 5 },
+  { id: 'evening_star', label: '黄昏之星', patternType: 'evening_star', defaultLookbackDays: 5 },
+];
+
+export const LOOKBACK_OPTIONS = [
+  { value: 1, label: '1天' },
+  { value: 3, label: '3天' },
+  { value: 5, label: '5天' },
+  { value: 10, label: '10天' },
+];
+
 export const FACTOR_CONFIG: FactorItem[] = [
   { id: 'turnover', label: '换手率', defaultWeight: 30, color: '#26A69A' },
   { id: 'ma_trend', label: 'MA趋势', defaultWeight: 40, color: '#2962FF' },

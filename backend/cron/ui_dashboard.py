@@ -26,7 +26,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError, ProgrammingError
 from dotenv import load_dotenv
 
-# 任务名称 → 中文显示映射（与 daily_job_runner 保持一致）
+# 任务名称 → 中文显示映射（仅用于部分场景，但仪表盘显示将直接使用程序名）
 TASK_DISPLAY_NAMES = {
     "pipeline_health_check": "健康检查",
     "stock_list_sync": "股票列表同步",
@@ -39,6 +39,21 @@ TASK_DISPLAY_NAMES = {
     "daily_sync": "宽表同步",
     "parquet_export": "导出 Parquet",
     "restart_backend": "重启后端服务",
+}
+
+# 任务名称 → 标准阶段序号（覆盖数据库中的 stage 字段）
+TASK_STAGE_MAP = {
+    "pipeline_health_check": 1,
+    "stock_list_sync": 2,
+    "daily_import": 3,
+    "adj_factor_sync": 4,
+    "daily_basic_sync": 5,
+    "fill_missing_data": 6,
+    "indicators_compute": 7,
+    "signal_precompute": 8,
+    "daily_sync": 9,
+    "parquet_export": 10,
+    "restart_backend": 11,
 }
 
 # ============================================================
@@ -195,75 +210,120 @@ def get_engine():
 # 7. 数据加载函数（30 秒缓存）
 # ============================================================
 @st.cache_data(ttl=30)
-def load_task_data(_engine, days, statuses, stages):
-    """从 task_run_log 表加载任务执行数据。"""
-    # 动态构建参数化 IN 子句，防止 SQL 注入
+def load_task_data(_engine, days, statuses, batch_filter=None):
+    """从 task_run_log 表加载任务执行数据。
+    
+    Parameters
+    ----------
+    _engine : SQLAlchemy Engine
+    days : int
+        查询近 N 天的数据
+    statuses : list
+        要筛选的任务状态列表（英文）
+    batch_filter : str or None
+        - None 或 "__all__"：返回所有符合条件的记录
+        - "__latest__"：每个 data_date 只保留最新批次的记录（去重）
+        - 具体 batch_id 字符串：只返回该批次的记录
+    """
+    # 动态构建状态 IN 子句
     status_conditions = " OR ".join(
         [f"status = :status_{i}" for i in range(len(statuses))]
     )
-    stage_conditions = " OR ".join(
-        [f"stage = :stage_{i}" for i in range(len(stages))]
-    )
-    
+
+    batch_clause = ""
+    params = {"days": days}
+    if batch_filter and batch_filter not in ("__latest__", "__all__"):
+        batch_clause = " AND batch_id = :batch_id"
+        params["batch_id"] = batch_filter
+
     query_str = f"""
-    SELECT 
-        id, task_name, stage, start_time, end_time, 
-        status, exit_code, error_message, rows_affected, 
-        extra_metrics, created_at, data_date,
-        CASE 
-            WHEN end_time IS NOT NULL 
+    SELECT
+        id, task_name, stage, start_time, end_time,
+        status, exit_code, error_message, rows_affected,
+        extra_metrics, created_at, data_date, batch_id,
+        CASE
+            WHEN end_time IS NOT NULL
             THEN EXTRACT(EPOCH FROM (end_time - start_time))
-            WHEN status = 'not_started' 
+            WHEN status = 'not_started'
             THEN 0
             ELSE EXTRACT(EPOCH FROM (NOW() - start_time))
         END AS duration_seconds
     FROM task_run_log
     WHERE start_time >= NOW() - make_interval(days => :days)
       AND ({status_conditions})
-      AND ({stage_conditions})
-    ORDER BY stage ASC, start_time DESC
+      {batch_clause}
+    ORDER BY start_time DESC
     """
-    
-    # 构建参数字典
-    params = {"days": days}
+
+    # 绑定参数
     for i, s in enumerate(statuses):
         params[f"status_{i}"] = s
-    for i, s in enumerate(stages):
-        params[f"stage_{i}"] = s
-    
-    # 使用 SQLAlchemy Engine 执行参数化查询
+
     df = pd.read_sql(text(query_str), _engine, params=params)
-    
+
     # 处理 extra_metrics JSONB 字段
     if "extra_metrics" in df.columns:
         df["extra_metrics"] = df["extra_metrics"].apply(
-            lambda x: json.loads(x) 
-            if isinstance(x, str) and x 
+            lambda x: json.loads(x)
+            if isinstance(x, str) and x
             else (x if isinstance(x, dict) else {})
         )
-    
+
+    # 使用 task_name 映射标准阶段，覆盖数据库中的 stage
+    df['stage'] = df['task_name'].map(TASK_STAGE_MAP)
+    df['stage'] = df['stage'].fillna(df['stage']).astype(int)
+
+    # 如果 batch_filter == "__latest__"，进行去重：每个 data_date 只保留最新批次
+    if batch_filter == "__latest__":
+        df_with_date = df[df['data_date'].notna()]
+        if not df_with_date.empty:
+            idx = df_with_date.groupby('data_date')['start_time'].idxmax()
+            latest_batch_ids = df_with_date.loc[idx, 'batch_id'].unique()
+            df = df[df['batch_id'].isin(latest_batch_ids)]
+        else:
+            df = pd.DataFrame()
+
     # 增加阶段中文名映射列
     def format_stage(x):
         if pd.isna(x):
             return "未知阶段"
         idx = int(x)
         return f"{idx} - {STAGE_NAMES.get(idx, '未知阶段')}"
-    
+
     df["stage_name"] = df["stage"].apply(format_stage)
-    
-    # 任务名称中文映射
-    df["task_display_name"] = df["task_name"].map(TASK_DISPLAY_NAMES).fillna(df["task_name"])
-    
+
+    # 【修改】任务名称直接显示程序名（英文 task_name），不再使用中文映射
+    df["task_display_name"] = df["task_name"]  # 直接用程序名
+
+    return df
+
+
+@st.cache_data(ttl=60)
+def load_available_batches(_engine, days=7):
+    """获取可用的批次列表（用于侧边栏筛选器）。"""
+    query_str = """
+    SELECT batch_id,
+           COUNT(*) as task_count,
+           MIN(start_time) as first_start,
+           MAX(start_time) as last_end,
+           STRING_AGG(DISTINCT status::text, ',') as statuses
+    FROM task_run_log
+    WHERE batch_id IS NOT NULL
+      AND start_time >= NOW() - make_interval(days => :days)
+    GROUP BY batch_id
+    ORDER BY MAX(start_time) DESC
+    """
+    df = pd.read_sql(text(query_str), _engine, params={"days": days})
     return df
 
 # ============================================================
 # 8. 侧边栏 —— 筛选器
 # ============================================================
-def render_sidebar():
+def render_sidebar(engine):
     """渲染侧边栏筛选器。"""
     with st.sidebar:
         st.header("数据筛选")
-        
+
         # 时间范围
         time_options = {
             "近 1 天": 1,
@@ -277,41 +337,64 @@ def render_sidebar():
             index=0,
         )
         days = time_options[time_label]
-        
+
         st.divider()
-        
+
         # 任务状态 (下拉菜单，中文显示)
         status_options = ["全部"] + [STATUS_DISPLAY_NAMES[s] for s in ALL_STATUSES]
         selected_status = st.selectbox("📌 任务状态", options=status_options)
-        
+
         # 反向映射：中文 -> 英文
         status_reverse_map = {v: k for k, v in STATUS_DISPLAY_NAMES.items()}
         if selected_status == "全部":
             statuses = ALL_STATUSES
         else:
             statuses = [status_reverse_map[selected_status]]
-        
+
         # 执行阶段筛选 (下拉菜单，显示所有 11 个阶段)
         stage_options = ["全部"] + [f"{k} - {v}" for k, v in STAGE_NAMES.items()]
         selected_stage = st.selectbox("📍 执行阶段", options=stage_options)
-        
+
         if selected_stage == "全部":
             stages = list(STAGE_NAMES.keys())
         else:
-            # 提取序号，例如 "3 - 日线数据下载" -> 3
             stage_num = int(selected_stage.split(" - ")[0])
             stages = [stage_num]
-        
+
         st.divider()
-        
+
+        # 批次筛选（默认"最新有效批次"）
+        try:
+            batches_df = load_available_batches(engine, days)
+            batch_labels = {"__latest__": "最新有效批次（自动去重）", "__all__": "全部记录（含重复）"}
+            if not batches_df.empty:
+                for _, row in batches_df.iterrows():
+                    bid = row["batch_id"]
+                    short_id = bid[:19] + "..." if len(bid) > 22 else bid
+                    cnt = int(row["task_count"])
+                    ts = str(row["last_end"])[:16] if pd.notna(row["last_end"]) else ""
+                    batch_labels[bid] = f"{short_id} ({cnt}任务, {ts})"
+            batch_keys = list(batch_labels.keys())
+            selected_batch_key = st.selectbox(
+                "📦 批次筛选",
+                options=batch_keys,
+                format_func=lambda x: batch_labels.get(x, x),
+                index=0,
+            )
+        except Exception:
+            selected_batch_key = "__latest__"
+            st.caption("⚠️ 批次列表加载失败，使用默认去重模式")
+
+        st.divider()
+
         # 手动刷新
         if st.button("🔄 手动刷新数据", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
-        
+
         st.caption("💡 数据每 30 秒自动刷新一次")
-        
-        return days, statuses, stages
+
+        return days, statuses, stages, selected_batch_key
 
 # ============================================================
 # 9. KPI 指标卡片
@@ -370,7 +453,7 @@ def render_charts(df):
                     "status": "状态",
                 },
                 hover_data={
-                    "task_display_name": True,
+                    "task_display_name": True,  # 此时为程序名
                     "duration_seconds": ":.1f",
                     "stage_name": False,
                 },
@@ -446,6 +529,9 @@ def render_data_table(df):
     display_df["数据日期"] = display_df["data_date"].apply(
         lambda x: str(x)[:10] if pd.notna(x) else "—"
     )
+    display_df["批次"] = display_df["batch_id"].apply(
+        lambda x: (x[:16] + "..") if pd.notna(x) and len(str(x)) > 18 else (str(x)[:18] if pd.notna(x) else "—")
+    )
     display_df["耗时"] = display_df["duration_seconds"].apply(
         lambda x: f"{x:.1f}s" if pd.notna(x) else "N/A"
     )
@@ -457,12 +543,12 @@ def render_data_table(df):
     display_df = display_df.rename(
         columns={
             "stage_name": "阶段",
-            "task_display_name": "任务名称",
+            "task_display_name": "程序名",  # 修改列标签为“程序名”
         }
     )
     
     display_df = display_df[
-        ["数据日期", "阶段", "任务名称", "开始时间", "耗时", "影响行数", "状态"]
+        ["数据日期", "批次", "阶段", "程序名", "开始时间", "耗时", "影响行数", "状态"]
     ]
     
     st.dataframe(
@@ -475,34 +561,34 @@ def render_data_table(df):
 # ============================================================
 # 12. 详情查看（下拉选择 + 展开面板）
 # ============================================================
-def render_detail_panel(df):
-    """渲染任务详情查看区域。"""
+def render_detail_panel(df, engine):
+    """渲染任务详情查看区域（含同任务历史执行列表）。"""
     st.subheader(" 任务详情查看")
-    
+
     if df.empty:
         st.info("暂无可查看详情的任务。")
         return
-    
-    # 构建下拉选项
+
+    # 构建下拉选项，使用程序名显示
     options = []
     id_map = {}
     for _, row in df.iterrows():
         label = f"ID {int(row['id'])} - {row['task_display_name']} [{row['stage_name']}]"
         options.append(label)
         id_map[label] = row["id"]
-    
+
     selected_label = st.selectbox("选择任务 ID 查看详情", options=options)
-    
+
     if selected_label:
         selected_id = id_map[selected_label]
         task = df[df["id"] == selected_id].iloc[0]
-        
+
         with st.expander(
             f"📌 详情 —— {task['task_display_name']} ({task['stage_name']})",
             expanded=True,
         ):
-            # 基础指标
-            info_cols = st.columns(5)
+            # 基础指标（增加批次列）
+            info_cols = st.columns(6)
             info_cols[0].metric(
                 "数据日期",
                 str(task.get("data_date"))[:10] if pd.notna(task.get("data_date")) else "—"
@@ -520,9 +606,14 @@ def render_detail_panel(df):
                 "影响行数",
                 int(task["rows_affected"]) if pd.notna(task["rows_affected"]) else "N/A"
             )
-            
+            bid = task.get("batch_id", "")
+            info_cols[5].metric(
+                "批次",
+                (bid[:14] + "..") if pd.notna(bid) and len(str(bid)) > 16 else (str(bid)[:16] if pd.notna(bid) else "—")
+            )
+
             st.divider()
-            
+
             # 状态消息
             status = task["status"]
             if status == "failed":
@@ -538,12 +629,45 @@ def render_detail_panel(df):
                 st.warning("⏭️ 任务已被跳过。")
             elif status == "not_started":
                 st.info("⏸️ 任务尚未开始执行。")
-            
+
             # 额外指标（JSONB 字段）
             extra = task.get("extra_metrics")
             if extra and isinstance(extra, dict) and len(extra) > 0:
                 st.markdown("##### 📈 额外指标 (extra_metrics)")
                 st.json(extra)
+
+            # --- 同任务历史执行记录 ---
+            st.divider()
+            task_name = task["task_name"]
+            try:
+                # 加载最近 7 天全部状态的任务（不限制阶段）
+                history_df = load_task_data(engine, 7, ALL_STATUSES)
+                same_task = history_df[history_df["task_name"] == task_name].copy()
+                same_task = same_task.sort_values("start_time", ascending=False)
+
+                if len(same_task) > 1:
+                    st.markdown(f"##### 📜 同任务「{task.get('task_display_name', task_name)}」历史执行 ({len(same_task)} 次)")
+
+                    hist_display = same_task.copy()
+                    hist_display["开始时间"] = hist_display["start_time"].dt.strftime("%m-%d %H:%M")
+                    hist_display["批次"] = hist_display["batch_id"].apply(
+                        lambda x: (x[:12] + "..") if pd.notna(x) and len(str(x)) > 14 else (str(x)[:14] if pd.notna(x) else "—")
+                    )
+                    hist_display["状态"] = hist_display["status"].map(STATUS_EMOJI)
+                    hist_display["耗时"] = hist_display["duration_seconds"].apply(
+                        lambda x: f"{x:.0f}s" if pd.notna(x) else "N/A"
+                    )
+
+                    st.dataframe(
+                        hist_display[["开始时间", "批次", "状态", "耗时", "影响行数"]],
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(40 * (len(same_task) + 1), 200),
+                    )
+                else:
+                    st.caption(f"📜 同任务仅 1 条记录，无更多历史。")
+            except Exception:
+                st.caption("⚠️ 历史数据加载失败")
 
 # ============================================================
 # 13. 主程序
@@ -555,9 +679,12 @@ def main():
         f"最后刷新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     
+    # --- 初始化数据库连接 ---
+    engine = get_engine()
+
     # --- 侧边栏筛选 ---
-    days, statuses, stages = render_sidebar()
-    
+    days, statuses, stages, batch_filter = render_sidebar(engine)
+
     # 校验筛选条件
     if not statuses:
         st.warning("⚠️ 请至少选择一个任务状态。")
@@ -565,13 +692,11 @@ def main():
     if not stages:
         st.warning("⚠️ 请至少选择一个执行阶段。")
         st.stop()
-    
-    # --- 加载数据 ---
-    engine = get_engine()
-    
+
+    # --- 加载数据（不再依赖数据库 stage 字段，由 TASK_STAGE_MAP 统一映射）---
     try:
         with st.spinner("正在加载数据..."):
-            df = load_task_data(engine, days, statuses, stages)
+            df = load_task_data(engine, days, statuses, batch_filter=batch_filter)
     except ProgrammingError as e:
         error_str = str(e.orig) if hasattr(e, "orig") and e.orig else str(e)
         if "does not exist" in error_str.lower():
@@ -590,9 +715,13 @@ def main():
         st.error(f"🚫 **发生未知错误：**\n\n```\n{e}\n```")
         st.stop()
     
-    # --- 今日数据（用于 KPI 卡片，始终显示今日统计）---
+    # --- 在 pandas 中应用阶段筛选（基于标准化后的 stage）---
+    if stages != list(STAGE_NAMES.keys()):
+        df = df[df['stage'].isin(stages)]
+
+    # --- 今日数据（用于 KPI 卡片，始终使用最新有效批次去重，全部阶段）---
     try:
-        df_today = load_task_data(engine, 1, ALL_STATUSES, list(STAGE_NAMES.keys()))
+        df_today = load_task_data(engine, 1, ALL_STATUSES, batch_filter="__latest__")
     except Exception:
         df_today = pd.DataFrame()
     
@@ -603,7 +732,7 @@ def main():
     st.divider()
     render_data_table(df)
     st.divider()
-    render_detail_panel(df)
+    render_detail_panel(df, engine)
 
 if __name__ == "__main__":
     main()

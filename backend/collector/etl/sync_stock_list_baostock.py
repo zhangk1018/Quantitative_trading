@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""用 Baostock 获取完整股票列表并补充 stock_basic"""
+"""股票列表同步 — 多数据源支持
+
+数据源优先级：Tushare Pro（主）→ Baostock（备/兜底）
+两个源返回统一格式 DataFrame（code/name/exchange/industry/list_date/delist_date/market）
+"""
 import os
 import sys
 import json
+import time
 import logging
 
 backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +35,24 @@ def get_connection():
         user=os.environ.get('PG_USER', 'quant_user'),
         password=os.environ.get('PG_PASSWORD', '')
     )
+
+
+def _classify_market(code: str) -> str:
+    """按代码前缀分类市场板块"""
+    p = code[:3]
+    if p in ('600', '601', '602', '603', '604', '605'):
+        return '上海主板'
+    if p in ('688', '689'):
+        return '科创板'
+    if p in ('000', '001', '002', '003'):
+        return '深圳主板'
+    if p in ('300', '301', '302'):
+        return '创业板'
+    if p == '920':
+        return '北交所'
+    if code[0] == '8':
+        return '北交所'
+    return '其他'
 
 
 def fetch_stock_list_from_baostock():
@@ -88,22 +111,125 @@ def fetch_stock_list_from_baostock():
     result.loc[result['code'].str.startswith('920'), 'exchange'] = 'BJ'
     result.loc[result['code'].str.match(r'^8\d{5}$'), 'exchange'] = 'BJ'
 
-    # 统计（按项目规范：002/003归深圳主板，302归创业板）
-    def classify(code):
-        p = code[:3]
-        if p in ['600', '601', '602', '603', '604', '605']: return '上海主板'
-        if p in ['688', '689']: return '科创板'
-        if p in ['000', '001', '002', '003']: return '深圳主板'
-        if p in ['300', '301', '302']: return '创业板'
-        if p == '920': return '北交所'
-        if code[0] == '8': return '北交所'
-        return '其他'
-
-    result['market'] = result['code'].apply(classify)
+    # 市场分类（使用共享函数）
+    result['market'] = result['code'].apply(_classify_market)
     market_counts = result['market'].value_counts().to_dict()
     logger.info(f"市场分布: {market_counts}")
 
     return result
+
+
+def fetch_stock_list_from_tushare() -> pd.DataFrame:
+    """从 Tushare Pro 获取完整股票列表（主数据源）
+
+    使用 pro.stock_basic() 接口，免费版可用。
+    返回格式与 fetch_stock_list_from_baostock 完全一致。
+    """
+    try:
+        import tushare as ts
+    except ImportError:
+        logger.warning("tushare 未安装，跳过 Tushare 数据源")
+        return pd.DataFrame()
+
+    token = os.environ.get('TUSHARE_TOKEN') or os.environ.get('TS_TOKEN')
+    if not token:
+        # 兜底：重新加载 .env（防止模块级 load_dotenv 未生效）
+        from dotenv import load_dotenv as _load
+        # 从当前文件位置向上 3 级到项目根目录
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _project_root = os.path.dirname(os.path.dirname(os.path.dirname(_script_dir)))
+        _env_path = os.path.join(_project_root, '.env')
+        if os.path.exists(_env_path):
+            _load(_env_path, override=True)
+            token = os.environ.get('TUSHARE_TOKEN') or os.environ.get('TS_TOKEN')
+    if not token:
+        logger.warning("未配置 TUSHARE_TOKEN，跳过 Tushare 数据源")
+        return pd.DataFrame()
+
+    try:
+        pro = ts.pro_api(token=token)
+
+        t0 = time.time()
+        df = pro.stock_basic(
+            exchange='',
+            list_status='L',
+            fields='ts_code,symbol,name,area,industry,list_date'
+        )
+        elapsed = time.time() - t0
+
+        if df is None or df.empty:
+            logger.warning(f"Tushare 返回空数据 (耗时 {elapsed:.1f}s)")
+            return pd.DataFrame()
+
+        # 统一字段名
+        df['code'] = df['symbol'].astype(str).str.strip()
+        df['name'] = df['name'].astype(str).str.strip()
+        df['industry'] = df['industry'].fillna('').astype(str)
+        df['list_date_raw'] = df['list_date'].fillna('').astype(str)
+
+        # 交易所判断
+        def get_exchange(ts_code: str) -> str:
+            if ts_code.endswith('.BJ'):
+                return 'BJ'
+            elif ts_code.endswith('.SH'):
+                return 'SH'
+            else:
+                return 'SZ'
+
+        df['exchange'] = df['ts_code'].apply(get_exchange)
+
+        # 日期标准化 YYYYMMDD → YYYY-MM-DD
+        def normalize_date(d: str) -> str:
+            d = str(d).strip()
+            if len(d) == 8 and d.isdigit():
+                return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+            if len(d) == 10:
+                return d
+            return None
+
+        df['list_date'] = df['list_date_raw'].apply(normalize_date)
+        df['delist_date'] = None
+
+        # 市场分类
+        df['market'] = df['code'].apply(_classify_market)
+
+        # 只保留需要的列
+        result = df[['code', 'name', 'exchange', 'industry', 'list_date', 'delist_date', 'market']].copy()
+
+        # 按市场统计
+        market_counts = result['market'].value_counts().to_dict()
+        logger.info(f"Tushare 总记录数: {len(result)} | 耗时 {elapsed:.1f}s | 市场分布: {market_counts}")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Tushare 获取股票列表失败: {type(e).__name__}: {e}")
+        return pd.DataFrame()
+
+
+def fetch_stock_list_with_fallback() -> tuple[pd.DataFrame, str]:
+    """多数据源获取股票列表（Tushare 主 → Baostock 备）
+
+    Returns:
+        (DataFrame, source_name): 成功的数据和来源名称
+    """
+    # Step 1: 尝试 Tushare Pro
+    logger.info("--- Step 1: 尝试 Tushare Pro ---")
+    df = fetch_stock_list_from_tushare()
+    if not df.empty:
+        logger.info(f"✅ Tushare 成功获取 {len(df)} 只股票")
+        return df, 'tushare'
+
+    # Step 2: 回退到 Baostock
+    logger.info("--- Step 2: 回退到 Baostock ---")
+    df = fetch_stock_list_from_baostock()
+    if not df.empty:
+        logger.info(f"✅ Baostock 成功获取 {len(df)} 只股票")
+        return df, 'baostock'
+
+    # 全部失败
+    logger.error("❌ 所有数据源均失败，无法获取股票列表")
+    return pd.DataFrame(), 'none'
 
 
 def sync_to_stock_basic(conn, stock_df):
@@ -248,14 +374,21 @@ def verify_coverage(conn):
 
 def main():
     logger.info("=" * 60)
-    logger.info("Baostock 股票列表同步脚本")
+    logger.info("股票列表同步脚本（多数据源: Tushare → Baostock）")
     logger.info("=" * 60)
 
     conn = get_connection()
     try:
-        # Step 1: 从 Baostock 获取完整股票列表
-        logger.info("\n--- Step 1: 从 Baostock 获取股票列表 ---")
-        stock_df = fetch_stock_list_from_baostock()
+        # Step 1: 多源获取股票列表（Tushare 主 → Baostock 备）
+        logger.info("\n--- Step 1: 获取股票列表 ---")
+        stock_df, source_name = fetch_stock_list_with_fallback()
+
+        if stock_df.empty:
+            logger.error("获取股票列表失败，终止同步")
+            print('TASK_RESULT:' + json.dumps({"rows_affected": 0, "error": "所有数据源均失败"}))
+            return
+
+        logger.info(f"使用数据源: {source_name} | 获取 {len(stock_df)} 只股票")
 
         # Step 2: 同步到 stock_basic
         logger.info("\n--- Step 2: 同步到 stock_basic ---")
@@ -266,9 +399,9 @@ def main():
         verify_coverage(conn)
 
         logger.info("\n" + "=" * 60)
-        logger.info("同步完成")
+        logger.info(f"同步完成 | 数据源: {source_name}")
         logger.info("=" * 60)
-        print(f'TASK_RESULT:{json.dumps({"rows_affected": len(stock_df), "extra_metrics": {"total_stocks": len(stock_df)}})}')
+        print(f'TASK_RESULT:{json.dumps({"rows_affected": len(stock_df), "extra_metrics": {"total_stocks": len(stock_df), "data_source": source_name}})}')
     finally:
         conn.close()
 

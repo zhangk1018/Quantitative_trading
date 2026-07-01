@@ -3,105 +3,113 @@
 科创板等缺失数据补全脚本 - 使用 Baostock 下载补全
 
 思路：
-1. 从 stock_quotes 统计哪些股票数据不足 60 个交易日
-2. 使用 Baostock 为这些股票补全全量历史数据
-3. 科创板(688xxx) 为重点补全对象
+1. 从 stock_basic 获取全部股票，左连接 stock_quotes 统计每个股票的数据天数
+2. 筛选出数据不足（或完全缺失）的股票
+3. 使用 Baostock 为这些股票补全全量历史数据
+4. 支持指定日期范围检查、试运行(dry-run)、断点续传
 
 用法：
-    python scripts/fill_missing_data.py                    # 补全所有数据不足的股票
-    python scripts/fill_missing_data.py --code 688001      # 单只补全
-    python scripts/fill_missing_data.py --market kcb       # 仅科创板
+python scripts/fill_missing_data.py                                  # 补全所有历史数据不足60天的股票
+python scripts/fill_missing_data.py --start-date 2026-01-01 --end-date 2026-06-30 --min-days 100  # 补全2026年上半年数据不足100天的股票
+python scripts/fill_missing_data.py --code 688001                    # 单只补全
+python scripts/fill_missing_data.py --market kcb --dry-run           # 试运行：仅查看科创板需补全的股票
 """
 import sys
 import os
-# 脚本位于 backend/collector/etl/fill_missing_data.py
-# backend 目录为 ../../.. => backend 父目录/sibling backend
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, backend_dir)
 
 import argparse
 import time
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional
+from psycopg2.extras import execute_values
 
 from collector.datasource.baostock import BaostockDataSource
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
 from utils.logger import setup_logger
-from utils.stock_code_utils import normalize_code
 
 logger = setup_logger('data_filler')
 
 
-def get_missing_stocks(storage: PostgreSQLStorage, min_days: int = 60, market: Optional[str] = None, 
-                     check_2026_range: bool = False) -> List[str]:
-    """获取数据不足的股票列表
+def get_missing_stocks(storage: PostgreSQLStorage, min_days: int = 60, market: Optional[str] = None,
+                       start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[str]:
+    """
+    获取数据不足的股票列表（从 stock_basic 表出发，包括完全没有数据的股票）
     
     Args:
         storage: 数据库连接
-        min_days: 最少交易日数
-        market: 市场筛选，可选：kcb(688), cyb(300), bj(8xx), sh(6), sz(00)
-        check_2026_range: 是否专门检查2026年1-5月数据
-    
+        min_days: 指定日期范围内的最少交易日数
+        market: 市场筛选，可选：kcb(688), cyb(300), sh(6), sz(00)
+        start_date: 检查起始日期 (YYYY-MM-DD)
+        end_date: 检查结束日期 (YYYY-MM-DD)
+        
     Returns:
-        股票代码列表（带后缀格式，如 688001.SH）
+        股票代码列表（6位纯数字，不带后缀）
     """
-    cursor = storage.conn.cursor()
+    # 构建市场筛选条件（基于股票代码前缀，排除北交所）
+    where_conds = [
+        "sb.code NOT LIKE '8%%'",
+        "sb.code NOT LIKE '43%%'",
+        "sb.code NOT LIKE '92%%'",
+        "sb.delist_date IS NULL"  # 排除已退市股票
+    ]
     
-    if check_2026_range:
-        # 专门检查2026年1-5月数据不足的股票
-        query = """
+    if market == 'kcb':
+        where_conds.append("sb.code LIKE '688%%'")
+    elif market == 'cyb':
+        where_conds.append("sb.code LIKE '300%%'")
+    elif market == 'sh':
+        where_conds.append("sb.code LIKE '6%%' AND sb.code NOT LIKE '688%%'")
+    elif market == 'sz':
+        where_conds.append("sb.code LIKE '00%%'")
+        
+    where_clause = " AND ".join(where_conds)
+    
+    # 根据是否指定日期范围，构建不同的查询
+    if start_date and end_date:
+        # 检查特定日期范围内的数据天数
+        query = f"""
             SELECT sb.code
             FROM stock_basic sb
             LEFT JOIN (
-                SELECT code, COUNT(DISTINCT trade_date) AS data_days_2026
+                SELECT code, COUNT(DISTINCT trade_date) AS data_days
                 FROM stock_quotes
-                WHERE cycle = '1d' 
-                    AND trade_date >= '2026-01-01' 
-                    AND trade_date <= '2026-05-31'
+                WHERE cycle = '1d'
+                  AND trade_date >= %s
+                  AND trade_date <= %s
                 GROUP BY code
             ) sq ON sb.code = sq.code
-            WHERE sq.data_days_2026 IS NULL OR sq.data_days_2026 < %s
+            WHERE {where_clause}
+              AND (sq.data_days IS NULL OR sq.data_days < %s)
             ORDER BY sb.code
         """
-        cursor.execute(query, (min_days,))
+        params = (start_date, end_date, min_days)
+        logger.debug(f"检查日期范围: {start_date} ~ {end_date}, 阈值: {min_days} 天")
     else:
-        # 构建 WHERE 条件
-        where_conds = []
-        
-        # 排除北交所(BJ)代码段：8xx, 43xx, 92xx（数据源不覆盖或质量低）
-        where_conds.append("sq.code NOT LIKE '8%'")
-        where_conds.append("sq.code NOT LIKE '43%'")
-        where_conds.append("sq.code NOT LIKE '92%'")
-
-        if market == 'kcb':
-            where_conds.append("sq.code LIKE '688%'")
-        elif market == 'cyb':
-            where_conds.append("sq.code LIKE '300%'")
-        elif market == 'bj':
-            where_conds.append("(sq.code LIKE '8%' OR sq.code LIKE '92%' OR sq.code LIKE '43%')")
-        elif market == 'sh':
-            where_conds.append("sq.code LIKE '6%' AND sq.code NOT LIKE '688%'")
-        elif market == 'sz':
-            where_conds.append("sq.code LIKE '00%'")
-        
-        where_clause = " AND ".join(where_conds) if where_conds else "TRUE"
-        
-        # 直接使用字符串格式化，避免参数占位符问题
+        # 检查全量历史数据天数
         query = f"""
-            SELECT sq.code
-            FROM stock_quotes sq
+            SELECT sb.code
+            FROM stock_basic sb
+            LEFT JOIN (
+                SELECT code, COUNT(DISTINCT trade_date) AS data_days
+                FROM stock_quotes 
+                WHERE cycle = '1d' 
+                GROUP BY code
+            ) sq ON sb.code = sq.code
             WHERE {where_clause}
-            GROUP BY sq.code
-            HAVING COUNT(*) < {min_days}
-            ORDER BY sq.code
+              AND (sq.data_days IS NULL OR sq.data_days < %s)
+            ORDER BY sb.code
         """
-        
-        cursor.execute(query)
-    
-    codes = [row[0] for row in cursor.fetchall()]
-    cursor.close()
+        params = (min_days,)
+        logger.debug(f"检查全量历史, 阈值: {min_days} 天")
+
+    with storage.transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            codes = [row[0] for row in cur.fetchall()]
     return codes
 
 
@@ -116,244 +124,180 @@ def _add_suffix(code: str) -> str:
     """为6位数字股票代码添加后缀"""
     if '.' in code:
         return code
-    
     if code.startswith('6'):
         return f"{code}.SH"
     elif code.startswith('0') or code.startswith('3'):
         return f"{code}.SZ"
-    elif code.startswith('8'):
+    # 支持北交所 8 开头和 920 开头
+    elif code.startswith('8') or code.startswith('920'):
         return f"{code}.BJ"
     else:
         return code
 
 
-def import_stock_via_baostock(storage: PostgreSQLStorage, code: str, 
+def import_stock_via_baostock(storage: PostgreSQLStorage, ds: BaostockDataSource, code: str,
                               start_date: str = '2000-01-01',
                               end_date: Optional[str] = None) -> int:
-    """使用 Baostock 导入单只股票的完整日线数据（增量）
+    """
+    使用 Baostock 导入单只股票的完整日线数据（增量）
+    复用外部传入的 BaostockDataSource 连接，避免频繁 login/logout
     
     Args:
         storage: 数据库连接
+        ds: 已连接的 BaostockDataSource 实例
         code: 股票代码（6位或带后缀格式）
         start_date: 起始日期
         end_date: 结束日期，默认为当天
-    
+        
     Returns:
         导入的记录数
     """
+    full_code = code
     try:
         full_code = _add_suffix(code)
         code6 = _strip_suffix(code)
         
         if end_date is None:
             end_date = datetime.now().strftime('%Y-%m-%d')
+
+        # 获取数据库中该股票在指定日期范围已存在的所有日期
+        with storage.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT trade_date
+                    FROM stock_quotes
+                    WHERE code = %s AND cycle = '1d'
+                      AND trade_date >= %s AND trade_date <= %s
+                """, (code6, start_date, end_date))
+                existing_dates = {row[0] for row in cur.fetchall()}
         
-        # 第一步：获取数据库中该股票在指定日期范围已存在的所有日期
-        cursor = storage.conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT trade_date 
-            FROM stock_quotes 
-            WHERE code = %s AND cycle = '1d'
-                AND trade_date >= %s AND trade_date <= %s
-        """, (code6, start_date, end_date))
-        existing_dates = {row[0] for row in cursor.fetchall()}
-        cursor.close()
         logger.debug(f"  {full_code}: 数据库中在 {start_date} 到 {end_date} 已有 {len(existing_dates)} 天数据")
-        
-        ds = BaostockDataSource()
-        ds.connect()
-        
-        df = ds.get_kline(code=code6, cycle='daily', start_date=start_date, end_date=end_date)
-        ds.disconnect()
-        
+
+        # 添加简单的重试机制
+        df = None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                df = ds.get_kline(code=code6, cycle='daily', start_date=start_date, end_date=end_date)
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                logger.warning(f"  {full_code}: 获取数据失败 (尝试 {attempt+1}/{max_retries}): {e}")
+                time.sleep(2 ** attempt)
+
         if df is None or df.empty:
             logger.warning(f"  {full_code}: Baostock 无数据")
             return 0
-        
-        # 格式化数据（参考 import_daily_data.py 的 _process_kline_data）
+
+        # 处理 Baostock 返回的 preclose 字段
+        if 'preclose' in df.columns:
+            df = df.rename(columns={'preclose': 'pre_close'})
+        # 标准化日期列名
+        if 'date' in df.columns:
+            df = df.rename(columns={'date': 'trade_date'})
+
+        # 格式化数据
         numeric_cols = ['open', 'high', 'low', 'close', 'amount']
+        if 'pre_close' in df.columns:
+            numeric_cols.append('pre_close')
+            
         df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
-        
-        # volume 列需要特殊处理
         df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-        df['volume'] = df['volume'].where(
-            df['volume'].notna() & df['volume'].notnull() & 
-            (df['volume'] != float('inf')) & (df['volume'] != float('-inf')), 
-            None
-        )
-        valid_mask = df['volume'].notna()
-        if valid_mask.any():
-            df.loc[valid_mask, 'volume'] = df.loc[valid_mask, 'volume'].astype('Int64')
         
         # 过滤无效数据
         price_cols = ['open', 'high', 'low', 'close']
         mask = (df[price_cols] > 0).all(axis=1) & df['volume'].notna() & (df['volume'] > 0)
         df = df[mask]
-        
-        # 第二步：只保留数据库中不存在的日期的数据
+
+        # 只保留数据库中不存在的日期
         df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
         new_data_mask = ~df['trade_date'].isin(existing_dates)
         df_new = df[new_data_mask].copy()
-        
+
         if df_new.empty:
             logger.info(f"  {full_code}: 无新数据需要导入")
             return 0
-        
+
         logger.info(f"  {full_code}: 发现 {len(df_new)} 条新数据")
-        
-        # 添加元数据（统一为纯数字格式）
-        df_new['code'] = code6  # 纯6位数字，不带后缀
+
+        # 添加元数据
+        df_new['code'] = code6
         df_new['cycle'] = '1d'
         df_new['adjust_type'] = 'qfq'
-        
-        # 确保列顺序正确
-        cols = ['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close',
-                'pre_close', 'volume', 'amount', 'adjust_type']
-        for col in cols:
-            if col not in df_new.columns:
-                df_new[col] = 0 if col in ('volume', 'amount') else 0.0
-        
-        df_new = df_new[cols]
-        
-        # 第三步：先删除该股票可能有冲突的日期（以防万一），再导入
-        # 使用逐行 INSERT ON CONFLICT 或临时表方式导入
-        # 这里我们实现一个安全的导入方式：分批导入并跳过重复
+
+        # 安全导入
         import_count = _safe_import_quotes(storage, df_new, full_code)
         return import_count
-        
+
     except Exception as e:
-        logger.error(f"  {full_code if 'full_code' in locals() else code}: 导入失败: {e}")
+        logger.error(f"  {full_code}: 导入失败: {e}")
         return 0
 
 
 def _safe_import_quotes(storage: PostgreSQLStorage, df: pd.DataFrame, code: str) -> int:
-    """安全导入行情数据，避免重复键冲突
-    
-    Args:
-        storage: 数据库连接
-        df: 要导入的数据
-        code: 股票代码（用于日志）
-    
-    Returns:
-        成功导入的记录数
     """
-    import_count = 0
-    
+    安全导入行情数据，使用 execute_values 批量插入，避免重复键冲突
+    使用 RETURNING 获取实际插入行数
+    缺失列填充 None 而非 0
+    """
     if df.empty:
         return 0
-    
-    try:
-        # 方法一：逐行 INSERT ON CONFLICT DO NOTHING
-        cursor = storage.conn.cursor()
-        
-        insert_sql = """
-            INSERT INTO stock_quotes (
-                code, cycle, trade_date, open, high, low, close,
-                pre_close, volume, amount, adjust_type, trade_datetime
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (code, cycle, trade_date, trade_datetime) DO NOTHING
-        """
-        
-        for _, row in df.iterrows():
-            # 构造 trade_datetime
-            trade_datetime = pd.to_datetime(row['trade_date']) + pd.Timedelta('15:00:00')
-            
-            params = (
-                row['code'],
-                row['cycle'],
-                row['trade_date'],
-                float(row['open']) if pd.notna(row['open']) else 0.0,
-                float(row['high']) if pd.notna(row['high']) else 0.0,
-                float(row['low']) if pd.notna(row['low']) else 0.0,
-                float(row['close']) if pd.notna(row['close']) else 0.0,
-                float(row['pre_close']) if pd.notna(row['pre_close']) else 0.0,
-                int(row['volume']) if pd.notna(row['volume']) else 0,
-                float(row['amount']) if pd.notna(row['amount']) else 0.0,
-                row['adjust_type'],
-                trade_datetime
-            )
-            
-            cursor.execute(insert_sql, params)
-            if cursor.rowcount > 0:
-                import_count += 1
-        
-        storage.conn.commit()
-        cursor.close()
-        logger.debug(f"  {code}: 成功导入 {import_count} 条新记录")
-        return import_count
-        
-    except Exception as e:
-        storage.conn.rollback()
-        logger.error(f"  {code}: 安全导入失败: {e}")
-        return 0
 
+    # 确保列存在
+    cols = ['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close',
+            'pre_close', 'volume', 'amount', 'adjust_type', 'trade_datetime']
+    for col in cols:
+        if col not in df.columns:
+            df[col] = None
 
-def import_stock_via_importer(storage: PostgreSQLStorage, code: str) -> int:
-    """使用已有的 DailyDataImporter（Tushare→Baostock 备用）导入
-    
-    Args:
-        storage: 数据库连接
-        code: 6位数字股票代码
-    
-    Returns:
-        导入的记录数
+    # 向量化处理时间
+    df['trade_datetime'] = pd.to_datetime(df['trade_date']) + pd.Timedelta(hours=15)
+    # 将 NaN/NaT 转换为 None
+    df = df.where(pd.notnull(df), None)
+
+    # 转换为 tuple 列表
+    data_tuples = [tuple(x) for x in df[cols].to_numpy()]
+
+    insert_sql = """
+        INSERT INTO stock_quotes (
+            code, cycle, trade_date, open, high, low, close,
+            pre_close, volume, amount, adjust_type, trade_datetime
+        ) VALUES %s
+        ON CONFLICT (code, cycle, trade_date) DO NOTHING
+        RETURNING code
     """
+    
     try:
-        # 复用 DataSourceManager（Tushare 优先，Baostock 备用）
-        from collector.datasource.base import DataSourceManager, SwitchStrategy
-        from collector.datasource.tushare import TushareDataSource
-        
-        manager = DataSourceManager(
-            sources=[
-                {'source': TushareDataSource(), 'weight': 1, 'priority': 0},
-                {'source': BaostockDataSource(), 'weight': 1, 'priority': 1}
-            ],
-            strategy=SwitchStrategy.FAILOVER
-        )
-        manager.connect()
-        
-        df = manager.get_kline(code=code, cycle='daily',
-                               start_date='2000-01-01',
-                               end_date=datetime.now().strftime('%Y-%m-%d'))
-        manager.disconnect()
-        
-        if df is None or df.empty:
-            logger.warning(f"  {code}: 无数据")
-            return 0
-        
-        # 格式化
-        df['code'] = code
-        df['cycle'] = '1d'
-        df['adjust_type'] = 'qfq'
-        
-        cols = ['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close',
-                'pre_close', 'volume', 'amount', 'adjust_type']
-        for col in cols:
-            if col not in df.columns:
-                df[col] = 0 if col in ('volume', 'amount') else 0.0
-        df = df[cols]
-        
-        count = storage.save_quotes(df)
-        return count
-        
+        with storage.transaction() as conn:
+            with conn.cursor() as cur:
+                execute_values(cur, insert_sql, data_tuples, page_size=1000)
+                import_count = len(cur.fetchall())
+        return import_count
     except Exception as e:
-        logger.error(f"  {code}: 导入失败: {e}")
+        logger.error(f"  {code}: 批量导入失败: {e}")
         return 0
 
 
 def main():
     parser = argparse.ArgumentParser(description='缺失数据补全脚本')
     parser.add_argument('--code', type=str, help='单只股票代码')
-    parser.add_argument('--market', type=str, choices=['kcb', 'cyb', 'bj', 'sh', 'sz'],
-                        help='市场筛选：kcb(科创板), cyb(创业板), bj(北交所), sh(上证), sz(深证)')
-    parser.add_argument('--min-days', type=int, default=60, help='最少交易日数，低于此值的将被补全')
-    parser.add_argument('--force', action='store_true', help='强制补全所有股票（不检查数据天数）')
-    parser.add_argument('--start', type=str, default='0', help='从第几只开始（断点续传）')
-    parser.add_argument('--limit', type=int, default=0, help='限制补全数量')
-    parser.add_argument('--check-2026', action='store_true', 
-                        help='专门检查并补全2026年1月-5月数据不足的股票')
+    parser.add_argument('--market', type=str, choices=['kcb', 'cyb', 'sh', 'sz'],
+                        help='市场筛选：kcb(科创板), cyb(创业板), sh(上证), sz(深证)')
+    parser.add_argument('--min-days', type=int, default=60, 
+                        help='指定日期范围内最少交易日数，低于此值的将被补全')
+    parser.add_argument('--start-date', type=str, 
+                        help='检查数据缺失的起始日期 (YYYY-MM-DD)')
+    parser.add_argument('--end-date', type=str, 
+                        help='检查数据缺失的结束日期 (YYYY-MM-DD)')
+    parser.add_argument('--start', type=int, default=0, 
+                        help='从第几只开始（断点续传，跳过前 N 只）')
+    parser.add_argument('--limit', type=int, default=0, 
+                        help='限制补全数量')
+    parser.add_argument('--dry-run', action='store_true', 
+                        help='试运行模式：仅打印需补全的股票，不实际导入')
     args = parser.parse_args()
-    
+
     # 连接数据库
     db_config = config.get('database', {})
     storage = PostgreSQLStorage({
@@ -364,98 +308,94 @@ def main():
         'password': db_config.get('password', ''),
     })
     storage.connect()
-    
-    if args.code:
-        # 单只股票补全
-        logger.info(f"补全单只股票: {args.code}")
-        count = import_stock_via_baostock(storage, args.code)
-        logger.info(f"  {args.code}: 导入 {count} 条记录")
-    else:
-        # 批量补全
-        if args.force:
-            # 强制补全：从 stock_list 取所有股票
-            cursor = storage.conn.cursor()
-            cursor.execute("SELECT code FROM stock_list ORDER BY code")
-            codes = [row[0] for row in cursor.fetchall()]
-            cursor.close()
-            logger.info(f"强制补全模式：stock_list 共 {len(codes)} 只")
+
+    try:
+        if args.code:
+            # 单只股票补全
+            logger.info(f"补全单只股票: {args.code}")
+            ds = BaostockDataSource()
+            ds.connect()
+            try:
+                count = import_stock_via_baostock(storage, ds, args.code)
+                logger.info(f"  {args.code}: 导入 {count} 条记录")
+            finally:
+                ds.disconnect()
         else:
-            codes = get_missing_stocks(storage, min_days=args.min_days, market=args.market, 
-                                     check_2026_range=args.check_2026)
-        
-        total = len(codes)
-        if total == 0:
-            logger.info("没有需要补全的股票 ✅")
-            storage.disconnect()
-            return
-        
-        start_idx = int(args.start)
-        if start_idx > 0:
-            codes = codes[start_idx:]
-        
-        if args.limit > 0:
-            codes = codes[:args.limit]
-        
-        logger.info(f"需补全股票: {len(codes)} 只（从 #{start_idx} 开始）")
-        
-        success = 0
-        fail = 0
-        total_records = 0
-        
-        for i, code in enumerate(codes):
-            # 检查是否已有足够数据
-            if args.check_2026:
-                cursor = storage.conn.cursor()
-                cursor.execute("""
-                    SELECT COUNT(DISTINCT trade_date) 
-                    FROM stock_quotes 
-                    WHERE code = %s AND cycle = '1d'
-                        AND trade_date >= '2026-01-01' AND trade_date <= '2026-05-31'
-                """, (code,))
-                existing = cursor.fetchone()[0]
-                cursor.close()
-            else:
-                cursor = storage.conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM stock_quotes WHERE code = %s", (code,))
-                existing = cursor.fetchone()[0]
-                cursor.close()
+            # 批量补全
+            codes = get_missing_stocks(
+                storage, 
+                min_days=args.min_days, 
+                market=args.market,
+                start_date=args.start_date,
+                end_date=args.end_date
+            )
             
-            if existing >= args.min_days and not args.force:
-                logger.debug(f"  [{start_idx+i+1}/{total}] {code}: 已有 {existing} 天数据，跳过")
-                continue
+            total = len(codes)
+            if total == 0:
+                logger.info("没有需要补全的股票 ✅")
+                return
+
+            # 断点续传与限制
+            start_idx = args.start
+            if start_idx > 0:
+                codes = codes[start_idx:]
+            if args.limit > 0:
+                codes = codes[:args.limit]
+
+            logger.info(f"需补全股票: {len(codes)} 只（从 #{start_idx} 开始）")
             
-            logger.info(f"  [{start_idx+i+1}/{total}] 补全 {code}（已有 {existing} 天）...")
-            if args.check_2026:
-                count = import_stock_via_baostock(storage, code, 
-                                                 start_date='2026-01-01', 
-                                                 end_date='2026-05-31')
-            else:
-                count = import_stock_via_baostock(storage, code)
+            # Dry-run 模式
+            if args.dry_run:
+                logger.info("🔍 [DRY-RUN] 试运行模式，以下股票将被补全：")
+                for i, code in enumerate(codes):
+                    logger.info(f"  [{i+1}] {code}")
+                logger.info(f"共计 {len(codes)} 只股票。取消 --dry-run 参数以执行实际导入。")
+                return
+
+            # 全局复用 Baostock 连接
+            ds = BaostockDataSource()
+            ds.connect()
             
-            if count > 0:
-                success += 1
-                total_records += count
-                logger.info(f"    ✅ 导入 {count} 条")
-            else:
-                fail += 1
+            success = 0
+            fail = 0
+            total_records = 0
             
-            # 每 50 只进度报告
-            if (i + 1) % 50 == 0:
-                logger.info(f"  进度: {i+1}/{len(codes)}, 成功 {success}, 失败 {fail}, 记录 {total_records}")
+            try:
+                for i, code in enumerate(codes):
+                    logger.info(f"  [{start_idx+i+1}/{total}] 补全 {code}...")
+                    
+                    imp_start = args.start_date or '2000-01-01'
+                    imp_end = args.end_date or datetime.now().strftime('%Y-%m-%d')
+                    
+                    count = import_stock_via_baostock(storage, ds, code, 
+                                                      start_date=imp_start, 
+                                                      end_date=imp_end)
+                    if count > 0:
+                        success += 1
+                        total_records += count
+                        logger.info(f"    ✅ 导入 {count} 条")
+                    else:
+                        fail += 1
+
+                    if (i + 1) % 50 == 0:
+                        logger.info(f"  进度: {i+1}/{len(codes)}, 成功 {success}, 失败 {fail}, 记录 {total_records}")
+                        
+                    # 简单限流，防止 Baostock 封禁
+                    if i % 10 == 9:
+                        time.sleep(0.5)
+            finally:
+                ds.disconnect()
+
+            logger.info("=" * 60)
+            logger.info("📊 补全完成")
+            logger.info(f"  处理: {len(codes)} 只")
+            logger.info(f"  成功: {success} 只")
+            logger.info(f"  失败: {fail} 只")
+            logger.info(f"  记录: {total_records} 条")
+            logger.info("=" * 60)
             
-            # 避免请求过快
-            if i % 10 == 9:
-                time.sleep(0.5)
-        
-        logger.info(f"\n{'='*60}")
-        logger.info(f"📊 补全完成")
-        logger.info(f"  处理: {len(codes)} 只")
-        logger.info(f"  成功: {success} 只")
-        logger.info(f"  失败: {fail} 只")
-        logger.info(f"  记录: {total_records} 条")
-        logger.info(f"{'='*60}")
-    
-    storage.disconnect()
+    finally:
+        storage.disconnect()
 
 
 if __name__ == '__main__':

@@ -102,6 +102,14 @@ export function buildScreeningParams(
     });
   }
 
+  // K线形态筛选：每个已选形态序列化为 `pattern_{id}=lookbackDays` 参数
+  // 例如：pattern_hammer=3&pattern_bullish_engulfing=5
+  if (state.selectedPatterns) {
+    Object.entries(state.selectedPatterns).forEach(([patternId, lookbackDays]) => {
+      params[`pattern_${patternId}`] = lookbackDays;
+    });
+  }
+
   // 条件构建器：filterGroup 序列化为 `cond_<fieldKey>=<op>` 多个 query 参数
   // 例：cond_rsi_oversold=AND&cond_volume_breakout=AND
   // 后端 router/stocks.py 的 _parse_condition_builder 识别该格式
@@ -166,6 +174,7 @@ const StockPickerContent: React.FC = () => {
     state.selectedMarketIndicators.length +
     state.selectedFinancialIndicators.length +
     Object.keys(state.selectedTechnicalIndicators).length +
+    Object.keys(state.selectedPatterns).length +
     (state.filterGroup?.conditions.length || 0);
 
   const handleReset = () => {
@@ -550,6 +559,7 @@ const StockPickerContent: React.FC = () => {
                       {renderSortableHeader('总市值', 'market_cap')}
                       {renderSortableHeader('成交额', 'amount')}
                       <th className="px-3 py-2 text-center">板块</th>
+                      <th className="px-3 py-2 text-center" style={{ minWidth: 100 }}>K线形态</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -599,6 +609,22 @@ const StockPickerContent: React.FC = () => {
                               <span className="text-xs px-1.5 py-0.5 bg-bg-card text-text-secondary rounded">
                                 {stock.listed_board}
                               </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            {stock.patterns && stock.patterns.length > 0 ? (
+                              <div className="flex gap-1 justify-center flex-wrap">
+                                {stock.patterns.slice(0, 2).map((p: string, i: number) => (
+                                  <span key={i} className="text-xs px-1.5 py-0.5 bg-color-accent/20 text-color-accent rounded">
+                                    {p}
+                                  </span>
+                                ))}
+                                {stock.patterns.length > 2 && (
+                                  <span className="text-xs text-text-secondary">+{stock.patterns.length - 2}</span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-text-secondary text-xs">-</span>
                             )}
                           </td>
                         </tr>
