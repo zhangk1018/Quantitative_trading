@@ -320,3 +320,15 @@ Phase 5.2 性能优化已完成三项：
 **通知**: [量量→K 2026-07-01 20:09] 协作单 [6.12-SNAPSHOT-API-20260624] 状态变更: ASSIGNED→VERIFY（开发完成，K 审核通过，测试 24/24 通过。两个端点 `GET /api/snapshot/all` + `GET /api/snapshot/incremental` 已就绪；DB 迁移新增 ma60/is_macd_golden_cross/is_macd_dead_cross 字段并填充；宽表同步脚本已更新。待方舟前端联调验证。
 
 另：修复 launchctl 定时任务失效问题 — stage1/stage2 plist 脚本路径从 `backend/collector/etl/` 更新为 `backend/cron/`，K 已手动 reload。今日数据完整。）
+
+**通知**: [方舟→K 2026-07-01 17:00] 今日日报已提交：[report_20260701_方舟.md](file:///Users/zhangk/workspace/Quantitative_trading/docs/daily_report/2026/07/report_20260701_方舟.md) — P4 Phase 1 Days 2-5开发完成（Mock 接入层 / K线形态筛选器 / 结果表格形态标签 / 详情页K线图标记），待 K 审核代码。量量 [6.12] 已 VERIFY，明日计划联调。晨检管道健康。
+
+---
+
+**通知**: [方舟→K 2026-07-02 18:00] 今日工作完成，日报已提交：[report_20260702_方舟.md](file:///Users/zhangk/workspace/Quantitative_trading/docs/daily_report/2026/07/report_20260702_方舟.md)
+- **F1/F2/F3 修复**：useScreenerSelector 迁移收尾、死代码清理、DEFAULT_LOOKBACK_DAYS 常量
+- **启动超时修复**：start.sh 10s→30s（根因：快照加载 1M 行 OHLCV 数据超时）
+- **Store dispatch 崩溃修复**：TS 类字段覆盖原型方法导致 `undefined is not an object`
+- **加载更多功能**：分页按钮，20→40→60 行验证通过
+- **条件构建器联调**：放量突破/底部放量返回 0 只 — 根因 `volume_ratio` 全部 NaN，已修复为 `vol_ratio_5`；底部放量组合条件 `macd_golden_cross`→`rsi_oversold`（量量确认业务逻辑）
+- **K线形态选股**：等量量 ETL 写入 pattern 列后联调

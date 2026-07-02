@@ -1,59 +1,118 @@
-import React, { createContext, useContext, useReducer, ReactNode, useEffect } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useReducer,
+  ReactNode,
+  useCallback,
+  useSyncExternalStore,
+  useRef,
+  useEffect,
+  useMemo,
+} from 'react';
 import { MARKET_CONFIG, STOCK_RANGE_OPTIONS } from '../config/marketConfig';
-import { MARKET_INDICATORS, FINANCIAL_INDICATORS, TECHNICAL_INDICATORS, PATTERN_INDICATORS, FACTOR_CONFIG } from '../config/indicatorConfig';
+import {
+  MARKET_INDICATORS,
+  FINANCIAL_INDICATORS,
+  TECHNICAL_INDICATORS,
+  PATTERN_INDICATORS,
+  FACTOR_CONFIG,
+  PANEL_KEYS,
+  DEFAULT_LOOKBACK_DAYS,
+  type PanelKey,
+  type TechnicalOptionValue,
+} from '../config/indicatorConfig';
 import { FilterOp, FilterCondition, FilterGroup, genConditionId } from '../types/filterTree';
 import { CustomIndicator } from '../types/customIndicator';
 import { listCustomIndicators as loadFromStorage } from '../utils/customIndicatorStorage';
 
+// ==================== 子状态类型 ====================
 export interface IndicatorRange {
   min: string;
   max: string;
 }
 
-/** 当前指标 Tab（PRD 3.1.1） */
-export type IndicatorTab = 'system' | 'custom';
-
-export interface ScreenerState {
+interface MarketState {
   selectedMarket: string;
   selectedBoards: string[];
   stockRange: string;
-  selectedMarketIndicators: string[];
-  marketIndicatorRanges: Record<string, IndicatorRange>;
-  selectedFinancialIndicators: string[];
-  financialIndicatorRanges: Record<string, IndicatorRange>;
-  /** 技术指标已选项：指标id → 选项value（如 ma → long_align） */
-  selectedTechnicalIndicators: Record<string, string>;
-  /** 当前打开的技术指标配置弹窗（指标id） */
-  openTechnicalModal: string | null;
-  factorWeights: Record<string, number>;
-  /** 条件构建器：当前选股条件组（扁平无嵌套） — P3.2 重命名自 filterTree */
-  filterGroup: FilterGroup | null;
-  /** 条件构建器：下一个待添加条件的关系（AND/OR/NOT） */
-  nextConditionOp: FilterOp;
-  collapsedPanels: Record<string, boolean>;
-  /** 自编指标列表（V1.0 条件构建器扩展） */
-  customIndicators: CustomIndicator[];
-  /** 当前激活的指标 Tab（系统预设 / 我的自编） */
-  activeIndicatorTab: IndicatorTab;
-  /** K线形态已选项：形态id → 回溯天数（如 hammer → 3） */
-  selectedPatterns: Record<string, number>;
-  /** K线形态面板折叠状态 */
-  patternPanelCollapsed: boolean;
 }
 
-type ScreenerAction =
+interface MarketIndicatorState {
+  selected: string[];
+  ranges: Record<string, IndicatorRange>;
+}
+
+interface FinancialIndicatorState {
+  selected: string[];
+  ranges: Record<string, IndicatorRange>;
+}
+
+interface TechnicalState {
+  selected: Record<string, TechnicalOptionValue>;
+  openModalId: string | null;
+}
+
+interface PatternState {
+  selected: Record<string, number>; // 保持 number，与 LOOKBACK_OPTIONS 的 string 值转换
+  panelCollapsed: boolean;
+}
+
+interface ConditionState {
+  filterGroup: FilterGroup | null;
+  nextOp: FilterOp;
+}
+
+interface CustomState {
+  indicators: CustomIndicator[];
+  activeTab: 'system' | 'custom';
+}
+
+interface FactorState {
+  weights: Record<string, number>;
+}
+
+interface PanelState {
+  collapsed: Record<PanelKey, boolean>;
+}
+
+export interface ScreenerState {
+  market: MarketState;
+  marketIndicators: MarketIndicatorState;
+  financialIndicators: FinancialIndicatorState;
+  technical: TechnicalState;
+  patterns: PatternState;
+  condition: ConditionState;
+  custom: CustomState;
+  factor: FactorState;
+  panels: PanelState;
+}
+
+// ==================== Action 定义 ====================
+type MarketAction =
   | { type: 'SET_MARKET'; payload: string }
   | { type: 'SET_BOARDS'; payload: string[] }
-  | { type: 'SET_STOCK_RANGE'; payload: string }
+  | { type: 'SET_STOCK_RANGE'; payload: string };
+
+type MarketIndicatorAction =
   | { type: 'TOGGLE_MARKET_INDICATOR'; payload: string }
-  | { type: 'SET_MARKET_INDICATOR_RANGE'; payload: { indicatorId: string; range: IndicatorRange } }
+  | { type: 'SET_MARKET_INDICATOR_RANGE'; payload: { indicatorId: string; range: IndicatorRange } };
+
+type FinancialIndicatorAction =
   | { type: 'TOGGLE_FINANCIAL_INDICATOR'; payload: string }
-  | { type: 'SET_FINANCIAL_INDICATOR_RANGE'; payload: { indicatorId: string; range: IndicatorRange } }
+  | { type: 'SET_FINANCIAL_INDICATOR_RANGE'; payload: { indicatorId: string; range: IndicatorRange } };
+
+type TechnicalAction =
   | { type: 'OPEN_TECHNICAL_MODAL'; payload: string }
   | { type: 'CLOSE_TECHNICAL_MODAL' }
-  | { type: 'SET_TECHNICAL_INDICATOR_OPTION'; payload: { indicatorId: string; option: string } }
-  | { type: 'CLEAR_TECHNICAL_INDICATOR_OPTION'; payload: string }
-  | { type: 'SET_FACTOR_WEIGHT'; payload: { factorId: string; weight: number } }
+  | { type: 'SET_TECHNICAL_INDICATOR_OPTION'; payload: { indicatorId: string; option: TechnicalOptionValue } }
+  | { type: 'CLEAR_TECHNICAL_INDICATOR_OPTION'; payload: string };
+
+type PatternAction =
+  | { type: 'TOGGLE_PATTERN'; payload: string }
+  | { type: 'SET_PATTERN_LOOKBACK'; payload: { patternId: string; lookbackDays: number } }
+  | { type: 'TOGGLE_PATTERN_PANEL' };
+
+type ConditionAction =
   | { type: 'SET_CONDITION_GROUP'; payload: FilterGroup | null }
   | { type: 'SET_NEXT_CONDITION_OP'; payload: FilterOp }
   | { type: 'ADD_CONDITION'; payload: {
@@ -67,431 +126,606 @@ type ScreenerAction =
   | { type: 'REMOVE_CONDITION'; payload: string }
   | { type: 'UPDATE_CONDITION_OP'; payload: { id: string; op: FilterOp } }
   | { type: 'CLEAR_CONDITIONS' }
-  | { type: 'APPLY_PRESET'; payload: Omit<FilterCondition, 'id'>[] }
-  | { type: 'TOGGLE_PANEL'; payload: string }
-  | { type: 'RESET_ALL' }
-  // V1.0 自编指标相关 actions
+  | { type: 'APPLY_PRESET'; payload: Omit<FilterCondition, 'id'>[] };
+
+type CustomAction =
   | { type: 'LOAD_CUSTOM_INDICATORS'; payload: CustomIndicator[] }
   | { type: 'ADD_CUSTOM_INDICATOR'; payload: CustomIndicator }
   | { type: 'UPDATE_CUSTOM_INDICATOR'; payload: CustomIndicator }
-  | { type: 'REMOVE_CUSTOM_INDICATOR'; payload: string /* id */ }
-  | { type: 'SET_INDICATOR_TAB'; payload: IndicatorTab }
-  | { type: 'TOGGLE_PATTERN'; payload: string }
-  | { type: 'SET_PATTERN_LOOKBACK'; payload: { patternId: string; lookbackDays: number } }
-  | { type: 'TOGGLE_PATTERN_PANEL' }
-  | { type: 'RESOLVE_MISSING_INDICATORS' }
+  | { type: 'REMOVE_CUSTOM_INDICATOR'; payload: string }
+  | { type: 'SET_INDICATOR_TAB'; payload: 'system' | 'custom' }
   | { type: 'IMPORT_CUSTOM_INDICATORS'; payload: CustomIndicator[] };
 
-const initialState: ScreenerState = {
-  selectedMarket: 'cn',
-  selectedBoards: ['all'],
-  stockRange: STOCK_RANGE_OPTIONS[0].value,
-  selectedMarketIndicators: [],
-  marketIndicatorRanges: {},
-  selectedFinancialIndicators: [],
-  financialIndicatorRanges: {},
-  selectedTechnicalIndicators: {},
-  openTechnicalModal: null,
-  factorWeights: FACTOR_CONFIG.reduce((acc, factor) => ({ ...acc, [factor.id]: factor.defaultWeight }), {}),
-  filterGroup: null,
-  nextConditionOp: 'AND',
-  collapsedPanels: {
-    range: true,
-    market: true,
-    financial: true,
-    technical: true,
-    factor: true,
-    condition: true,
-  },
-  customIndicators: [],
-  activeIndicatorTab: 'system',
-  selectedPatterns: {},
-  patternPanelCollapsed: true,
-};
+type FactorAction = { type: 'SET_FACTOR_WEIGHT'; payload: { factorId: string; weight: number } };
 
-function screenerReducer(state: ScreenerState, action: ScreenerAction): ScreenerState {
+type PanelAction = { type: 'TOGGLE_PANEL'; payload: PanelKey };
+
+type ResetAction = { type: 'RESET_ALL' };
+
+export type ScreenerAction =
+  | MarketAction
+  | MarketIndicatorAction
+  | FinancialIndicatorAction
+  | TechnicalAction
+  | PatternAction
+  | ConditionAction
+  | CustomAction
+  | FactorAction
+  | PanelAction
+  | ResetAction;
+
+// ==================== 子 Reducer 实现（带变化检测优化） ====================
+function marketReducer(state: MarketState, action: MarketAction): MarketState {
   switch (action.type) {
     case 'SET_MARKET': {
-      const marketConfig = MARKET_CONFIG[action.payload];
-      return {
-        ...state,
+      const config = MARKET_CONFIG[action.payload];
+      const newState = {
         selectedMarket: action.payload,
-        selectedBoards: marketConfig?.disabled ? [] : ['all'],
-        selectedMarketIndicators: [],
-        marketIndicatorRanges: {},
-        selectedFinancialIndicators: [],
-        financialIndicatorRanges: {},
-        selectedTechnicalIndicators: {},
-        openTechnicalModal: null,
-        filterGroup: null,
-        nextConditionOp: 'AND',
+        selectedBoards: config?.disabled ? [] : ['all'],
+        stockRange: STOCK_RANGE_OPTIONS[0].value,
       };
+      // 浅比较，若相同则返回原引用
+      return (newState.selectedMarket === state.selectedMarket &&
+              newState.selectedBoards === state.selectedBoards &&
+              newState.stockRange === state.stockRange) ? state : newState;
     }
-    case 'SET_BOARDS':
-      return {
-        ...state,
-        selectedBoards: action.payload,
-      };
-    case 'SET_STOCK_RANGE':
-      return {
-        ...state,
-        stockRange: action.payload,
-      };
-    case 'TOGGLE_MARKET_INDICATOR': {
-      const { payload: indicatorId } = action;
-      const isSelected = state.selectedMarketIndicators.includes(indicatorId);
-      return {
-        ...state,
-        selectedMarketIndicators: isSelected
-          ? state.selectedMarketIndicators.filter(id => id !== indicatorId)
-          : [...state.selectedMarketIndicators, indicatorId],
-        marketIndicatorRanges: isSelected
-          ? Object.fromEntries(Object.entries(state.marketIndicatorRanges).filter(([id]) => id !== indicatorId))
-          : {
-              ...state.marketIndicatorRanges,
-              [indicatorId]: state.marketIndicatorRanges[indicatorId] || { min: '', max: '' },
-            },
-      };
+    case 'SET_BOARDS': {
+      if (action.payload === state.selectedBoards) return state;
+      return { ...state, selectedBoards: action.payload };
     }
-    case 'SET_MARKET_INDICATOR_RANGE':
-      return {
-        ...state,
-        marketIndicatorRanges: {
-          ...state.marketIndicatorRanges,
-          [action.payload.indicatorId]: action.payload.range,
-        },
-      };
-    case 'TOGGLE_FINANCIAL_INDICATOR': {
-      const { payload: indicatorId } = action;
-      const isSelected = state.selectedFinancialIndicators.includes(indicatorId);
-      return {
-        ...state,
-        selectedFinancialIndicators: isSelected
-          ? state.selectedFinancialIndicators.filter(id => id !== indicatorId)
-          : [...state.selectedFinancialIndicators, indicatorId],
-        financialIndicatorRanges: isSelected
-          ? Object.fromEntries(Object.entries(state.financialIndicatorRanges).filter(([id]) => id !== indicatorId))
-          : {
-              ...state.financialIndicatorRanges,
-              [indicatorId]: state.financialIndicatorRanges[indicatorId] || { min: '', max: '' },
-            },
-      };
+    case 'SET_STOCK_RANGE': {
+      if (action.payload === state.stockRange) return state;
+      return { ...state, stockRange: action.payload };
     }
-    case 'SET_FINANCIAL_INDICATOR_RANGE':
-      return {
-        ...state,
-        financialIndicatorRanges: {
-          ...state.financialIndicatorRanges,
-          [action.payload.indicatorId]: action.payload.range,
-        },
-      };
-    case 'OPEN_TECHNICAL_MODAL':
-      return {
-        ...state,
-        openTechnicalModal: action.payload,
-      };
-    case 'CLOSE_TECHNICAL_MODAL':
-      return {
-        ...state,
-        openTechnicalModal: null,
-      };
-    case 'SET_TECHNICAL_INDICATOR_OPTION':
-      return {
-        ...state,
-        selectedTechnicalIndicators: {
-          ...state.selectedTechnicalIndicators,
-          [action.payload.indicatorId]: action.payload.option,
-        },
-        openTechnicalModal: null,
-      };
-    case 'CLEAR_TECHNICAL_INDICATOR_OPTION': {
-      const next = { ...state.selectedTechnicalIndicators };
-      delete next[action.payload];
-      return {
-        ...state,
-        selectedTechnicalIndicators: next,
-      };
-    }
-    case 'SET_FACTOR_WEIGHT':
-      return {
-        ...state,
-        factorWeights: {
-          ...state.factorWeights,
-          [action.payload.factorId]: action.payload.weight,
-        },
-      };
-    case 'SET_CONDITION_GROUP':
-      return {
-        ...state,
-        filterGroup: action.payload,
-      };
-    case 'SET_NEXT_CONDITION_OP':
-      return {
-        ...state,
-        nextConditionOp: action.payload,
-      };
-    case 'ADD_CONDITION': {
-      const currentConditions = state.filterGroup?.conditions || [];
-      // K 2026-06-16 代码审阅建议：空列表时首条件 op 强制 'AND'（无意义，但保证数据一致性）
-      // 实际过滤逻辑中首条件前无连接符，其 op 应被忽略
-      // K 2026-06-17 扩展：payload 可携带 op 覆盖（自编指标多选时按选择顺序确定 op）
-      const op: FilterOp = action.payload.op
-        ?? (currentConditions.length === 0 ? 'AND' : state.nextConditionOp);
-      const newCond: FilterCondition = {
-        id: genConditionId(),
-        op,
-        fieldKey: action.payload.fieldKey,
-        label: action.payload.label,
-        source: action.payload.source,
-        sourceId: action.payload.sourceId,
-        lookbackDays: action.payload.lookbackDays,
-      };
-      return {
-        ...state,
-        filterGroup: { conditions: [...currentConditions, newCond] },
-      };
-    }
-    case 'REMOVE_CONDITION': {
-      const currentConditions = state.filterGroup?.conditions || [];
-      const nextConditions = currentConditions.filter((c) => c.id !== action.payload);
-      return {
-        ...state,
-        filterGroup: nextConditions.length > 0 ? { conditions: nextConditions } : null,
-      };
-    }
-    case 'UPDATE_CONDITION_OP': {
-      const currentConditions = state.filterGroup?.conditions || [];
-      const nextConditions = currentConditions.map((c) =>
-        c.id === action.payload.id ? { ...c, op: action.payload.op } : c
-      );
-      return {
-        ...state,
-        filterGroup: { conditions: nextConditions },
-      };
-    }
-    case 'CLEAR_CONDITIONS':
-      return {
-        ...state,
-        filterGroup: null,
-        nextConditionOp: 'AND',
-      };
-    case 'APPLY_PRESET': {
-      const presetConditions: FilterCondition[] = action.payload.map((c) => ({
-        ...c,
-        id: genConditionId(),
-      }));
-      return {
-        ...state,
-        filterGroup: { conditions: presetConditions },
-      };
-    }
-    case 'TOGGLE_PANEL':
-      return {
-        ...state,
-        collapsedPanels: {
-          ...state.collapsedPanels,
-          [action.payload]: !state.collapsedPanels[action.payload],
-        },
-      };
-    case 'RESET_ALL':
-      // K 2026-06-16 决策：自编指标属于用户私有长期资产（与"选股会话态"语义隔离），
-      // 重置选股配置时保留 customIndicators + activeIndicatorTab，不受 RESET_ALL 影响
-      return {
-        ...initialState,
-        customIndicators: state.customIndicators,
-        activeIndicatorTab: state.activeIndicatorTab,
-      };
-
-    // ============================================================
-    // K 线形态 actions
-    // ============================================================
-
-    case 'TOGGLE_PATTERN': {
-      const { payload: patternId } = action;
-      const isSelected = patternId in state.selectedPatterns;
-      const config = PATTERN_INDICATORS.find((p) => p.id === patternId);
-      const next = { ...state.selectedPatterns };
-      if (isSelected) {
-        delete next[patternId];
-      } else {
-        next[patternId] = config?.defaultLookbackDays ?? 3;
-      }
-      return { ...state, selectedPatterns: next };
-    }
-
-    case 'SET_PATTERN_LOOKBACK':
-      return {
-        ...state,
-        selectedPatterns: {
-          ...state.selectedPatterns,
-          [action.payload.patternId]: action.payload.lookbackDays,
-        },
-      };
-
-    case 'TOGGLE_PATTERN_PANEL':
-      return {
-        ...state,
-        patternPanelCollapsed: !state.patternPanelCollapsed,
-      };
-
-    // ============================================================
-    // V1.0 自编指标 actions
-    // ============================================================
-
-    case 'LOAD_CUSTOM_INDICATORS':
-      return {
-        ...state,
-        customIndicators: action.payload,
-      };
-
-    case 'ADD_CUSTOM_INDICATOR': {
-      // 按 updatedAt 倒序插入
-      const next = [action.payload, ...state.customIndicators];
-      return {
-        ...state,
-        customIndicators: next,
-      };
-    }
-
-    case 'UPDATE_CUSTOM_INDICATOR': {
-      const next = state.customIndicators.map((i) =>
-        i.id === action.payload.id ? action.payload : i
-      );
-      return {
-        ...state,
-        customIndicators: next,
-      };
-    }
-
-    case 'REMOVE_CUSTOM_INDICATOR': {
-      const removedId = action.payload;
-      const next = state.customIndicators.filter((i) => i.id !== removedId);
-      // K 2026-06-16 代码审阅建议 2a：删除自编指标时同步扫描 filterGroup.conditions，
-      // 将引用该指标的条件标记为 invalid（避免 UI 重新加载时失效状态丢失）
-      let nextFilterGroup = state.filterGroup;
-      if (state.filterGroup) {
-        const removedFieldKey = `custom_${removedId}`;
-        const nextConditions = state.filterGroup.conditions.map((c) =>
-          c.fieldKey === removedFieldKey
-            ? { ...c, invalid: true, invalidReason: '引用的自编指标已被删除' }
-            : c
-        );
-        nextFilterGroup = { conditions: nextConditions };
-      }
-      return {
-        ...state,
-        customIndicators: next,
-        filterGroup: nextFilterGroup,
-      };
-    }
-
-    case 'SET_INDICATOR_TAB':
-      return {
-        ...state,
-        activeIndicatorTab: action.payload,
-      };
-
-    case 'RESOLVE_MISSING_INDICATORS': {
-      // K 2026-06-16 代码审阅建议 2b：基于 FilterCondition.source/sourceId 字段
-      // （已完成 1c 扩展），启用失效检测逻辑：
-      //   ① 自编条件引用的 sourceId 不在 state.customIndicators 中 → 标记 invalid
-      //   ② 当前已标记 invalid 但引用的指标已恢复 → 清空 invalid 标记
-      // 调用时机：ScreenerProvider 启动时 + 每次 LOAD_CUSTOM_INDICATORS / ADD / UPDATE / REMOVE 后
-      if (!state.filterGroup) return state;
-      const customIds = new Set(state.customIndicators.map((i) => i.id));
-      const nextConditions = state.filterGroup.conditions.map((c) => {
-        if (c.source !== 'custom' || !c.sourceId) return c;
-        if (customIds.has(c.sourceId)) {
-          // 引用恢复 → 清除失效标记
-          if (c.invalid) {
-            const { invalid: _i, invalidReason: _r, ...rest } = c;
-            return rest as FilterCondition;
-          }
-          return c;
-        }
-        // 引用丢失 → 标记失效
-        if (c.invalid) return c;
-        return { ...c, invalid: true, invalidReason: '引用的自编指标已被删除' };
-      });
-      return {
-        ...state,
-        filterGroup: { conditions: nextConditions },
-      };
-    }
-
-    case 'IMPORT_CUSTOM_INDICATORS': {
-      // 导入去重：按 id 保留 — 重复 id 跳过
-      const existingIds = new Set(state.customIndicators.map((i) => i.id));
-      const newOnes = action.payload.filter((i) => !existingIds.has(i.id));
-      // K 2026-06-16 代码审阅建议 7a：合并后按 updatedAt 倒序，与 ADD/UPDATE 行为一致
-      const merged = [...newOnes, ...state.customIndicators].sort(
-        (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-      );
-      return {
-        ...state,
-        customIndicators: merged,
-      };
-    }
-
     default:
       return state;
   }
 }
 
-// =====================================================================
-// 失效检测说明
-// =====================================================================
-// V1.0 过渡：FilterCondition 不含 source/sourceId/invalid 字段，失效检测由
-// UI 层（ConditionBuilder.tsx）通过 state.customIndicators.some() 自行判断。
-// 过渡约定：自定义指标的 fieldKey 统一以 "custom_" 前缀 + 指标 ID 组成。
-// RESOLVE_MISSING_INDICATORS action 保留以便未来 FilterCondition 扩展后启用。
-// =====================================================================
-
-interface ScreenerContextType {
-  state: ScreenerState;
-  dispatch: React.Dispatch<ScreenerAction>;
+function marketIndicatorReducer(
+  state: MarketIndicatorState,
+  action: MarketIndicatorAction
+): MarketIndicatorState {
+  switch (action.type) {
+    case 'TOGGLE_MARKET_INDICATOR': {
+      const id = action.payload;
+      const isSelected = state.selected.includes(id);
+      if (!isSelected && state.selected.includes(id)) return state; // 不可能
+      const newSelected = isSelected ? state.selected.filter(i => i !== id) : [...state.selected, id];
+      const newRanges = isSelected
+        ? Object.fromEntries(Object.entries(state.ranges).filter(([k]) => k !== id))
+        : { ...state.ranges, [id]: state.ranges[id] || { min: '', max: '' } };
+      if (newSelected === state.selected && newRanges === state.ranges) return state;
+      return { selected: newSelected, ranges: newRanges };
+    }
+    case 'SET_MARKET_INDICATOR_RANGE': {
+      const { indicatorId, range } = action.payload;
+      if (state.ranges[indicatorId] === range) return state;
+      return {
+        ...state,
+        ranges: { ...state.ranges, [indicatorId]: range },
+      };
+    }
+    default:
+      return state;
+  }
 }
 
-const ScreenerContext = createContext<ScreenerContextType | null>(null);
-
-export function ScreenerProvider({ children, autoLoad = true }: {
-  children: ReactNode;
-  autoLoad?: boolean;
-}) {
-  const [state, dispatch] = useReducer(screenerReducer, initialState);
-
-  // 启动时自动从 localStorage 加载自编指标 + 触发失效检测
-  useEffect(() => {
-    if (autoLoad && typeof window !== 'undefined') {
-      try {
-        const indicators = loadFromStorage();
-        dispatch({ type: 'LOAD_CUSTOM_INDICATORS', payload: indicators });
-        // K 2026-06-16 代码审阅建议：启动后调用 RESOLVE_MISSING_INDICATORS，
-        // 确保从 localStorage 恢复的 filterGroup 中失效条件被正确标记
-        // （避免 UI 重新加载时失效状态丢失）
-        dispatch({ type: 'RESOLVE_MISSING_INDICATORS' });
-      } catch (e) {
-        // K 2026-06-16 代码审阅建议 6a：loadFromStorage 失败提示
-        // V1.0 简化：仅 console.error，避免引入全局 toast 依赖；
-        // V2.0 计划接入全局 notification 体系
-        console.error('[ScreenerProvider] 加载自编指标失败', e);
-      }
+function financialIndicatorReducer(
+  state: FinancialIndicatorState,
+  action: FinancialIndicatorAction
+): FinancialIndicatorState {
+  switch (action.type) {
+    case 'TOGGLE_FINANCIAL_INDICATOR': {
+      const id = action.payload;
+      const isSelected = state.selected.includes(id);
+      const newSelected = isSelected ? state.selected.filter(i => i !== id) : [...state.selected, id];
+      const newRanges = isSelected
+        ? Object.fromEntries(Object.entries(state.ranges).filter(([k]) => k !== id))
+        : { ...state.ranges, [id]: state.ranges[id] || { min: '', max: '' } };
+      if (newSelected === state.selected && newRanges === state.ranges) return state;
+      return { selected: newSelected, ranges: newRanges };
     }
-  }, [autoLoad]);
+    case 'SET_FINANCIAL_INDICATOR_RANGE': {
+      const { indicatorId, range } = action.payload;
+      if (state.ranges[indicatorId] === range) return state;
+      return {
+        ...state,
+        ranges: { ...state.ranges, [indicatorId]: range },
+      };
+    }
+    default:
+      return state;
+  }
+}
+
+function technicalReducer(state: TechnicalState, action: TechnicalAction): TechnicalState {
+  switch (action.type) {
+    case 'OPEN_TECHNICAL_MODAL': {
+      if (state.openModalId === action.payload) return state;
+      return { ...state, openModalId: action.payload };
+    }
+    case 'CLOSE_TECHNICAL_MODAL': {
+      if (state.openModalId === null) return state;
+      return { ...state, openModalId: null };
+    }
+    case 'SET_TECHNICAL_INDICATOR_OPTION': {
+      const { indicatorId, option } = action.payload;
+      if (!indicatorId || !option) {
+        console.warn('[Screener] SET_TECHNICAL_INDICATOR_OPTION 缺少必要参数');
+        return state;
+      }
+      const newSelected = { ...state.selected, [indicatorId]: option };
+      if (newSelected === state.selected && state.openModalId === null) return state;
+      return { selected: newSelected, openModalId: null };
+    }
+    case 'CLEAR_TECHNICAL_INDICATOR_OPTION': {
+      const { [action.payload]: _, ...rest } = state.selected;
+      if (Object.keys(rest).length === Object.keys(state.selected).length) return state;
+      return { ...state, selected: rest };
+    }
+    default:
+      return state;
+  }
+}
+
+function patternReducer(state: PatternState, action: PatternAction): PatternState {
+  switch (action.type) {
+    case 'TOGGLE_PATTERN': {
+      const id = action.payload;
+      const isSelected = id in state.selected;
+      const config = PATTERN_INDICATORS.find(p => p.id === id);
+      const next = { ...state.selected };
+      if (isSelected) {
+        delete next[id];
+      } else {
+        next[id] = config?.defaultLookbackDays ?? DEFAULT_LOOKBACK_DAYS;
+      }
+      if (next === state.selected) return state;
+      return { ...state, selected: next };
+    }
+    case 'SET_PATTERN_LOOKBACK': {
+      const { patternId, lookbackDays } = action.payload;
+      if (lookbackDays <= 0) {
+        console.warn('[Screener] 回溯天数必须大于0');
+        return state;
+      }
+      if (state.selected[patternId] === lookbackDays) return state;
+      return {
+        ...state,
+        selected: { ...state.selected, [patternId]: lookbackDays },
+      };
+    }
+    case 'TOGGLE_PATTERN_PANEL': {
+      return { ...state, panelCollapsed: !state.panelCollapsed };
+    }
+    default:
+      return state;
+  }
+}
+
+function conditionReducer(state: ConditionState, action: ConditionAction): ConditionState {
+  switch (action.type) {
+    case 'SET_CONDITION_GROUP': {
+      if (state.filterGroup === action.payload) return state;
+      return { ...state, filterGroup: action.payload };
+    }
+    case 'SET_NEXT_CONDITION_OP': {
+      if (state.nextOp === action.payload) return state;
+      return { ...state, nextOp: action.payload };
+    }
+    case 'ADD_CONDITION': {
+      const { fieldKey, label, source, sourceId, op, lookbackDays } = action.payload;
+      if (!fieldKey || !label) {
+        console.warn('[Screener] ADD_CONDITION 缺少必要字段');
+        return state;
+      }
+      const current = state.filterGroup?.conditions || [];
+      const finalOp = op ?? (current.length === 0 ? 'AND' : state.nextOp);
+      const newCond: FilterCondition = {
+        id: genConditionId(),
+        op: finalOp,
+        fieldKey,
+        label,
+        source,
+        sourceId,
+        lookbackDays,
+      };
+      const newGroup = { conditions: [...current, newCond] };
+      if (newGroup === state.filterGroup) return state;
+      return { ...state, filterGroup: newGroup };
+    }
+    case 'REMOVE_CONDITION': {
+      const current = state.filterGroup?.conditions || [];
+      const filtered = current.filter(c => c.id !== action.payload);
+      if (filtered.length === current.length) return state;
+      const newGroup = filtered.length ? { conditions: filtered } : null;
+      if (newGroup === state.filterGroup) return state;
+      return { ...state, filterGroup: newGroup };
+    }
+    case 'UPDATE_CONDITION_OP': {
+      const current = state.filterGroup?.conditions || [];
+      const updated = current.map(c =>
+        c.id === action.payload.id ? { ...c, op: action.payload.op } : c
+      );
+      if (updated === current) return state;
+      return { ...state, filterGroup: { conditions: updated } };
+    }
+    case 'CLEAR_CONDITIONS': {
+      if (state.filterGroup === null) return state;
+      return { filterGroup: null, nextOp: 'AND' };
+    }
+    case 'APPLY_PRESET': {
+      const preset = action.payload.map(c => ({ ...c, id: genConditionId() }));
+      const newGroup = { conditions: preset };
+      if (newGroup === state.filterGroup) return state;
+      return { ...state, filterGroup: newGroup };
+    }
+    default:
+      return state;
+  }
+}
+
+function customReducer(state: CustomState, action: CustomAction): CustomState {
+  switch (action.type) {
+    case 'LOAD_CUSTOM_INDICATORS': {
+      if (action.payload === state.indicators) return state;
+      return { ...state, indicators: action.payload };
+    }
+    case 'ADD_CUSTOM_INDICATOR': {
+      const newList = [action.payload, ...state.indicators];
+      if (newList === state.indicators) return state;
+      return { ...state, indicators: newList };
+    }
+    case 'UPDATE_CUSTOM_INDICATOR': {
+      const newList = state.indicators.map(i =>
+        i.id === action.payload.id ? action.payload : i
+      );
+      if (newList === state.indicators) return state;
+      return { ...state, indicators: newList };
+    }
+    case 'REMOVE_CUSTOM_INDICATOR': {
+      const newList = state.indicators.filter(i => i.id !== action.payload);
+      if (newList.length === state.indicators.length) return state;
+      return { ...state, indicators: newList };
+    }
+    case 'SET_INDICATOR_TAB': {
+      if (state.activeTab === action.payload) return state;
+      return { ...state, activeTab: action.payload };
+    }
+    case 'IMPORT_CUSTOM_INDICATORS': {
+      const existing = new Set(state.indicators.map(i => i.id));
+      const newOnes = action.payload.filter(i => !existing.has(i.id));
+      if (newOnes.length === 0) return state;
+      const merged = [...newOnes, ...state.indicators].sort(
+        (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      );
+      if (merged === state.indicators) return state;
+      return { ...state, indicators: merged };
+    }
+    default:
+      return state;
+  }
+}
+
+function factorReducer(state: FactorState, action: FactorAction): FactorState {
+  switch (action.type) {
+    case 'SET_FACTOR_WEIGHT': {
+      const { factorId, weight } = action.payload;
+      if (weight < 0 || weight > 100) {
+        console.warn('[Screener] 权重超出范围 0-100');
+        return state;
+      }
+      if (state.weights[factorId] === weight) return state;
+      return { weights: { ...state.weights, [factorId]: weight } };
+    }
+    default:
+      return state;
+  }
+}
+
+function panelReducer(state: PanelState, action: PanelAction): PanelState {
+  switch (action.type) {
+    case 'TOGGLE_PANEL': {
+      const newCollapsed = {
+        ...state.collapsed,
+        [action.payload]: !state.collapsed[action.payload],
+      };
+      if (newCollapsed === state.collapsed) return state;
+      return { collapsed: newCollapsed };
+    }
+    default:
+      return state;
+  }
+}
+
+// ==================== 声明式路由映射（增强类型安全） ====================
+type SubReducerMap = {
+  [K in keyof ScreenerState]: (state: ScreenerState[K], action: any) => ScreenerState[K];
+};
+
+const subReducerMap: SubReducerMap = {
+  market: marketReducer,
+  marketIndicators: marketIndicatorReducer,
+  financialIndicators: financialIndicatorReducer,
+  technical: technicalReducer,
+  patterns: patternReducer,
+  condition: conditionReducer,
+  custom: customReducer,
+  factor: factorReducer,
+  panels: panelReducer,
+};
+
+// Action 到子 Reducer 的映射（使用类型断言确保完整性）
+const actionToSubReducer: Record<ScreenerAction['type'], keyof ScreenerState> = {
+  SET_MARKET: 'market',
+  SET_BOARDS: 'market',
+  SET_STOCK_RANGE: 'market',
+  TOGGLE_MARKET_INDICATOR: 'marketIndicators',
+  SET_MARKET_INDICATOR_RANGE: 'marketIndicators',
+  TOGGLE_FINANCIAL_INDICATOR: 'financialIndicators',
+  SET_FINANCIAL_INDICATOR_RANGE: 'financialIndicators',
+  OPEN_TECHNICAL_MODAL: 'technical',
+  CLOSE_TECHNICAL_MODAL: 'technical',
+  SET_TECHNICAL_INDICATOR_OPTION: 'technical',
+  CLEAR_TECHNICAL_INDICATOR_OPTION: 'technical',
+  TOGGLE_PATTERN: 'patterns',
+  SET_PATTERN_LOOKBACK: 'patterns',
+  TOGGLE_PATTERN_PANEL: 'patterns',
+  SET_CONDITION_GROUP: 'condition',
+  SET_NEXT_CONDITION_OP: 'condition',
+  ADD_CONDITION: 'condition',
+  REMOVE_CONDITION: 'condition',
+  UPDATE_CONDITION_OP: 'condition',
+  CLEAR_CONDITIONS: 'condition',
+  APPLY_PRESET: 'condition',
+  LOAD_CUSTOM_INDICATORS: 'custom',
+  ADD_CUSTOM_INDICATOR: 'custom',
+  UPDATE_CUSTOM_INDICATOR: 'custom',
+  REMOVE_CUSTOM_INDICATOR: 'custom',
+  SET_INDICATOR_TAB: 'custom',
+  IMPORT_CUSTOM_INDICATORS: 'custom',
+  SET_FACTOR_WEIGHT: 'factor',
+  TOGGLE_PANEL: 'panels',
+};
+
+// ==================== 根 Reducer（含后置钩子） ====================
+function rootReducer(state: ScreenerState, action: ScreenerAction): ScreenerState {
+  // 先处理 RESET_ALL
+  if (action.type === 'RESET_ALL') {
+    const newState = createInitialState(true);
+    return { ...newState, custom: state.custom };
+  }
+
+  // 路由到子 Reducer
+  const subKey = actionToSubReducer[action.type];
+  if (!subKey) {
+    console.warn(`[Screener] Unknown action type: ${(action as any).type}`);
+    return state;
+  }
+
+  const subReducer = subReducerMap[subKey];
+  const newSubState = subReducer(state[subKey], action);
+  if (newSubState === state[subKey]) {
+    return state;
+  }
+
+  // 构建新状态
+  let newState = { ...state, [subKey]: newSubState };
+
+  // 后置钩子：处理跨领域联动
+  newState = afterDispatch(newState, action);
+
+  return newState;
+}
+
+/**
+ * 后置钩子：根据 Action 触发额外的状态更新
+ * 当前处理：
+ * - IMPORT_CUSTOM_INDICATORS / REMOVE_CUSTOM_INDICATOR：刷新条件组失效状态
+ */
+function afterDispatch(state: ScreenerState, action: ScreenerAction): ScreenerState {
+  // 当自定义指标列表变化时，重新验证条件组
+  if (action.type === 'IMPORT_CUSTOM_INDICATORS' || action.type === 'REMOVE_CUSTOM_INDICATOR') {
+    const validatedGroup = resolveMissingIndicators(state.condition.filterGroup, state.custom.indicators);
+    if (validatedGroup !== state.condition.filterGroup) {
+      return {
+        ...state,
+        condition: { ...state.condition, filterGroup: validatedGroup },
+      };
+    }
+  }
+  // 也可处理 ADD_CUSTOM_INDICATOR? 但新增指标不会使现有条件失效，可忽略
+  return state;
+}
+
+// ==================== 初始状态（含 Schema 校验） ====================
+function isValidCustomIndicator(data: unknown): data is CustomIndicator {
+  if (typeof data !== 'object' || data === null) return false;
+  const obj = data as Record<string, unknown>;
+  return (
+    typeof obj.id === 'string' &&
+    typeof obj.name === 'string' &&
+    typeof obj.expr === 'string' &&
+    typeof obj.updatedAt === 'string'
+  );
+}
+
+function loadCustomIndicatorsSafe(): CustomIndicator[] {
+  try {
+    const raw = loadFromStorage();
+    if (Array.isArray(raw) && raw.every(isValidCustomIndicator)) {
+      return raw;
+    }
+    console.warn('[Screener] LocalStorage 数据格式损坏，使用默认空列表');
+    return [];
+  } catch (e) {
+    console.error('[Screener] 加载自编指标失败', e);
+    return [];
+  }
+}
+
+// 同步创建初始状态（无自定义指标，异步加载）
+function createInitialState(preserveCustom = false): ScreenerState {
+  return {
+    market: {
+      selectedMarket: 'cn',
+      selectedBoards: ['all'],
+      stockRange: STOCK_RANGE_OPTIONS[0].value,
+    },
+    marketIndicators: { selected: [], ranges: {} },
+    financialIndicators: { selected: [], ranges: {} },
+    technical: { selected: {}, openModalId: null },
+    patterns: { selected: {}, panelCollapsed: true },
+    condition: { filterGroup: null, nextOp: 'AND' },
+    custom: {
+      indicators: preserveCustom ? [] : [], // 初始为空，异步加载
+      activeTab: 'system',
+    },
+    factor: {
+      weights: FACTOR_CONFIG.reduce((acc, f) => ({ ...acc, [f.id]: f.defaultWeight }), {}),
+    },
+    panels: {
+      collapsed: {
+        range: true,
+        market: true,
+        financial: true,
+        technical: true,
+        factor: true,
+        condition: true,
+        pattern: true,
+      },
+    },
+  };
+}
+
+// ==================== 失效检测工具 ====================
+export function resolveMissingIndicators(
+  filterGroup: FilterGroup | null,
+  customIndicators: CustomIndicator[]
+): FilterGroup | null {
+  if (!filterGroup) return null;
+  const customIds = new Set(customIndicators.map(i => i.id));
+  let changed = false;
+  const nextConditions = filterGroup.conditions.map(c => {
+    if (c.source !== 'custom' || !c.sourceId) return c;
+    if (customIds.has(c.sourceId)) {
+      // 引用存在，清除失效标记
+      if (c.invalid) {
+        changed = true;
+        const { invalid, invalidReason, ...rest } = c;
+        return rest as FilterCondition;
+      }
+      return c;
+    } else {
+      // 引用丢失
+      if (!c.invalid) {
+        changed = true;
+        return { ...c, invalid: true, invalidReason: '引用的自编指标已被删除' };
+      }
+      return c;
+    }
+  });
+  if (!changed) return filterGroup;
+  return { conditions: nextConditions };
+}
+
+// ==================== Store 类（修复 dispatch 稳定性） ====================
+type Listener = () => void;
+
+class Store {
+  private state: ScreenerState;
+  private listeners: Set<Listener> = new Set();
+  constructor(initialState: ScreenerState) {
+    this.state = initialState;
+    this.dispatch = this.dispatch.bind(this); // 永久绑定
+  }
+
+  getState() {
+    return this.state;
+  }
+
+  dispatch(action: ScreenerAction) {
+    const newState = rootReducer(this.state, action);
+    if (newState !== this.state) {
+      this.state = newState;
+      this.listeners.forEach(listener => listener());
+    }
+  }
+
+  subscribe(listener: Listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+}
+
+// ==================== Context & Provider（异步加载指标） ====================
+const ScreenerContext = createContext<Store | null>(null);
+
+export function ScreenerProvider({ children }: { children: ReactNode }) {
+  const storeRef = useRef<Store | null>(null);
+  if (!storeRef.current) {
+    const initialState = createInitialState(false);
+    storeRef.current = new Store(initialState);
+  }
+  const store = storeRef.current;
+
+  // 异步加载自定义指标
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const indicators = loadCustomIndicatorsSafe();
+        if (!cancelled) {
+          store.dispatch({ type: 'LOAD_CUSTOM_INDICATORS', payload: indicators });
+        }
+      } catch (e) {
+        console.error('[Screener] 异步加载自定义指标失败', e);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [store]);
 
   return (
-    <ScreenerContext.Provider value={{ state, dispatch }}>
+    <ScreenerContext.Provider value={store}>
       {children}
     </ScreenerContext.Provider>
   );
 }
 
-export function useScreener() {
-  const context = useContext(ScreenerContext);
-  if (!context) {
-    throw new Error('useScreener must be used within a ScreenerProvider');
-  }
-  return context;
+// ==================== Hooks ====================
+
+export function useScreenerSelector<T>(selector: (state: ScreenerState) => T): T {
+  const store = useContext(ScreenerContext);
+  if (!store) throw new Error('useScreenerSelector must be used within ScreenerProvider');
+
+  const selectorRef = useRef(selector);
+  selectorRef.current = selector;
+
+  const getSnapshot = useCallback(() => selectorRef.current(store.getState()), [store]);
+  const subscribe = useCallback((onStoreChange: () => void) => {
+    return store.subscribe(onStoreChange);
+  }, [store]);
+
+  return useSyncExternalStore(subscribe, getSnapshot);
 }
 
-export { screenerReducer };
+export function useScreenerDispatch() {
+  const store = useContext(ScreenerContext);
+  if (!store) throw new Error('useScreenerDispatch must be used within ScreenerProvider');
+  return store.dispatch;
+}
+
+// 兼容旧版本 — @deprecated 请使用 useScreenerSelector + useScreenerDispatch 替代，下个迭代移除
+export function useScreener() {
+  const store = useContext(ScreenerContext);
+  if (!store) throw new Error('useScreener must be used within ScreenerProvider');
+  const state = useSyncExternalStore(
+    useCallback((onChange) => store.subscribe(onChange), [store]),
+    useCallback(() => store.getState(), [store])
+  );
+  return { state, dispatch: store.dispatch };
+}
+
+export { rootReducer };

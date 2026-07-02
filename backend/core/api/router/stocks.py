@@ -48,9 +48,11 @@ COND_SPECIAL_MAP = {
         "value": 30,
     },
     "volume_breakout": {
-        # 量比 ≥ 1.5 视为放量
+        # K 2026-07-02 决策：ETL 实际写入的是 vol_ratio_5（5 日量比），
+        # 而非即时日量比 volume_ratio（该字段在 parquet 中全部为 NaN）。
+        # 参考 daily_snapshot_sync.py 的 width_stats CTE。
         "kind": "threshold",
-        "field": "volume_ratio",
+        "field": "vol_ratio_5",
         "op": ">=",
         "value": 1.5,
     },

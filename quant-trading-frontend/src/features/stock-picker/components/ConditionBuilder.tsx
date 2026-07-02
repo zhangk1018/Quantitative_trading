@@ -10,7 +10,7 @@ import {
   AppstoreAddOutlined,
   PlusCircleOutlined,
 } from '@ant-design/icons';
-import { useScreener } from '../context/ScreenerContext';
+import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerContext';
 import {
   FILTER_PRESETS,
   PATTERN_PRESETS_GROUP,
@@ -34,8 +34,10 @@ const PATTERN_PRESETS = FILTER_PRESETS.filter(
 
 const ConditionBuilder: React.FC = () => {
   const navigate = useNavigate();
-  const { state, dispatch } = useScreener();
-  const { collapsedPanels, filterGroup, customIndicators } = state;
+  const collapsedPanels = useScreenerSelector(s => s.panels.collapsed);
+  const filterGroup = useScreenerSelector(s => s.condition.filterGroup);
+  const customIndicators = useScreenerSelector(s => s.custom.indicators);
+  const dispatch = useScreenerDispatch();
 
   // K 2026-06-17 新增：K线形态全局回看天数
   const [lookbackDays, setLookbackDays] = useState<number>(DEFAULT_LOOKBACK_DAYS);

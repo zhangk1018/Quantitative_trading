@@ -1,15 +1,17 @@
 import React from 'react';
 import { Typography, Button, InputNumber, Collapse, Tooltip } from 'antd';
 import { CloseCircleOutlined } from '@ant-design/icons';
-import { useScreener } from '../context/ScreenerContext';
+import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerContext';
 import { MARKET_INDICATORS } from '../config/indicatorConfig';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
 
 const IndicatorFilter: React.FC = () => {
-  const { state, dispatch } = useScreener();
-  const { selectedMarketIndicators, marketIndicatorRanges, collapsedPanels } = state;
+  const selectedMarketIndicators = useScreenerSelector(s => s.marketIndicators.selected);
+  const marketIndicatorRanges = useScreenerSelector(s => s.marketIndicators.ranges);
+  const collapsedPanels = useScreenerSelector(s => s.panels.collapsed);
+  const dispatch = useScreenerDispatch();
 
   const toggleIndicator = (id: string) => {
     dispatch({ type: 'TOGGLE_MARKET_INDICATOR', payload: id });

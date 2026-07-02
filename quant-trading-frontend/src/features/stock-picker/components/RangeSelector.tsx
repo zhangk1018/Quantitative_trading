@@ -1,14 +1,17 @@
 import React from 'react';
 import { Typography, Radio, Select, Collapse } from 'antd';
-import { useScreener } from '../context/ScreenerContext';
+import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerContext';
 import { MARKET_CONFIG, STOCK_RANGE_OPTIONS } from '../config/marketConfig';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
 
 const RangeSelector: React.FC = () => {
-  const { state, dispatch } = useScreener();
-  const { selectedMarket, selectedBoards, stockRange } = state;
+  const stockRange = useScreenerSelector(s => s.market.stockRange);
+  const selectedMarket = useScreenerSelector(s => s.market.selectedMarket);
+  const selectedBoards = useScreenerSelector(s => s.market.selectedBoards);
+  const collapsedPanels = useScreenerSelector(s => s.panels.collapsed);
+  const dispatch = useScreenerDispatch();
   const currentMarketConfig = MARKET_CONFIG[selectedMarket];
   const availableBoardValues = currentMarketConfig?.boards.map((b) => b.value) || [];
 

@@ -1,15 +1,17 @@
 import React from 'react';
 import { Typography, Button, InputNumber, Collapse, Tooltip } from 'antd';
 import { CloseCircleOutlined } from '@ant-design/icons';
-import { useScreener } from '../context/ScreenerContext';
+import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerContext';
 import { FINANCIAL_INDICATORS } from '../config/indicatorConfig';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
 
 const FinancialFilter: React.FC = () => {
-  const { state, dispatch } = useScreener();
-  const { selectedFinancialIndicators, financialIndicatorRanges, collapsedPanels } = state;
+  const selectedFinancialIndicators = useScreenerSelector(s => s.financialIndicators.selected);
+  const financialIndicatorRanges = useScreenerSelector(s => s.financialIndicators.ranges);
+  const collapsedPanels = useScreenerSelector(s => s.panels.collapsed);
+  const dispatch = useScreenerDispatch();
 
   const toggleIndicator = (id: string) => {
     dispatch({ type: 'TOGGLE_FINANCIAL_INDICATOR', payload: id });

@@ -186,17 +186,20 @@ dev_start_backend() {
 
     cd "$BACKEND_DIR"
     export PYTHONPATH="$SCRIPT_DIR"
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+    fi
     nohup "$VENV_DIR/bin/python" -m uvicorn core.api.main:app --host 0.0.0.0 --port "$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
     local new_pid=$!
     echo "$new_pid" > "$BACKEND_PID_FILE"
 
-    for i in $(seq 1 10); do
+    for i in $(seq 1 30); do
         sleep 1
         if is_port_in_use "$BACKEND_PORT"; then
             log_ok "后端服务启动成功 (PID: $new_pid, 端口: $BACKEND_PORT)"; return 0
         fi
     done
-    log_err "后端服务启动失败（10秒超时），查看日志: $BACKEND_LOG"
+    log_err "后端服务启动失败（30秒超时），查看日志: $BACKEND_LOG"
     rm -f "$BACKEND_PID_FILE"; return 1
 }
 

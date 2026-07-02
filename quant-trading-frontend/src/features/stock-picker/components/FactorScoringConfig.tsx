@@ -1,15 +1,16 @@
 import React from 'react';
 import { Typography, Slider, Collapse } from 'antd';
 import { SlidersOutlined } from '@ant-design/icons';
-import { useScreener } from '../context/ScreenerContext';
+import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerContext';
 import { FACTOR_CONFIG } from '../config/indicatorConfig';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
 
 const FactorScoringConfig: React.FC = () => {
-  const { state, dispatch } = useScreener();
-  const { factorWeights, collapsedPanels } = state;
+  const factorWeights = useScreenerSelector(s => s.factor.weights);
+  const collapsedPanels = useScreenerSelector(s => s.panels.collapsed);
+  const dispatch = useScreenerDispatch();
 
   const updateWeight = (factorId: string, value: number) => {
     dispatch({ type: 'SET_FACTOR_WEIGHT', payload: { factorId, weight: value } });

@@ -109,9 +109,11 @@ export const FILTER_PRESETS: FilterPreset[] = [
     fieldKey: 'bottom_volume_macd',
     // K 2026-06-17 调整：preset 按钮文案简化（详见截图说明）
     label: '底部放量',
+    // K 2026-07-02 修正：量量确认"底部放量" = RSI超卖 + 放量突破，
+    // 不应包含 MACD 金叉。将 macd_golden_cross 改为 rsi_oversold。
     conditions: [
       { op: 'AND', fieldKey: 'volume_breakout', label: '底部放量' },
-      { op: 'AND', fieldKey: 'macd_golden_cross', label: 'MACD金叉' },
+      { op: 'AND', fieldKey: 'rsi_oversold', label: 'RSI超卖' },
     ],
   },
   {

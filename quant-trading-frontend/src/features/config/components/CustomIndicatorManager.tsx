@@ -16,7 +16,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Button, message, Space, Typography, Card } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import { useScreener } from '../../stock-picker/context/ScreenerContext';
+import { useScreenerSelector, useScreenerDispatch } from '../../stock-picker/context/ScreenerContext';
 import { CustomIndicatorModal } from '../../stock-picker/components/CustomIndicatorModal';
 import { CustomIndicatorList } from '../../stock-picker/components/CustomIndicatorList';
 import { ImportExportButtons } from '../../stock-picker/components/ImportExportButtons';
@@ -30,8 +30,9 @@ import type { CustomIndicator } from '../../stock-picker/types/customIndicator';
 const { Text } = Typography;
 
 export const CustomIndicatorManager: React.FC = () => {
-  const { state, dispatch } = useScreener();
-  const { customIndicators, filterGroup } = state;
+  const customIndicators = useScreenerSelector(s => s.custom.indicators);
+  const filterGroup = useScreenerSelector(s => s.condition.filterGroup);
+  const dispatch = useScreenerDispatch();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // K 2026-06-18 任务 #9：从 state.filterGroup.conditions 实时计算已引用的指标 ID

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Typography, Button, Select, Divider, Spin, message, Checkbox, Modal, Input } from 'antd';
 import { SaveOutlined, FolderOpenOutlined, ReloadOutlined, PlusCircleOutlined, DownloadOutlined, BlockOutlined, PlayCircleOutlined, LoadingOutlined, CaretUpOutlined, CaretDownOutlined } from '@ant-design/icons';
-import { ScreenerProvider, useScreener, ScreenerState } from './context/ScreenerContext';
+import { ScreenerProvider, useScreenerSelector, useScreenerDispatch, ScreenerState } from './context/ScreenerContext';
 import RangeSelector from './components/RangeSelector';
 import IndicatorFilter from './components/IndicatorFilter';
 import FinancialFilter from './components/FinancialFilter';
@@ -34,10 +34,12 @@ const { Text } = Typography;
  * - filterGroup: FilterGroup | null  — 条件构建器
  */
 export function buildScreeningParams(
-  state: ScreenerState,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  state: any,
   sortBy: string,
   sortAsc: boolean,
   limit: number,
+  offset: number = 0,
 ): Record<string, unknown> {
   // 显式解构 state 字段（K 反馈 #1）：列出所有依赖，未来调整时编译器会立即提示
   const {
@@ -46,7 +48,16 @@ export function buildScreeningParams(
     marketIndicatorRanges,
     financialIndicatorRanges,
     selectedTechnicalIndicators,
+    selectedPatterns,
     filterGroup,
+  }: {
+    selectedBoards?: string[];
+    stockRange?: string;
+    marketIndicatorRanges?: Record<string, { min?: number; max?: number }>;
+    financialIndicatorRanges?: Record<string, { min?: number; max?: number }>;
+    selectedTechnicalIndicators?: Record<string, string>;
+    selectedPatterns?: Record<string, number>;
+    filterGroup?: { conditions?: Array<{ fieldKey: string; op: string }> } | null;
   } = state;
   const params: Record<string, unknown> = {};
 
@@ -104,8 +115,8 @@ export function buildScreeningParams(
 
   // K线形态筛选：每个已选形态序列化为 `pattern_{id}=lookbackDays` 参数
   // 例如：pattern_hammer=3&pattern_bullish_engulfing=5
-  if (state.selectedPatterns) {
-    Object.entries(state.selectedPatterns).forEach(([patternId, lookbackDays]) => {
+  if (selectedPatterns) {
+    Object.entries(selectedPatterns).forEach(([patternId, lookbackDays]) => {
       params[`pattern_${patternId}`] = lookbackDays;
     });
   }
@@ -122,14 +133,23 @@ export function buildScreeningParams(
 
   params.sort_by = sortBy;
   params.sort_asc = sortAsc;
-  params.offset = 0;
+  params.offset = offset;
   params.limit = limit;
 
   return params;
 }
 
 const StockPickerContent: React.FC = () => {
-  const { state, dispatch } = useScreener();
+  const selectedBoards = useScreenerSelector(s => s.market.selectedBoards);
+  const stockRange = useScreenerSelector(s => s.market.stockRange);
+  const selectedMarketIndicators = useScreenerSelector(s => s.marketIndicators.selected);
+  const selectedFinancialIndicators = useScreenerSelector(s => s.financialIndicators.selected);
+  const selectedTechnicalIndicators = useScreenerSelector(s => s.technical.selected);
+  const selectedPatterns = useScreenerSelector(s => s.patterns.selected);
+  const marketIndicatorRanges = useScreenerSelector(s => s.marketIndicators.ranges);
+  const financialIndicatorRanges = useScreenerSelector(s => s.financialIndicators.ranges);
+  const filterGroup = useScreenerSelector(s => s.condition.filterGroup);
+  const dispatch = useScreenerDispatch();
   const { colors: upDownColors } = useSettings();
   const { addMany } = useWatchlist();
   const [screenerLoading, setScreenerLoading] = useState(false);
@@ -137,7 +157,9 @@ const StockPickerContent: React.FC = () => {
   const [totalCount, setTotalCount] = useState(0);
   const [sortBy, setSortBy] = useState('change_pct');
   const [sortAsc, setSortAsc] = useState(false);
-  const [limit, setLimit] = useState(20);
+  const PAGE_SIZE = 20;
+  const [offset, setOffset] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   // 选股结果中的复选框选中项（key 为股票 code）
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
   // 批量加入自选：自定义分组名（空 → 走后端默认分组）
@@ -171,11 +193,11 @@ const StockPickerContent: React.FC = () => {
   }, []);
 
   const totalFiltersCount =
-    state.selectedMarketIndicators.length +
-    state.selectedFinancialIndicators.length +
-    Object.keys(state.selectedTechnicalIndicators).length +
-    Object.keys(state.selectedPatterns).length +
-    (state.filterGroup?.conditions.length || 0);
+    selectedMarketIndicators.length +
+    selectedFinancialIndicators.length +
+    Object.keys(selectedTechnicalIndicators).length +
+    Object.keys(selectedPatterns).length +
+    (filterGroup?.conditions.length || 0);
 
   const handleReset = () => {
     // K 2026-06-22 反馈：重置时取消进行中的请求，避免旧响应覆盖空状态
@@ -189,7 +211,7 @@ const StockPickerContent: React.FC = () => {
     setTotalCount(0);
     setSortBy('change_pct');
     setSortAsc(false);
-    setLimit(20);
+    setOffset(0);
     setSelectedCodes(new Set());
   };
 
@@ -372,7 +394,8 @@ const StockPickerContent: React.FC = () => {
     const nextSortAsc = sortBy === column ? !sortAsc : false;
     setSortBy(column);
     setSortAsc(nextSortAsc);
-    runScreening(column, nextSortAsc);
+    setOffset(0);
+    runScreening(column, nextSortAsc, false);
   };
 
   // 抽取查询逻辑，便于点击表头时复用
@@ -381,7 +404,7 @@ const StockPickerContent: React.FC = () => {
   // 本函数仅关注 AbortController 生命周期 + 错误处理 + setState 分发
   // K 2026-06-18 反馈 #4：用 requestIdRef 自增计数器判断"当前活跃请求"，
   // 避免引用比较在多请求快速切换时失效导致 loading 卡住
-  const runScreening = async (overrideSortBy?: string, overrideSortAsc?: boolean) => {
+  const runScreening = async (overrideSortBy?: string, overrideSortAsc?: boolean, append = false) => {
     // 取消上一次未完成的请求（如果有）
     if (abortRef.current) {
       abortRef.current.abort();
@@ -391,18 +414,32 @@ const StockPickerContent: React.FC = () => {
     // K 反馈 #4：自增 ID 标记本次请求
     const myRequestId = ++requestIdRef.current;
 
-    setScreenerLoading(true);
+    if (!append) {
+      setScreenerLoading(true);
+    } else {
+      setLoadingMore(true);
+    }
     try {
       const _sortBy = overrideSortBy ?? sortBy;
       const _sortAsc = overrideSortAsc ?? sortAsc;
-      const params = buildScreeningParams(state, _sortBy, _sortAsc, limit) as Record<string, any>;
+      const _offset = append ? offset : 0;
+      const stateForParams = {
+        selectedBoards, stockRange, marketIndicatorRanges,
+        financialIndicatorRanges, selectedTechnicalIndicators, selectedPatterns,
+        filterGroup,
+      } as unknown as ScreenerState;
+      const params = buildScreeningParams(stateForParams, _sortBy, _sortAsc, PAGE_SIZE, _offset) as Record<string, any>;
 
       const result = await fetchStocks(params, controller.signal);
       // K 反馈 #4：仅当本次 requestId 仍是当前活跃的 + 组件未卸载才更新 state
       if (requestIdRef.current !== myRequestId || !isMountedRef.current) {
         return null;
       }
-      setStockResults(result.items || []);
+      if (append) {
+        setStockResults(prev => [...prev, ...(result.items || [])]);
+      } else {
+        setStockResults(result.items || []);
+      }
       setTotalCount(result.total || 0);
       // K 2026-06-22 反馈 #5：选股结果变化时清空选中集（旧的 stock_code 不再有效）
       setSelectedCodes(new Set());
@@ -419,11 +456,21 @@ const StockPickerContent: React.FC = () => {
       setTotalCount(0);
       return null;
     } finally {
-      // K 反馈 #4：仅当本次 requestId 仍是当前活跃的 + 组件未卸载才清 loading
       if (requestIdRef.current === myRequestId && isMountedRef.current) {
-        setScreenerLoading(false);
+        if (append) {
+          setLoadingMore(false);
+        } else {
+          setScreenerLoading(false);
+        }
       }
     }
+  };
+
+  // 加载更多：保留已有结果，追加下一页
+  const handleLoadMore = async () => {
+    const newOffset = offset + PAGE_SIZE;
+    setOffset(newOffset);
+    await runScreening(undefined, undefined, true);
   };
 
   // 渲染可排序的表头单元格
@@ -632,6 +679,19 @@ const StockPickerContent: React.FC = () => {
                     })}
                   </tbody>
                 </table>
+                {stockResults.length < totalCount && (
+                  <div className="flex justify-center py-4">
+                    <Button
+                      type="dashed"
+                      icon={loadingMore ? <LoadingOutlined spin /> : undefined}
+                      onClick={handleLoadMore}
+                      disabled={loadingMore}
+                      className="w-48"
+                    >
+                      {loadingMore ? '加载中...' : `加载更多（${Math.min(PAGE_SIZE, totalCount - stockResults.length)} 只）`}
+                    </Button>
+                  </div>
+                )}
               </div>
             ) : (
               <Text className="text-text-secondary">暂无数据，请先设置筛选条件并点击"开始选股"</Text>
