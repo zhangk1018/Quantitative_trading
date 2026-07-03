@@ -5,10 +5,23 @@ export const OHLCV_LOW = 3;
 export const OHLCV_CLOSE = 4;
 export const OHLCV_VOLUME = 5;
 
-/** 
- * K线数据元组类型，增强类型安全与语义约束
- * [time, open, high, low, close, volume]
- */
+export interface KLineItem {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
+
+export interface SignalItem {
+  time: string;
+  position: 'aboveBar' | 'belowBar';
+  shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square';
+  color: string;
+  text?: string;
+}
+
 export type OHLCVArray = [
   time: number,
   open: number,
@@ -31,7 +44,6 @@ export interface StockSnapshot {
   pe_ttm: number;
   pb: number;
   indicators: StandardIndicators;
-  /** K线数据，必须按时间升序排列 (oldest to newest) */
   ohlcv: OHLCVArray[];
 }
 
@@ -61,7 +73,6 @@ export type PatternType =
   | 'bearish_engulfing';
 
 export interface PatternDetectionResult {
-  code: string;
   hits: PatternType[];
   hitDays: Record<PatternType, number[]>;
 }

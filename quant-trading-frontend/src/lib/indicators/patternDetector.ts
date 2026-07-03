@@ -1,221 +1,287 @@
+// lib/indicators/patternDetector.ts
+
 import {
-  OHLCV_OPEN,
-  OHLCV_HIGH,
-  OHLCV_LOW,
-  OHLCV_CLOSE,
-  type OHLCVArray,
-  type PatternType,
-  type PatternDetectionResult,
-} from './types';
+  precomputeBars,
+  type PrecomputedBar,
+  getBodySize,
+  getRange,
+  getBodyTop,
+  getBodyBottom,
+  getOpen,
+  getClose,
+  getHigh,
+  getLow,
+} from './barUtils';
+import { DETECTION_CONFIG, validateConfig, ChartError, ChartErrorType } from './chartConstants';
+import { type PatternType, type PatternDetectionResult, type OHLCVArray, OHLCV_TIME } from './types';
 
-// --- 默认阈值常量 (作为 fallback) ---
-const DEFAULT_MORNING_STAR_PENETRATION = 0.3;
-const DEFAULT_EVENING_STAR_PENETRATION = 0.3;
-const DEFAULT_DOJI_BODY_RATIO = 0.1;
-const DEFAULT_LARGE_BODY_RATIO = 0.6;
-const DEFAULT_HAMMER_LOWER_SHADOW_RATIO = 2.0;
-const DEFAULT_HAMMER_UPPER_SHADOW_RATIO = 0.1;
-
-export interface DetectionConfig {
-  /** 参与检测的K线总数窗口（强制要求整个形态都落入此窗口内） */
-  lookbackDays: number;
-  morningStarPenetration?: number;
-  eveningStarPenetration?: number;
-  dojiBodyRatio?: number;
-  largeBodyRatio?: number;
-  hammerLowerShadowRatio?: number;
-  hammerUpperShadowRatio?: number;
-  /** 是否要求晨星/夜星的星线必须与前后K线存在跳空缺口 */
-  requireGapForStar?: boolean;
+// ---------- 单K线形态（基于 PrecomputedBar） ----------
+/**
+ * 判断是否为十字星
+ * @param bar - 预计算K线数据
+ * @param ratio - 实体占振幅的最大比例
+ */
+function isDojiFromPrecomputed(bar: PrecomputedBar, ratio: number): boolean {
+  if (bar.range === 0) return true;
+  return bar.bodySize / bar.range <= ratio;
 }
 
-function getOpen(bar: OHLCVArray): number { return bar[OHLCV_OPEN]; }
-function getHigh(bar: OHLCVArray): number { return bar[OHLCV_HIGH]; }
-function getLow(bar: OHLCVArray): number { return bar[OHLCV_LOW]; }
-function getClose(bar: OHLCVArray): number { return bar[OHLCV_CLOSE]; }
-
-function isValidBar(bar: OHLCVArray): boolean {
-  return (
-    bar != null &&
-    Number.isFinite(getOpen(bar)) &&
-    Number.isFinite(getHigh(bar)) &&
-    Number.isFinite(getLow(bar)) &&
-    Number.isFinite(getClose(bar)) &&
-    getHigh(bar) >= getLow(bar) &&
-    getHigh(bar) >= Math.max(getOpen(bar), getClose(bar)) &&
-    getLow(bar) <= Math.min(getOpen(bar), getClose(bar))
-  );
+/**
+ * 判断是否为大实体
+ */
+function isLargeBodyFromPrecomputed(bar: PrecomputedBar, ratio: number): boolean {
+  if (bar.range === 0) return false;
+  return bar.bodySize / bar.range >= ratio;
 }
 
-function getBodyTop(bar: OHLCVArray): number { return Math.max(getOpen(bar), getClose(bar)); }
-function getBodyBottom(bar: OHLCVArray): number { return Math.min(getOpen(bar), getClose(bar)); }
-function getBodySize(bar: OHLCVArray): number { return Math.abs(getClose(bar) - getOpen(bar)); }
-function getRange(bar: OHLCVArray): number { return getHigh(bar) - getLow(bar); }
-function isBullish(bar: OHLCVArray): boolean { return getClose(bar) > getOpen(bar); }
-function isBearish(bar: OHLCVArray): boolean { return getClose(bar) < getOpen(bar); }
-function getUpperShadow(bar: OHLCVArray): number { return getHigh(bar) - getBodyTop(bar); }
-function getLowerShadow(bar: OHLCVArray): number { return getBodyBottom(bar) - getLow(bar); }
-
-function isDoji(bar: OHLCVArray, ratio: number = DEFAULT_DOJI_BODY_RATIO): boolean {
-  const range = getRange(bar);
-  if (range === 0) return true;
-  return getBodySize(bar) / range <= ratio;
-}
-
-function isLargeBody(bar: OHLCVArray, ratio: number = DEFAULT_LARGE_BODY_RATIO): boolean {
-  const range = getRange(bar);
-  if (range === 0) return false;
-  return getBodySize(bar) / range >= ratio;
-}
-
-export function isHammer(
-  bar: OHLCVArray, 
-  lowerRatio: number = DEFAULT_HAMMER_LOWER_SHADOW_RATIO, 
-  upperRatio: number = DEFAULT_HAMMER_UPPER_SHADOW_RATIO
+/**
+ * 判断是否为锤子线（含上影线容差）
+ */
+function isHammerFromPrecomputed(
+  bar: PrecomputedBar,
+  lowerRatio: number,
+  upperRatio: number,
+  tolerance: number,
 ): boolean {
-  if (!isValidBar(bar)) return false;
-  const range = getRange(bar);
-  if (range === 0) return false;
-  
-  const body = getBodySize(bar);
-  const lowerShadow = getLowerShadow(bar);
-  const upperShadow = getUpperShadow(bar);
-  const upperTolerance = range * 0.01; // 允许 1% 振幅的上影线容差
-  
+  if (bar.range === 0) return false;
+  const upperTolerance = bar.range * tolerance;
   return (
-    lowerShadow >= body * lowerRatio &&
-    upperShadow <= body * upperRatio + upperTolerance
+    bar.lowerShadow >= bar.bodySize * lowerRatio &&
+    bar.upperShadow <= bar.bodySize * upperRatio + upperTolerance
   );
 }
 
-export function isBullishEngulfing(prevBar: OHLCVArray, currBar: OHLCVArray): boolean {
-  if (!isValidBar(prevBar) || !isValidBar(currBar)) return false;
-  if (!isBearish(prevBar) || !isBullish(currBar)) return false;
+// ---------- 双K线形态 ----------
+function isBullishEngulfingFromPrecomputed(prev: PrecomputedBar, curr: PrecomputedBar): boolean {
+  if (!prev.bearish || !curr.bullish) return false;
   return (
-    getOpen(currBar) <= getBodyBottom(prevBar) && 
-    getClose(currBar) >= getBodyTop(prevBar) &&
-    getBodySize(currBar) > getBodySize(prevBar) 
+    curr.open <= prev.bodyBottom &&
+    curr.close >= prev.bodyTop &&
+    curr.bodySize > prev.bodySize
   );
 }
 
-export function isBearishEngulfing(prevBar: OHLCVArray, currBar: OHLCVArray): boolean {
-  if (!isValidBar(prevBar) || !isValidBar(currBar)) return false;
-  if (!isBullish(prevBar) || !isBearish(currBar)) return false;
+function isBearishEngulfingFromPrecomputed(prev: PrecomputedBar, curr: PrecomputedBar): boolean {
+  if (!prev.bullish || !curr.bearish) return false;
   return (
-    getOpen(currBar) >= getBodyTop(prevBar) && 
-    getClose(currBar) <= getBodyBottom(prevBar) &&
-    getBodySize(currBar) > getBodySize(prevBar) 
+    curr.open >= prev.bodyTop &&
+    curr.close <= prev.bodyBottom &&
+    curr.bodySize > prev.bodySize
   );
 }
 
-export function isMorningStar(
-  bar1: OHLCVArray, bar2: OHLCVArray, bar3: OHLCVArray,
-  penetration: number = DEFAULT_MORNING_STAR_PENETRATION,
-  dojiRatio: number = DEFAULT_DOJI_BODY_RATIO,
-  largeBodyRatio: number = DEFAULT_LARGE_BODY_RATIO,
-  requireGap: boolean = false,
+// ---------- 星形态（晨星/夜星） ----------
+function isStarPatternFromPrecomputed(
+  bar1: PrecomputedBar,
+  bar2: PrecomputedBar,
+  bar3: PrecomputedBar,
+  firstBullish: boolean,   // true: 夜星（第一根阳线）, false: 晨星（第一根阴线）
+  penetration: number,
+  dojiRatio: number,
+  largeBodyRatio: number,
+  requireGap: boolean,
 ): boolean {
-  if (!isValidBar(bar1) || !isValidBar(bar2) || !isValidBar(bar3)) return false;
-  if (!isBearish(bar1) || !isLargeBody(bar1, largeBodyRatio)) return false;
-  if (!isDoji(bar2, dojiRatio)) return false;
-  if (!isBullish(bar3) || !isLargeBody(bar3, largeBodyRatio)) return false;
-  
-  if (requireGap) {
-    if (getLow(bar2) <= getClose(bar1)) return false;
-    if (getOpen(bar3) <= getClose(bar2)) return false;
+  // 第一根
+  if (firstBullish) {
+    if (!bar1.bullish || !isLargeBodyFromPrecomputed(bar1, largeBodyRatio)) return false;
+  } else {
+    if (!bar1.bearish || !isLargeBodyFromPrecomputed(bar1, largeBodyRatio)) return false;
   }
-  
-  const penetrationPrice = getBodyBottom(bar1) + getBodySize(bar1) * penetration;
-  return getClose(bar3) >= penetrationPrice;
-}
-
-export function isEveningStar(
-  bar1: OHLCVArray, bar2: OHLCVArray, bar3: OHLCVArray,
-  penetration: number = DEFAULT_EVENING_STAR_PENETRATION,
-  dojiRatio: number = DEFAULT_DOJI_BODY_RATIO,
-  largeBodyRatio: number = DEFAULT_LARGE_BODY_RATIO,
-  requireGap: boolean = false,
-): boolean {
-  if (!isValidBar(bar1) || !isValidBar(bar2) || !isValidBar(bar3)) return false;
-  if (!isBullish(bar1) || !isLargeBody(bar1, largeBodyRatio)) return false;
-  if (!isDoji(bar2, dojiRatio)) return false;
-  if (!isBearish(bar3) || !isLargeBody(bar3, largeBodyRatio)) return false;
-  
-  if (requireGap) {
-    if (getHigh(bar2) >= getClose(bar1)) return false;
-    if (getOpen(bar3) >= getClose(bar2)) return false;
+  // 第二根（星线）
+  if (!isDojiFromPrecomputed(bar2, dojiRatio)) return false;
+  // 第三根
+  if (firstBullish) {
+    if (!bar3.bearish || !isLargeBodyFromPrecomputed(bar3, largeBodyRatio)) return false;
+  } else {
+    if (!bar3.bullish || !isLargeBodyFromPrecomputed(bar3, largeBodyRatio)) return false;
   }
-  
-  const penetrationPrice = getBodyTop(bar1) - getBodySize(bar1) * penetration;
-  return getClose(bar3) <= penetrationPrice;
+
+  if (requireGap) {
+    if (firstBullish) {
+      // 夜星：第二根高开，第三根低开
+      if (bar2.high >= bar1.close) return false;
+      if (bar3.open >= bar2.close) return false;
+    } else {
+      // 晨星：第二根低开，第三根高开
+      if (bar2.low <= bar1.close) return false;
+      if (bar3.open <= bar2.close) return false;
+    }
+  }
+
+  const bodySize = bar1.bodySize;
+  if (firstBullish) {
+    const penetrationPrice = bar1.bodyTop - bodySize * penetration;
+    return bar3.close <= penetrationPrice;
+  } else {
+    const penetrationPrice = bar1.bodyBottom + bodySize * penetration;
+    return bar3.close >= penetrationPrice;
+  }
 }
 
+function isMorningStarFromPrecomputed(
+  b1: PrecomputedBar,
+  b2: PrecomputedBar,
+  b3: PrecomputedBar,
+  config: typeof DETECTION_CONFIG,
+): boolean {
+  return isStarPatternFromPrecomputed(
+    b1, b2, b3,
+    false,
+    config.morningStarPenetration,
+    config.dojiBodyRatio,
+    config.largeBodyRatio,
+    config.requireGapForStar,
+  );
+}
+
+function isEveningStarFromPrecomputed(
+  b1: PrecomputedBar,
+  b2: PrecomputedBar,
+  b3: PrecomputedBar,
+  config: typeof DETECTION_CONFIG,
+): boolean {
+  return isStarPatternFromPrecomputed(
+    b1, b2, b3,
+    true,
+    config.eveningStarPenetration,
+    config.dojiBodyRatio,
+    config.largeBodyRatio,
+    config.requireGapForStar,
+  );
+}
+
+// ---------- 辅助：检查时间有序性 ----------
+/**
+ * 检查 OHLCV 数组是否按时间升序排列
+ * @param ohlcv - 数据数组
+ * @param strict - 若为 false，检测到乱序则自动排序并警告；若为 true 则抛出错误
+ * @returns 排序后的数组（若原有序则返回原数组引用）
+ */
+function ensureTimeOrder(ohlcv: OHLCVArray[], strict = false): OHLCVArray[] {
+  if (ohlcv.length < 2) return ohlcv;
+  let sorted = true;
+  for (let i = 1; i < ohlcv.length; i++) {
+    if (ohlcv[i][OHLCV_TIME] < ohlcv[i - 1][OHLCV_TIME]) {
+      sorted = false;
+      break;
+    }
+  }
+  if (sorted) return ohlcv;
+  const msg = 'OHLCV data is not in ascending time order, auto-sorting.';
+  console.warn(`[ensureTimeOrder] ${msg}`);
+  if (strict) {
+    throw new ChartError(ChartErrorType.DATA_INVALID, 'OHLCV data must be time-ascending');
+  }
+  // 复制并排序（按时间升序）
+  const copy = [...ohlcv];
+  copy.sort((a, b) => a[OHLCV_TIME] - b[OHLCV_TIME]);
+  return copy;
+}
+
+// ---------- 批量检测入口（核心） ----------
+/**
+ * 检测所有形态（纯函数）
+ * @param ohlcv - OHLCV 数组（建议按时间升序，若非升序则会自动排序并警告）
+ * @param config - 检测配置（覆盖默认值，非法值将自动修正）
+ * @param targetPatterns - 仅检测指定形态（可选，用于提前终止）
+ * @returns 包含命中形态和对应索引的结果
+ * @throws {ChartError} 当入参严重无效时（如非数组、元素不足）
+ */
 export function detectAllPatterns(
-  code: string,
   ohlcv: OHLCVArray[],
-  config: DetectionConfig = { lookbackDays: 3 },
-  targetPatterns?: PatternType[], 
+  config: Partial<typeof DETECTION_CONFIG> = {},
+  targetPatterns?: PatternType[],
 ): PatternDetectionResult {
+  // 1. 入参基础校验
+  if (!Array.isArray(ohlcv) || ohlcv.length < 2) {
+    throw new ChartError(
+      ChartErrorType.DATA_INVALID,
+      'ohlcv must be an array with at least 2 elements'
+    );
+  }
+  // 2. 时间有序性检查 & 自动排序
+  const sortedData = ensureTimeOrder(ohlcv, false);
+
+  // 3. 配置校验与合并
+  const validatedConfig = validateConfig(config);
+
+  // 4. 预计算
+  const precomputed = precomputeBars(sortedData);
+  if (precomputed.length < 2) {
+    return {
+      hits: [],
+      hitDays: {
+        hammer: [],
+        morning_star: [],
+        evening_star: [],
+        bullish_engulfing: [],
+        bearish_engulfing: [],
+      },
+    };
+  }
+
+  // 5. 初始化结果
   const result: PatternDetectionResult = {
-    code,
     hits: [],
     hitDays: {
-      hammer: [], morning_star: [], evening_star: [],
-      bullish_engulfing: [], bearish_engulfing: [],
+      hammer: [],
+      morning_star: [],
+      evening_star: [],
+      bullish_engulfing: [],
+      bearish_engulfing: [],
     },
   };
 
-  const n = ohlcv.length;
-  if (n === 0) return result;
-
-  const windowStart = Math.max(0, n - config.lookbackDays);
-  
-  const dojiRatio = config.dojiBodyRatio ?? DEFAULT_DOJI_BODY_RATIO;
-  const largeBodyRatio = config.largeBodyRatio ?? DEFAULT_LARGE_BODY_RATIO;
-  const hammerLower = config.hammerLowerShadowRatio ?? DEFAULT_HAMMER_LOWER_SHADOW_RATIO;
-  const hammerUpper = config.hammerUpperShadowRatio ?? DEFAULT_HAMMER_UPPER_SHADOW_RATIO;
-  const morningPen = config.morningStarPenetration ?? DEFAULT_MORNING_STAR_PENETRATION;
-  const eveningPen = config.eveningStarPenetration ?? DEFAULT_EVENING_STAR_PENETRATION;
-  const requireGap = config.requireGapForStar ?? false;
-
-  const hitSet = new Set<PatternType>();
   const targetSet = targetPatterns ? new Set(targetPatterns) : null;
+  const hitSet = new Set<PatternType>();
 
-  for (let i = windowStart; i < n; i++) {
-    const bar = ohlcv[i];
-    if (!isValidBar(bar)) continue;
+  // 6. 遍历预计算数组
+  for (let idx = 0; idx < precomputed.length; idx++) {
+    const bar = precomputed[idx];
+    const originalIndex = bar.index;
 
-    if (isHammer(bar, hammerLower, hammerUpper)) {
-      result.hitDays.hammer.push(i);
+    // ---- 锤子线 ----
+    if (isHammerFromPrecomputed(
+      bar,
+      validatedConfig.hammerLowerShadowRatio,
+      validatedConfig.hammerUpperShadowRatio,
+      validatedConfig.hammerUpperTolerance
+    )) {
+      result.hitDays.hammer.push(originalIndex);
       hitSet.add('hammer');
     }
 
-    if (i >= windowStart + 1) {
-      const prev = ohlcv[i - 1];
-      if (isBullishEngulfing(prev, bar)) {
-        result.hitDays.bullish_engulfing.push(i);
+    // ---- 吞没（需要连续两根原始K线相邻） ----
+    if (idx > 0 && precomputed[idx - 1].index === originalIndex - 1) {
+      const prev = precomputed[idx - 1];
+      if (isBullishEngulfingFromPrecomputed(prev, bar)) {
+        result.hitDays.bullish_engulfing.push(originalIndex);
         hitSet.add('bullish_engulfing');
       }
-      if (isBearishEngulfing(prev, bar)) {
-        result.hitDays.bearish_engulfing.push(i);
+      if (isBearishEngulfingFromPrecomputed(prev, bar)) {
+        result.hitDays.bearish_engulfing.push(originalIndex);
         hitSet.add('bearish_engulfing');
       }
     }
 
-    if (i >= windowStart + 2) {
-      const b1 = ohlcv[i - 2];
-      const b2 = ohlcv[i - 1];
-      const b3 = bar;
-      if (isMorningStar(b1, b2, b3, morningPen, dojiRatio, largeBodyRatio, requireGap)) {
-        result.hitDays.morning_star.push(i);
+    // ---- 星形态（需要连续三根原始K线相邻） ----
+    if (idx > 1 &&
+        precomputed[idx - 1].index === originalIndex - 1 &&
+        precomputed[idx - 2].index === originalIndex - 2) {
+      const b1 = precomputed[idx - 2],
+            b2 = precomputed[idx - 1],
+            b3 = bar;
+      if (isMorningStarFromPrecomputed(b1, b2, b3, validatedConfig)) {
+        result.hitDays.morning_star.push(originalIndex);
         hitSet.add('morning_star');
       }
-      if (isEveningStar(b1, b2, b3, eveningPen, dojiRatio, largeBodyRatio, requireGap)) {
-        result.hitDays.evening_star.push(i);
+      if (isEveningStarFromPrecomputed(b1, b2, b3, validatedConfig)) {
+        result.hitDays.evening_star.push(originalIndex);
         hitSet.add('evening_star');
       }
     }
 
+    // 提前终止（若已找到所有目标形态）
     if (targetSet && targetSet.size > 0) {
       let allFound = true;
       for (const p of targetSet) {
@@ -229,13 +295,20 @@ export function detectAllPatterns(
   return result;
 }
 
+/**
+ * 快速检测是否存在指定形态（基于 `detectAllPatterns`）
+ */
 export function hasAnyPattern(
-  code: string,
   ohlcv: OHLCVArray[],
   patterns: PatternType[],
-  lookbackDays: number = 3,
+  config: Partial<typeof DETECTION_CONFIG> = {},
 ): boolean {
   if (!patterns || patterns.length === 0) return false;
-  const result = detectAllPatterns(code, ohlcv, { lookbackDays }, patterns);
-  return patterns.some((p) => result.hits.includes(p));
+  try {
+    const result = detectAllPatterns(ohlcv, config, patterns);
+    return patterns.some((p) => result.hits.includes(p));
+  } catch (err) {
+    console.error('[hasAnyPattern] detection failed:', err);
+    return false;
+  }
 }

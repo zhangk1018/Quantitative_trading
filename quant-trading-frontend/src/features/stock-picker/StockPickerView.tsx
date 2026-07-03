@@ -1,7 +1,16 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Typography, Button, Select, Divider, Spin, message, Checkbox, Modal, Input } from 'antd';
-import { SaveOutlined, FolderOpenOutlined, ReloadOutlined, PlusCircleOutlined, DownloadOutlined, BlockOutlined, PlayCircleOutlined, LoadingOutlined, CaretUpOutlined, CaretDownOutlined } from '@ant-design/icons';
-import { ScreenerProvider, useScreenerSelector, useScreenerDispatch, ScreenerState } from './context/ScreenerContext';
+// StockPickerView.tsx
+import React, {
+  useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect, memo,
+} from 'react';
+import {
+  Typography, Button, Divider, Spin, message, Checkbox, Modal, Input,
+} from 'antd';
+import {
+  SaveOutlined, FolderOpenOutlined, ReloadOutlined,
+  PlusCircleOutlined, DownloadOutlined, BlockOutlined,
+  PlayCircleOutlined, LoadingOutlined, CaretUpOutlined, CaretDownOutlined,
+} from '@ant-design/icons';
+import { useScreenerSelector, useScreenerDispatch } from './context/ScreenerContext';
 import RangeSelector from './components/RangeSelector';
 import IndicatorFilter from './components/IndicatorFilter';
 import FinancialFilter from './components/FinancialFilter';
@@ -11,38 +20,52 @@ import FactorScoringConfig from './components/FactorScoringConfig';
 import { fetchStocks } from '../stock-detail/api';
 import { useSettings } from '@/shared/contexts/SettingsContext';
 import { useWatchlist } from '../watchlist/store';
+import {
+  buildScreeningParams,
+  formatMarketCap,
+  formatNumber,
+  exportToCsv,
+  CONFIG,
+  ScreenerFilterPayload,
+  RequestParamKeys,
+} from './utils/screener';
 
 const { Text } = Typography;
 
-// =====================================================================
-// K 2026-06-18 反馈 #4：把 ScreenerState → fetchStocks params 的转换抽离为纯函数，
-// 便于单测 + 降低 runScreening 职责。
-// =====================================================================
+// ==================== 类型定义 ====================
+interface StockItem {
+  stock_code: string;
+  stock_name: string;
+  close: number | null;
+  change_pct: number | null;
+  turnover_rate: number | null;
+  pe: number | null;
+  pe_ttm?: number | null;
+  pb: number | null;
+  market_cap: number | null;
+  amount: number | null;
+  listed_board: string | null;
+  patterns?: string[];
+}
 
-/**
- * 把 ScreenerState 序列化为 fetchStocks 的 params（纯函数，无副作用）
- * K 2026-06-18 反馈 #4：便于单元测试 + 降低 runScreening 的行数。
- * K 2026-06-18 反馈 #1：显式解构 state 字段并在注释中列出依赖，
- * 避免未来 ScreenerState 结构变化时本函数产生隐式依赖。
- *
- * 依赖的 ScreenerState 字段（变更时需同步检查本函数）：
- * - selectedBoards: string[]   — 上市地过滤
- * - stockRange: string         — 选股范围（watchlist / all）
- * - marketIndicatorRanges: Record<string, IndicatorRange>  — 行情指标阈值（含单位转换）
- * - financialIndicatorRanges: Record<string, IndicatorRange> — 财务指标阈值
- * - selectedTechnicalIndicators: Record<string, string>    — 技术指标选项
- * - filterGroup: FilterGroup | null  — 条件构建器
- */
-export function buildScreeningParams(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  state: any,
-  sortBy: string,
-  sortAsc: boolean,
-  limit: number,
-  offset: number = 0,
-): Record<string, unknown> {
-  // 显式解构 state 字段（K 反馈 #1）：列出所有依赖，未来调整时编译器会立即提示
-  const {
+interface FetchStocksResponse {
+  items: StockItem[];
+  total: number;
+}
+
+// ==================== 自定义 Hook：数据管理（分离至独立函数，便于测试） ====================
+function useScreenerData() {
+  // 所有筛选状态（使用 ref 保证最新值，配合 useLayoutEffect 确保同步）
+  const selectedBoards = useScreenerSelector((s) => s.market.selectedBoards);
+  const stockRange = useScreenerSelector((s) => s.market.stockRange);
+  const marketIndicatorRanges = useScreenerSelector((s) => s.marketIndicators.ranges);
+  const financialIndicatorRanges = useScreenerSelector((s) => s.financialIndicators.ranges);
+  const selectedTechnicalIndicators = useScreenerSelector((s) => s.technical.selected);
+  const selectedPatterns = useScreenerSelector((s) => s.patterns.selected);
+  const filterGroup = useScreenerSelector((s) => s.condition.filterGroup);
+
+  // 使用 useRef 存储最新状态，并在每次渲染后同步更新
+  const stateRef = useRef<ScreenerFilterPayload>({
     selectedBoards,
     stockRange,
     marketIndicatorRanges,
@@ -50,293 +73,345 @@ export function buildScreeningParams(
     selectedTechnicalIndicators,
     selectedPatterns,
     filterGroup,
-  }: {
-    selectedBoards?: string[];
-    stockRange?: string;
-    marketIndicatorRanges?: Record<string, { min?: number; max?: number }>;
-    financialIndicatorRanges?: Record<string, { min?: number; max?: number }>;
-    selectedTechnicalIndicators?: Record<string, string>;
-    selectedPatterns?: Record<string, number>;
-    filterGroup?: { conditions?: Array<{ fieldKey: string; op: string }> } | null;
-  } = state;
-  const params: Record<string, unknown> = {};
+  });
+  // 使用 useLayoutEffect 确保在浏览器绘制前更新，避免视觉不一致
+  useLayoutEffect(() => {
+    stateRef.current = {
+      selectedBoards,
+      stockRange,
+      marketIndicatorRanges,
+      financialIndicatorRanges,
+      selectedTechnicalIndicators,
+      selectedPatterns,
+      filterGroup,
+    };
+  });
 
-  // 上市地（listed_board）
-  if (selectedBoards && !selectedBoards.includes('all')) {
-    const boards = selectedBoards.filter((b) => b !== 'all');
-    if (boards.length > 0) {
-      if (
-        boards.length === 2 &&
-        boards.includes('上海主板') &&
-        boards.includes('深圳主板')
-      ) {
-        params.listed_board = '主板';
-      } else {
-        params.listed_board = boards.join(',');
-      }
-    }
-  }
-
-  if (stockRange === 'watchlist') {
-    params.watchlist_only = true;
-  }
-
-  // 指标范围参数单位转换（前端用户输入单位 → 后端存储单位）
-  // market_cap: 用户输入"亿" → 后端"万元"，×10000
-  // amount: 用户输入"亿" → 后端"万元"，×10000
-  // volume: 用户输入"手" → 后端"手"，无需转换
-  const UNIT_CONVERSION: Record<string, number> = {
-    market_cap: 10000,  // 亿 → 万元
-    amount: 10000,      // 亿 → 万元
-  };
-
-  if (marketIndicatorRanges) {
-    Object.entries(marketIndicatorRanges).forEach(([key, range]) => {
-      const multiplier = UNIT_CONVERSION[key] || 1;
-      if (range.min) params[`${key}_min`] = Number(range.min) * multiplier;
-      if (range.max) params[`${key}_max`] = Number(range.max) * multiplier;
-    });
-  }
-
-  if (financialIndicatorRanges) {
-    Object.entries(financialIndicatorRanges).forEach(([key, range]) => {
-      if (range.min) params[`${key}_min`] = Number(range.min);
-      if (range.max) params[`${key}_max`] = Number(range.max);
-    });
-  }
-
-  // 技术指标选项：每个已选指标序列化为 `tech_{id}=option` 参数
-  // 例如：tech_ma=long_align&tech_rsi=low_golden_cross
-  if (selectedTechnicalIndicators) {
-    Object.entries(selectedTechnicalIndicators).forEach(([id, option]) => {
-      params[`tech_${id}`] = option;
-    });
-  }
-
-  // K线形态筛选：每个已选形态序列化为 `pattern_{id}=lookbackDays` 参数
-  // 例如：pattern_hammer=3&pattern_bullish_engulfing=5
-  if (selectedPatterns) {
-    Object.entries(selectedPatterns).forEach(([patternId, lookbackDays]) => {
-      params[`pattern_${patternId}`] = lookbackDays;
-    });
-  }
-
-  // 条件构建器：filterGroup 序列化为 `cond_<fieldKey>=<op>` 多个 query 参数
-  // 例：cond_rsi_oversold=AND&cond_volume_breakout=AND
-  // 后端 router/stocks.py 的 _parse_condition_builder 识别该格式
-  // (K 2026-06-18 任务：把条件构建器接入选股)
-  if (filterGroup?.conditions) {
-    filterGroup.conditions.forEach((cond) => {
-      params[`cond_${cond.fieldKey}`] = cond.op;
-    });
-  }
-
-  params.sort_by = sortBy;
-  params.sort_asc = sortAsc;
-  params.offset = offset;
-  params.limit = limit;
-
-  return params;
-}
-
-const StockPickerContent: React.FC = () => {
-  const selectedBoards = useScreenerSelector(s => s.market.selectedBoards);
-  const stockRange = useScreenerSelector(s => s.market.stockRange);
-  const selectedMarketIndicators = useScreenerSelector(s => s.marketIndicators.selected);
-  const selectedFinancialIndicators = useScreenerSelector(s => s.financialIndicators.selected);
-  const selectedTechnicalIndicators = useScreenerSelector(s => s.technical.selected);
-  const selectedPatterns = useScreenerSelector(s => s.patterns.selected);
-  const marketIndicatorRanges = useScreenerSelector(s => s.marketIndicators.ranges);
-  const financialIndicatorRanges = useScreenerSelector(s => s.financialIndicators.ranges);
-  const filterGroup = useScreenerSelector(s => s.condition.filterGroup);
-  const dispatch = useScreenerDispatch();
-  const { colors: upDownColors } = useSettings();
-  const { addMany } = useWatchlist();
-  const [screenerLoading, setScreenerLoading] = useState(false);
-  const [stockResults, setStockResults] = useState<any[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
+  const [items, setItems] = useState<StockItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [sortBy, setSortBy] = useState('change_pct');
   const [sortAsc, setSortAsc] = useState(false);
-  const PAGE_SIZE = 20;
   const [offset, setOffset] = useState(0);
-  const [loadingMore, setLoadingMore] = useState(false);
-  // 选股结果中的复选框选中项（key 为股票 code）
-  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
-  // 批量加入自选：自定义分组名（空 → 走后端默认分组）
-  const [addToWatchlistOpen, setAddToWatchlistOpen] = useState(false);
-  const [groupNameInput, setGroupNameInput] = useState('');
-  const [addingToWatchlist, setAddingToWatchlist] = useState(false);
-  // K 2026-06-18 反馈 #5：移除未使用的 asOfDate state（UI 无对应日期选择器）
+  const PAGE_SIZE = CONFIG.PAGE_SIZE;
 
-  // K 2026-06-18 任务 #11：用 AbortController 取消上一次未完成的选股请求，
-  // 防止用户快速多次点击时旧数据覆盖新数据。
-  // K 2026-06-18 反馈 #1：加 isMounted 保险，防止组件卸载后 setState 警告 + 旧 controller
-  // 的 finally 块在 abortRef 已指向新 controller 时不关 loading 的潜在 race。
-  // K 2026-06-18 反馈 #4：引入 requestIdRef 自增计数器作为"当前活跃请求"判断，
-  // 避免依赖引用比较（多个连续请求被 abort 时仍能准确识别"哪一次是最终活跃"）。
+  // 请求控制
   const abortRef = useRef<AbortController | null>(null);
-  const requestIdRef = useRef(0);
-  const isMountedRef = useRef(true);
+  const timeoutRef = useRef<number | null>(null);
+  const debounceTimerRef = useRef<number | null>(null);
 
+  /** 核心请求函数（重命名明确意图） */
+  const fetchScreeningData = useCallback(
+    async (params: {
+      sortBy: string;
+      sortAsc: boolean;
+      offset: number;
+      append?: boolean;
+      signal?: AbortSignal;
+    }) => {
+      const { sortBy: sortByParam, sortAsc: sortAscParam, offset: offsetParam, append = false, signal } = params;
+
+      if (abortRef.current) abortRef.current.abort();
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const finalSignal = signal || controller.signal;
+
+      const timeoutId = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT);
+      timeoutRef.current = timeoutId;
+
+      if (!append) setLoading(true);
+      else setLoadingMore(true);
+
+      try {
+        const state = stateRef.current;
+        const requestParams = buildScreeningParams(
+          state,
+          sortByParam,
+          sortAscParam,
+          PAGE_SIZE,
+          offsetParam,
+        );
+        const result = (await fetchStocks(requestParams, finalSignal)) as FetchStocksResponse;
+
+        setItems((prev) => (append ? [...prev, ...result.items] : result.items));
+        setTotal(result.total || 0);
+        setSortBy(sortByParam);
+        setSortAsc(sortAscParam);
+        setOffset(offsetParam);
+        return result;
+      } catch (error: any) {
+        if (finalSignal.aborted) return null;
+        if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return null;
+        // 分类错误
+        const isNetworkError = !error.response && error.request;
+        const statusCode = error.response?.status;
+        let errorMsg = '选股失败，请稍后重试';
+        if (isNetworkError) errorMsg = '网络连接异常，请检查网络';
+        else if (statusCode === 400) errorMsg = '请求参数错误，请检查筛选条件';
+        else if (statusCode >= 500) errorMsg = '服务器异常，请稍后重试';
+        else if (error.message) errorMsg = error.message;
+        console.error('选股失败:', error);
+        message.error(errorMsg);
+        if (!append) { setItems([]); setTotal(0); }
+        return null;
+      } finally {
+        if (timeoutRef.current === timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutRef.current = null;
+        }
+        if (!append) setLoading(false);
+        else setLoadingMore(false);
+        if (abortRef.current === controller) abortRef.current = null;
+      }
+    },
+    [PAGE_SIZE],
+  );
+
+  const refresh = useCallback(
+    async (newSortBy?: string, newSortAsc?: boolean) => {
+      const sortByParam = newSortBy ?? sortBy;
+      const sortAscParam = newSortAsc ?? sortAsc;
+      return fetchScreeningData({
+        sortBy: sortByParam,
+        sortAsc: sortAscParam,
+        offset: 0,
+        append: false,
+      });
+    },
+    [fetchScreeningData, sortBy, sortAsc],
+  );
+
+  const loadMore = useCallback(() => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      const nextOffset = offset + PAGE_SIZE;
+      fetchScreeningData({
+        sortBy,
+        sortAsc,
+        offset: nextOffset,
+        append: true,
+      });
+      debounceTimerRef.current = null;
+    }, CONFIG.DEBOUNCE_DELAY) as unknown as number;
+  }, [fetchScreeningData, sortBy, sortAsc, offset, PAGE_SIZE]);
+
+  const reset = useCallback(() => {
+    if (abortRef.current) abortRef.current.abort();
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    setItems([]);
+    setTotal(0);
+    setSortBy('change_pct');
+    setSortAsc(false);
+    setOffset(0);
+  }, []);
+
+  // 页面可见性监听
   useEffect(() => {
-    isMountedRef.current = true;
-    return () => {
-      isMountedRef.current = false;
-      // 组件卸载时取消未完成的请求 + 清空 ref，避免内存泄漏 / setState after unmount
-      // K 2026-06-18 反馈 #6：同时把 abortRef.current 置 null，
-      // 防止 finally 块中 abortRef.current === controller 判断因引用变化失败导致 loading 未清理
-      if (abortRef.current) {
+    const handleVisibilityChange = () => {
+      if (document.hidden && abortRef.current) {
         abortRef.current.abort();
         abortRef.current = null;
       }
     };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
-  const totalFiltersCount =
-    selectedMarketIndicators.length +
-    selectedFinancialIndicators.length +
-    Object.keys(selectedTechnicalIndicators).length +
-    Object.keys(selectedPatterns).length +
-    (filterGroup?.conditions.length || 0);
+  // 组件卸载清理
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, []);
 
-  const handleReset = () => {
-    // K 2026-06-22 反馈：重置时取消进行中的请求，避免旧响应覆盖空状态
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
-    }
-    requestIdRef.current += 1;
-    dispatch({ type: 'RESET_ALL' });
-    setStockResults([]);
-    setTotalCount(0);
-    setSortBy('change_pct');
-    setSortAsc(false);
-    setOffset(0);
-    setSelectedCodes(new Set());
+  return {
+    items,
+    total,
+    loading,
+    loadingMore,
+    sortBy,
+    sortAsc,
+    offset,
+    PAGE_SIZE,
+    refresh,
+    loadMore,
+    reset,
   };
+}
 
-  const handleStartScreening = async () => {
-    const result = await runScreening();
-    if (result && result.items && result.items.length > 0) {
+// ==================== 表格行组件（memo） ====================
+interface TableRowProps {
+  stock: StockItem;
+  index: number;
+  selected: boolean;
+  onToggle: (code: string) => void;
+}
+
+const TableRow = memo(({ stock, index, selected, onToggle }: TableRowProps) => {
+  const { colors } = useSettings();
+  const changePct = Number(stock.change_pct) || 0;
+  const isUp = changePct >= 0;
+  const color = isUp ? colors.up : colors.down;
+
+  return (
+    <tr
+      className={`border-b border-border-color hover:bg-bg-panel/60 transition-colors ${
+        selected ? 'bg-color-accent/10' : ''
+      }`}
+    >
+      <td className="px-3 py-2 text-center">
+        <Checkbox
+          checked={selected}
+          onChange={() => onToggle(stock.stock_code)}
+          data-testid={`row-checkbox-${stock.stock_code}`}
+        />
+      </td>
+      <td className="px-3 py-2 text-center text-text-secondary text-xs">{index + 1}</td>
+      <td className="px-3 py-2 text-text-primary font-mono">{stock.stock_code}</td>
+      <td className="px-3 py-2 text-text-primary">{stock.stock_name}</td>
+      <td className="px-3 py-2 text-right font-mono" style={{ color }}>
+        {formatNumber(stock.close)}
+      </td>
+      <td className="px-3 py-2 text-right font-mono" style={{ color }}>
+        {isUp ? '+' : ''}{changePct.toFixed(2)}%
+      </td>
+      <td className="px-3 py-2 text-right text-text-primary font-mono">
+        {formatNumber(stock.turnover_rate)}%
+      </td>
+      <td className="px-3 py-2 text-right text-text-primary font-mono">
+        {formatNumber(stock.pe ?? stock.pe_ttm)}
+      </td>
+      <td className="px-3 py-2 text-right text-text-primary font-mono">
+        {formatNumber(stock.pb)}
+      </td>
+      <td className="px-3 py-2 text-right text-text-primary font-mono">
+        {formatMarketCap(stock.market_cap)}
+      </td>
+      <td className="px-3 py-2 text-right text-text-primary font-mono">
+        {formatMarketCap(stock.amount)}
+      </td>
+      <td className="px-3 py-2 text-center">
+        {stock.listed_board && (
+          <span className="text-xs px-1.5 py-0.5 bg-bg-card text-text-secondary rounded">
+            {stock.listed_board}
+          </span>
+        )}
+      </td>
+      <td className="px-3 py-2 text-center">
+        {stock.patterns && stock.patterns.length > 0 ? (
+          <div className="flex gap-1 justify-center flex-wrap">
+            {stock.patterns.slice(0, 2).map((p, i) => (
+              <span key={i} className="text-xs px-1.5 py-0.5 bg-color-accent/20 text-color-accent rounded">
+                {p}
+              </span>
+            ))}
+            {stock.patterns.length > 2 && (
+              <span className="text-xs text-text-secondary">+{stock.patterns.length - 2}</span>
+            )}
+          </div>
+        ) : (
+          <span className="text-text-secondary text-xs">-</span>
+        )}
+      </td>
+    </tr>
+  );
+});
+TableRow.displayName = 'TableRow';
+
+// ==================== 主组件 ====================
+const StockPickerContent: React.FC = () => {
+  const dispatch = useScreenerDispatch();
+  const { addMany } = useWatchlist();
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+
+  const {
+    items, total, loading, loadingMore, sortBy, sortAsc, PAGE_SIZE,
+    refresh, loadMore, reset: resetData,
+  } = useScreenerData();
+
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [adding, setAdding] = useState(false);
+
+  // 筛选条件计数
+  const marketCount = useScreenerSelector((s) => s.marketIndicators.selected.length);
+  const financialCount = useScreenerSelector((s) => s.financialIndicators.selected.length);
+  const techCount = useScreenerSelector((s) => Object.keys(s.technical.selected).length);
+  const patternCount = useScreenerSelector((s) => Object.keys(s.patterns.selected).length);
+  const conditionCount = useScreenerSelector(
+    (s) => s.condition.filterGroup?.conditions?.length || 0,
+  );
+  const totalFiltersCount = useMemo(
+    () => marketCount + financialCount + techCount + patternCount + conditionCount,
+    [marketCount, financialCount, techCount, patternCount, conditionCount],
+  );
+
+  const handleReset = useCallback(() => {
+    dispatch({ type: 'RESET_ALL' });
+    resetData();
+    setSelectedCodes(new Set());
+  }, [dispatch, resetData]);
+
+  const handleStartScreening = useCallback(async () => {
+    const result = await refresh();
+    if (result && result.items.length > 0) {
       message.success(`选股成功，共 ${result.total} 只`);
     }
-  };
+  }, [refresh]);
 
-  // 格式化市值（万元 → 亿）
-  const formatMarketCap = (value: number | null | undefined): string => {
-    if (value === null || value === undefined) return '-';
-    // market_cap 字段为万元，转为亿需要 ÷10000
-    const yi = value / 10000;
-    return `${yi.toFixed(2)}亿`;
-  };
+  // ---- 排序（带默认方向 + 滚动到顶部） ----
+  const handleSort = useCallback(
+    (column: string) => {
+      const defaultAsc = CONFIG.DEFAULT_SORT_DIR[column] ?? false;
+      const newAsc = sortBy === column ? !sortAsc : defaultAsc;
+      refresh(column, newAsc).then(() => {
+        if (tableContainerRef.current) {
+          tableContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      });
+    },
+    [sortBy, sortAsc, refresh],
+  );
 
-  // 格式化数字
-  const formatNumber = (value: number | null | undefined, decimals = 2): string => {
-    if (value === null || value === undefined) return '-';
-    return Number(value).toFixed(decimals);
-  };
-
-  // ============================================================
-  // 复选框：单行 toggle / 全选 / 反选 / 清空
-  // 选股结果切换（重新选股 / 重置）时自动清空选中集，避免悬空引用
-  // ============================================================
   const allCodes = useMemo(
-    () => stockResults.map((s) => s.stock_code).filter(Boolean) as string[],
-    [stockResults],
+    () => items.map((s) => s.stock_code).filter((code) => code != null),
+    [items],
   );
   const selectedCount = selectedCodes.size;
   const allSelected = allCodes.length > 0 && selectedCount === allCodes.length;
   const indeterminate = selectedCount > 0 && !allSelected;
 
-  const toggleOne = (code: string) => {
+  const toggleOne = useCallback((code: string) => {
     setSelectedCodes((prev) => {
       const next = new Set(prev);
-      if (next.has(code)) {
-        next.delete(code);
-      } else {
-        next.add(code);
-      }
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
       return next;
     });
-  };
+  }, []);
 
-  const toggleAll = () => {
-    if (allSelected) {
-      setSelectedCodes(new Set());
-    } else {
-      setSelectedCodes(new Set(allCodes));
-    }
-  };
+  const toggleAll = useCallback(() => {
+    if (allSelected) setSelectedCodes(new Set());
+    else setSelectedCodes(new Set(allCodes));
+  }, [allCodes, allSelected]);
 
-  // ============================================================
-  // 导出 CSV：导出当前 stockResults 全部行（不分选中/未选中，保持简单）
-  // 文件名格式：screener-result-YYYYMMDD-HHmm.csv
-  // ============================================================
-  const handleExportCsv = () => {
-    if (stockResults.length === 0) {
+  const handleExport = useCallback(() => {
+    if (items.length === 0) {
       message.warning('暂无可导出的数据，请先选股');
       return;
     }
-    // CSV 表头（中文 + 英文别名）
-    const headers = [
-      '#', '代码', '名称', '收盘价', '涨跌幅(%)', '换手率(%)',
-      '市盈率(PE)', '市净率(PB)', '总市值(亿)', '成交额(亿)', '板块',
-    ];
-    // CSV 单元格：含逗号/引号/换行的字段加引号包裹，引号转义为 ""
-    const escape = (v: unknown): string => {
-      if (v === null || v === undefined) return '';
-      const s = String(v);
-      if (/[",\n\r]/.test(s)) {
-        return `"${s.replace(/"/g, '""')}"`;
-      }
-      return s;
-    };
-    const rows = stockResults.map((s, idx) => {
-      const changePct = Number(s.change_pct) || 0;
-      return [
-        idx + 1,
-        s.stock_code,
-        s.stock_name,
-        Number(s.close ?? 0).toFixed(2),
-        changePct.toFixed(2),
-        s.turnover_rate === null || s.turnover_rate === undefined ? '' : Number(s.turnover_rate).toFixed(2),
-        s.pe ?? s.pe_ttm ?? '',
-        s.pb ?? '',
-        // market_cap/amount 字段为万元，导出"亿"对用户更直观
-        s.market_cap === null || s.market_cap === undefined ? '' : (Number(s.market_cap) / 10000).toFixed(2),
-        s.amount === null || s.amount === undefined ? '' : (Number(s.amount) / 10000).toFixed(2),
-        s.listed_board ?? '',
-      ];
-    });
-    // Excel 友好：UTF-8 BOM
-    const BOM = '\uFEFF';
-    const csv = BOM + [headers, ...rows]
-      .map((row) => row.map(escape).join(','))
-      .join('\r\n');
+    exportToCsv(items);
+    message.success(`已导出 ${items.length} 只股票`);
+  }, [items]);
 
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const now = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const filename = `screener-result-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.csv`;
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    message.success(`已导出 ${stockResults.length} 只股票到 ${filename}`);
-  };
-
-  // ============================================================
-  // 添加自选：弹窗让用户选分组 → 批量 POST /api/watchlist
-  // - 无选中：弹 Modal 提示用户勾选
-  // - 已选中：弹分组名输入框（可留空走后端默认）
-  // ============================================================
-  const handleAddToWatchlistClick = () => {
+  const handleAddClick = useCallback(() => {
     if (selectedCount === 0) {
       Modal.info({
         title: '请先勾选股票',
@@ -345,135 +420,35 @@ const StockPickerContent: React.FC = () => {
       });
       return;
     }
-    setAddToWatchlistOpen(true);
-  };
+    setAddModalOpen(true);
+  }, [selectedCount]);
 
-  const handleConfirmAddToWatchlist = async () => {
-    if (addingToWatchlist) return;
-    setAddingToWatchlist(true);
+  const handleConfirmAdd = useCallback(async () => {
+    if (adding) return;
+    setAdding(true);
     try {
       const codes = Array.from(selectedCodes);
-      const result = await addMany(
-        codes,
-        groupNameInput.trim() || undefined,
-      );
-      // 汇总结果：成功/跳过/失败分类提示（K 偏好：覆盖率异常必须显示原因）
-      const parts: string[] = [];
+      const result = await addMany(codes, groupName.trim() || undefined);
+      const parts = [];
       if (result.added > 0) parts.push(`新增 ${result.added}`);
       if (result.skipped > 0) parts.push(`跳过 ${result.skipped}（已在自选）`);
       if (result.failed > 0) parts.push(`失败 ${result.failed}`);
       const summary = parts.length > 0 ? parts.join('，') : '无变化';
       if (result.failed > 0) {
-        message.warning(
-          `添加自选完成：${summary}。失败股票：${result.errors.join(', ')}`,
-        );
+        message.warning(`添加自选完成：${summary}。失败股票：${result.errors.join(', ')}`);
       } else {
         message.success(`添加自选完成：${summary}`);
       }
-      // 操作成功后清空选中（避免重复点击）
       setSelectedCodes(new Set());
-      setAddToWatchlistOpen(false);
-      setGroupNameInput('');
+      setAddModalOpen(false);
+      setGroupName('');
     } catch (e: any) {
       message.error(`添加自选失败: ${e?.message || '未知错误'}`);
     } finally {
-      setAddingToWatchlist(false);
+      setAdding(false);
     }
-  };
+  }, [addMany, selectedCodes, groupName, adding]);
 
-  const handleCancelAddToWatchlist = () => {
-    if (addingToWatchlist) return;
-    setAddToWatchlistOpen(false);
-    setGroupNameInput('');
-  };
-
-  // 点击表头排序：同列切换升/降序，不同列切换为该列（默认降序）
-  // K 2026-06-18 反馈 #2：统一排序行为，无论是否已有数据，立即按新排序参数发起请求。
-  // 之前"无数据时只更新 state"会导致用户切换列后不立即生效，产生歧义。
-  const handleSortByColumn = (column: string) => {
-    const nextSortAsc = sortBy === column ? !sortAsc : false;
-    setSortBy(column);
-    setSortAsc(nextSortAsc);
-    setOffset(0);
-    runScreening(column, nextSortAsc, false);
-  };
-
-  // 抽取查询逻辑，便于点击表头时复用
-  // K 2026-06-18 任务 #11：每次调用先 abort 上一次未完成的请求，避免旧数据覆盖
-  // K 2026-06-18 反馈 #4：参数构建已抽离到 buildScreeningParams 纯函数，
-  // 本函数仅关注 AbortController 生命周期 + 错误处理 + setState 分发
-  // K 2026-06-18 反馈 #4：用 requestIdRef 自增计数器判断"当前活跃请求"，
-  // 避免引用比较在多请求快速切换时失效导致 loading 卡住
-  const runScreening = async (overrideSortBy?: string, overrideSortAsc?: boolean, append = false) => {
-    // 取消上一次未完成的请求（如果有）
-    if (abortRef.current) {
-      abortRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortRef.current = controller;
-    // K 反馈 #4：自增 ID 标记本次请求
-    const myRequestId = ++requestIdRef.current;
-
-    if (!append) {
-      setScreenerLoading(true);
-    } else {
-      setLoadingMore(true);
-    }
-    try {
-      const _sortBy = overrideSortBy ?? sortBy;
-      const _sortAsc = overrideSortAsc ?? sortAsc;
-      const _offset = append ? offset : 0;
-      const stateForParams = {
-        selectedBoards, stockRange, marketIndicatorRanges,
-        financialIndicatorRanges, selectedTechnicalIndicators, selectedPatterns,
-        filterGroup,
-      } as unknown as ScreenerState;
-      const params = buildScreeningParams(stateForParams, _sortBy, _sortAsc, PAGE_SIZE, _offset) as Record<string, any>;
-
-      const result = await fetchStocks(params, controller.signal);
-      // K 反馈 #4：仅当本次 requestId 仍是当前活跃的 + 组件未卸载才更新 state
-      if (requestIdRef.current !== myRequestId || !isMountedRef.current) {
-        return null;
-      }
-      if (append) {
-        setStockResults(prev => [...prev, ...(result.items || [])]);
-      } else {
-        setStockResults(result.items || []);
-      }
-      setTotalCount(result.total || 0);
-      // K 2026-06-22 反馈 #5：选股结果变化时清空选中集（旧的 stock_code 不再有效）
-      setSelectedCodes(new Set());
-      return result;
-    } catch (error: any) {
-      // axios 取消请求会抛 AbortError，忽略（属于正常取消）
-      if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
-        return null;
-      }
-      if (!isMountedRef.current) return null;
-      console.error('选股失败:', error);
-      message.error(`选股失败: ${error?.message || '请检查后端服务是否启动'}`);
-      setStockResults([]);
-      setTotalCount(0);
-      return null;
-    } finally {
-      if (requestIdRef.current === myRequestId && isMountedRef.current) {
-        if (append) {
-          setLoadingMore(false);
-        } else {
-          setScreenerLoading(false);
-        }
-      }
-    }
-  };
-
-  // 加载更多：保留已有结果，追加下一页
-  const handleLoadMore = async () => {
-    const newOffset = offset + PAGE_SIZE;
-    setOffset(newOffset);
-    await runScreening(undefined, undefined, true);
-  };
-
-  // 渲染可排序的表头单元格
   const renderSortableHeader = (label: string, column: string) => {
     const isActive = sortBy === column;
     return (
@@ -482,17 +457,13 @@ const StockPickerContent: React.FC = () => {
         className={`px-3 py-2 text-right cursor-pointer select-none hover:text-text-primary transition-colors ${
           isActive ? 'text-color-accent' : ''
         }`}
-        onClick={() => handleSortByColumn(column)}
+        onClick={() => handleSort(column)}
         title="点击排序"
       >
         <span className="inline-flex items-center gap-1">
           {label}
           {isActive ? (
-            sortAsc ? (
-              <CaretUpOutlined style={{ fontSize: 10 }} />
-            ) : (
-              <CaretDownOutlined style={{ fontSize: 10 }} />
-            )
+            sortAsc ? <CaretUpOutlined style={{ fontSize: 10 }} /> : <CaretDownOutlined style={{ fontSize: 10 }} />
           ) : (
             <span style={{ display: 'inline-block', width: 10 }} />
           )}
@@ -503,10 +474,12 @@ const StockPickerContent: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-bg-base">
-      {/* 主内容区 */}
       <div className="flex-1 flex overflow-hidden min-h-[calc(100vh-56px)]">
-        {/* 左侧筛选区（固定宽度280px） */}
-        <div className="w-[280px] flex-shrink-0 bg-bg-panel border-r border-border-color flex flex-col" style={{ height: 'calc(100vh - 56px)' }}>
+        {/* 左侧筛选区 */}
+        <div
+          className="w-[280px] flex-shrink-0 bg-bg-panel border-r border-border-color flex flex-col"
+          style={{ height: 'calc(100vh - 56px)' }}
+        >
           <div className="flex-1 overflow-y-auto overflow-x-hidden">
             <RangeSelector />
             <IndicatorFilter />
@@ -515,26 +488,26 @@ const StockPickerContent: React.FC = () => {
             <ConditionBuilder />
             <FactorScoringConfig />
           </div>
-          
-          {/* 左侧底部操作按钮 */}
           <div className="p-3 border-t border-border-color bg-bg-panel">
             <div className="flex gap-2">
               <Button
                 type="primary"
                 data-testid="start-screener"
-                className={`flex-1 border-color-accent ${screenerLoading ? 'bg-color-accent/60 cursor-not-allowed' : 'bg-color-accent hover:bg-color-accent/80'}`}
-                icon={screenerLoading ? <LoadingOutlined spin /> : <PlayCircleOutlined />}
+                className={`flex-1 border-color-accent ${
+                  loading ? 'bg-color-accent/60 cursor-not-allowed' : 'bg-color-accent hover:bg-color-accent/80'
+                }`}
+                icon={loading ? <LoadingOutlined spin /> : <PlayCircleOutlined />}
                 onClick={handleStartScreening}
-                disabled={screenerLoading}
+                disabled={loading}
               >
-                {screenerLoading ? '选股中...' : '开始选股'}
+                {loading ? '选股中...' : '开始选股'}
               </Button>
               <Button
                 data-testid="reset-screener"
                 className="flex-1 bg-bg-card border-border-color text-text-secondary hover:text-text-primary"
                 icon={<ReloadOutlined />}
                 onClick={handleReset}
-                disabled={screenerLoading}
+                disabled={loading}
               >
                 重置
               </Button>
@@ -549,15 +522,14 @@ const StockPickerContent: React.FC = () => {
             <div className="flex items-center gap-4">
               <Text className="text-text-primary font-semibold">因子综合排名</Text>
               <div className="flex items-center gap-2 text-text-secondary text-sm">
-                <span className="px-2 py-0.5 bg-bg-card rounded text-xs">筛选条件: {totalFiltersCount}个</span>
-                <span>共 {totalCount} 只</span>
-                {/* K 2026-06-18 反馈 #5：移除 asOfDate 状态后，"截至 日期" 显示一并移除 */}
+                <span className="px-2 py-0.5 bg-bg-card rounded text-xs">
+                  筛选条件: {totalFiltersCount}个
+                </span>
+                <span>共 {total} 只</span>
               </div>
             </div>
-
             <div className="flex items-center gap-2">
               <Divider type="vertical" className="h-6 bg-border-color" />
-              
               <Button
                 icon={<SaveOutlined />}
                 className="bg-bg-card text-text-primary border-border-color hover:bg-border-color"
@@ -573,27 +545,28 @@ const StockPickerContent: React.FC = () => {
             </div>
           </div>
 
-          {/* 数据展示区域 */}
-          <div className="flex-1 flex items-center justify-center text-text-secondary bg-bg-base/50 overflow-hidden">
-            {screenerLoading ? (
+          {/* 表格容器，绑定 ref 用于滚动 */}
+          <div
+            ref={tableContainerRef}
+            className="flex-1 flex items-center justify-center text-text-secondary bg-bg-base/50 overflow-auto"
+          >
+            {loading ? (
               <div className="flex flex-col items-center gap-2">
                 <Spin indicator={<LoadingOutlined spin />} size="large" />
                 <Text className="text-text-secondary text-sm">正在加载数据...</Text>
               </div>
-            ) : stockResults.length > 0 ? (
-              <div className="w-full h-full overflow-auto">
+            ) : items.length > 0 ? (
+              <div className="w-full h-full">
                 <table className="w-full text-sm border-collapse">
                   <thead className="sticky top-0 z-10 bg-bg-panel">
                     <tr className="text-text-secondary text-xs border-b border-border-color">
                       <th className="px-3 py-2 text-center w-12">
-                        {stockResults.length > 0 && (
-                          <Checkbox
-                            indeterminate={indeterminate}
-                            checked={allSelected}
-                            onChange={toggleAll}
-                            data-testid="select-all-checkbox"
-                          />
-                        )}
+                        <Checkbox
+                          indeterminate={indeterminate}
+                          checked={allSelected}
+                          onChange={toggleAll}
+                          data-testid="select-all-checkbox"
+                        />
                       </th>
                       <th className="px-3 py-2 text-center text-text-secondary text-xs">#</th>
                       <th className="px-3 py-2 text-left">代码</th>
@@ -606,89 +579,34 @@ const StockPickerContent: React.FC = () => {
                       {renderSortableHeader('总市值', 'market_cap')}
                       {renderSortableHeader('成交额', 'amount')}
                       <th className="px-3 py-2 text-center">板块</th>
-                      <th className="px-3 py-2 text-center" style={{ minWidth: 100 }}>K线形态</th>
+                      <th className="px-3 py-2 text-center" style={{ minWidth: 100 }}>
+                        K线形态
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {stockResults.map((stock, idx) => {
-                      const changePct = Number(stock.change_pct) || 0;
-                      const isUp = changePct >= 0;
-                      return (
-                        <tr
-                          key={stock.stock_code || idx}
-                          className={`border-b border-border-color hover:bg-bg-panel/60 transition-colors ${
-                            selectedCodes.has(stock.stock_code) ? 'bg-color-accent/10' : ''
-                          }`}
-                        >
-                          <td className="px-3 py-2 text-center">
-                            <Checkbox
-                              checked={selectedCodes.has(stock.stock_code)}
-                              onChange={() => toggleOne(stock.stock_code)}
-                              data-testid={`row-checkbox-${stock.stock_code}`}
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-center text-text-secondary text-xs">{idx + 1}</td>
-                          <td className="px-3 py-2 text-text-primary font-mono">{stock.stock_code}</td>
-                          <td className="px-3 py-2 text-text-primary">{stock.stock_name}</td>
-                          <td className="px-3 py-2 text-right font-mono" style={{ color: isUp ? upDownColors.up : upDownColors.down }}>
-                            {formatNumber(stock.close)}
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono" style={{ color: isUp ? upDownColors.up : upDownColors.down }}>
-                            {isUp ? '+' : ''}{changePct.toFixed(2)}%
-                          </td>
-                          <td className="px-3 py-2 text-right text-text-primary font-mono">
-                            {formatNumber(stock.turnover_rate)}%
-                          </td>
-                          <td className="px-3 py-2 text-right text-text-primary font-mono">
-                            {formatNumber(stock.pe ?? stock.pe_ttm)}
-                          </td>
-                          <td className="px-3 py-2 text-right text-text-primary font-mono">
-                            {formatNumber(stock.pb)}
-                          </td>
-                          <td className="px-3 py-2 text-right text-text-primary font-mono">
-                            {formatMarketCap(stock.market_cap)}
-                          </td>
-                          <td className="px-3 py-2 text-right text-text-primary font-mono">
-                            {formatMarketCap(stock.amount)}
-                          </td>
-                          <td className="px-3 py-2 text-center">
-                            {stock.listed_board && (
-                              <span className="text-xs px-1.5 py-0.5 bg-bg-card text-text-secondary rounded">
-                                {stock.listed_board}
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 text-center">
-                            {stock.patterns && stock.patterns.length > 0 ? (
-                              <div className="flex gap-1 justify-center flex-wrap">
-                                {stock.patterns.slice(0, 2).map((p: string, i: number) => (
-                                  <span key={i} className="text-xs px-1.5 py-0.5 bg-color-accent/20 text-color-accent rounded">
-                                    {p}
-                                  </span>
-                                ))}
-                                {stock.patterns.length > 2 && (
-                                  <span className="text-xs text-text-secondary">+{stock.patterns.length - 2}</span>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="text-text-secondary text-xs">-</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
+                    {items.map((stock, idx) => (
+                      <TableRow
+                        key={stock.stock_code || idx}
+                        stock={stock}
+                        index={idx}
+                        selected={selectedCodes.has(stock.stock_code)}
+                        onToggle={toggleOne}
+                      />
+                    ))}
                   </tbody>
                 </table>
-                {stockResults.length < totalCount && (
+                {items.length < total && (
                   <div className="flex justify-center py-4">
                     <Button
                       type="dashed"
                       icon={loadingMore ? <LoadingOutlined spin /> : undefined}
-                      onClick={handleLoadMore}
+                      onClick={loadMore}
                       disabled={loadingMore}
                       className="w-48"
+                      data-testid="load-more-btn"
                     >
-                      {loadingMore ? '加载中...' : `加载更多（${Math.min(PAGE_SIZE, totalCount - stockResults.length)} 只）`}
+                      {loadingMore ? '加载中...' : `加载更多（${Math.min(PAGE_SIZE, total - items.length)} 只）`}
                     </Button>
                   </div>
                 )}
@@ -710,8 +628,8 @@ const StockPickerContent: React.FC = () => {
               <Button
                 icon={<PlusCircleOutlined />}
                 className="bg-bg-card border-border-color text-text-secondary hover:text-text-primary text-sm"
-                onClick={handleAddToWatchlistClick}
-                disabled={screenerLoading}
+                onClick={handleAddClick}
+                disabled={loading}
                 data-testid="add-to-watchlist-btn"
               >
                 添加自选{selectedCount > 0 ? `(${selectedCount})` : ''}
@@ -719,11 +637,11 @@ const StockPickerContent: React.FC = () => {
               <Button
                 icon={<DownloadOutlined />}
                 className="bg-bg-card border-border-color text-text-secondary hover:text-text-primary text-sm"
-                onClick={handleExportCsv}
-                disabled={screenerLoading || stockResults.length === 0}
+                onClick={handleExport}
+                disabled={loading || items.length === 0}
                 data-testid="export-result-btn"
               >
-                导出结果{stockResults.length > 0 ? `(${stockResults.length})` : ''}
+                导出结果{items.length > 0 ? `(${items.length})` : ''}
               </Button>
               <Button
                 icon={<BlockOutlined />}
@@ -732,38 +650,40 @@ const StockPickerContent: React.FC = () => {
                 加入黑名单
               </Button>
             </div>
-            
             <div className="flex items-center gap-4">
               <Button
                 icon={<ReloadOutlined />}
                 className="bg-bg-card border-border-color text-text-secondary hover:text-text-primary text-sm"
-                onClick={() => runScreening()}
-                disabled={screenerLoading || stockResults.length === 0}
+                onClick={() => refresh()}
+                disabled={loading || items.length === 0}
                 data-testid="refresh-result-btn"
               >
                 刷新
               </Button>
               <span className="text-text-secondary text-sm">
-                {selectedCount > 0
-                  ? `已选中 ${selectedCount} 只`
-                  : '未选中（点击左侧复选框多选）'}
+                {selectedCount > 0 ? `已选中 ${selectedCount} 只` : '未选中（点击左侧复选框多选）'}
               </span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 添加自选弹窗：分组名输入 + 提交 */}
+      {/* 添加自选弹窗 */}
       <Modal
         title={`添加 ${selectedCount} 只股票到自选股`}
-        open={addToWatchlistOpen}
-        onCancel={handleCancelAddToWatchlist}
-        onOk={handleConfirmAddToWatchlist}
-        confirmLoading={addingToWatchlist}
+        open={addModalOpen}
+        onCancel={() => {
+          if (!adding) {
+            setAddModalOpen(false);
+            setGroupName('');
+          }
+        }}
+        onOk={handleConfirmAdd}
+        confirmLoading={adding}
         okText="确认添加"
         cancelText="取消"
         destroyOnHidden
-        maskClosable={false}
+        maskClosable={!adding}
         data-testid="add-to-watchlist-modal"
       >
         <div className="py-2">
@@ -772,8 +692,8 @@ const StockPickerContent: React.FC = () => {
           </div>
           <Input
             placeholder="例如：白马股 / 高股息 / 短期关注"
-            value={groupNameInput}
-            onChange={(e) => setGroupNameInput(e.target.value)}
+            value={groupName}
+            onChange={(e) => setGroupName(e.target.value)}
             maxLength={20}
             data-testid="add-to-watchlist-group-input"
           />
@@ -786,10 +706,5 @@ const StockPickerContent: React.FC = () => {
   );
 };
 
-const StockPickerView: React.FC = () => {
-  // K 2026-06-17 决策：ScreenerProvider 已上移到 AppLayout 层（让 /config 和 /picker
-  // 共享同一份 screener state，无需事件桥接）
-  return <StockPickerContent />;
-};
-
+const StockPickerView: React.FC = () => <StockPickerContent />;
 export default StockPickerView;

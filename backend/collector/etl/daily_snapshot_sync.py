@@ -60,7 +60,10 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                 boll_upper, boll_mid, boll_lower,
                 break_high_20, break_high_60, consec_up_days, vol_ratio_5,
                 is_st, is_new, limit_up, limit_down,
-                is_macd_golden_cross, is_macd_dead_cross
+                is_macd_golden_cross, is_macd_dead_cross,
+                pattern_morning_star, pattern_evening_star,
+                pattern_bullish_engulfing, pattern_bearish_engulfing,
+                pattern_hammer
             )
             WITH
             qdata AS (
@@ -183,7 +186,12 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                   ELSE FALSE
                 END AS limit_down,
                 FALSE AS is_macd_golden_cross,
-                FALSE AS is_macd_dead_cross
+                FALSE AS is_macd_dead_cross,
+                COALESCE(i.pattern_morning_star != 0, FALSE) AS pattern_morning_star,
+                COALESCE(i.pattern_evening_star != 0, FALSE) AS pattern_evening_star,
+                COALESCE(i.pattern_bullish_engulfing != 0, FALSE) AS pattern_bullish_engulfing,
+                COALESCE(i.pattern_bearish_engulfing != 0, FALSE) AS pattern_bearish_engulfing,
+                COALESCE(i.pattern_hammer != 0, FALSE) AS pattern_hammer
             FROM qdata q
             LEFT JOIN stock_basic b ON q.code = b.code
             LEFT JOIN stats s ON q.code = s.code
@@ -243,6 +251,11 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                 limit_down = EXCLUDED.limit_down,
                 is_macd_golden_cross = EXCLUDED.is_macd_golden_cross,
                 is_macd_dead_cross = EXCLUDED.is_macd_dead_cross,
+                pattern_morning_star = EXCLUDED.pattern_morning_star,
+                pattern_evening_star = EXCLUDED.pattern_evening_star,
+                pattern_bullish_engulfing = EXCLUDED.pattern_bullish_engulfing,
+                pattern_bearish_engulfing = EXCLUDED.pattern_bearish_engulfing,
+                pattern_hammer = EXCLUDED.pattern_hammer,
                 updated_at = CURRENT_TIMESTAMP
         """)
 

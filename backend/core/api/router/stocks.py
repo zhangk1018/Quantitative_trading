@@ -264,6 +264,12 @@ def get_stocks(
                     if p in tech_pattern_map.get(tech_key, {}):
                         filter_dict[tech_pattern_map[tech_key][p]] = True
 
+        # 解析 K 线形态 pattern_* 参数（前端通过 buildScreeningParams 发送）
+        # 格式：pattern_hammer=3, pattern_bullish_engulfing=3，值（lookbackDays）忽略
+        for key, value in request.query_params.items():
+            if key.startswith('pattern_'):
+                filter_dict[key] = True
+
         page = offset // limit + 1 if limit > 0 else 1
         page_size = limit
 
