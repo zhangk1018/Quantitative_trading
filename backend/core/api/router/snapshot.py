@@ -7,7 +7,7 @@ import time
 import logging
 from fastapi import APIRouter, Query, HTTPException
 from shared.schemas import ApiResponse, SnapshotAllData, SnapshotIncrementalData
-from core.api.dependencies import validate_required_date, validate_board, SnapshotServiceDep
+from core.api.dependencies import validate_required_date, validate_board, SnapshotServiceDep, get_snapshot_service
 
 logger = logging.getLogger(__name__)
 # 慢请求阈值支持环境变量配置
@@ -56,3 +56,18 @@ def get_incremental_snapshot(
     else:
         logger.info("增量快照请求：since=%s, %d只, %d天, %.2fs", since, len(result.stocks), result.days)
     return ApiResponse(code=200, message="success", data=result)
+
+
+@router.get("/ready", summary="服务就绪状态检查")
+def check_ready():
+    """检查全量快照数据是否加载就绪"""
+    svc = get_snapshot_service()
+    status = svc.get_status()
+    if status["ready"]:
+        return ApiResponse(code=200, message="ready", data=status)
+    else:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=503,
+            content=ApiResponse(code=503, message="loading", data=status).model_dump(),
+        )

@@ -20,6 +20,7 @@ import FactorScoringConfig from './components/FactorScoringConfig';
 import { fetchStocks } from '../stock-detail/api';
 import { useSettings } from '@/shared/contexts/SettingsContext';
 import { useWatchlist } from '../watchlist/store';
+import StockAnalysisModal from './components/StockAnalysisModal';
 import {
   buildScreeningParams,
   formatMarketCap,
@@ -251,9 +252,10 @@ interface TableRowProps {
   index: number;
   selected: boolean;
   onToggle: (code: string) => void;
+  onDoubleClick?: (stock: StockItem) => void;
 }
 
-const TableRow = memo(({ stock, index, selected, onToggle }: TableRowProps) => {
+const TableRow = memo(({ stock, index, selected, onToggle, onDoubleClick }: TableRowProps) => {
   const { colors } = useSettings();
   const changePct = Number(stock.change_pct) || 0;
   const isUp = changePct >= 0;
@@ -261,9 +263,10 @@ const TableRow = memo(({ stock, index, selected, onToggle }: TableRowProps) => {
 
   return (
     <tr
-      className={`border-b border-border-color hover:bg-bg-panel/60 transition-colors ${
+      className={`border-b border-border-color hover:bg-bg-panel/60 transition-colors cursor-pointer ${
         selected ? 'bg-color-accent/10' : ''
       }`}
+      onDoubleClick={() => onDoubleClick?.(stock)}
     >
       <td className="px-3 py-2 text-center">
         <Checkbox
@@ -339,6 +342,7 @@ const StockPickerContent: React.FC = () => {
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [groupName, setGroupName] = useState('');
   const [adding, setAdding] = useState(false);
+  const [analysisStock, setAnalysisStock] = useState<StockItem | null>(null);
 
   // 筛选条件计数
   const marketCount = useScreenerSelector((s) => s.marketIndicators.selected.length);
@@ -395,6 +399,10 @@ const StockPickerContent: React.FC = () => {
       else next.add(code);
       return next;
     });
+  }, []);
+
+  const handleDoubleClick = useCallback((stock: StockItem) => {
+    setAnalysisStock(stock);
   }, []);
 
   const toggleAll = useCallback(() => {
@@ -592,6 +600,7 @@ const StockPickerContent: React.FC = () => {
                         index={idx}
                         selected={selectedCodes.has(stock.stock_code)}
                         onToggle={toggleOne}
+                        onDoubleClick={handleDoubleClick}
                       />
                     ))}
                   </tbody>
@@ -702,6 +711,11 @@ const StockPickerContent: React.FC = () => {
           </div>
         </div>
       </Modal>
+      <StockAnalysisModal
+        open={!!analysisStock}
+        stock={analysisStock}
+        onClose={() => setAnalysisStock(null)}
+      />
     </div>
   );
 };

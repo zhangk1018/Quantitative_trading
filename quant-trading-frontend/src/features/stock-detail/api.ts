@@ -139,8 +139,10 @@ export const fetchStockDetail = async (code: string): Promise<StockDetailInfo> =
 /**
  * 获取K线数据 (核心修复：解包 + 字段映射 + 类型转换)
  */
-export const fetchKLineData = async (code: string): Promise<KLineItem[]> => {
-  const { data } = await api.get<ApiResponse<RawKLineItem[]>>(`/kline/${code}`);
+export const fetchKLineData = async (code: string, period?: string): Promise<KLineItem[]> => {
+  const { data } = await api.get<ApiResponse<RawKLineItem[]>>(`/kline/${code}`, {
+    params: period ? { period } : undefined,
+  });
   const rawList = unwrap(data);
   
   if (!Array.isArray(rawList)) return [];

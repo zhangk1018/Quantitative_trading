@@ -45,9 +45,9 @@ async def lifespan(app: FastAPI):
     # 3. 初始化筛选服务
     get_screener_service()
 
-    # 4. 预热快照缓存，避免首次请求阻塞
+    # 4. 初始化快照服务（内部后台线程加载数据，不阻塞启动）
     snapshot_svc = get_snapshot_service()
-    snapshot_svc.get_all_snapshot()
+    logger.info("📦 快照服务初始化完成，数据后台加载中...")
 
     # 5. 加载管理后台页面
     html_path = os.path.join(_STATIC_DIR, "monitor.html")
