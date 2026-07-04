@@ -67,7 +67,8 @@ coverage/
 
 # Do not commit to GitHub
 .trae/
-docs/
+docs/*
+!docs/daily_report/
 
 # Debug/test scripts (one-off tools, not part of the project)
 backend/debug_fill.py
