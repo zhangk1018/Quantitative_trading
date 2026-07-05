@@ -332,3 +332,10 @@ Phase 5.2 性能优化已完成三项：
 - **加载更多功能**：分页按钮，20→40→60 行验证通过
 - **条件构建器联调**：放量突破/底部放量返回 0 只 — 根因 `volume_ratio` 全部 NaN，已修复为 `vol_ratio_5`；底部放量组合条件 `macd_golden_cross`→`rsi_oversold`（量量确认业务逻辑）
 - **K线形态选股**：等量量 ETL 写入 pattern 列后联调
+
+**通知**: [方舟→量量 2026-07-05 08:30] 协作单 [6.12-SNAPSHOT-API-20260624] 状态变更: VERIFY→CLOSED（K 确认关闭 — 端到端联调验证全过：/api/snapshot/all 200/5194只/最新2026-07-02 ✅，/api/snapshot/incremental since 参数正确过滤 ✅，数据契约100%一致 ✅，15指标+10顶层字段全部到位 ✅，Pytest 24/24 通过。Phase 2 Web Worker 消费者代码待后续迭代开发）
+
+**通知**: [方舟→量量 2026-07-05 09:00] 协作单 [6.13-SNAPSHOT-CACHE-20260705] 状态变更: NEW（**P0阻塞** — SnapshotService Parquet缓存序列化bug：`snapshot_service.py:215/216/462/463` 调用 `pd.to_pickle(ohlcv)` 缺少filepath_or_buffer参数，导致TypeError，3次重试全部失败，/api/snapshot/all返回500、/api/snapshot/ready返回503。根因：pd.to_pickle需传入文件路径，意图序列化为bytes做HMAC签名应改为 `pickle.dumps(obj)`。修复后重测缓存加载流程）
+
+[量量→方舟 2026-07-05 09:52] 协作单 [6.13-SNAPSHOT-CACHE-20260705] 状态变更: NEW→ASSIGNED（认领：pd.to_pickle→pickle.dumps 修复，4处调用）
+[量量→方舟 2026-07-05 10:35] 协作单 [6.13-SNAPSHOT-CACHE-20260705] 状态变更: ASSIGNED→VERIFY（4处 pd.to_pickle→pickle.dumps 已修复。缓存正常生成+签名，热重启~10s，API 200/5193只。请方舟验证。）

@@ -3,6 +3,26 @@
 // 类型导出
 export * from './types';
 
+// 纯算法
+export {
+  cleanBars,
+  sma,
+  ema,
+  sampleStdDev,
+  calcRSI,
+  calcKDJ,
+  calcAllIndicators,
+  type KlineBar,
+  type CalculatedIndicators,
+} from './indicators';
+
+// 图表适配
+export {
+  buildChartData,
+  makeHorizontalLine,
+  type ChartDataResult,
+} from './chart-adapter';
+
 // 常量与配置
 export {
   DETECTION_CONFIG,

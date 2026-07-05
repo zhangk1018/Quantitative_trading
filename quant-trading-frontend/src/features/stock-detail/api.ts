@@ -1,37 +1,61 @@
+// src/features/stock-detail/api.ts
 import axios from 'axios';
 
-// ==================== 1. 通用响应结构 (适配 Swagger ApiResponse) ====================
+// ==================== 1. 通用响应结构 ====================
 interface ApiResponse<T> {
   code?: number;
   message?: string;
   data: T;
-  stock_code?: string; // 兼容 K线接口的特殊包装
+  stock_code?: string;
 }
 
+// 成功状态码（后端实际返回 200，约定 0 或缺失 code 字段也视为成功）
+const SUCCESS_CODES = [0, 200];
+
 const unwrap = <T>(response: ApiResponse<T>): T => {
+  // 检查业务状态码
+  if (response.code !== undefined && !SUCCESS_CODES.includes(response.code)) {
+    throw new Error(response.message || `业务错误 (code: ${response.code})`);
+  }
   if (response.data !== undefined) return response.data;
   throw new Error(response.message || 'API Request Failed');
 };
 
-// ==================== 2. 类型定义 ====================
+// ==================== 1b. 错误友好映射 ====================
+const FRIENDLY_ERRORS: Record<string, string> = {
+  'Request failed with status code 404': '数据接口不存在，请联系管理员',
+  'Request failed with status code 500': '服务器繁忙，请稍后重试',
+  'Request failed with status code 502': '网关超时，请稍后重试',
+  'timeout of 0ms exceeded': '网络连接超时，请检查网络后重试',
+  'Network Error': '网络连接失败，请检查网络后重试',
+};
 
-// 股票列表筛选参数
+/**
+ * 将 API 抛出的错误转换为用户友好的提示文本
+ */
+export function toFriendlyMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  for (const [key, val] of Object.entries(FRIENDLY_ERRORS)) {
+    if (msg.includes(key)) return val;
+  }
+  return msg.length > 80 ? msg.substring(0, 80) + '...' : msg;
+}
+
+// ==================== 2. 类型定义 ====================
 export interface StockListParams {
-  listed_board?: string;        // 上市板块（逗号分隔）
-  industry?: string;            // 行业（逗号分隔）
-  area?: string;                // 地区（逗号分隔）
-  filters?: string;             // 形态筛选（逗号分隔）
-  sort_by?: string;             // 排序字段
-  sort_asc?: boolean;           // 是否升序
-  offset?: number;              // 分页偏移量
-  limit?: number;               // 每页数量
-  as_of_date?: string;          // 数据截止日期
-  watchlist_only?: boolean;     // 仅看自选
-  // 范围参数（动态）
+  listed_board?: string;
+  industry?: string;
+  area?: string;
+  filters?: string;
+  sort_by?: string;
+  sort_asc?: boolean;
+  offset?: number;
+  limit?: number;
+  as_of_date?: string;
+  watchlist_only?: boolean;
   [key: string]: any;
 }
 
-// 单只股票（来自后端 StockResponse）
 export interface StockItem {
   stock_code: string;
   stock_name: string;
@@ -51,16 +75,14 @@ export interface StockItem {
   [key: string]: any;
 }
 
-// 股票列表响应
 export interface StockListResponse {
   items: StockItem[];
   total: number;
 }
 
-// 后端原始 K 线数据 (Swagger: KLineItem)
 interface RawKLineItem {
-  trade_date: string;   // 注意：后端用 trade_date
-  open: string | number; // 注意：后端可能是字符串
+  trade_date: string;
+  open: string | number;
   high: string | number;
   low: string | number;
   close: string | number;
@@ -76,10 +98,9 @@ interface RawKLineItem {
   boll_lower?: string | number | null;
 }
 
-// 前端图表标准数据 (Lightweight Charts 要求)
 export interface KLineItem {
-  time: string;       // 必须是 time
-  open: number;       // 必须是 number
+  time: string;
+  open: number;
   high: number;
   low: number;
   close: number;
@@ -110,13 +131,6 @@ export interface StockDetailInfo {
 // ==================== 3. API 封装 ====================
 const api = axios.create({ baseURL: '/api' });
 
-/**
- * 获取股票列表（选股接口）
- * 响应路径：json.data.items + json.data.total
- *
- * K 2026-06-18 任务 #11：可选 signal 参数用于取消上次未完成的请求，
- * 防止用户快速多次点击"开始选股"时旧数据覆盖新数据。
- */
 export const fetchStocks = async (
   params: StockListParams = {},
   signal?: AbortSignal,
@@ -128,39 +142,49 @@ export const fetchStocks = async (
   return unwrap(data);
 };
 
-/**
- * 获取股票详情
- */
 export const fetchStockDetail = async (code: string): Promise<StockDetailInfo> => {
   const { data } = await api.get<ApiResponse<StockDetailInfo>>(`/stocks/${code}`);
   return unwrap(data);
 };
 
-/**
- * 获取K线数据 (核心修复：解包 + 字段映射 + 类型转换)
- */
-export const fetchKLineData = async (code: string, period?: string): Promise<KLineItem[]> => {
+export interface KLineFetchOptions {
+  period?: string;
+  limit?: number;
+  adj?: 'none' | 'forward' | 'backward';
+}
+
+export const fetchKLineData = async (
+  code: string,
+  options?: KLineFetchOptions | string,
+  signal?: AbortSignal,
+): Promise<KLineItem[]> => {
+  let params: Record<string, any> = {};
+  if (typeof options === 'string') {
+    params = { period: options };
+  } else if (options) {
+    if (options.period) params.period = options.period;
+    if (options.limit) params.limit = options.limit;
+    if (options.adj) params.adj = options.adj;
+  }
   const { data } = await api.get<ApiResponse<RawKLineItem[]>>(`/kline/${code}`, {
-    params: period ? { period } : undefined,
+    params,
+    ...(signal ? { signal } : {}),
   });
   const rawList = unwrap(data);
-  
   if (!Array.isArray(rawList)) return [];
 
-  // ✅ 关键转换逻辑
-  return rawList.map(item => ({
-    time: item.trade_date,                    // trade_date -> time
-    open: Number(item.open),                  // string -> number
-    high: Number(item.high),
-    low: Number(item.low),
-    close: Number(item.close),
-    volume: Number(item.volume),
-  })).filter(item => !isNaN(item.open));      // 过滤脏数据
+  return rawList
+    .map(item => ({
+      time: item.trade_date,
+      open: Number(item.open),
+      high: Number(item.high),
+      low: Number(item.low),
+      close: Number(item.close),
+      volume: Number(item.volume),
+    }))
+    .filter(item => !isNaN(item.open));
 };
 
-/**
- * 获取买卖信号
- */
 export const fetchSignals = async (code: string): Promise<SignalItem[]> => {
   const { data } = await api.get<ApiResponse<SignalItem[]>>(`/signals/${code}`);
   const list = unwrap(data);

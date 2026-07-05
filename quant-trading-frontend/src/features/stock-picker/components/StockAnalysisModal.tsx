@@ -1,157 +1,88 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Modal, Typography, Spin, Alert } from 'antd';
+// StockAnalysisModal.tsx
+// 容器组件 — 负责数据获取、loading/error 状态管理，渲染 KLineChart 展示组件
+
+import React, { useEffect, useState, useCallback } from 'react';
+import { Modal, Typography, Spin, Alert, Segmented } from 'antd';
+import { fetchKLineData, toFriendlyMessage, type StockItem } from '@/features/stock-detail/api';
+import { buildChartData, type ChartDataResult } from '@/lib/indicators/chart-adapter';
+import { sanitizeNumber, sanitizePct } from '@/lib/indicators/indicators';
+import { CHART_THEME } from '@/lib/indicators/chart-config';
+import KLineChart, { type MainType, type OscType } from './KLineChart';
 
 const { Text } = Typography;
 
-declare global {
-  interface Window {
-    TradingView?: {
-      widget: new (options: Record<string, any>) => { remove: () => void };
-    };
-  }
-}
-
-type StockItem = {
-  stock_code: string;
-  stock_name: string;
-  close: number | null;
-  change_pct: number | null;
-  turnover_rate: number | null;
-  pe: number | null;
-  pe_ttm?: number | null;
-  pb: number | null;
-  market_cap: number | null;
-  amount: number | null;
+// StockItem 的 stock_name 字段在 api.ts 中定义为必需，
+// 但父组件传递的 stock 可能是 null，用 typescript Pick 保持类型对齐
+type ModalStock = Pick<StockItem, 'stock_code' | 'stock_name' | 'close' | 'change_pct' | 'turnover_rate' | 'pe' | 'pb' | 'market_cap' | 'amount'> & {
   listed_board: string | null;
-  patterns?: string[];
 };
 
 interface StockAnalysisModalProps {
   open: boolean;
-  stock: StockItem | null;
+  stock: ModalStock | null;
   onClose: () => void;
 }
 
-const CONTAINER_ID = 'tv_kline_container';
-
-function toTVSymbol(code: string): string {
-  const clean = code.replace(/\.(SH|SZ|BJ)$/i, '');
-  if (/^(6|5|9)/.test(clean)) return `SSE:${clean}`;
-  if (/^(0|2|3)/.test(clean)) return `SZSE:${clean}`;
-  if (/^(4|8)/.test(clean)) return `BSE:${clean}`;
-  return `SSE:${clean}`;
-}
+type ChartStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, onClose }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const widgetRef = useRef<any>(null);
-  const initTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [tvStatus, setTvStatus] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
+  const [status, setStatus] = useState<ChartStatus>('idle');
+  const [errorMsg, setErrorMsg] = useState<string>('');
+  const [chartData, setChartData] = useState<ChartDataResult | null>(null);
+  const [mainType, setMainType] = useState<MainType>('ma');
+  const [oscType, setOscType] = useState<OscType>('rsi');
+  const [retryCount, setRetryCount] = useState(0);
 
+  // 数据获取（支持 AbortSignal 取消过期请求）
   useEffect(() => {
     if (!open) {
-      if (initTimerRef.current) {
-        clearTimeout(initTimerRef.current);
-        initTimerRef.current = null;
-      }
-      if (widgetRef.current) {
-        try { widgetRef.current.remove(); } catch (_) {}
-        widgetRef.current = null;
-      }
-      setTvStatus('idle');
+      setStatus('idle');
+      setErrorMsg('');
+      setChartData(null);
       return;
     }
-
     if (!stock?.stock_code) return;
 
-    if (widgetRef.current) {
-      try { widgetRef.current.remove(); } catch (_) {}
-      widgetRef.current = null;
-    }
+    const abortController = new AbortController();
+    setStatus('loading');
+    setErrorMsg('');
+    setChartData(null);
 
-    if (!window.TradingView) {
-      setTvStatus('failed');
-      return;
-    }
-
-    setTvStatus('loading');
-
-    initTimerRef.current = setTimeout(() => {
-      const container = document.getElementById(CONTAINER_ID);
-      if (!container) {
-        setTvStatus('failed');
-        return;
-      }
-
-      container.innerHTML = '';
-
-      const symbol = toTVSymbol(stock.stock_code);
-
+    const load = async () => {
       try {
-        widgetRef.current = new window.TradingView!.widget({
-          container_id: CONTAINER_ID,
-          autosize: true,
-          symbol,
-          interval: 'D',
-          timezone: 'Asia/Shanghai',
-          theme: 'dark',
-          style: '1',
-          locale: 'zh_CN',
-          toolbar_bg: '#131722',
-          enable_publishing: false,
-          allow_symbol_change: false,
-          save_image: true,
-          hide_top_toolbar: false,
-          hide_side_toolbar: true,
-          hide_legend: false,
-          withdateranges: true,
-          details: false,
-          hotlist: false,
-          calendar: false,
-          studies: [
-            'BB@tv-basicstudies',
-            'MACD@tv-basicstudies',
-          ],
-          studies_overrides: {
-            'Bollinger Bands.median': '#f5a623',
-            'Bollinger Bands.upper': '#4a90e2',
-            'Bollinger Bands.lower': '#e879a9',
-          },
-          overrides: {
-            'mainSeriesProperties.candleStyle.upColor': '#00d4aa',
-            'mainSeriesProperties.candleStyle.downColor': '#f23645',
-            'mainSeriesProperties.candleStyle.borderUpColor': '#00d4aa',
-            'mainSeriesProperties.candleStyle.borderDownColor': '#f23645',
-            'mainSeriesProperties.candleStyle.wickUpColor': '#00d4aa',
-            'mainSeriesProperties.candleStyle.wickDownColor': '#f23645',
-            'paneProperties.background': '#131722',
-            'paneProperties.backgroundType': 'solid',
-            'paneProperties.vertGridProperties.color': 'rgba(42,46,57,0.5)',
-            'paneProperties.horzGridProperties.color': 'rgba(42,46,57,0.5)',
-            'volumePaneSize': 'medium',
-          },
-          loading_screen: { backgroundColor: '#131722' },
-          disabled_features: [
-            'header_symbol_search',
-            'symbol_search_hot_key',
-          ],
-        });
-        setTvStatus('ready');
-      } catch (err) {
-        console.error('TradingView widget init failed:', err);
-        setTvStatus('failed');
-      }
-    }, 300);
+        const klineData = await fetchKLineData(
+          stock.stock_code,
+          { limit: 500, adj: 'forward' },
+          abortController.signal,
+        );
 
-    return () => {
-      if (initTimerRef.current) {
-        clearTimeout(initTimerRef.current);
-        initTimerRef.current = null;
+        if (!klineData || klineData.length === 0) {
+          setStatus('error');
+          setErrorMsg('未获取到K线数据，请重试');
+          return;
+        }
+
+        const data = buildChartData(klineData);
+        setChartData(data);
+        setStatus('ready');
+      } catch (err: any) {
+        if (err?.name === 'CanceledError' || abortController.signal.aborted) return;
+        console.error('K线图表加载失败:', err);
+        setStatus('error');
+        setErrorMsg(toFriendlyMessage(err));
       }
     };
-  }, [open, stock?.stock_code]);
 
-  const changeColor = stock?.change_pct != null && stock.change_pct >= 0 ? '#00d4aa' : '#f23645';
+    load();
+
+    return () => { abortController.abort(); };
+  }, [open, stock?.stock_code, retryCount]);
+
+  const handleRetry = useCallback(() => {
+    setRetryCount(c => c + 1);
+  }, []);
+
+  const changeColor = (stock?.change_pct ?? 0) >= 0 ? CHART_THEME.green : CHART_THEME.red;
 
   return (
     <Modal
@@ -159,6 +90,7 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
       open={open}
       onCancel={onClose}
       footer={null}
+      closable={false}
       width="100vw"
       style={{ top: 0, padding: 0, maxWidth: '100vw' }}
       styles={{ body: { padding: 0, height: '100vh' } }}
@@ -166,60 +98,90 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
       maskClosable={false}
       className="stock-analysis-modal"
     >
-      <div className="flex flex-col h-full bg-[#131722]">
-        <div className="flex items-center justify-between px-4 py-1.5 border-b border-[#2A2E39] shrink-0 bg-[#1E222D] z-10">
+      <div className="flex flex-col h-full" style={{ background: CHART_THEME.bg }}>
+        {/* 顶栏 — 股票信息 + 切换按钮 */}
+        <div
+          className="flex items-center justify-between px-4 py-1.5 shrink-0 z-10"
+          style={{ background: CHART_THEME.bgHeader, borderBottom: `1px solid ${CHART_THEME.border}` }}
+        >
           <div className="flex items-center gap-3 min-w-0 flex-wrap">
             <Text className="text-[#EAECEF] text-sm font-bold whitespace-nowrap">
               {stock?.stock_name || '-'}
             </Text>
             <Text className="text-[#848E9C] text-xs">{stock?.stock_code}</Text>
-            {stock?.close != null && (
-              <Text className="text-base font-bold" style={{ color: changeColor }}>
-                {stock.close.toFixed(2)}
-              </Text>
-            )}
-            {stock?.change_pct != null && (
-              <Text className="text-xs" style={{ color: changeColor }}>
-                {stock.change_pct >= 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%
-              </Text>
-            )}
-            {stock?.pe != null && <Text className="text-[#848E9C] text-xs">PE {stock.pe.toFixed(2)}</Text>}
-            {stock?.pb != null && <Text className="text-[#848E9C] text-xs">PB {stock.pb.toFixed(2)}</Text>}
+            <Text className="text-base font-bold" style={{ color: changeColor }}>
+              {sanitizeNumber(stock?.close)}
+            </Text>
+            <Text className="text-xs" style={{ color: changeColor }}>
+              {stock?.change_pct != null ? sanitizePct(stock.change_pct) : '--'}
+            </Text>
+            <Text className="text-[#848E9C] text-xs">PE {sanitizeNumber(stock?.pe, 2)}</Text>
+            <Text className="text-[#848E9C] text-xs">PB {sanitizeNumber(stock?.pb, 2)}</Text>
             {stock?.market_cap != null && (
               <Text className="text-[#848E9C] text-xs">
-                市值 {(stock.market_cap / 10000).toFixed(2)}亿
+                市值 {sanitizeNumber(stock.market_cap / 10000, 2)}亿
               </Text>
             )}
             {stock?.turnover_rate != null && (
-              <Text className="text-[#848E9C] text-xs">换手 {stock.turnover_rate.toFixed(2)}%</Text>
+              <Text className="text-[#848E9C] text-xs">换手 {sanitizeNumber(stock.turnover_rate, 2)}%</Text>
             )}
             {stock?.listed_board && <Text className="text-[#848E9C] text-xs">{stock.listed_board}</Text>}
           </div>
-          <button
-            className="text-[#848E9C] hover:text-[#EAECEF] text-base px-2 flex-shrink-0"
-            onClick={onClose}
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Segmented
+              value={mainType}
+              onChange={(v) => setMainType(v as MainType)}
+              options={[
+                { label: 'MA', value: 'ma' },
+                { label: 'BOLL', value: 'boll' },
+              ]}
+              size="small"
+              style={{ background: CHART_THEME.border }}
+            />
+            <Segmented
+              value={oscType}
+              onChange={(v) => setOscType(v as OscType)}
+              options={[
+                { label: 'RSI', value: 'rsi' },
+                { label: 'KDJ', value: 'kdj' },
+              ]}
+              size="small"
+              style={{ background: CHART_THEME.border }}
+            />
+            <button
+              className="text-[#848E9C] hover:text-[#EAECEF] text-base px-2"
+              onClick={onClose}
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
-        <div className="flex-1 relative">
-          {tvStatus === 'loading' && (
-            <div className="absolute inset-0 flex items-center justify-center bg-[#131722] z-20">
-              <Spin tip="正在加载K线图表..." />
+        {/* 图表区域 */}
+        <div className="flex-1 relative" style={{ borderTop: `1px solid ${CHART_THEME.border}` }}>
+          {status === 'loading' && (
+            <div className="absolute inset-0 flex items-center justify-center z-20" style={{ background: CHART_THEME.bg }}>
+              <Spin />
             </div>
           )}
-          {tvStatus === 'failed' && (
-            <div className="absolute inset-0 flex items-center justify-center bg-[#131722] z-20 p-8">
+          {status === 'error' && (
+            <div className="absolute inset-0 flex items-center justify-center z-20 p-8" style={{ background: CHART_THEME.bg }}>
               <Alert
                 type="error"
                 message="K线图表加载失败"
-                description="TradingView组件初始化失败，请刷新页面重试。"
+                description={
+                  <div>
+                    <div>{errorMsg}</div>
+                    <a onClick={handleRetry} style={{ color: '#2196f3', cursor: 'pointer', marginTop: 8, display: 'inline-block' }}>
+                      点击重试
+                    </a>
+                  </div>
+                }
                 showIcon
               />
             </div>
           )}
-          <div id={CONTAINER_ID} ref={containerRef} className="absolute inset-0" />
+          <KLineChart chartData={chartData} mainType={mainType} oscType={oscType} />
         </div>
       </div>
     </Modal>

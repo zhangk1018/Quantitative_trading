@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import os
+import pickle
 import time
 import logging
 import threading
@@ -212,8 +213,8 @@ class SnapshotService:
             snapshot = self._snapshot_cache
             latest = self._latest_trade_date
         # 序列化并签名
-        ohlcv_bytes = pd.to_pickle(ohlcv)
-        snap_bytes = pd.to_pickle(snapshot)
+        ohlcv_bytes = pickle.dumps(ohlcv)
+        snap_bytes = pickle.dumps(snapshot)
         self._write_with_signature(OHLCV_CACHE_FILE, ohlcv_bytes)
         self._write_with_signature(SNAPSHOT_CACHE_FILE, snap_bytes)
 
@@ -459,8 +460,8 @@ class SnapshotService:
             # 保存缓存（使用新数据）
             count = sum(len(v) for v in new_ohlcv.values())
             os.makedirs(CACHE_DIR, exist_ok=True)
-            ohlcv_bytes = pd.to_pickle(new_ohlcv)
-            snap_bytes = pd.to_pickle(new_snapshot)
+            ohlcv_bytes = pickle.dumps(new_ohlcv)
+            snap_bytes = pickle.dumps(new_snapshot)
             self._write_with_signature(OHLCV_CACHE_FILE, ohlcv_bytes)
             self._write_with_signature(SNAPSHOT_CACHE_FILE, snap_bytes)
             row_hash_new = hashlib.md5(str(count).encode()).hexdigest()

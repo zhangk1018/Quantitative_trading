@@ -84,7 +84,7 @@ ORDER BY trade_date DESC;
 ```sql
 SELECT 
     COUNT(*) as total,
-    SUM(CASE WHEN pe IS NOT NULL THEN 1 ELSE 0 END) as pe_count,
+    SUM(CASE WHEN pe_ttm IS NOT NULL THEN 1 ELSE 0 END) as pe_ttm_count,
     SUM(CASE WHEN ma5 IS NOT NULL THEN 1 ELSE 0 END) as ma5_count,
     SUM(CASE WHEN macd IS NOT NULL THEN 1 ELSE 0 END) as macd_count,
     SUM(CASE WHEN rsi_6 IS NOT NULL THEN 1 ELSE 0 END) as rsi6_count,
@@ -93,7 +93,10 @@ FROM stock_daily_snapshot
 WHERE trade_date = '<最新交易日>';
 ```
 
-关键字段（pe, ma5, macd, rsi_6, boll_mid）非空比例低于 80% 需关注。
+关键字段合规阈值：
+- **pe_ttm**：≥72% 正常（Tushare 数据源天然覆盖限制，ST/退市股无估值）
+- **ma5, macd, rsi_6, boll_mid**：≥80% 正常（技术指标，大部分股票有数据）
+- 所有字段 ≥95% 时仅显示绿色，不展示详细报错
 
 ### 5. 检查任务日志
 
