@@ -316,8 +316,19 @@ class KLineItem(BaseModel):
     boll_mid: Optional[Decimal] = Field(None, description="布林中轨")
     boll_lower: Optional[Decimal] = Field(None, description="布林下轨")
 
+    # 基本面字段（每日快照）
+    pe_ttm: Optional[Decimal] = Field(None, description="市盈率TTM")
+    turnover_rate: Optional[Decimal] = Field(None, description="换手率(%)")
+
     class Config:
         from_attributes = True
+
+
+class PatternMarker(BaseModel):
+    """单日K线形态标记（TA-Lib预计算结果）"""
+
+    trade_date: date = Field(..., description="交易日期")
+    patterns: List[str] = Field(..., description="当日识别的形态列表，如 ['hammer', 'morning_star']")
 
 
 class KLineResponse(BaseModel):
@@ -330,6 +341,8 @@ class KLineResponse(BaseModel):
     adj_method: AdjMethod = Field(AdjMethod.NONE, description="复权方式")
     latest_factor: Optional[Decimal] = Field(None, description="最新复权因子（adj_factor）")
     warning: Optional[str] = Field(None, description="处理过程中产生的警告信息，如复权失败等")
+    # K线形态标记（TA-Lib 预计算结果）
+    pattern_markers: List[PatternMarker] = Field(default_factory=list, description="K线形态标记列表")
 
 
 # ============================================

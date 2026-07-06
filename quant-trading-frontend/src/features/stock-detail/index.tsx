@@ -30,7 +30,7 @@ const StockDetailPage: React.FC = () => {
 
   useStockChart({
     containerRef: chartContainerRef,
-    data: klineData || [],
+    data: klineData?.items || [],
     signals: signalsData || [],
     indicators,
   });
@@ -66,7 +66,7 @@ const StockDetailPage: React.FC = () => {
             body: { flex: 1, display: 'flex', flexDirection: 'column', padding: 0, position: 'relative' } // ✅ 关键：body flex + relative
           }}
         >
-          {(!klineData || klineData.length === 0) ? (
+          {(!klineData?.items || klineData.items.length === 0) ? (
             <div className="flex items-center justify-center h-full text-[#848E9C]">暂无K线数据</div>
           ) : (
             // ✅ 关键：使用 absolute inset-0 确保图表容器填满 Card Body

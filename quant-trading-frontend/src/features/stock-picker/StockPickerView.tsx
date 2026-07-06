@@ -348,13 +348,13 @@ const StockPickerContent: React.FC = () => {
   const marketCount = useScreenerSelector((s) => s.marketIndicators.selected.length);
   const financialCount = useScreenerSelector((s) => s.financialIndicators.selected.length);
   const techCount = useScreenerSelector((s) => Object.keys(s.technical.selected).length);
-  const patternCount = useScreenerSelector((s) => Object.keys(s.patterns.selected).length);
+  const filterGroup = useScreenerSelector((s) => s.condition.filterGroup);
   const conditionCount = useScreenerSelector(
     (s) => s.condition.filterGroup?.conditions?.length || 0,
   );
   const totalFiltersCount = useMemo(
-    () => marketCount + financialCount + techCount + patternCount + conditionCount,
-    [marketCount, financialCount, techCount, patternCount, conditionCount],
+    () => marketCount + financialCount + techCount + conditionCount,
+    [marketCount, financialCount, techCount, conditionCount],
   );
 
   const handleReset = useCallback(() => {
@@ -715,6 +715,7 @@ const StockPickerContent: React.FC = () => {
         open={!!analysisStock}
         stock={analysisStock}
         onClose={() => setAnalysisStock(null)}
+        conditions={filterGroup?.conditions}
       />
     </div>
   );

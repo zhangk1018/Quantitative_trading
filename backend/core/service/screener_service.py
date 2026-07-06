@@ -7,7 +7,8 @@ screener_service.py - 股票筛选服务
 
 import pandas as pd
 import datetime
-from typing import Dict, List, Any, Optional, Tuple
+import logging
+from typing import Dict, List, Any, Optional, Set, Tuple
 from decimal import Decimal
 
 from collector.db.loader import DataLoader
@@ -15,6 +16,8 @@ from core.api.models.schemas import (
     StockResponse, ScreenerRequest, ScreenerResponse,
     FilterGroup, FilterField, ListedBoard
 )
+
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------
 # 列名映射：API 字段名 → Parquet 列名
@@ -242,9 +245,26 @@ class ScreenerService:
     # ------------------------------------------------------------------
     # 核心筛选逻辑
     # ------------------------------------------------------------------
-    def screen_stocks(self, request: ScreenerRequest) -> ScreenerResponse:
-        """执行股票筛选"""
+    def screen_stocks(self, request: ScreenerRequest,
+                      pattern_lookback: Optional[Dict[str, int]] = None) -> ScreenerResponse:
+        """执行股票筛选
+
+        Args:
+            request: 筛选请求（含 filters, sort, pagination）
+            pattern_lookback: 可选，K 线形态 lookback 天数映射
+                             {"pattern_hammer": 3, "pattern_morning_star": 5}
+        """
+        # Step 1: Parquet 过滤（不含 pattern 条件）
         filtered_df = self._apply_filters(self.df, request.filters)
+
+        # Step 2: DB pattern lookback 过滤（若有）
+        # K 2026-07-06 决策：先快速用 Parquet 过滤非 pattern 条件，
+        # 再从数据库查询符合 lookback 的股票，取交集
+        if pattern_lookback:
+            matched_codes = self._filter_patterns_with_lookback(pattern_lookback)
+            if matched_codes is not None:
+                filtered_df = filtered_df[filtered_df['code'].isin(matched_codes)]
+
         sorted_df = self._apply_sorting(filtered_df, request.sort_by, request.sort_order)
         paginated_df, total_count = self._apply_pagination(sorted_df, request.page, request.page_size)
         stocks = self._convert_to_stock_responses(paginated_df)
@@ -255,6 +275,73 @@ class ScreenerService:
             page_size=request.page_size,
             data=stocks,
         )
+
+    # ------------------------------------------------------------------
+    # DB pattern lookback 查询
+    # ------------------------------------------------------------------
+    def _filter_patterns_with_lookback(self, pattern_lookback: Dict[str, int]) -> Optional[Set[str]]:
+        """查询 stock_indicators 表，返回在指定 lookback 天数内出现过所请求形态的股票代码集合。
+
+        核心设计（K 2026-07-06 决策 — 方案 A）：
+        - 动态拼接 WHERE 子句，不写死任何 pattern
+        - TA-Lib 值 != 0 即视为命中（捕获 -100/100 双向信号）
+        - 日期差使用 PostgreSQL 原生 `date - date` 语法（返回整数天数）
+        - 无有效条件时返回 None，由调用方决定是否跳过 DB 查询
+        - 多个 pattern 条件使用 INTERSECT 取交集（AND 逻辑）
+
+        Args:
+            pattern_lookback: {"pattern_hammer": 3, "pattern_morning_star": 5}
+
+        Returns:
+            Set[str] 符合条件的股票代码集合；None 表示无条件应跳过 DB
+        """
+        if not pattern_lookback:
+            return None
+
+        subqueries = []
+        params = {}
+
+        # 当前交易日：从 YYYYMMDD 转为 YYYY-MM-DD（PostgreSQL DATE 格式）
+        raw_date = self.trade_date  # e.g. "20260706"
+        target_date_fmt = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+        params["target_date"] = target_date_fmt
+
+        for pattern_col, lookback_days in pattern_lookback.items():
+            lookback = int(lookback_days) if lookback_days else 0
+            if lookback > 0:
+                # pattern_col 已是完整列名（如 pattern_hammer），无需加 pattern_ 前缀
+                # TA-Lib 返回值 -100/0/100，!= 0 捕获所有触发
+                subqueries.append(
+                    f"SELECT DISTINCT code FROM stock_indicators "
+                    f"WHERE cycle = '1d' "
+                    f"AND {pattern_col} != 0 "
+                    f"AND (%(target_date)s - trade_date) < %(lb_{pattern_col})s"
+                )
+                params[f"lb_{pattern_col}"] = lookback
+
+        if not subqueries:
+            return None  # 无有效 lookback 条件，跳过 DB 查询
+
+        # K 2026-07-06 决策：所有选股条件均为 AND 关系
+        # 多个 pattern 条件使用 INTERSECT 取交集（而非 OR 取并集）
+        sql = "\nINTERSECT\n".join(subqueries)
+
+        # 延迟导入避免循环依赖（dependencies → screener_service）
+        from core.api.dependencies import get_db
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+                    result = {row[0] for row in rows}
+                    logger.info(
+                        "DB pattern lookback 查询完成: conditions=%d, matched=%d 只股票",
+                        len(subqueries), len(result),
+                    )
+                    return result
+        except Exception as e:
+            logger.exception("数据库 pattern lookback 查询失败")
+            return None  # DB 查询失败时返回 None，不阻塞整个筛选流程
 
     def _apply_filters(self, df: pd.DataFrame, filters: Dict[str, Any]) -> pd.DataFrame:
         if not filters:

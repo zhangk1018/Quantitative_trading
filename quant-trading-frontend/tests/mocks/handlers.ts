@@ -81,4 +81,48 @@ export const stocksHandlers = [
       { status: 500 }
     );
   }),
+
+  // ==================== K 线 ====================
+  http.get('/api/kline/:code', ({ request, params }) => {
+    const url = new URL(request.url);
+    const code = params.code as string;
+    const limit = Number(url.searchParams.get('limit') ?? '500');
+
+    // 生成 mock K 线数据
+    const baseDate = new Date('2026-07-01');
+    const rawItems = Array.from({ length: Math.min(limit, 10) }, (_, i) => {
+      const d = new Date(baseDate);
+      d.setDate(d.getDate() + i);
+      const dateStr = d.toISOString().slice(0, 10);
+      // 仅交易日（跳过周末）
+      if (d.getDay() === 0 || d.getDay() === 6) return null;
+      const open = 35 + i * 0.1;
+      const close = open + (i % 3 === 0 ? -0.5 : 0.3);
+      return {
+        trade_date: dateStr,
+        open: String(open),
+        high: String(Math.max(open, close) + 0.5),
+        low: String(Math.min(open, close) - 0.5),
+        close: String(close),
+        volume: '1000000',
+        amount: '35000000',
+        pe_ttm: '5.1',
+        turnover_rate: '0.85',
+      };
+    }).filter(Boolean);
+
+    // 带有 pattern_markers 的完整响应（直接返回 KLineResponse，非 ApiResponse 信封）
+    const response = {
+      stock_code: code,
+      data: rawItems,
+      count: rawItems.length,
+      adj_method: 'forward',
+      pattern_markers: [
+        { date: '2026-07-03', patterns: ['hammer'] },
+        { date: '2026-07-06', patterns: ['morning_star', 'bullish_engulfing'] },
+      ],
+    };
+
+    return HttpResponse.json(response);
+  }),
 ];

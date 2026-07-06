@@ -996,7 +996,7 @@ class PostgreSQLStorage(BaseStorage):
                         code, cycle, trade_date, signal_type, signal_direction,
                         signal_value, signal_strength, description
                     ) VALUES %s
-                    ON CONFLICT (code, cycle, trade_date, signal_type, signal_direction) DO UPDATE SET
+                    ON CONFLICT (code, trade_date, signal_type) DO UPDATE SET
                         signal_value = EXCLUDED.signal_value,
                         signal_strength = EXCLUDED.signal_strength,
                         description = EXCLUDED.description
@@ -1043,7 +1043,7 @@ class PostgreSQLStorage(BaseStorage):
                             code, cycle, trade_date, signal_type, signal_direction,
                             signal_value, signal_strength, description
                         ) VALUES %s
-                        ON CONFLICT (code, cycle, trade_date, signal_type, signal_direction) DO UPDATE SET
+                        ON CONFLICT (code, trade_date, signal_type) DO UPDATE SET
                             signal_value = EXCLUDED.signal_value,
                             signal_strength = EXCLUDED.signal_strength,
                             description = EXCLUDED.description
@@ -1224,8 +1224,7 @@ class PostgreSQLStorage(BaseStorage):
 
     def get_indicators_with_quotes_batch(self, codes: List[str], cycle: str = 'daily',
                                          start_date: Optional[str] = None,
-                                         end_date: Optional[str] = None,
-                                         limit: int = 10000) -> pd.DataFrame:
+                                         end_date: Optional[str] = None) -> pd.DataFrame:
         if not codes:
             return pd.DataFrame()
         self._ensure_connection()
@@ -1251,8 +1250,7 @@ class PostgreSQLStorage(BaseStorage):
         if end_date:
             query += " AND i.trade_date <= %s"
             params.append(end_date)
-        query += " ORDER BY i.code, i.trade_date LIMIT %s"
-        params.append(limit)
+        query += " ORDER BY i.code, i.trade_date"
 
         conn = self._get_conn()
         try:
@@ -1262,6 +1260,68 @@ class PostgreSQLStorage(BaseStorage):
         except Exception as e:
             logger.error(f"❌ 批量获取指标和行情数据失败: {str(e)}")
             return pd.DataFrame()
+        finally:
+            self._return_conn(conn)
+
+    def get_pattern_markers(self, code: str, start_date: str, end_date: str) -> List[Dict]:
+        """查询指定股票在时间范围内的K线形态标记（TA-Lib预计算结果）
+
+        Args:
+            code: 股票代码（标准化格式，如 600000）
+            start_date: 开始日期 (YYYY-MM-DD)
+            end_date: 结束日期 (YYYY-MM-DD)
+
+        Returns:
+            形态标记列表，格式为 [{"date": "2026-07-03", "patterns": ["hammer"]}, ...]
+            日期按升序排列，全零日期不返回
+        """
+        self._ensure_connection()
+        pattern_fields = [
+            ('pattern_hammer', 'hammer'),
+            ('pattern_morning_star', 'morning_star'),
+            ('pattern_evening_star', 'evening_star'),
+            ('pattern_bullish_engulfing', 'bullish_engulfing'),
+            ('pattern_bearish_engulfing', 'bearish_engulfing'),
+        ]
+
+        cases = [f"CASE WHEN {col} != 0 THEN '{name}' END AS p_{name}" for col, name in pattern_fields]
+        conditions = ' OR '.join([f'{col} != 0' for col, _ in pattern_fields])
+
+        sql = f"""
+            SELECT trade_date, {', '.join(cases)}
+            FROM stock_indicators
+            WHERE code = %(code)s
+              AND cycle = '1d'
+              AND trade_date BETWEEN %(start_date)s AND %(end_date)s
+              AND ({conditions})
+            ORDER BY trade_date ASC
+        """
+        params = {'code': code, 'start_date': start_date, 'end_date': end_date}
+
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+                col_names = [desc[0] for desc in cur.description]
+
+            markers = []
+            for row in rows:
+                row_dict = dict(zip(col_names, row))
+                patterns = []
+                for _, name in pattern_fields:
+                    p_col = f'p_{name}'
+                    if p_col in row_dict and row_dict[p_col] is not None:
+                        patterns.append(name)
+                if patterns:
+                    markers.append({
+                        'date': str(row_dict['trade_date']),
+                        'patterns': patterns,
+                    })
+            return markers
+        except Exception as e:
+            logger.warning(f"pattern_markers 查询失败 (code={code}): {e}")
+            return []
         finally:
             self._return_conn(conn)
 

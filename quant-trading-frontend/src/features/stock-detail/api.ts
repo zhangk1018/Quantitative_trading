@@ -87,7 +87,7 @@ interface RawKLineItem {
   low: string | number;
   close: string | number;
   volume: string | number;
-  amount?: string | number;
+  amount?: string | number | null;
   ma5?: string | number;
   ma10?: string | number;
   ma20?: string | number;
@@ -96,6 +96,19 @@ interface RawKLineItem {
   boll_upper?: string | number | null;
   boll_mid?: string | number | null;
   boll_lower?: string | number | null;
+  pe_ttm?: string | number | null;
+  turnover_rate?: string | number | null;
+}
+
+/** KLineResponse 的原始 JSON 结构（后端直接返回，非 ApiResponse 信封） */
+interface KLineApiResponse {
+  stock_code: string;
+  data: RawKLineItem[];
+  count: number;
+  adj_method: string;
+  pattern_markers?: PatternMarker[];
+  warning?: string | null;
+  latest_factor?: number | null;
 }
 
 export interface KLineItem {
@@ -105,6 +118,21 @@ export interface KLineItem {
   low: number;
   close: number;
   volume: number;
+  amount: number;
+  pe_ttm: number | null;
+  turnover_rate: number | null;
+}
+
+/** 后端 TA-Lib 返回的单日形态标记 */
+export interface PatternMarker {
+  date: string;
+  patterns: string[];
+}
+
+/** K 线数据 + 形态标记的完整返回 */
+export interface KLineDataResult {
+  items: KLineItem[];
+  patternMarkers: PatternMarker[];
 }
 
 export interface SignalItem {
@@ -157,7 +185,7 @@ export const fetchKLineData = async (
   code: string,
   options?: KLineFetchOptions | string,
   signal?: AbortSignal,
-): Promise<KLineItem[]> => {
+): Promise<KLineDataResult> => {
   let params: Record<string, any> = {};
   if (typeof options === 'string') {
     params = { period: options };
@@ -166,14 +194,23 @@ export const fetchKLineData = async (
     if (options.limit) params.limit = options.limit;
     if (options.adj) params.adj = options.adj;
   }
-  const { data } = await api.get<ApiResponse<RawKLineItem[]>>(`/kline/${code}`, {
+  const { data } = await api.get<KLineApiResponse>(`/kline/${code}`, {
     params,
     ...(signal ? { signal } : {}),
   });
-  const rawList = unwrap(data);
-  if (!Array.isArray(rawList)) return [];
 
-  return rawList
+  // 提取 pattern_markers（KLineResponse 顶层字段）
+  const patternMarkers: PatternMarker[] = Array.isArray(data?.pattern_markers)
+    ? data.pattern_markers
+    : [];
+
+  // 提取 K 线数据数组（KLineResponse.data）
+  const rawItems = data?.data ?? [];
+  if (!Array.isArray(rawItems)) {
+    return { items: [], patternMarkers };
+  }
+
+  const items: KLineItem[] = rawItems
     .map(item => ({
       time: item.trade_date,
       open: Number(item.open),
@@ -181,8 +218,13 @@ export const fetchKLineData = async (
       low: Number(item.low),
       close: Number(item.close),
       volume: Number(item.volume),
+      amount: item.amount != null ? Number(item.amount) : 0,
+      pe_ttm: item.pe_ttm != null ? Number(item.pe_ttm) : null,
+      turnover_rate: item.turnover_rate != null ? Number(item.turnover_rate) : null,
     }))
     .filter(item => !isNaN(item.open));
+
+  return { items, patternMarkers };
 };
 
 export const fetchSignals = async (code: string): Promise<SignalItem[]> => {

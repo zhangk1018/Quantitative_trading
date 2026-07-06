@@ -103,7 +103,10 @@ def setup_logger(
     log_dir = log_dir or os.environ.get('LOG_DIR', 'logs')
 
     os.makedirs(log_dir, exist_ok=True)
-    os.chmod(log_dir, 0o755)
+    try:
+        os.chmod(log_dir, 0o755)
+    except PermissionError:
+        pass
 
     logger = logging.getLogger(name)
     logger.setLevel(level)

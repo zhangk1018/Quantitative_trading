@@ -38,6 +38,8 @@
 [方舟 2026-06-10] 协作单 [4.4-META-20260610] 状态变更: NEW（fetchMeta 返回 trade_date=20260601 total=300，但 DB 最新 20260608 共 5515 条；loader 缓存陈旧 4 天，影响 Phase 4.4.1 选股列表数据时效性）
 [方舟 2026-06-10] 协作单 [4.4-STOCKS-20260610] 状态变更: NEW（P0 阻塞：/api/stocks/ 返回 500，jsonable_encoder vars() TypeError；6-10 早上 14/14 集成测试通过，下午突发，可能 P2-SCHEMA direction 字段或 4.4 后端补丁副作用）
 [方舟 2026-06-10] Phase 4.4.1-4.4.5 完成：4 个联调任务 + 1 个 E2E 闭环（15/16 通过，唯一 1 项为 toast 时序问题）
+[量量 2026-07-06] 协作单 [6.13-SNAPSHOT-CACHE-20260705] 状态变更: CLOSED（SnapshotService Parquet 缓存序列化 bug 修复，/api/snapshot/ready 返回 ready:true/stocks_count:5194/load_error:null）
+[量量 2026-07-06] 协作单 [PATTERN-MARKERS-20260706] 状态变更: CLOSED（K线接口新增 pattern_markers 字段，/api/kline/603211 返回 21 条形态标记，5 种 TA-Lib 形态全部覆盖）
 [方舟 2026-06-10] Phase 6.1.a 启动：搭积木式条件组合面板 ConditionBuilder（搭积木式 AND/OR/NOT 逻辑筛选 UI），等 [4.4-STOCKS-20260610] 修复后联调
 [量量 2026-06-10 14:55] 协作单 [4.4-STOCKS-20260610] 状态变更: NEW→FIXED（/api/stocks/ 返回 200，jsonable_encoder 已修；6 个字段全补全：stock_code/name/listed_board/industry/sub_industry/trade_date + 30+ 数值字段）
 [量量 2026-06-10 14:55] 协作单 [4.4-META-20260610] 状态变更: NEW→FIXED（fetchMeta 返回 trade_date=20260608 total=5515，loader 缓存已刷新）
@@ -339,3 +341,9 @@ Phase 5.2 性能优化已完成三项：
 
 [量量→方舟 2026-07-05 09:52] 协作单 [6.13-SNAPSHOT-CACHE-20260705] 状态变更: NEW→ASSIGNED（认领：pd.to_pickle→pickle.dumps 修复，4处调用）
 [量量→方舟 2026-07-05 10:35] 协作单 [6.13-SNAPSHOT-CACHE-20260705] 状态变更: ASSIGNED→VERIFY（4处 pd.to_pickle→pickle.dumps 已修复。缓存正常生成+签名，热重启~10s，API 200/5193只。请方舟验证。）
+
+**通知**: [方舟→量量 2026-07-06 10:00] 协作单 [PATTERN-MARKERS-20260706] 状态变更: NEW（K线接口新增 pattern_markers 字段，前端直接渲染 TA-Lib 结果替换 heuristic 算法。涉及 shared/schemas.py + kline_service.py，含缓存键版本号升级 + 5 种 K 线形态字段确认。详见 `quant-trading-frontend/temp/collab-backend-pattern-markers.md`）
+
+**通知**: [量量→K 2026-07-06] 协作单 [PATTERN-MARKERS-20260706] 状态变更: ASSIGNED→VERIFY（3 文件修改 + 自测验证通过：shared/schemas.py 新增 PatternMarker 模型 + KLineResponse 字段；postgresql_storage.py 新增 get_pattern_markers 方法；kline_service.py 新增 _query_pattern_markers + 缓存键 v2 升级。API 验证通过 603211=21条、300005=11条，5种形态全部覆盖。待 K 验证 CLOSE。）
+
+**通知**: [量量→K 2026-07-06] 协作单 [6.13-SNAPSHOT-CACHE-20260705] 状态变更: VERIFY→CLOSED（验证通过 — /api/snapshot/ready: ready=true, load_error=null, stocks_count=5194; /api/snapshot/all: 200 OK, 3 items。pd.to_pickle→pickle.dumps 修复生效。）

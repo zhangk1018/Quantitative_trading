@@ -1,13 +1,15 @@
 // StockAnalysisModal.tsx
 // 容器组件 — 负责数据获取、loading/error 状态管理，渲染 KLineChart 展示组件
 
-import React, { useEffect, useState, useCallback } from 'react';
-import { Modal, Typography, Spin, Alert, Segmented } from 'antd';
-import { fetchKLineData, toFriendlyMessage, type StockItem } from '@/features/stock-detail/api';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { Modal, Typography, Spin, Alert, Segmented, Tooltip } from 'antd';
+import { fetchKLineData, toFriendlyMessage, type StockItem, type PatternMarker, type KLineDataResult } from '@/features/stock-detail/api';
 import { buildChartData, type ChartDataResult } from '@/lib/indicators/chart-adapter';
 import { sanitizeNumber, sanitizePct } from '@/lib/indicators/indicators';
 import { CHART_THEME } from '@/lib/indicators/chart-config';
 import KLineChart, { type MainType, type OscType } from './KLineChart';
+import { detectConditions, type ConditionEvent, type ConditionConfig } from '@/lib/indicators/condition-detector';
+import type { FilterCondition } from '../types/filterTree';
 
 const { Text } = Typography;
 
@@ -21,17 +23,28 @@ interface StockAnalysisModalProps {
   open: boolean;
   stock: ModalStock | null;
   onClose: () => void;
+  conditions?: FilterCondition[];
 }
 
 type ChartStatus = 'idle' | 'loading' | 'ready' | 'error';
 
-const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, onClose }) => {
+const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, onClose, conditions }) => {
   const [status, setStatus] = useState<ChartStatus>('idle');
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [chartData, setChartData] = useState<ChartDataResult | null>(null);
   const [mainType, setMainType] = useState<MainType>('ma');
   const [oscType, setOscType] = useState<OscType>('rsi');
   const [retryCount, setRetryCount] = useState(0);
+  const [markers, setMarkers] = useState<ConditionEvent[]>([]);
+  const [undetectable, setUndetectable] = useState<{ fieldKey: string; label: string; reason: string }[]>([]);
+
+  // 从 conditions 中提取 fieldKey 和 lookbackDays
+  const conditionConfigs = useMemo<ConditionConfig[]>(() => {
+    if (!conditions || conditions.length === 0) return [];
+    return conditions
+      .map(c => ({ fieldKey: c.fieldKey, lookbackDays: c.lookbackDays }))
+      .filter(c => Boolean(c.fieldKey));
+  }, [conditions]);
 
   // 数据获取（支持 AbortSignal 取消过期请求）
   useEffect(() => {
@@ -50,20 +63,81 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
 
     const load = async () => {
       try {
-        const klineData = await fetchKLineData(
+        const klineResult = await fetchKLineData(
           stock.stock_code,
           { limit: 500, adj: 'forward' },
           abortController.signal,
         );
 
-        if (!klineData || klineData.length === 0) {
+        if (!klineResult.items || klineResult.items.length === 0) {
           setStatus('error');
           setErrorMsg('未获取到K线数据，请重试');
           return;
         }
 
-        const data = buildChartData(klineData);
+        const data = buildChartData(klineResult.items);
         setChartData(data);
+
+        // --- 标记合并逻辑 ---
+        // 将 conditionConfigs 拆为 pattern 和非 pattern 两组
+        const patternFieldKeys = new Set(
+          conditionConfigs.filter(c => c.fieldKey.startsWith('pattern_')).map(c => c.fieldKey)
+        );
+        const nonPatternConfigs = conditionConfigs.filter(c => !c.fieldKey.startsWith('pattern_'));
+        const hasBackendPatterns = klineResult.patternMarkers.length > 0;
+
+        let allEvents: ConditionEvent[] = [];
+        const allUndetectable: { fieldKey: string; label: string; reason: string }[] = [];
+
+        // 1) 非 pattern 条件（RSI/MACD 等）— 始终使用本地检测
+        if (nonPatternConfigs.length > 0 && data.candles.length > 0) {
+          const volLookup = new Map<string, number>();
+          data.volume.forEach(v => volLookup.set(String(v.time), v.value));
+          const bars = data.candles.map(c => ({
+            time: String(c.time),
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: volLookup.get(String(c.time)) ?? 0,
+          }));
+          bars.sort((a, b) => a.time.localeCompare(b.time));
+          const result = detectConditions(bars, nonPatternConfigs);
+          allEvents = result.events;
+          allUndetectable.push(...result.undetectable);
+        }
+
+        // 2) pattern 条件 — 优先使用后端 TA-Lib，否则 fallback 到前端 heuristic
+        if (patternFieldKeys.size > 0) {
+          if (hasBackendPatterns) {
+            // 后端 TA-Lib 数据（准确）
+            const backendEvents = convertPatternMarkersToEvents(
+              klineResult.patternMarkers, conditionConfigs, data.candles
+            );
+            allEvents = [...allEvents, ...backendEvents];
+          } else if (data.candles.length > 0) {
+            // fallback: 前端 heuristic 检测（后端还没上线 or 字段尚未就绪）
+            const volLookup = new Map<string, number>();
+            data.volume.forEach(v => volLookup.set(String(v.time), v.value));
+            const bars = data.candles.map(c => ({
+              time: String(c.time),
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close,
+              volume: volLookup.get(String(c.time)) ?? 0,
+            }));
+            bars.sort((a, b) => a.time.localeCompare(b.time));
+            const patternConfigs = conditionConfigs.filter(c => c.fieldKey.startsWith('pattern_'));
+            const patternResult = detectConditions(bars, patternConfigs);
+            allEvents = [...allEvents, ...patternResult.events];
+            allUndetectable.push(...patternResult.undetectable);
+          }
+        }
+
+        setMarkers(allEvents);
+        setUndetectable(allUndetectable);
+
         setStatus('ready');
       } catch (err: any) {
         if (err?.name === 'CanceledError' || abortController.signal.aborted) return;
@@ -92,8 +166,12 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
       footer={null}
       closable={false}
       width="100vw"
-      style={{ top: 0, padding: 0, maxWidth: '100vw' }}
-      styles={{ body: { padding: 0, height: '100vh' } }}
+      style={{ top: 0, padding: 0, maxWidth: '100vw', margin: 0, paddingBottom: 0 }}
+      styles={{
+        body: { padding: 0, flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
+        content: { borderRadius: 0, padding: 0, margin: 0, height: '100vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' },
+        header: { display: 'none' },
+      }}
       destroyOnHidden
       maskClosable={false}
       className="stock-analysis-modal"
@@ -126,6 +204,38 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
               <Text className="text-[#848E9C] text-xs">换手 {sanitizeNumber(stock.turnover_rate, 2)}%</Text>
             )}
             {stock?.listed_board && <Text className="text-[#848E9C] text-xs">{stock.listed_board}</Text>}
+            {/* 条件图例 + 不可标注提示 */}
+            {markers.length > 0 && (
+              <div className="flex items-center gap-1 ml-2">
+                {Array.from(new Set(markers.map(m => m.fieldKey))).map((fk) => {
+                  const first = markers.find(m => m.fieldKey === fk);
+                  if (!first) return null;
+                  return (
+                    <Tooltip key={fk} title={`${first.label} (${markers.filter(m => m.fieldKey === fk).length}次)`}>
+                      <span
+                        className="inline-block w-2 h-2 rounded-full"
+                        style={{ background: first.color }}
+                      />
+                    </Tooltip>
+                  );
+                })}
+              </div>
+            )}
+            {undetectable.length > 0 && (
+              <Tooltip
+                title={
+                  <div>
+                    {undetectable.map(u => (
+                      <div key={u.fieldKey}>{u.label}: {u.reason}</div>
+                    ))}
+                  </div>
+                }
+              >
+                <Text className="text-[#848E9C] text-xs cursor-help ml-2">
+                  ⚡ {undetectable.length}项不可标注
+                </Text>
+              </Tooltip>
+            )}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <Segmented
@@ -181,11 +291,57 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
               />
             </div>
           )}
-          <KLineChart chartData={chartData} mainType={mainType} oscType={oscType} />
+          <KLineChart chartData={chartData} mainType={mainType} oscType={oscType} markers={markers} />
         </div>
       </div>
     </Modal>
   );
 };
+
+/** 后端 PatternMarker 中 5 种形态的视觉映射 */
+export const PATTERN_MARKER_VISUAL_MAP: Record<string, {
+  label: string; color: string; shape: ConditionEvent['shape']; direction: ConditionEvent['direction'];
+}> = {
+  hammer:              { label: '锤子线',   color: '#2962FF', shape: 'arrowUp',  direction: 'buy' },
+  morning_star:        { label: '早晨之星', color: '#26A69A', shape: 'arrowUp',  direction: 'buy' },
+  evening_star:        { label: '黄昏之星', color: '#EF5350', shape: 'arrowDown', direction: 'sell' },
+  bullish_engulfing:   { label: '看涨吞没', color: '#26A69A', shape: 'arrowUp',  direction: 'buy' },
+  bearish_engulfing:   { label: '看跌吞没', color: '#EF5350', shape: 'arrowDown', direction: 'sell' },
+};
+
+/**
+ * 将后端 TA-Lib 返回的 PatternMarker[] 转换为 ConditionEvent[]
+ * 仅保留用户选中的 pattern 条件，过滤掉未选中的形态
+ */
+export function convertPatternMarkersToEvents(
+  markers: PatternMarker[],
+  allConfigs: ConditionConfig[],
+  candles: { time: string | number }[],
+): ConditionEvent[] {
+  const activePatternKeys = new Set(
+    allConfigs.filter(c => c.fieldKey.startsWith('pattern_')).map(c => c.fieldKey)
+  );
+  const timeSet = new Set(candles.map(c => String(c.time)));
+  const events: ConditionEvent[] = [];
+
+  for (const marker of markers) {
+    if (!timeSet.has(marker.date)) continue;
+    for (const pattern of marker.patterns) {
+      const fieldKey = `pattern_${pattern}`;
+      if (!activePatternKeys.has(fieldKey)) continue;
+      const config = PATTERN_MARKER_VISUAL_MAP[pattern];
+      if (!config) continue;
+      events.push({
+        time: marker.date,
+        label: config.label,
+        fieldKey,
+        color: config.color,
+        shape: config.shape,
+        direction: config.direction,
+      });
+    }
+  }
+  return events;
+}
 
 export default StockAnalysisModal;

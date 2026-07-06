@@ -58,9 +58,9 @@ export const REF_LINES = {
 /** 各副图占主图的比例（top / bottom 为 scaleMargins 值） */
 export const PANE_RATIOS = {
   main: { top: 0.02, bottom: 0.48 },
-  volume: { top: 0.58, bottom: 0.28 },
-  macd: { top: 0.75, bottom: 0.14 },
-  osc: { top: 0.88, bottom: 0.0 },
+  volume: { top: 0.55, bottom: 0.31 },
+  macd: { top: 0.72, bottom: 0.18 },
+  osc: { top: 0.85, bottom: 0.05 },
 } as const;
 
 /** 指标默认周期 */

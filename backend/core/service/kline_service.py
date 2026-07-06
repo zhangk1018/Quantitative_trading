@@ -4,7 +4,7 @@ kline_service.py - K线数据服务
 """
 import pandas as pd
 import numpy as np
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime, timedelta
 from decimal import Decimal
 import time
@@ -16,6 +16,7 @@ from collector.storage.postgresql_storage import PostgreSQLStorage
 from core.api.models.schemas import (
     KLineResponse, KLineItem, StockResponse,
 )
+from shared.schemas import PatternMarker
 
 class KlineService:
     """K线数据服务"""
@@ -85,7 +86,7 @@ class KlineService:
             KLineResponse对象，包含K线数据列表
         """
         # 生成缓存键（包含limit和adj_method，不同复权方式/不同数据量需独立缓存）
-        cache_key = f"{stock_code}_{period}_{limit}_{adj_method}"
+        cache_key = f"kline_v2_{stock_code}_{period}_{limit}_{adj_method}"
         
         # 检查缓存
         cached_data = self._get_from_cache(cache_key)
@@ -180,6 +181,13 @@ class KlineService:
                 warning_msg = f'复权处理失败: {e}，返回原始价格'
                 logger.warning(f'⚠️ {warning_msg}')
 
+        # 查询 pattern_markers（K 2026-07-06 需求：前端直接渲染 TA-Lib 结果）
+        pattern_dicts = self._query_pattern_markers(stock_code, kline_df)
+        pattern_markers = [
+            PatternMarker(trade_date=datetime.strptime(m['date'], '%Y-%m-%d').date(), patterns=m['patterns'])
+            for m in pattern_dicts
+        ]
+
         # 构建响应
         response = KLineResponse(
             stock_code=stock_code,
@@ -188,6 +196,7 @@ class KlineService:
             adj_method=adj_method,
             latest_factor=latest_factor,
             warning=warning_msg,
+            pattern_markers=pattern_markers,
         )
         
         # 存入缓存
@@ -273,7 +282,41 @@ class KlineService:
             datetime.strptime(date_str, "%Y-%m-%d")
             return date_str
         except ValueError:
-            return None
+            return kline_items
+
+    def _query_pattern_markers(self, stock_code: str, kline_df: pd.DataFrame) -> List[Dict]:
+        """查询 stock_indicators 表，返回时间范围内的 K线形态标记
+
+        Args:
+            stock_code: 股票代码
+            kline_df: K线数据 DataFrame（用于获取时间范围）
+
+        Returns:
+            形态标记列表，格式 [{"date": "YYYY-MM-DD", "patterns": ["hammer"]}, ...]
+            失败时返回空数组，不影响 K线主数据返回
+        """
+        if self._storage is None or kline_df.empty or 'trade_date' not in kline_df.columns:
+            return []
+
+        # 获取时间范围（与 K线请求一致）
+        dates = pd.to_datetime(kline_df['trade_date'], errors='coerce')
+        valid_dates = dates.dropna()
+        if valid_dates.empty:
+            return []
+        start_date = valid_dates.min().strftime('%Y-%m-%d')
+        end_date = valid_dates.max().strftime('%Y-%m-%d')
+
+        # 标准化股票代码（去掉 sh./sz. 前缀）
+        db_code = stock_code
+        for prefix in ('sh.', 'sz.', 'SH.', 'SZ.'):
+            if db_code.startswith(prefix):
+                db_code = db_code.replace(prefix, '').lower()
+
+        try:
+            return self._storage.get_pattern_markers(db_code, start_date, end_date)
+        except Exception as e:
+            logger.warning(f"pattern_markers 查询失败 ({stock_code}): {e}")
+            return []
 
     def _calc_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """兜底计算：如果数据库没存指标，则在内存中计算"""
@@ -343,6 +386,10 @@ class KlineService:
                 boll_upper=safe_dec(row.get("boll_upper")),
                 boll_mid=safe_dec(row.get("boll_mid")),
                 boll_lower=safe_dec(row.get("boll_lower")),
+
+                # 基本面
+                pe_ttm=safe_dec(row.get("pe_ttm")),
+                turnover_rate=safe_dec(row.get("turnover_rate")),
             )
             kline_items.append(kline_item)
         

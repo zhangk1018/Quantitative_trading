@@ -19,9 +19,12 @@ for p in [_project_root, _backend_dir]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from .config import settings
-from .dependencies import init_pg_pool, close_pg_pool, get_loader, get_screener_service, get_snapshot_service
-from .router import meta, stocks, kline, signals, monitor, watchlist, snapshot
+from dotenv import load_dotenv
+load_dotenv(os.path.join(_project_root, ".env"))
+
+from core.api.config import settings
+from core.api.dependencies import init_pg_pool, close_pg_pool, get_loader, get_screener_service, get_snapshot_service
+from core.api.router import meta, stocks, kline, signals, monitor, watchlist, snapshot
 
 logger = logging.getLogger(__name__)
 

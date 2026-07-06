@@ -30,20 +30,24 @@ def init_pg_pool() -> None:
         return
     min_conn = int(os.environ.get("PG_POOL_MIN", "2"))
     max_conn = int(os.environ.get("PG_POOL_MAX", "10"))
-    _PG_POOL = pg_pool.ThreadedConnectionPool(
-        minconn=min_conn,
-        maxconn=max_conn,
-        host=os.environ.get("PG_HOST", "localhost"),
-        port=int(os.environ.get("PG_PORT", "5432")),
-        database=os.environ.get("PG_DATABASE", "quant_trading"),
-        user=os.environ.get("PG_USER", "quant_user"),
-        password=os.environ.get("PG_PASSWORD", ""),
-        keepalives=1,
-        keepalives_idle=30,
-        keepalives_interval=10,
-        keepalives_count=5,
-        connect_timeout=10,
-    )
+    try:
+        _PG_POOL = pg_pool.ThreadedConnectionPool(
+            minconn=min_conn,
+            maxconn=max_conn,
+            host=os.environ.get("PG_HOST", "localhost"),
+            port=int(os.environ.get("PG_PORT", "5432")),
+            database=os.environ.get("PG_DATABASE", "quant_trading"),
+            user=os.environ.get("PG_USER", "quant_user"),
+            password=os.environ.get("PG_PASSWORD", ""),
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
+            connect_timeout=10,
+        )
+    except Exception:
+        logger.exception("数据库连接池初始化失败")
+        raise
     logger.info(f"[db_pool] 连接池初始化完成 min={min_conn}, max={max_conn}")
 
 def close_pg_pool() -> None:

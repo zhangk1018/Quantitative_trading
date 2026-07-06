@@ -5,6 +5,26 @@
 import type { LineData, HistogramData, Time } from 'lightweight-charts';
 import { cleanBars, calcAllIndicators, type KlineBar } from './indicators';
 
+export interface RawBarDetail {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  amount: number;
+  pe_ttm: number | null;
+  turnover_rate: number | null;
+  preClose: number | null;
+}
+
+// 扩展的 KlineBar，包含额外字段（不影响指标计算）
+interface ExtendedKlineBar extends KlineBar {
+  amount?: number;
+  pe_ttm?: number | null;
+  turnover_rate?: number | null;
+}
+
 export interface ChartDataResult {
   candles: { time: Time; open: number; high: number; low: number; close: number }[];
   ma5: LineData<Time>[];
@@ -24,6 +44,7 @@ export interface ChartDataResult {
   kdjK: LineData<Time>[];
   kdjD: LineData<Time>[];
   kdjJ: LineData<Time>[];
+  rawBars: RawBarDetail[];
 }
 
 function toLineData(times: string[], values: (number | null)[]): LineData<Time>[] {
@@ -48,10 +69,34 @@ function toHistogramData(
   return result;
 }
 
-export function buildChartData(rawBars: KlineBar[]): ChartDataResult {
-  const cleaned = cleanBars(rawBars);
+export function buildChartData(rawBarsInput: ExtendedKlineBar[]): ChartDataResult {
+  // LWC requires asc order (old → new); API may return desc
+  const sorted = [...rawBarsInput].sort((a, b) => {
+    if (typeof a.time === 'number' && typeof b.time === 'number') return a.time - b.time;
+    if (typeof a.time === 'string' && typeof b.time === 'string') return a.time.localeCompare(b.time);
+    return String(a.time).localeCompare(String(b.time));
+  });
+  const cleaned = cleanBars(sorted);
   const ind = calcAllIndicators(cleaned);
   const times = cleaned.map(b => b.time);
+
+  // 构建rawBars，包含完整字段和前收盘价（用于涨跌计算）
+  const rawBars: RawBarDetail[] = cleaned.map((b, i) => {
+    const ext = b as ExtendedKlineBar;
+    const prevClose = i > 0 ? cleaned[i - 1].close : null;
+    return {
+      time: b.time,
+      open: b.open,
+      high: b.high,
+      low: b.low,
+      close: b.close,
+      volume: b.volume,
+      amount: ext.amount ?? 0,
+      pe_ttm: ext.pe_ttm ?? null,
+      turnover_rate: ext.turnover_rate ?? null,
+      preClose: prevClose,
+    };
+  });
 
   const candles = cleaned.map(b => ({
     time: b.time as Time,
@@ -82,7 +127,7 @@ export function buildChartData(rawBars: KlineBar[]): ChartDataResult {
     ma20: toLineData(times, ind.ma20),
     ma60: toLineData(times, ind.ma60),
     bollUpper: toLineData(times, ind.bollUpper),
-    bollMid: toLineData(times, ind.ma20),  // BOLL中轨 = SMA(20)
+    bollMid: toLineData(times, ind.ma20),
     bollLower: toLineData(times, ind.bollLower),
     volume: volumeData,
     dif: toLineData(times, ind.dif),
@@ -94,6 +139,7 @@ export function buildChartData(rawBars: KlineBar[]): ChartDataResult {
     kdjK: toLineData(times, ind.kdjK),
     kdjD: toLineData(times, ind.kdjD),
     kdjJ: toLineData(times, ind.kdjJ),
+    rawBars,
   };
 }
 

@@ -79,6 +79,14 @@ COND_SPECIAL_MAP = {
 # 后端收到这些 fieldKey 写入 logger.warning 并跳过（前端 UI 仍保留，
 # 等后续 ETL 接入后从该集合移除即可生效）
 COND_UNSUPPORTED_FIELD_KEYS = {
+    # 2026-07-06 已移除 pattern 形态：通过 pattern_* 参数（带 lookbackDays）处理
+}
+
+# K 2026-07-06 决策：K 线形态 fieldKey 不再通过 _parse_condition_builder 处理，
+# 而是通过 get_stocks() 中独立的 pattern_* 参数循环收集（含 lookbackDays），
+# 后续由 screener_service._filter_patterns_with_lookback() 查询数据库。
+# 此处显式标记，在 _parse_condition_builder 中跳过。
+PATTERN_FIELD_KEYS = {
     "pattern_morning_star",
     "pattern_evening_star",
     "pattern_bullish_engulfing",
@@ -88,11 +96,12 @@ COND_UNSUPPORTED_FIELD_KEYS = {
 
 # 条件构建器 preset fieldKey → 真实 parquet 列名（同名的 fieldKey 走这条路径）
 # 业务：K 2026-06-18 任务，仅保留与 parquet 列名 1:1 映射的 preset。
-# 其余复杂/不支持的 preset 见 COND_SPECIAL_MAP / COND_UNSUPPORTED_FIELD_KEYS。
+# 其余复杂/不支持的 preset 见 COND_SPECIAL_MAP / PATTERN_FIELD_KEYS。
 COND_DIRECT_FIELD_KEYS = {
     # MACD pattern（preset fieldKey 简写 → parquet 全称）
     "macd_golden_cross": "macd_low_golden_cross",
     "bottom_volume_macd": None,  # 组合 preset，下面特殊处理
+    # K 2026-07-06 已移除：K线形态通过 pattern_* 参数独立处理
 }
 
 
@@ -132,10 +141,13 @@ def _parse_condition_builder(query_params) -> dict:
     1. 复合条件（如 rsi_oversold/volume_breakout/low_valuation）：
        写入 filter_dict[`__cond_<fieldKey>`] = {kind, field/op/value/...}，
        后续由 screener_service._apply_cond_special 处理。
-    2. 1:1 映射的 preset（如 consecutive_up → consec_up_3、5 个 K线形态）：
+    2. 1:1 映射的 preset（如 consecutive_up → consec_up_3）：
        写入 filter_dict[<parquet_col>] = True（二进制列 =1 即命中）。
     3. 组合 preset（如 bottom_volume_macd = volume_breakout AND macd_golden_cross）：
        展开为两个条件。
+
+    K 线形态 fieldKey（PATTERN_FIELD_KEYS）不在此函数处理，
+    由 get_stocks() 中 pattern_* 参数循环独立收集（含 lookbackDays）。
 
     自编指标（fieldKey 以 `custom_` 开头）后端暂无 ETL 支持，跳过。
 
@@ -152,7 +164,11 @@ def _parse_condition_builder(query_params) -> dict:
         if field_key.startswith("custom_"):
             continue
 
-        # 0. 不支持的 preset（K 2026-06-18 决策：写 warning 后跳过）
+        # 0. K 线形态：由 pattern_* 参数独立处理（含 lookbackDays），此处跳过
+        if field_key in PATTERN_FIELD_KEYS:
+            continue
+
+        # 1. 不支持的 preset（K 2026-06-18 决策：写 warning 后跳过）
         if field_key in COND_UNSUPPORTED_FIELD_KEYS:
             logger.warning(
                 "条件构建器 preset %r 当前无 parquet 数据支持（K 2026-06-18 决策 ignore），已跳过",
@@ -160,18 +176,18 @@ def _parse_condition_builder(query_params) -> dict:
             )
             continue
 
-        # 1. 复合条件（需特判）
+        # 2. 复合条件（需特判）
         if field_key in COND_SPECIAL_MAP:
             result[f"{_COND_SPECIAL_PREFIX}{field_key}"] = COND_SPECIAL_MAP[field_key]
             continue
 
-        # 2. 组合 preset：展开
+        # 3. 组合 preset：展开
         if field_key == "bottom_volume_macd":
             result[f"{_COND_SPECIAL_PREFIX}volume_breakout"] = COND_SPECIAL_MAP["volume_breakout"]
             result["macd_low_golden_cross"] = True
             continue
 
-        # 3. 1:1 映射 preset
+        # 4. 1:1 映射 preset
         parquet_col = COND_DIRECT_FIELD_KEYS.get(field_key)
         if parquet_col:
             result[parquet_col] = True
@@ -229,6 +245,7 @@ def get_stocks(
             filter_dict[field] = range_cond
 
         # 解析条件构建器 cond_<fieldKey>=<op>（K 2026-06-18 任务）
+        # 注意：K 线形态 fieldKey 已从中移除，由下面的 pattern_* 循环独立处理
         cond_filters = _parse_condition_builder(request.query_params)
         filter_dict.update(cond_filters)
 
@@ -264,11 +281,18 @@ def get_stocks(
                     if p in tech_pattern_map.get(tech_key, {}):
                         filter_dict[tech_pattern_map[tech_key][p]] = True
 
-        # 解析 K 线形态 pattern_* 参数（前端通过 buildScreeningParams 发送）
-        # 格式：pattern_hammer=3, pattern_bullish_engulfing=3，值（lookbackDays）忽略
+        # ------------------------------------------------------------
+        # K 线形态 pattern_* 参数：含 lookbackDays，独立收集不走 filter_dict
+        # K 2026-07-06 决策 — 方案 A：收集为 pattern_lookback dict，
+        # 后续由 screener_service._filter_patterns_with_lookback() 查询 DB
+        # ------------------------------------------------------------
+        pattern_lookback = {}
         for key, value in request.query_params.items():
             if key.startswith('pattern_'):
-                filter_dict[key] = True
+                try:
+                    pattern_lookback[key] = int(value) if value else 0
+                except (ValueError, TypeError):
+                    pattern_lookback[key] = 0
 
         page = offset // limit + 1 if limit > 0 else 1
         page_size = limit
@@ -281,10 +305,10 @@ def get_stocks(
             page_size=page_size,
             as_of_date=as_of_date,
         )
-        
-        # 调用服务获取结果
-        result = screener.screen_stocks(request)
-        
+
+        # 调用服务获取结果（传入 pattern_lookback）
+        result = screener.screen_stocks(request, pattern_lookback=pattern_lookback)
+
         # 转换为前端期望的格式 {items, total, offset, limit}
         data = {
             "items": result.data,
@@ -292,7 +316,7 @@ def get_stocks(
             "offset": offset,
             "limit": limit,
         }
-        
+
         return ApiResponse(code=200, message="success", data=data)
     except Exception as e:
         logger.exception("获取股票列表失败")
@@ -308,7 +332,7 @@ def get_top_gainers(
     try:
         request = ScreenerRequest(page=page, page_size=page_size, sort_by="change_pct", sort_order="desc")
         result = screener.screen_stocks(request)
-        
+
         offset = (page - 1) * page_size
         data = {
             "items": result.data,
@@ -316,7 +340,7 @@ def get_top_gainers(
             "offset": offset,
             "limit": page_size,
         }
-        
+
         return ApiResponse(code=200, message="success", data=data)
     except Exception as e:
         logger.exception("获取涨幅榜失败")
@@ -332,7 +356,7 @@ def get_top_losers(
     try:
         request = ScreenerRequest(page=page, page_size=page_size, sort_by="change_pct", sort_order="asc")
         result = screener.screen_stocks(request)
-        
+
         offset = (page - 1) * page_size
         data = {
             "items": result.data,
@@ -340,7 +364,7 @@ def get_top_losers(
             "offset": offset,
             "limit": page_size,
         }
-        
+
         return ApiResponse(code=200, message="success", data=data)
     except Exception as e:
         logger.exception("获取跌幅榜失败")
@@ -356,7 +380,7 @@ def get_top_volume(
     try:
         request = ScreenerRequest(page=page, page_size=page_size, sort_by="volume", sort_order="desc")
         result = screener.screen_stocks(request)
-        
+
         offset = (page - 1) * page_size
         data = {
             "items": result.data,
@@ -364,7 +388,7 @@ def get_top_volume(
             "offset": offset,
             "limit": page_size,
         }
-        
+
         return ApiResponse(code=200, message="success", data=data)
     except Exception as e:
         logger.exception("获取成交量榜失败")
@@ -426,7 +450,7 @@ def search_stocks(
             "offset": offset,
             "limit": page_size,
         }
-        
+
         return ApiResponse(code=200, message="success", data=data)
     except Exception as e:
         logger.exception("股票搜索失败")
@@ -442,7 +466,7 @@ def get_stock_by_code(
         stock = screener.get_stock_by_code(stock_code)
         if stock is None:
             return ApiResponse(code=404, message=f"股票代码 {stock_code} 不存在", data=None)
-        
+
         return ApiResponse(code=200, message="success", data=stock)
     except Exception as e:
         logger.exception("获取股票详情失败")
