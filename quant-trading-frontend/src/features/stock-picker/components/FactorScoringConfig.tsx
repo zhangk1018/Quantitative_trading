@@ -1,6 +1,5 @@
 import React from 'react';
 import { Typography, Slider, Collapse } from 'antd';
-import { SlidersOutlined } from '@ant-design/icons';
 import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerContext';
 import { FACTOR_CONFIG } from '../config/indicatorConfig';
 
@@ -16,7 +15,7 @@ const FactorScoringConfig: React.FC = () => {
     dispatch({ type: 'SET_FACTOR_WEIGHT', payload: { factorId, weight: value } });
   };
 
-  const activeKey = collapsedPanels.factor ? ['factor'] : [];
+  const activeKey = collapsedPanels.factor ? [] : ['factor'];
 
   return (
     <Collapse
@@ -28,7 +27,6 @@ const FactorScoringConfig: React.FC = () => {
       <Panel
         header={
           <span className="flex items-center gap-2">
-            <SlidersOutlined className="text-color-accent" />
             <Text className="text-text-primary font-semibold">因子打分配置</Text>
           </span>
         }

@@ -63,9 +63,12 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
 
     const load = async () => {
       try {
+        // 默认显示最近 1 年数据（约 250 个交易日）
+        const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)
+          .toISOString().split('T')[0];
         const klineResult = await fetchKLineData(
           stock.stock_code,
-          { limit: 500, adj: 'forward' },
+          { start_date: oneYearAgo, limit: 500, adj: 'forward' },
           abortController.signal,
         );
 
@@ -325,14 +328,14 @@ export function convertPatternMarkersToEvents(
   const events: ConditionEvent[] = [];
 
   for (const marker of markers) {
-    if (!timeSet.has(marker.date)) continue;
+    if (!timeSet.has(marker.trade_date)) continue;
     for (const pattern of marker.patterns) {
       const fieldKey = `pattern_${pattern}`;
       if (!activePatternKeys.has(fieldKey)) continue;
       const config = PATTERN_MARKER_VISUAL_MAP[pattern];
       if (!config) continue;
       events.push({
-        time: marker.date,
+        time: marker.trade_date,
         label: config.label,
         fieldKey,
         color: config.color,

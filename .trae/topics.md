@@ -347,3 +347,9 @@ Phase 5.2 性能优化已完成三项：
 **通知**: [量量→K 2026-07-06] 协作单 [PATTERN-MARKERS-20260706] 状态变更: ASSIGNED→VERIFY（3 文件修改 + 自测验证通过：shared/schemas.py 新增 PatternMarker 模型 + KLineResponse 字段；postgresql_storage.py 新增 get_pattern_markers 方法；kline_service.py 新增 _query_pattern_markers + 缓存键 v2 升级。API 验证通过 603211=21条、300005=11条，5种形态全部覆盖。待 K 验证 CLOSE。）
 
 **通知**: [量量→K 2026-07-06] 协作单 [6.13-SNAPSHOT-CACHE-20260705] 状态变更: VERIFY→CLOSED（验证通过 — /api/snapshot/ready: ready=true, load_error=null, stocks_count=5194; /api/snapshot/all: 200 OK, 3 items。pd.to_pickle→pickle.dumps 修复生效。）
+
+**通知**: [方舟→量量 2026-07-07 08:40] 协作单 [FRONTEND-PATTERN-PICKER-20260707] 状态变更: NEW（前端K线形态选股功能验收。方舟已通过 Playwright 验证 "早晨之星" 近10天 正常，需量量人工验收 5形态×4回溯天数组合。详见 docs/协作单.md）
+
+**通知**: [量量→方舟 2026-07-07 09:00] 协作单 [FRONTEND-PATTERN-PICKER-20260707] 状态变更: ASSIGNED→VERIFY（验收通过：API 全20组合 code=0/200 全部正常 + 浏览器渲染验证通过 — 5形态×4回溯天数表格已填 ✅，浏览器截图已保存 /tmp/。待方舟关闭。）
+
+**通知**: [量量→方舟 2026-07-07 09:05] 协作单 [ANTD-WARNINGS-20260707] 状态变更: NEW（浏览器控制台 2 类 antd v5 弃用警告：① rc-collapse children→items 涉及 6 个文件 ② message 静态方法→App.useApp() 涉及 StockPickerView.tsx 7 处。见 docs/协作单.md P3 级别，不阻塞功能。）

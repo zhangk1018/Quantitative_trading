@@ -125,7 +125,7 @@ export interface KLineItem {
 
 /** 后端 TA-Lib 返回的单日形态标记 */
 export interface PatternMarker {
-  date: string;
+  trade_date: string;
   patterns: string[];
 }
 
@@ -179,6 +179,8 @@ export interface KLineFetchOptions {
   period?: string;
   limit?: number;
   adj?: 'none' | 'forward' | 'backward';
+  start_date?: string;
+  end_date?: string;
 }
 
 export const fetchKLineData = async (
@@ -193,6 +195,8 @@ export const fetchKLineData = async (
     if (options.period) params.period = options.period;
     if (options.limit) params.limit = options.limit;
     if (options.adj) params.adj = options.adj;
+    if (options.start_date) params.start_date = options.start_date;
+    if (options.end_date) params.end_date = options.end_date;
   }
   const { data } = await api.get<KLineApiResponse>(`/kline/${code}`, {
     params,

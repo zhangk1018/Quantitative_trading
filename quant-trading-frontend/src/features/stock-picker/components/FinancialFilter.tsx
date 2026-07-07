@@ -154,9 +154,7 @@ const FinancialFilter: React.FC = () => {
             })}
           </div>
         ) : (
-          <div className="border-t border-border-color pt-3" data-testid="financial-empty-hint">
-            <Text className="text-text-secondary text-xs">点击上方按钮添加筛选条件</Text>
-          </div>
+          <div className="border-t border-border-color pt-3" data-testid="financial-empty-hint" />
         )}
       </Panel>
     </Collapse>

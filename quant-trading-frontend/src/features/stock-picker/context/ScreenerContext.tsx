@@ -7,7 +7,6 @@ import React, {
   useSyncExternalStore,
   useRef,
   useEffect,
-  useMemo,
 } from 'react';
 import { MARKET_CONFIG, STOCK_RANGE_OPTIONS } from '../config/marketConfig';
 import {
@@ -53,7 +52,7 @@ interface TechnicalState {
 }
 
 interface PatternState {
-  selected: Record<string, number>; // 保持 number，与 LOOKBACK_OPTIONS 的 string 值转换
+  selected: Record<string, number>;
   panelCollapsed: boolean;
 }
 
@@ -126,7 +125,9 @@ type ConditionAction =
   | { type: 'REMOVE_CONDITION'; payload: string }
   | { type: 'UPDATE_CONDITION_OP'; payload: { id: string; op: FilterOp } }
   | { type: 'CLEAR_CONDITIONS' }
-  | { type: 'APPLY_PRESET'; payload: Omit<FilterCondition, 'id'>[] };
+  | { type: 'APPLY_PRESET'; payload: Omit<FilterCondition, 'id'>[] }
+  // 新增：批量更新所有 K线形态条件的回看天数
+  | { type: 'UPDATE_PATTERN_LOOKBACKS'; payload: number };
 
 type CustomAction =
   | { type: 'LOAD_CUSTOM_INDICATORS'; payload: CustomIndicator[] }
@@ -154,7 +155,7 @@ export type ScreenerAction =
   | PanelAction
   | ResetAction;
 
-// ==================== 子 Reducer 实现（带变化检测优化） ====================
+// ==================== 子 Reducer 实现 ====================
 function marketReducer(state: MarketState, action: MarketAction): MarketState {
   switch (action.type) {
     case 'SET_MARKET': {
@@ -164,7 +165,6 @@ function marketReducer(state: MarketState, action: MarketAction): MarketState {
         selectedBoards: config?.disabled ? [] : ['all'],
         stockRange: STOCK_RANGE_OPTIONS[0].value,
       };
-      // 浅比较，若相同则返回原引用
       return (newState.selectedMarket === state.selectedMarket &&
               newState.selectedBoards === state.selectedBoards &&
               newState.stockRange === state.stockRange) ? state : newState;
@@ -190,7 +190,6 @@ function marketIndicatorReducer(
     case 'TOGGLE_MARKET_INDICATOR': {
       const id = action.payload;
       const isSelected = state.selected.includes(id);
-      if (!isSelected && state.selected.includes(id)) return state; // 不可能
       const newSelected = isSelected ? state.selected.filter(i => i !== id) : [...state.selected, id];
       const newRanges = isSelected
         ? Object.fromEntries(Object.entries(state.ranges).filter(([k]) => k !== id))
@@ -361,6 +360,22 @@ function conditionReducer(state: ConditionState, action: ConditionAction): Condi
       if (newGroup === state.filterGroup) return state;
       return { ...state, filterGroup: newGroup };
     }
+    // 新增：批量更新所有 K线形态条件的回看天数
+    case 'UPDATE_PATTERN_LOOKBACKS': {
+      const newLookback = action.payload;
+      const current = state.filterGroup?.conditions || [];
+      let changed = false;
+      const updated = current.map((c) => {
+        if (c.fieldKey.startsWith('pattern_') && c.lookbackDays !== newLookback) {
+          changed = true;
+          return { ...c, lookbackDays: newLookback };
+        }
+        return c;
+      });
+      if (!changed) return state;
+      const newGroup = updated.length ? { conditions: updated } : null;
+      return { ...state, filterGroup: newGroup };
+    }
     default:
       return state;
   }
@@ -439,7 +454,7 @@ function panelReducer(state: PanelState, action: PanelAction): PanelState {
   }
 }
 
-// ==================== 声明式路由映射（增强类型安全） ====================
+// ==================== 声明式路由映射 ====================
 type SubReducerMap = {
   [K in keyof ScreenerState]: (state: ScreenerState[K], action: any) => ScreenerState[K];
 };
@@ -456,7 +471,7 @@ const subReducerMap: SubReducerMap = {
   panels: panelReducer,
 };
 
-// Action 到子 Reducer 的映射（使用类型断言确保完整性）
+// Action 到子 Reducer 的映射
 const actionToSubReducer: Record<ScreenerAction['type'], keyof ScreenerState> = {
   SET_MARKET: 'market',
   SET_BOARDS: 'market',
@@ -479,6 +494,7 @@ const actionToSubReducer: Record<ScreenerAction['type'], keyof ScreenerState> = 
   UPDATE_CONDITION_OP: 'condition',
   CLEAR_CONDITIONS: 'condition',
   APPLY_PRESET: 'condition',
+  UPDATE_PATTERN_LOOKBACKS: 'condition', // 新增
   LOAD_CUSTOM_INDICATORS: 'custom',
   ADD_CUSTOM_INDICATOR: 'custom',
   UPDATE_CUSTOM_INDICATOR: 'custom',
@@ -497,7 +513,6 @@ function rootReducer(state: ScreenerState, action: ScreenerAction): ScreenerStat
     return { ...newState, custom: state.custom };
   }
 
-  // 路由到子 Reducer
   const subKey = actionToSubReducer[action.type];
   if (!subKey) {
     console.warn(`[Screener] Unknown action type: ${(action as any).type}`);
@@ -510,22 +525,15 @@ function rootReducer(state: ScreenerState, action: ScreenerAction): ScreenerStat
     return state;
   }
 
-  // 构建新状态
   let newState = { ...state, [subKey]: newSubState };
-
-  // 后置钩子：处理跨领域联动
   newState = afterDispatch(newState, action);
-
   return newState;
 }
 
 /**
- * 后置钩子：根据 Action 触发额外的状态更新
- * 当前处理：
- * - IMPORT_CUSTOM_INDICATORS / REMOVE_CUSTOM_INDICATOR：刷新条件组失效状态
+ * 后置钩子：处理跨领域联动
  */
 function afterDispatch(state: ScreenerState, action: ScreenerAction): ScreenerState {
-  // 当自定义指标列表变化时，重新验证条件组
   if (action.type === 'IMPORT_CUSTOM_INDICATORS' || action.type === 'REMOVE_CUSTOM_INDICATOR') {
     const validatedGroup = resolveMissingIndicators(state.condition.filterGroup, state.custom.indicators);
     if (validatedGroup !== state.condition.filterGroup) {
@@ -535,11 +543,10 @@ function afterDispatch(state: ScreenerState, action: ScreenerAction): ScreenerSt
       };
     }
   }
-  // 也可处理 ADD_CUSTOM_INDICATOR? 但新增指标不会使现有条件失效，可忽略
   return state;
 }
 
-// ==================== 初始状态（含 Schema 校验） ====================
+// ==================== 初始状态 & 校验 ====================
 function isValidCustomIndicator(data: unknown): data is CustomIndicator {
   if (typeof data !== 'object' || data === null) return false;
   const obj = data as Record<string, unknown>;
@@ -565,7 +572,6 @@ function loadCustomIndicatorsSafe(): CustomIndicator[] {
   }
 }
 
-// 同步创建初始状态（无自定义指标，异步加载）
 function createInitialState(preserveCustom = false): ScreenerState {
   return {
     market: {
@@ -579,7 +585,7 @@ function createInitialState(preserveCustom = false): ScreenerState {
     patterns: { selected: {}, panelCollapsed: true },
     condition: { filterGroup: null, nextOp: 'AND' },
     custom: {
-      indicators: preserveCustom ? [] : [], // 初始为空，异步加载
+      indicators: preserveCustom ? [] : [],
       activeTab: 'system',
     },
     factor: {
@@ -592,7 +598,7 @@ function createInitialState(preserveCustom = false): ScreenerState {
         financial: true,
         technical: true,
         factor: true,
-        condition: true,
+        condition: false,
         pattern: true,
       },
     },
@@ -610,7 +616,6 @@ export function resolveMissingIndicators(
   const nextConditions = filterGroup.conditions.map(c => {
     if (c.source !== 'custom' || !c.sourceId) return c;
     if (customIds.has(c.sourceId)) {
-      // 引用存在，清除失效标记
       if (c.invalid) {
         changed = true;
         const { invalid, invalidReason, ...rest } = c;
@@ -618,7 +623,6 @@ export function resolveMissingIndicators(
       }
       return c;
     } else {
-      // 引用丢失
       if (!c.invalid) {
         changed = true;
         return { ...c, invalid: true, invalidReason: '引用的自编指标已被删除' };
@@ -630,7 +634,7 @@ export function resolveMissingIndicators(
   return { conditions: nextConditions };
 }
 
-// ==================== Store 类（修复 dispatch 稳定性） ====================
+// ==================== Store 类 ====================
 type Listener = () => void;
 
 class Store {
@@ -638,7 +642,7 @@ class Store {
   private listeners: Set<Listener> = new Set();
   constructor(initialState: ScreenerState) {
     this.state = initialState;
-    this.dispatch = this.dispatch.bind(this); // 永久绑定
+    this.dispatch = this.dispatch.bind(this);
   }
 
   getState() {
@@ -659,7 +663,7 @@ class Store {
   }
 }
 
-// ==================== Context & Provider（异步加载指标） ====================
+// ==================== Context & Provider ====================
 const ScreenerContext = createContext<Store | null>(null);
 
 export function ScreenerProvider({ children }: { children: ReactNode }) {
@@ -670,7 +674,6 @@ export function ScreenerProvider({ children }: { children: ReactNode }) {
   }
   const store = storeRef.current;
 
-  // 异步加载自定义指标
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -695,7 +698,6 @@ export function ScreenerProvider({ children }: { children: ReactNode }) {
 }
 
 // ==================== Hooks ====================
-
 export function useScreenerSelector<T>(selector: (state: ScreenerState) => T): T {
   const store = useContext(ScreenerContext);
   if (!store) throw new Error('useScreenerSelector must be used within ScreenerProvider');
@@ -717,7 +719,7 @@ export function useScreenerDispatch() {
   return store.dispatch;
 }
 
-// 兼容旧版本 — @deprecated 请使用 useScreenerSelector + useScreenerDispatch 替代，下个迭代移除
+// 兼容旧版本
 export function useScreener() {
   const store = useContext(ScreenerContext);
   if (!store) throw new Error('useScreener must be used within ScreenerProvider');

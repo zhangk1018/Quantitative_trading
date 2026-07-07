@@ -1,8 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Typography, Button, Collapse, Tooltip, Select } from 'antd';
 import {
-  ControlOutlined,
   ReloadOutlined,
   CloseOutlined,
   BookOutlined,
@@ -24,7 +23,7 @@ import { CustomIndicator } from '../types/customIndicator';
 const { Text } = Typography;
 const { Panel } = Collapse;
 
-/** K 2026-06-17 决策：按 fieldKey 区分三组 preset */
+// 分组预设（技术指标 vs K线形态）
 const TECHNICAL_PRESETS = FILTER_PRESETS.filter(
   (p) => !p.fieldKey.startsWith(PATTERN_PRESETS_GROUP.fieldKeyPrefix),
 );
@@ -34,24 +33,32 @@ const PATTERN_PRESETS = FILTER_PRESETS.filter(
 
 const ConditionBuilder: React.FC = () => {
   const navigate = useNavigate();
-  const collapsedPanels = useScreenerSelector(s => s.panels.collapsed);
-  const filterGroup = useScreenerSelector(s => s.condition.filterGroup);
-  const customIndicators = useScreenerSelector(s => s.custom.indicators);
+  const collapsedPanels = useScreenerSelector((s) => s.panels.collapsed);
+  const filterGroup = useScreenerSelector((s) => s.condition.filterGroup);
+  const customIndicators = useScreenerSelector((s) => s.custom.indicators);
   const dispatch = useScreenerDispatch();
 
-  // K 2026-06-17 新增：K线形态全局回看天数
   const [lookbackDays, setLookbackDays] = useState<number>(DEFAULT_LOOKBACK_DAYS);
 
   const conditions = filterGroup?.conditions || [];
   const conditionCount = conditions.length;
 
-  // 自编指标可用列表（过滤已删除）
+  // ✅ 监听 lookbackDays 变化，自动更新所有 K线形态条件的回看天数
+  useEffect(() => {
+    const hasPattern = conditions.some((c) => c.fieldKey.startsWith('pattern_'));
+    if (hasPattern) {
+      dispatch({ type: 'UPDATE_PATTERN_LOOKBACKS', payload: lookbackDays });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lookbackDays]);
+
+  // 可用自编指标（过滤已删除）
   const availableCustomIndicators = useMemo(
     () => customIndicators.filter((i: CustomIndicator) => !i.deleted),
     [customIndicators],
   );
 
-  // 已添加的自编指标 fieldKey 集合
+  // 已添加的自编指标 ID 集合
   const addedCustomFieldKeys = useMemo(() => {
     const keys = new Set<string>();
     conditions.forEach((c) => {
@@ -62,7 +69,7 @@ const ConditionBuilder: React.FC = () => {
     return keys;
   }, [conditions]);
 
-  // 已添加的 system preset fieldKey 集合（用于按钮高亮）
+  // 用于预设按钮高亮（仅用于单条件预设，组合预设单独处理）
   const selectedPresetFieldKeys = useMemo(() => {
     const keys = new Set<string>();
     conditions.forEach((c) => {
@@ -77,38 +84,54 @@ const ConditionBuilder: React.FC = () => {
     dispatch({ type: 'CLEAR_CONDITIONS' });
   };
 
-  // K 2026-06-17 决策：自编指标管理入口已迁移至 /config 页面
   const handleGoToConfigCustom = () => {
     navigate('/config?tab=custom');
   };
 
   /**
-   * K 2026-06-17 决策：三组平级 + 全部 AND 关系，preset 按钮改为 toggle 行为。
-   * - 点未选按钮 → 添加为新条件 (AND 关系)
-   * - 点已选按钮 → 从 conditions 中移除
-   * - K线形态 preset 自动带当前 lookbackDays
+   * 切换预设（支持组合预设展开/收起）
    */
   const handleTogglePreset = (preset: typeof FILTER_PRESETS[number]) => {
     const isPattern = preset.fieldKey.startsWith(PATTERN_PRESETS_GROUP.fieldKeyPrefix);
-    const existing = conditions.find((c) => c.fieldKey === preset.fieldKey);
-    if (existing) {
-      dispatch({ type: 'REMOVE_CONDITION', payload: existing.id });
+    // 使用数组存储子条件 fieldKey
+    const subFieldKeys = preset.conditions.map((c) => c.fieldKey);
+    // 检查是否所有子条件都已存在
+    const allExist = subFieldKeys.length > 0 && subFieldKeys.every((key) =>
+      conditions.some((c) => c.fieldKey === key)
+    );
+
+    if (allExist) {
+      // 全部存在 → 全部移除
+      conditions.forEach((c) => {
+        if (subFieldKeys.includes(c.fieldKey)) {
+          dispatch({ type: 'REMOVE_CONDITION', payload: c.id });
+        }
+      });
       return;
     }
-    const newCond: Omit<FilterCondition, 'id'> = {
-      op: 'AND',
-      fieldKey: preset.fieldKey,
-      label: preset.label,
-      ...(isPattern ? { lookbackDays } : {}),
-    };
-    dispatch({ type: 'ADD_CONDITION', payload: newCond });
+
+    // 否则：补齐缺失的子条件（部分存在则保留，只添加缺失的）
+    const existingKeys = new Set(conditions.map((c) => c.fieldKey));
+    preset.conditions.forEach((sub) => {
+      if (!existingKeys.has(sub.fieldKey)) {
+        dispatch({
+          type: 'ADD_CONDITION',
+          payload: {
+            op: sub.op || 'AND',
+            fieldKey: sub.fieldKey,
+            label: sub.label,
+            // K线形态：使用当前下拉框的值
+            ...(isPattern ? { lookbackDays } : {}),
+          },
+        });
+      }
+    });
   };
 
   const handleRemoveCondition = (id: string) => {
     dispatch({ type: 'REMOVE_CONDITION', payload: id });
   };
 
-  // K 2026-06-17 决策：自编指标下拉多选 onChange（同样是 toggle/平级 AND）
   const handleCustomIndicatorChange = (selectedIds: string[]) => {
     const newSelected = selectedIds.filter((id) => !addedCustomFieldKeys.has(id));
     newSelected.forEach((id) => {
@@ -139,9 +162,16 @@ const ConditionBuilder: React.FC = () => {
 
   const activeKey = collapsedPanels.condition ? [] : ['condition'];
 
-  // 单个 preset 按钮渲染（已选高亮 + toggle 行为）
+  // ✅ 渲染预设按钮（修正 Set.every 问题，改用数组）
   const renderPresetButton = (preset: typeof FILTER_PRESETS[number]) => {
-    const isSelected = selectedPresetFieldKeys.has(preset.fieldKey);
+    // 使用数组存储子条件 fieldKey
+    const subFieldKeys = preset.conditions.map((c) => c.fieldKey);
+    // 检查是否所有子条件都已存在（用于高亮）
+    const allExist = subFieldKeys.length > 0 && subFieldKeys.every((key) =>
+      conditions.some((c) => c.fieldKey === key)
+    );
+    const isSelected = allExist;
+
     return (
       <Button
         key={preset.fieldKey}
@@ -157,10 +187,9 @@ const ConditionBuilder: React.FC = () => {
     );
   };
 
-  // K线形态 preset 在已添加条件中显示时附加"近N天"后缀
   const formatCondLabel = (label: string, fieldKey: string, days?: number): string => {
     if (fieldKey.startsWith(PATTERN_PRESETS_GROUP.fieldKeyPrefix) && days) {
-      return `${label} (近${days}天)`;
+      return `${label}（近${days}天）`;
     }
     return label;
   };
@@ -178,7 +207,6 @@ const ConditionBuilder: React.FC = () => {
         header={
           <span className="flex items-center justify-between w-full">
             <span className="flex items-center gap-2">
-              <ControlOutlined className="text-color-up" />
               <Text className="text-text-primary font-semibold" data-testid="condition-builder-header">
                 条件构建器
               </Text>
@@ -208,7 +236,7 @@ const ConditionBuilder: React.FC = () => {
         key="condition"
       >
         <div className="space-y-4">
-          {/* ============== 第一组：技术指标 (6) ============== */}
+          {/* 技术指标 */}
           <div>
             <div className="flex items-center gap-2 mb-2">
               <BookOutlined className="text-text-secondary" />
@@ -221,7 +249,7 @@ const ConditionBuilder: React.FC = () => {
             </div>
           </div>
 
-          {/* ============== 第二组：K线形态 (5) ============== */}
+          {/* K线形态 */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <span className="flex items-center gap-2">
@@ -251,7 +279,7 @@ const ConditionBuilder: React.FC = () => {
             </div>
           </div>
 
-          {/* ============== 第三组：自编指标（下拉多选） ============== */}
+          {/* 自编指标 */}
           <div>
             <div className="flex items-center gap-2 mb-2">
               <AppstoreAddOutlined className="text-text-secondary" />
@@ -302,7 +330,7 @@ const ConditionBuilder: React.FC = () => {
             )}
           </div>
 
-          {/* 条件列表 / 空状态 */}
+          {/* 条件列表 */}
           {conditionCount === 0 ? (
             <div
               className="text-text-secondary text-sm text-center py-3"

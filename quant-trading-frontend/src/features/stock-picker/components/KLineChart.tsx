@@ -312,7 +312,7 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
       layout: {
         background: { type: ColorType.Solid, color: CHART_THEME.bg },
         textColor: CHART_THEME.text,
-        fontSize: 11,
+        fontSize: 12,
       },
       grid: {
         vertLines: { color: CHART_THEME.grid },

@@ -28,7 +28,6 @@ export interface ScreenerFilterPayload {
   marketIndicatorRanges?: Record<string, { min?: string; max?: string }>;
   financialIndicatorRanges?: Record<string, { min?: string; max?: string }>;
   selectedTechnicalIndicators?: Record<string, string>;
-  selectedPatterns?: Record<string, number>;
   /** 条件构建器中的条件列表，K线形态条件需包含 lookbackDays */
   filterGroup?: {
     conditions?: Array<{
@@ -75,7 +74,6 @@ export function buildScreeningParams(
     marketIndicatorRanges = {},
     financialIndicatorRanges = {},
     selectedTechnicalIndicators = {},
-    selectedPatterns = {},
     filterGroup,
   } = state;
 
@@ -100,8 +98,15 @@ export function buildScreeningParams(
   // 行情指标（单位转换 + 数值校验 + 范围逻辑）
   const { UNIT_CONVERSION } = CONFIG;
   Object.entries(marketIndicatorRanges).forEach(([key, range]) => {
-    const min = range.min !== undefined && isFinite(Number(range.min)) ? Number(range.min) : undefined;
-    const max = range.max !== undefined && isFinite(Number(range.max)) ? Number(range.max) : undefined;
+    // 空字符串表示用户未填写，不应该当作 0 处理
+    const min =
+      range.min !== undefined && range.min.trim() !== '' && isFinite(Number(range.min))
+        ? Number(range.min)
+        : undefined;
+    const max =
+      range.max !== undefined && range.max.trim() !== '' && isFinite(Number(range.max))
+        ? Number(range.max)
+        : undefined;
     // 校验 min > max
     if (min !== undefined && max !== undefined && min > max) {
       console.warn(`[buildScreeningParams] 指标 ${key} 最小值(${min})大于最大值(${max})，忽略该条件`);
@@ -114,8 +119,14 @@ export function buildScreeningParams(
 
   // 财务指标（无单位转换）
   Object.entries(financialIndicatorRanges).forEach(([key, range]) => {
-    const min = range.min !== undefined && isFinite(Number(range.min)) ? Number(range.min) : undefined;
-    const max = range.max !== undefined && isFinite(Number(range.max)) ? Number(range.max) : undefined;
+    const min =
+      range.min !== undefined && range.min.trim() !== '' && isFinite(Number(range.min))
+        ? Number(range.min)
+        : undefined;
+    const max =
+      range.max !== undefined && range.max.trim() !== '' && isFinite(Number(range.max))
+        ? Number(range.max)
+        : undefined;
     if (min !== undefined && max !== undefined && min > max) {
       console.warn(`[buildScreeningParams] 指标 ${key} 最小值(${min})大于最大值(${max})，忽略该条件`);
       return;
@@ -128,11 +139,7 @@ export function buildScreeningParams(
   Object.entries(selectedTechnicalIndicators).forEach(([id, option]) => {
     params[`${RequestParamKeys.TechPrefix}${id}`] = option;
   });
-  // K线形态
-  Object.entries(selectedPatterns).forEach(([patternId, lookbackDays]) => {
-    params[`${RequestParamKeys.PatternPrefix}${patternId}`] = lookbackDays;
-  });
-  // 条件构建器
+  // 条件构建器（含 K线形态 — 统一由 filterGroup.conditions 管理，不再有独立 patterns.selected）
   if (filterGroup?.conditions) {
     filterGroup.conditions.forEach((cond) => {
       params[`${RequestParamKeys.CondPrefix}${cond.fieldKey}`] = cond.op;
@@ -148,6 +155,7 @@ export function buildScreeningParams(
   params[RequestParamKeys.SortAsc] = sortAsc;
   params[RequestParamKeys.Offset] = offset;
   params[RequestParamKeys.Limit] = limit;
+
   return params;
 }
 

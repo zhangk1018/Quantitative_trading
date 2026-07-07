@@ -100,22 +100,8 @@ export const FILTER_PRESETS: FilterPreset[] = [
     label: '放量突破',
     conditions: [{ op: 'AND', fieldKey: 'volume_breakout', label: '放量突破' }],
   },
-  {
-    fieldKey: 'macd_golden_cross',
-    label: 'MACD金叉',
-    conditions: [{ op: 'AND', fieldKey: 'macd_golden_cross', label: 'MACD金叉' }],
-  },
-  {
-    fieldKey: 'bottom_volume_macd',
-    // K 2026-06-17 调整：preset 按钮文案简化（详见截图说明）
-    label: '底部放量',
-    // K 2026-07-02 修正：量量确认"底部放量" = RSI超卖 + 放量突破，
-    // 不应包含 MACD 金叉。将 macd_golden_cross 改为 rsi_oversold。
-    conditions: [
-      { op: 'AND', fieldKey: 'volume_breakout', label: '底部放量' },
-      { op: 'AND', fieldKey: 'rsi_oversold', label: 'RSI超卖' },
-    ],
-  },
+  // "MACD金叉" 和 "底部放量" 已从条件构建器移除（K 2026-07-07）
+  // 避免与技术指标中同名概念产生歧义，用户如需使用可手动组合"RSI超卖"+"放量突破"
   {
     fieldKey: 'consecutive_up',
     label: '连续上涨',

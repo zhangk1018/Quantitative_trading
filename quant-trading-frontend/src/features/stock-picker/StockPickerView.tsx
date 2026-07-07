@@ -28,7 +28,6 @@ import {
   exportToCsv,
   CONFIG,
   ScreenerFilterPayload,
-  RequestParamKeys,
 } from './utils/screener';
 
 const { Text } = Typography;
@@ -62,7 +61,6 @@ function useScreenerData() {
   const marketIndicatorRanges = useScreenerSelector((s) => s.marketIndicators.ranges);
   const financialIndicatorRanges = useScreenerSelector((s) => s.financialIndicators.ranges);
   const selectedTechnicalIndicators = useScreenerSelector((s) => s.technical.selected);
-  const selectedPatterns = useScreenerSelector((s) => s.patterns.selected);
   const filterGroup = useScreenerSelector((s) => s.condition.filterGroup);
 
   // 使用 useRef 存储最新状态，并在每次渲染后同步更新
@@ -72,7 +70,6 @@ function useScreenerData() {
     marketIndicatorRanges,
     financialIndicatorRanges,
     selectedTechnicalIndicators,
-    selectedPatterns,
     filterGroup,
   });
   // 使用 useLayoutEffect 确保在浏览器绘制前更新，避免视觉不一致
@@ -83,7 +80,6 @@ function useScreenerData() {
       marketIndicatorRanges,
       financialIndicatorRanges,
       selectedTechnicalIndicators,
-      selectedPatterns,
       filterGroup,
     };
   });
@@ -488,7 +484,7 @@ const StockPickerContent: React.FC = () => {
           className="w-[280px] flex-shrink-0 bg-bg-panel border-r border-border-color flex flex-col"
           style={{ height: 'calc(100vh - 56px)' }}
         >
-          <div className="flex-1 overflow-y-auto overflow-x-hidden">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
             <RangeSelector />
             <IndicatorFilter />
             <FinancialFilter />
