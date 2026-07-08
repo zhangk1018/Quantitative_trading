@@ -5,7 +5,6 @@ import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerCon
 import { FINANCIAL_INDICATORS } from '../config/indicatorConfig';
 
 const { Text } = Typography;
-const { Panel } = Collapse;
 
 const FinancialFilter: React.FC = () => {
   const selectedFinancialIndicators = useScreenerSelector(s => s.financialIndicators.selected);
@@ -47,25 +46,26 @@ const FinancialFilter: React.FC = () => {
       className="border-b border-border-color"
       onChange={() => dispatch({ type: 'TOGGLE_PANEL', payload: 'financial' })}
       data-testid="financial-filter-collapse"
-    >
-      <Panel
-        header={
-          <span
-            data-testid="financial-filter-header"
-            className="flex items-center gap-2"
-          >
-            <Text className="text-text-primary font-semibold">财务指标</Text>
+      items={[
+        {
+          key: 'financial',
+          label: (
             <span
-              data-testid="financial-filter-badge"
-              className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full"
+              data-testid="financial-filter-header"
+              className="flex items-center gap-2"
             >
-              {selectedFinancialIndicators.length}
+              <Text className="text-text-primary font-semibold">财务指标</Text>
+              <span
+                data-testid="financial-filter-badge"
+                className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full"
+              >
+                {selectedFinancialIndicators.length}
+              </span>
             </span>
-          </span>
-        }
-        key="financial"
-      >
-        <div className="grid grid-cols-2 gap-2 mb-3">
+          ),
+          children: (
+            <>
+              <div className="grid grid-cols-2 gap-2 mb-3">
           {FINANCIAL_INDICATORS.map((indicator) => {
             const btn = (
               <Button
@@ -156,7 +156,11 @@ const FinancialFilter: React.FC = () => {
         ) : (
           <div className="border-t border-border-color pt-3" data-testid="financial-empty-hint" />
         )}
-      </Panel>
+            </>
+          ),
+        },
+      ]}
+    >
     </Collapse>
   );
 };

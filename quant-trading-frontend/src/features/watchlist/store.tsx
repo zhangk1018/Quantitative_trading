@@ -1,199 +1,357 @@
 /**
- * watchlist store - 自选股模块状态管理（V1.0）
+ * store.tsx — 自选股 localStorage 存储（零后端依赖）
  *
- * 设计要点：
- * - 不引入 Redux/Zustand，沿用项目其它 feature 的 React Context + useReducer 模式
- * - 提供 4 个 actions：LOAD/ADD/REMOVE/REFRESH，供 watchlist 页面与 stock-picker 共享
- * - 错误状态独立保留（lastError），避免单次失败把整个列表清空
- * - 添加自选时去重：若已在列表中 → 跳过（不抛错，调用方可选择性提示）
+ * 数据模型：
+ * - customGroups: 用户自建的分组名列表
+ * - stocks: { groupName: [code, ...] } — 分组 → 股票代码列表
+ * - 系统分组（全部/沪深/港股/美股）由代码派生存算，不持久化
  */
-import { createContext, useContext, useReducer, ReactNode, useCallback } from 'react';
-import {
-  WatchlistItem,
-  fetchWatchlist,
-  addWatchlist as apiAddWatchlist,
-  removeWatchlist as apiRemoveWatchlist,
-} from './api';
 
-export interface WatchlistState {
-  items: WatchlistItem[];
-  loading: boolean;
-  lastError: string | null;
-  /** 最近一次批量操作的结果摘要（成功/跳过/失败数） */
-  lastBatchSummary: { added: number; skipped: number; failed: number } | null;
+import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
+
+// ============================================
+// Storage key
+// ============================================
+const STORAGE_KEY = 'watchlist';
+
+// ============================================
+// 系统分组（硬编码，不可删除）
+// ============================================
+const SYSTEM_GROUPS = ['全部', '沪深', '港股', '美股'] as const;
+export type SystemGroup = (typeof SYSTEM_GROUPS)[number];
+export const SYSTEM_GROUP_SET: ReadonlySet<string> = new Set(SYSTEM_GROUPS);
+
+/** 根据代码前缀判断所属市场分组 */
+export function detectMarketGroup(code: string): string {
+  if (!code || code.length < 2) return '沪深';
+  const prefix = code.substring(0, 1);
+  // 沪深：6xxxx(上海), 0xxxx/3xxxx(深圳)
+  if (['6', '0', '3'].includes(prefix)) return '沪深';
+  // 港股：暂按代码规则预留
+  // 美股：暂按代码规则预留
+  return '沪深';
 }
 
-type Action =
-  | { type: 'LOAD_START' }
-  | { type: 'LOAD_SUCCESS'; payload: WatchlistItem[] }
-  | { type: 'LOAD_ERROR'; payload: string }
-  | { type: 'ADD_ITEM'; payload: WatchlistItem }
-  | { type: 'REMOVE_ITEM'; payload: string /* code */ }
-  // K 2026-06-22 反馈 #4：补 SET_BATCH_SUMMARY action，让 addMany 完成后
-  // 把统计写入 state.lastBatchSummary，供调用方 UI 展示（不只是返回）
-  | { type: 'SET_BATCH_SUMMARY'; payload: { added: number; skipped: number; failed: number } }
-  | { type: 'CLEAR_BATCH_SUMMARY' }
-  | { type: 'CLEAR_ERROR' };
+// ============================================
+// 持久化结构
+// ============================================
+interface WatchlistStorage {
+  customGroups: string[];
+  stocks: Record<string, string[]>;
+}
 
-export const initialState: WatchlistState = {
-  items: [],
-  loading: false,
-  lastError: null,
-  lastBatchSummary: null,
-};
-
-/** @internal 导出供单测验证 */
-export function watchlistReducer(state: WatchlistState, action: Action): WatchlistState {
-  switch (action.type) {
-    case 'LOAD_START':
-      return { ...state, loading: true, lastError: null };
-    case 'LOAD_SUCCESS':
-      return { ...state, loading: false, items: action.payload, lastError: null };
-    case 'LOAD_ERROR':
-      return { ...state, loading: false, lastError: action.payload };
-    case 'ADD_ITEM': {
-      // 防御：重复 code 不重复加入
-      if (state.items.some((i) => i.code === action.payload.code)) {
-        return state;
-      }
-      return { ...state, items: [...state.items, action.payload] };
+function loadStorage(): WatchlistStorage {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        customGroups: Array.isArray(parsed.customGroups) ? parsed.customGroups : [],
+        stocks: parsed.stocks && typeof parsed.stocks === 'object' ? parsed.stocks : {},
+      };
     }
-    case 'REMOVE_ITEM':
+  } catch { /* ignore */ }
+  return { customGroups: [], stocks: {} };
+}
+
+function saveStorage(data: WatchlistStorage): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+// ============================================
+// Bridge: 同步旧后端数据 → localStorage
+// 首次加载时读取旧接口数据，写入 localStorage
+// ============================================
+async function migrateFromBackend(): Promise<WatchlistStorage | null> {
+  try {
+    const resp = await fetch('/api/watchlist/?user_id=default');
+    const json = await resp.json();
+    if (json.code === 200 && Array.isArray(json.data) && json.data.length > 0) {
+      const stocks: Record<string, string[]> = {};
+      const codes = new Set<string>();
+      for (const item of json.data) {
+        const group = item.group_name || '默认分组';
+        if (!stocks[group]) stocks[group] = [];
+        if (!stocks[group].includes(item.code)) {
+          stocks[group].push(item.code);
+        }
+        codes.add(item.code);
+      }
+      // 为所有股票自动填充"全部"和市场分组
+      stocks['全部'] = Array.from(codes);
+      for (const code of codes) {
+        const market = detectMarketGroup(code);
+        if (!stocks[market]) stocks[market] = [];
+        if (!stocks[market].includes(code)) stocks[market].push(code);
+      }
+      const customGroups = Object.keys(stocks).filter((g) => !SYSTEM_GROUP_SET.has(g));
+      const data: WatchlistStorage = { customGroups, stocks };
+      saveStorage(data);
+      return data;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+// ============================================
+// State & Actions
+// ============================================
+interface WatchlistState {
+  customGroups: string[];
+  stocks: Record<string, string[]>;
+  loading: boolean;
+  migrated: boolean;
+}
+
+type WatchlistAction =
+  | { type: 'LOAD'; payload: WatchlistStorage }
+  | { type: 'ADD_STOCK'; payload: { code: string; groupName: string } }
+  | { type: 'REMOVE_FROM_GROUP'; payload: { code: string; groupName: string } }
+  | { type: 'CREATE_GROUP'; payload: { name: string } }
+  | { type: 'DELETE_GROUP'; payload: { name: string } }
+  | { type: 'SET_LOADING'; payload: boolean };
+
+function reducer(state: WatchlistState, action: WatchlistAction): WatchlistState {
+  switch (action.type) {
+    case 'LOAD':
+      return { ...state, ...action.payload, loading: false, migrated: true };
+
+    case 'ADD_STOCK': {
+      const { code, groupName } = action.payload;
+      const newStocks = { ...state.stocks };
+      const newCustomGroups = [...state.customGroups];
+
+      // 添加到目标分组
+      if (!newStocks[groupName]) newStocks[groupName] = [];
+      if (!newStocks[groupName].includes(code)) {
+        newStocks[groupName] = [...newStocks[groupName], code];
+      }
+
+      // 自动添加到"全部"
+      if (!newStocks['全部']) newStocks['全部'] = [];
+      if (!newStocks['全部'].includes(code)) {
+        newStocks['全部'] = [...newStocks['全部'], code];
+      }
+
+      // 自动添加到市场分组
+      const market = detectMarketGroup(code);
+      if (!newStocks[market]) newStocks[market] = [];
+      if (!newStocks[market].includes(code)) {
+        newStocks[market] = [...newStocks[market], code];
+      }
+
+      return { ...state, stocks: newStocks, customGroups: newCustomGroups };
+    }
+
+    case 'REMOVE_FROM_GROUP': {
+      const { code, groupName } = action.payload;
+      const newStocks = { ...state.stocks };
+      const newCustomGroups = [...state.customGroups];
+
+      if (SYSTEM_GROUP_SET.has(groupName)) {
+        // 从系统分组删除 = 从全部分组中移除该股票
+        for (const g of Object.keys(newStocks)) {
+          newStocks[g] = newStocks[g].filter((c) => c !== code);
+          if (newStocks[g].length === 0 && !SYSTEM_GROUP_SET.has(g)) {
+            delete newStocks[g];
+          }
+        }
+      } else {
+        // 从自建分组删除：仅从该分组移除
+        if (newStocks[groupName]) {
+          newStocks[groupName] = newStocks[groupName].filter((c) => c !== code);
+          if (newStocks[groupName].length === 0) {
+            delete newStocks[groupName];
+          }
+        }
+        // 检查该股票是否还在其他自建分组中
+        const inOtherCustom = Object.entries(newStocks).some(
+          ([g, codes]) => !SYSTEM_GROUP_SET.has(g) && g !== groupName && codes.includes(code),
+        );
+        if (!inOtherCustom) {
+          // 从所有系统分组中移除
+          for (const sys of SYSTEM_GROUPS) {
+            if (newStocks[sys]) {
+              newStocks[sys] = newStocks[sys].filter((c) => c !== code);
+            }
+          }
+        }
+      }
+
+      return { ...state, stocks: newStocks, customGroups: newCustomGroups };
+    }
+
+    case 'CREATE_GROUP': {
+      const { name } = action.payload;
+      if (state.customGroups.includes(name)) return state;
+      if (SYSTEM_GROUP_SET.has(name)) return state;
       return {
         ...state,
-        items: state.items.filter((i) => i.code !== action.payload),
+        customGroups: [...state.customGroups, name],
+        stocks: { ...state.stocks, [name]: state.stocks[name] || [] },
       };
-    case 'SET_BATCH_SUMMARY':
-      return { ...state, lastBatchSummary: action.payload };
-    case 'CLEAR_BATCH_SUMMARY':
-      return { ...state, lastBatchSummary: null };
-    case 'CLEAR_ERROR':
-      return { ...state, lastError: null };
+    }
+
+    case 'DELETE_GROUP': {
+      const { name } = action.payload;
+      if (SYSTEM_GROUP_SET.has(name)) return state;
+      const newStocks = { ...state.stocks };
+      delete newStocks[name];
+      return {
+        ...state,
+        customGroups: state.customGroups.filter((g) => g !== name),
+        stocks: newStocks,
+      };
+    }
+
+    case 'SET_LOADING':
+      return { ...state, loading: action.payload };
+
     default:
       return state;
   }
 }
 
+// ============================================
+// Context
+// ============================================
 interface WatchlistContextValue {
   state: WatchlistState;
-  refresh: () => Promise<void>;
-  addOne: (code: string, groupName?: string) => Promise<WatchlistItem | 'duplicate' | null>;
-  removeOne: (code: string) => Promise<boolean>;
-  /** 批量添加（用于选股结果批量加入自选） */
-  addMany: (
-    codes: string[],
-    groupName?: string,
-  ) => Promise<{ added: number; skipped: number; failed: number; errors: string[] }>;
-  clearBatchSummary: () => void;
+  /** 所有可用分组（系统 + 自建） */
+  allGroups: string[];
+  /** 添加股票到指定分组 */
+  addOne: (code: string, groupName: string) => void;
+  /** 批量添加股票到指定分组 */
+  addMany: (codes: string[], groupName: string) => { added: number; skipped: number; failed: number; errors: string[] };
+  /** 从指定分组移除股票 */
+  removeOne: (code: string, groupName: string) => void;
+  /** 创建自建分组 */
+  createGroup: (name: string) => boolean;
+  /** 删除自建分组 */
+  deleteGroup: (name: string) => void;
+  /** 刷新（重新加载 localStorage） */
+  refresh: () => void;
 }
 
 const WatchlistContext = createContext<WatchlistContextValue | null>(null);
 
-export function WatchlistProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(watchlistReducer, initialState);
+export function useWatchlist(): WatchlistContextValue {
+  const ctx = useContext(WatchlistContext);
+  if (!ctx) throw new Error('useWatchlist must be used within WatchlistProvider');
+  return ctx;
+}
 
-  const refresh = useCallback(async () => {
-    dispatch({ type: 'LOAD_START' });
-    try {
-      const items = await fetchWatchlist();
-      dispatch({ type: 'LOAD_SUCCESS', payload: items });
-    } catch (e) {
-      dispatch({ type: 'LOAD_ERROR', payload: (e as Error).message });
-    }
+// ============================================
+// Provider
+// ============================================
+export function WatchlistProvider({ children }: { children: React.ReactNode }) {
+  const [state, dispatch] = useReducer(reducer, {
+    customGroups: [],
+    stocks: {},
+    loading: true,
+    migrated: false,
+  });
+  const migratedRef = useRef(false);
+
+  const persist = useCallback((s: WatchlistState) => {
+    saveStorage({ customGroups: s.customGroups, stocks: s.stocks });
   }, []);
 
-  /**
-   * 添加单只：
-   * - 已在列表 → 返回 'duplicate'，不调后端
-   * - 后端 409 冲突 → 同样视作 duplicate（防御）
-   * - 其它错误 → 返回 null，错误信息通过 lastError 暴露
-   */
-  const addOne = useCallback(
-    async (code: string, groupName?: string): Promise<WatchlistItem | 'duplicate' | null> => {
-      if (state.items.some((i) => i.code === code)) {
-        return 'duplicate';
-      }
-      try {
-        const item = await apiAddWatchlist({ code, group_name: groupName });
-        dispatch({ type: 'ADD_ITEM', payload: item });
-        return item;
-      } catch (e: any) {
-        // 409 业务冲突：后端已存在 → 视作 duplicate
-        const msg = (e?.response?.data?.message || e?.message || '') as string;
-        if (e?.response?.status === 409 || msg.includes('已在自选股中')) {
-          return 'duplicate';
+  // 初始化：从 localStorage 加载，或从后端迁移
+  useEffect(() => {
+    if (migratedRef.current) return;
+    migratedRef.current = true;
+    (async () => {
+      const local = loadStorage();
+      if (local.customGroups.length > 0 || Object.keys(local.stocks).length > 0) {
+        dispatch({ type: 'LOAD', payload: local });
+      } else {
+        const migrated = await migrateFromBackend();
+        if (migrated) {
+          dispatch({ type: 'LOAD', payload: migrated });
+        } else {
+          dispatch({ type: 'LOAD', payload: { customGroups: [], stocks: {} } });
         }
-        dispatch({ type: 'LOAD_ERROR', payload: msg || '添加自选失败' });
-        return null;
       }
+    })();
+  }, []);
+
+  // 状态变化时持久化
+  useEffect(() => {
+    if (state.migrated) {
+      persist(state);
+    }
+  }, [state.customGroups, state.stocks, state.migrated, persist]);
+
+  const allGroups = [
+    ...SYSTEM_GROUPS.filter((g) => state.stocks[g] && state.stocks[g].length > 0),
+    ...state.customGroups.filter((g) => state.stocks[g] && state.stocks[g].length > 0),
+  ];
+
+  const addOne = useCallback(
+    (code: string, groupName: string) => {
+      dispatch({ type: 'ADD_STOCK', payload: { code, groupName } });
     },
-    [state.items],
+    [],
   );
 
-  const removeOne = useCallback(async (code: string): Promise<boolean> => {
-    try {
-      await apiRemoveWatchlist(code);
-      dispatch({ type: 'REMOVE_ITEM', payload: code });
-      return true;
-    } catch (e) {
-      dispatch({ type: 'LOAD_ERROR', payload: (e as Error).message });
-      return false;
-    }
-  }, []);
+  const removeOne = useCallback(
+    (code: string, groupName: string) => {
+      dispatch({ type: 'REMOVE_FROM_GROUP', payload: { code, groupName } });
+    },
+    [],
+  );
 
-  /**
-   * 批量添加（用于选股结果）：
-   * - 串行执行避免触发后端连接池过载
-   * - 失败不影响其它股票继续添加
-   * - 返回分类统计供 UI 提示
-   */
+  const createGroup = useCallback(
+    (name: string): boolean => {
+      const trimmed = name.trim();
+      if (!trimmed) return false;
+      if (SYSTEM_GROUP_SET.has(trimmed)) return false;
+      if (state.customGroups.includes(trimmed)) return false;
+      dispatch({ type: 'CREATE_GROUP', payload: { name: trimmed } });
+      return true;
+    },
+    [state.customGroups],
+  );
+
+  const deleteGroup = useCallback(
+    (name: string) => {
+      dispatch({ type: 'DELETE_GROUP', payload: { name } });
+    },
+    [],
+  );
+
   const addMany = useCallback(
-    async (
-      codes: string[],
-      groupName?: string,
-    ): Promise<{ added: number; skipped: number; failed: number; errors: string[] }> => {
+    (codes: string[], groupName: string): { added: number; skipped: number; failed: number; errors: string[] } => {
+      const targetGroup = groupName.trim() || '全部';
       let added = 0;
       let skipped = 0;
-      let failed = 0;
-      const errors: string[] = [];
       for (const code of codes) {
-        const result = await addOne(code, groupName);
-        if (result === null) {
-          failed += 1;
-          errors.push(code);
-        } else if (result === 'duplicate') {
-          skipped += 1;
+        if (!code || code.trim() === '') {
+          skipped++;
+          continue;
+        }
+        const existing = state.stocks[targetGroup] || [];
+        if (existing.includes(code)) {
+          skipped++;
         } else {
-          added += 1;
+          dispatch({ type: 'ADD_STOCK', payload: { code, groupName: targetGroup } });
+          added++;
         }
       }
-      // K 2026-06-22 反馈 #4：把统计写回 state.lastBatchSummary，便于其它页面消费
-      dispatch({
-        type: 'SET_BATCH_SUMMARY',
-        payload: { added, skipped, failed },
-      });
-      return { added, skipped, failed, errors };
+      return { added, skipped, failed: 0, errors: [] };
     },
-    [addOne],
+    [state.stocks],
   );
 
-  const clearBatchSummary = useCallback(() => {
-    dispatch({ type: 'CLEAR_BATCH_SUMMARY' });
+  const refresh = useCallback(() => {
+    const local = loadStorage();
+    dispatch({ type: 'LOAD', payload: local });
   }, []);
 
   return (
-    <WatchlistContext.Provider
-      value={{ state, refresh, addOne, removeOne, addMany, clearBatchSummary }}
-    >
+    <WatchlistContext.Provider value={{ state, allGroups, addOne, addMany, removeOne, createGroup, deleteGroup, refresh }}>
       {children}
     </WatchlistContext.Provider>
   );
-}
-
-export function useWatchlist() {
-  const ctx = useContext(WatchlistContext);
-  if (!ctx) {
-    throw new Error('useWatchlist must be used within a WatchlistProvider');
-  }
-  return ctx;
 }

@@ -352,4 +352,16 @@ Phase 5.2 性能优化已完成三项：
 
 **通知**: [量量→方舟 2026-07-07 09:00] 协作单 [FRONTEND-PATTERN-PICKER-20260707] 状态变更: ASSIGNED→VERIFY（验收通过：API 全20组合 code=0/200 全部正常 + 浏览器渲染验证通过 — 5形态×4回溯天数表格已填 ✅，浏览器截图已保存 /tmp/。待方舟关闭。）
 
-**通知**: [量量→方舟 2026-07-07 09:05] 协作单 [ANTD-WARNINGS-20260707] 状态变更: NEW（浏览器控制台 2 类 antd v5 弃用警告：① rc-collapse children→items 涉及 6 个文件 ② message 静态方法→App.useApp() 涉及 StockPickerView.tsx 7 处。见 docs/协作单.md P3 级别，不阻塞功能。）
+**通知**: [方舟→量量 2026-07-08 09:00] 协作单 [ANTD-WARNINGS-20260707] 状态变更: NEW→VERIFY（**修复完成**：① Collapse children→items 迁移 6 个组件（ConditionBuilder/FinancialFilter/TechnicalFilter/IndicatorFilter/RangeSelector/FactorScoringConfig）② message 静态方法→App.useApp() 迁移（StockPickerView.tsx 7 处 + App.tsx 新增 AntdApp 包裹）。Playwright 验证：rc-collapse 警告 0 条、message 静态方法警告 0 条，页面渲染正常、面板展开/收拢正常、选股/消息提示正常。待量量验证。）
+
+**通知**: [方舟→量量 2026-07-08 09:00] 协作单 [FRONTEND-PATTERN-PICKER-20260707] 状态变更: VERIFY→CLOSED（量量验收通过，20组合API全部正常，5形态×4回溯天数表格已填，浏览器渲染验证通过。）
+
+**通知**: [方舟→量量 2026-07-08 11:00] 协作单 [WATCHLIST-STOCK_CODES-20260708] 状态变更: NEW（P0 阻塞 — 自选股页面开发时发现后端 `/api/stocks/` 端点缺少 `stock_codes` 参数，前端发送 `watchlist_only=true` 被 FastAPI 拒绝返回 422。需量量在 `get_stocks` 新增 `stock_codes` 查询参数，按 `ts_code` 列过滤。验收方式：前端改为传 `stock_codes=codes.join(',')` 后行情正常加载。）
+
+**通知**: [量量→方舟 2026-07-08 13:50] 协作单 [ANTD-WARNINGS-20260707] 状态变更: VERIFY→CLOSED（量量代码审查验证通过：6 个组件全部使用 `items={[...]}` 新 API，`Collapse.Panel` 导入已移除；`StockPickerView.tsx` 通过 `App.useApp()` 获取 `message` 实例替代静态方法，7 处调用全部迁移。无残留旧模式。）
+
+**通知**: [量量→方舟 2026-07-08 13:50] 协作单 [WATCHLIST-STOCK_CODES-20260708] 状态变更: NEW→ASSIGNED（量量认领：后端 `get_stocks` 新增 `stock_codes` 查询参数，通过 `filter_dict["stock_code"]` 列表在 Parquet 层用 `df["code"].isin(codes)` 过滤，支持分页前过滤。）
+
+**通知**: [量量→方舟 2026-07-08 13:50] 协作单 [WATCHLIST-STOCK_CODES-20260708] 状态变更: ASSIGNED→VERIFY（修复完成。API 验证通过：`GET /api/stocks/?stock_codes=000001,600000` 返回 total=2 精确匹配平安银行+浦发银行，无 stock_codes 参数时返回 total=5194 保持原行为。前端改为传 `stock_codes=codes.join(',')` 后即可正常加载。等待方舟验收关闭。）
+
+**通知**: [方舟→量量 2026-07-08 14:45] 协作单 [WATCHLIST-STOCK_CODES-20260708] 状态变更: VERIFY→CLOSED（方舟验收通过：① 后端 stock_codes 参数正常，`curl` 验证 code=200 total=2 ② 前端 `useWatchlistQuotes` hook 改为 `stock_codes: codes.join(',')` ③ 修复 MAX_WATCHLIST_SIZE 1000→200（后端 le=200 校验限制）④ Playwright 自测：0 错误、21 行表格正常渲染、无 422 异常。）

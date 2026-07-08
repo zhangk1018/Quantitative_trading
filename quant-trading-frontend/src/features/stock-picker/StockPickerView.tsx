@@ -3,7 +3,7 @@ import React, {
   useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect, memo,
 } from 'react';
 import {
-  Typography, Button, Divider, Spin, message, Checkbox, Modal, Input,
+  Typography, Button, Divider, Spin, App, Checkbox, Modal, Input, Select,
 } from 'antd';
 import {
   SaveOutlined, FolderOpenOutlined, ReloadOutlined,
@@ -19,7 +19,8 @@ import ConditionBuilder from './components/ConditionBuilder';
 import FactorScoringConfig from './components/FactorScoringConfig';
 import { fetchStocks } from '../stock-detail/api';
 import { useSettings } from '@/shared/contexts/SettingsContext';
-import { useWatchlist } from '../watchlist/store';
+import { useWatchlist, SYSTEM_GROUP_SET } from '../watchlist/store';
+import { MARKET_CONFIG } from './config/marketConfig';
 import StockAnalysisModal from './components/StockAnalysisModal';
 import {
   buildScreeningParams,
@@ -54,7 +55,7 @@ interface FetchStocksResponse {
 }
 
 // ==================== 自定义 Hook：数据管理（分离至独立函数，便于测试） ====================
-function useScreenerData() {
+function useScreenerData(messageApi: ReturnType<typeof App.useApp>['message']) {
   // 所有筛选状态（使用 ref 保证最新值，配合 useLayoutEffect 确保同步）
   const selectedBoards = useScreenerSelector((s) => s.market.selectedBoards);
   const stockRange = useScreenerSelector((s) => s.market.stockRange);
@@ -151,7 +152,7 @@ function useScreenerData() {
         else if (statusCode >= 500) errorMsg = '服务器异常，请稍后重试';
         else if (error.message) errorMsg = error.message;
         console.error('选股失败:', error);
-        message.error(errorMsg);
+        messageApi.error(errorMsg);
         if (!append) { setItems([]); setTotal(0); }
         return null;
       } finally {
@@ -325,20 +326,26 @@ TableRow.displayName = 'TableRow';
 
 // ==================== 主组件 ====================
 const StockPickerContent: React.FC = () => {
+  const { message } = App.useApp();
   const dispatch = useScreenerDispatch();
-  const { addMany } = useWatchlist();
+  const { addMany, state: watchlistState, createGroup } = useWatchlist();
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
   const {
     items, total, loading, loadingMore, sortBy, sortAsc, PAGE_SIZE,
     refresh, loadMore, reset: resetData,
-  } = useScreenerData();
+  } = useScreenerData(message);
 
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
   const [addModalOpen, setAddModalOpen] = useState(false);
-  const [groupName, setGroupName] = useState('');
+  const [selectedGroup, setSelectedGroup] = useState('沪深');
+  const [newGroupName, setNewGroupName] = useState('');
   const [adding, setAdding] = useState(false);
   const [analysisStock, setAnalysisStock] = useState<StockItem | null>(null);
+
+  // 从选股条件中读取当前选中的市场
+  const screenerMarket = useScreenerSelector((s) => s.market.selectedMarket);
+  const selectedMarketLabel = MARKET_CONFIG[screenerMarket]?.label || '沪深';
 
   // 筛选条件计数
   const marketCount = useScreenerSelector((s) => s.marketIndicators.selected.length);
@@ -424,15 +431,40 @@ const StockPickerContent: React.FC = () => {
       });
       return;
     }
+    setSelectedGroup(selectedMarketLabel);
+    setNewGroupName('');
     setAddModalOpen(true);
-  }, [selectedCount]);
+  }, [selectedCount, selectedMarketLabel]);
 
   const handleConfirmAdd = useCallback(async () => {
     if (adding) return;
     setAdding(true);
     try {
       const codes = Array.from(selectedCodes);
-      const result = await addMany(codes, groupName.trim() || undefined);
+
+      // 处理分组名：如果选择了"新建分组"，则创建新分组
+      let targetGroup = selectedGroup;
+      if (selectedGroup === '__new__') {
+        const trimmed = newGroupName.trim();
+        if (!trimmed) {
+          message.warning('请输入分组名称');
+          setAdding(false);
+          return;
+        }
+        if (SYSTEM_GROUP_SET.has(trimmed)) {
+          message.warning('不能使用系统分组名称');
+          setAdding(false);
+          return;
+        }
+        if (!createGroup(trimmed)) {
+          message.warning('分组已存在');
+          setAdding(false);
+          return;
+        }
+        targetGroup = trimmed;
+      }
+
+      const result = addMany(codes, targetGroup);
       const parts = [];
       if (result.added > 0) parts.push(`新增 ${result.added}`);
       if (result.skipped > 0) parts.push(`跳过 ${result.skipped}（已在自选）`);
@@ -445,13 +477,14 @@ const StockPickerContent: React.FC = () => {
       }
       setSelectedCodes(new Set());
       setAddModalOpen(false);
-      setGroupName('');
+      setSelectedGroup(selectedMarketLabel);
+      setNewGroupName('');
     } catch (e: any) {
       message.error(`添加自选失败: ${e?.message || '未知错误'}`);
     } finally {
       setAdding(false);
     }
-  }, [addMany, selectedCodes, groupName, adding]);
+  }, [addMany, selectedCodes, selectedGroup, newGroupName, adding, createGroup, message]);
 
   const renderSortableHeader = (label: string, column: string) => {
     const isActive = sortBy === column;
@@ -680,7 +713,8 @@ const StockPickerContent: React.FC = () => {
         onCancel={() => {
           if (!adding) {
             setAddModalOpen(false);
-            setGroupName('');
+            setSelectedGroup(selectedMarketLabel);
+            setNewGroupName('');
           }
         }}
         onOk={handleConfirmAdd}
@@ -693,15 +727,34 @@ const StockPickerContent: React.FC = () => {
       >
         <div className="py-2">
           <div className="text-text-secondary text-sm mb-2">
-            分组名（留空使用默认分组"默认分组"）
+            选择目标分组
           </div>
-          <Input
-            placeholder="例如：白马股 / 高股息 / 短期关注"
-            value={groupName}
-            onChange={(e) => setGroupName(e.target.value)}
-            maxLength={20}
-            data-testid="add-to-watchlist-group-input"
+          <Select
+            value={selectedGroup}
+            onChange={(v) => setSelectedGroup(v)}
+            options={[
+              { label: selectedMarketLabel, value: selectedMarketLabel },
+              ...watchlistState.customGroups.map((g) => ({ label: g, value: g })),
+              { label: '+ 新建分组', value: '__new__' },
+            ]}
+            className="w-full"
+            data-testid="add-to-watchlist-group-select"
+            disabled={adding}
           />
+          {selectedGroup === '__new__' && (
+            <div className="mt-3">
+              <div className="text-text-secondary text-sm mb-1">新分组名称</div>
+              <Input
+                placeholder="输入分组名称"
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                maxLength={20}
+                disabled={adding}
+                data-testid="add-to-watchlist-new-group-input"
+                autoFocus
+              />
+            </div>
+          )}
           <div className="text-text-secondary text-xs mt-3">
             重复股票会自动跳过，可在「自选股」页面查看与管理。
           </div>

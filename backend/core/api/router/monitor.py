@@ -1255,7 +1255,7 @@ def get_field_completeness():
                 SUM(CASE WHEN close IS NULL THEN 1 ELSE 0 END) AS null_close,
                 SUM(CASE WHEN volume IS NULL THEN 1 ELSE 0 END) AS null_volume,
                 SUM(CASE WHEN amount IS NULL THEN 1 ELSE 0 END) AS null_amount,
-                SUM(CASE WHEN pct_chg IS NULL THEN 1 ELSE 0 END) AS null_pct_chg
+                SUM(CASE WHEN change_pct IS NULL THEN 1 ELSE 0 END) AS null_change_pct
             FROM stock_quotes
             WHERE cycle='1d' AND trade_date=%s
             """,
@@ -1265,7 +1265,7 @@ def get_field_completeness():
             r = row[0]
             total = int(r["total"]) or 1
             fields = []
-            for fname in ["open", "high", "low", "close", "volume", "amount", "pct_chg"]:
+            for fname in ["open", "high", "low", "close", "volume", "amount", "change_pct"]:
                 null_cnt = int(r.get(f"null_{fname}", 0))
                 rate = round(null_cnt / total * 100, 2)
                 fields.append({"field": fname, "null_count": null_cnt, "null_rate": rate})
@@ -1714,8 +1714,8 @@ def get_anomaly_detection(
     pct_anomalies = _query_dict(
         """
         SELECT
-            SUM(CASE WHEN pct_chg > 100 OR pct_chg < -100 THEN 1 ELSE 0 END) AS extreme_pct,
-            SUM(CASE WHEN pct_chg IS NULL THEN 1 ELSE 0 END) AS null_pct
+            SUM(CASE WHEN change_pct > 100 OR change_pct < -100 THEN 1 ELSE 0 END) AS extreme_pct,
+            SUM(CASE WHEN change_pct IS NULL THEN 1 ELSE 0 END) AS null_pct
         FROM stock_quotes
         WHERE cycle='1d' AND trade_date=%s
         """,
@@ -1729,8 +1729,8 @@ def get_anomaly_detection(
             "status": "ok" if extreme_pct == 0 else "warning",
             "latest_date": str(latest_quote),
             "details": {
-                "pct_chg_gt_100_or_lt_neg100": extreme_pct,
-                "null_pct_chg": int(r["null_pct"]),
+                "change_pct_gt_100_or_lt_neg100": extreme_pct,
+                "null_change_pct": int(r["null_pct"]),
             },
         })
 

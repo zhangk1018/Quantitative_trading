@@ -9,8 +9,6 @@ import {
 } from '../config/indicatorConfig';
 import { TechnicalIndicatorModal } from './TechnicalIndicatorModal';
 
-const { Panel } = Collapse;
-
 // ==================== 子组件：技术指标按钮 ====================
 interface TechnicalButtonProps {
   indicatorId: string;
@@ -64,34 +62,37 @@ const TechnicalPanel: React.FC<{
       className="border-b border-border-color"
       onChange={onTogglePanel}
       data-testid="technical-filter-collapse"
-    >
-      <Panel
-        header={
-          <span data-testid="technical-filter-header" className="flex items-center gap-2">
-            <span className="text-text-primary font-semibold">技术指标</span>
-            <span
-              data-testid="technical-filter-badge"
-              className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full"
-            >
-              {selectedCount}
+      items={[
+        {
+          key: 'technical',
+          label: (
+            <span data-testid="technical-filter-header" className="flex items-center gap-2">
+              <span className="text-text-primary font-semibold">技术指标</span>
+              <span
+                data-testid="technical-filter-badge"
+                className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full"
+              >
+                {selectedCount}
+              </span>
             </span>
-          </span>
-        }
-        key="technical"
-      >
-        <div className="grid grid-cols-2 gap-2">
-          {TECHNICAL_INDICATORS.map(indicator => (
-            <TechnicalButton
-              key={indicator.id}
-              indicatorId={indicator.id}
-              label={indicator.label}
-              disabled={indicator.disabled}
-              selectedOption={technical.selected[indicator.id]}
-              onOpenModal={onOpenModal}
-            />
-          ))}
-        </div>
-      </Panel>
+          ),
+          children: (
+            <div className="grid grid-cols-2 gap-2">
+              {TECHNICAL_INDICATORS.map(indicator => (
+                <TechnicalButton
+                  key={indicator.id}
+                  indicatorId={indicator.id}
+                  label={indicator.label}
+                  disabled={indicator.disabled}
+                  selectedOption={technical.selected[indicator.id]}
+                  onOpenModal={onOpenModal}
+                />
+              ))}
+            </div>
+          ),
+        },
+      ]}
+    >
     </Collapse>
   );
 });

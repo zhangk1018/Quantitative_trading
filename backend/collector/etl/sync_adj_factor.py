@@ -395,6 +395,7 @@ def sync_adj_factor(incremental: bool = False):
 
     except Exception as e:
         logger.error(f"❌ 同步复权因子失败: {e}", exc_info=True)
+        raise
     finally:
         source.disconnect()
         storage.disconnect()

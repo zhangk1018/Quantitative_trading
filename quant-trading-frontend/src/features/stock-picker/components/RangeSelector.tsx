@@ -4,7 +4,6 @@ import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerCon
 import { MARKET_CONFIG, STOCK_RANGE_OPTIONS } from '../config/marketConfig';
 
 const { Text } = Typography;
-const { Panel } = Collapse;
 
 const RangeSelector: React.FC = () => {
   const stockRange = useScreenerSelector(s => s.market.stockRange);
@@ -80,17 +79,17 @@ const RangeSelector: React.FC = () => {
       defaultActiveKey={['range']}
       ghost
       className="border-b border-border-color"
-    >
-      <Panel
-        header={
-          <span className="flex items-center gap-2">
-            <Text className="text-text-primary font-semibold">范围</Text>
-            <span className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full">3</span>
-          </span>
-        }
-        key="range"
-      >
-        <div className="space-y-4">
+      items={[
+        {
+          key: 'range',
+          label: (
+            <span className="flex items-center gap-2">
+              <Text className="text-text-primary font-semibold">范围</Text>
+              <span className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full">3</span>
+            </span>
+          ),
+          children: (
+            <div className="space-y-4">
           {/* 所属市场 */}
           <div>
             <Text className="text-text-secondary text-sm mb-2 block">所属市场</Text>
@@ -143,7 +142,10 @@ const RangeSelector: React.FC = () => {
             </Radio.Group>
           </div>
         </div>
-      </Panel>
+          ),
+        },
+      ]}
+    >
     </Collapse>
   );
 };

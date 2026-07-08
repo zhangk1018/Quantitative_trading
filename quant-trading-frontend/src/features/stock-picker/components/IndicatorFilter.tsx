@@ -5,7 +5,6 @@ import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerCon
 import { MARKET_INDICATORS } from '../config/indicatorConfig';
 
 const { Text } = Typography;
-const { Panel } = Collapse;
 
 const IndicatorFilter: React.FC = () => {
   const selectedMarketIndicators = useScreenerSelector(s => s.marketIndicators.selected);
@@ -47,22 +46,23 @@ const IndicatorFilter: React.FC = () => {
       className="border-b border-border-color"
       onChange={() => dispatch({ type: 'TOGGLE_PANEL', payload: 'market' })}
       data-testid="indicator-filter-collapse"
-    >
-      <Panel
-        header={
-          <span className="flex items-center gap-2">
-            <Text className="text-text-primary font-semibold">行情指标</Text>
-            <span
-              data-testid="indicator-filter-badge"
-              className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full"
-            >
-              {selectedMarketIndicators.length}
+      items={[
+        {
+          key: 'market',
+          label: (
+            <span className="flex items-center gap-2">
+              <Text className="text-text-primary font-semibold">行情指标</Text>
+              <span
+                data-testid="indicator-filter-badge"
+                className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full"
+              >
+                {selectedMarketIndicators.length}
+              </span>
             </span>
-          </span>
-        }
-        key="market"
-      >
-        <div className="grid grid-cols-2 gap-2 mb-3">
+          ),
+          children: (
+            <>
+              <div className="grid grid-cols-2 gap-2 mb-3">
           {MARKET_INDICATORS.map((indicator) => (
             <Button
               key={indicator.id}
@@ -142,7 +142,11 @@ const IndicatorFilter: React.FC = () => {
         ) : (
           <div className="border-t border-border-color pt-3" data-testid="indicator-empty-hint" />
         )}
-      </Panel>
+            </>
+          ),
+        },
+      ]}
+    >
     </Collapse>
   );
 };

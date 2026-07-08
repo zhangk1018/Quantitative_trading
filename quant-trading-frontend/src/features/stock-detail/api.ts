@@ -53,6 +53,7 @@ export interface StockListParams {
   limit?: number;
   as_of_date?: string;
   watchlist_only?: boolean;
+  stock_codes?: string;
   [key: string]: any;
 }
 

@@ -4,7 +4,6 @@ import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerCon
 import { FACTOR_CONFIG } from '../config/indicatorConfig';
 
 const { Text } = Typography;
-const { Panel } = Collapse;
 
 const FactorScoringConfig: React.FC = () => {
   const factorWeights = useScreenerSelector(s => s.factor.weights);
@@ -23,16 +22,16 @@ const FactorScoringConfig: React.FC = () => {
       ghost
       className="border-b border-border-color"
       onChange={() => dispatch({ type: 'TOGGLE_PANEL', payload: 'factor' })}
-    >
-      <Panel
-        header={
-          <span className="flex items-center gap-2">
-            <Text className="text-text-primary font-semibold">因子打分配置</Text>
-          </span>
-        }
-        key="factor"
-      >
-        <div className="space-y-3">
+      items={[
+        {
+          key: 'factor',
+          label: (
+            <span className="flex items-center gap-2">
+              <Text className="text-text-primary font-semibold">因子打分配置</Text>
+            </span>
+          ),
+          children: (
+            <div className="space-y-3">
           {FACTOR_CONFIG.map((factor) => (
             <div key={factor.id}>
               <div className="flex items-center justify-between mb-1">
@@ -61,7 +60,10 @@ const FactorScoringConfig: React.FC = () => {
             </div>
           ))}
         </div>
-      </Panel>
+          ),
+        },
+      ]}
+    >
     </Collapse>
   );
 };

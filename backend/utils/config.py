@@ -64,6 +64,14 @@ _DEFAULT_CONFIG = {
         'enabled': True,
         'backup_dir': 'data/backups',
         'max_backups': 30
+    },
+    'cache': {
+        'enabled': True,
+        'default_ttl': 300,
+        'quotes_ttl': 60,
+        'indicators_ttl': 300,
+        'stock_list_ttl': 3600,
+        'max_size': 1000
     }
 }
 

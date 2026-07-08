@@ -21,6 +21,7 @@ import uuid
 import subprocess
 import argparse
 import re
+import traceback
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, date, timedelta
@@ -461,6 +462,10 @@ def main():
                 print("\n" + "=" * 60)
                 print(f"【全部完成】{len(tasks)}/{len(tasks)} 任务成功 | 耗时 {elapsed:.1f}s | batch_id: {task_logger.batch_id}")
                 print("=" * 60)
+                # 记录整体流水线状态
+                _pid = task_logger.log_start('etl_pipeline', 0)
+                task_logger.log_end(_pid, 'etl_pipeline', 0, True, 0, None, None,
+                                    {"elapsed_seconds": round(elapsed, 1), "total_tasks": len(tasks), "failed_task": None})
                 sys.exit(0)
                 
             if failed_task:
@@ -474,6 +479,11 @@ def main():
                     row = conn.execute(sql, {"data_date": task_logger.data_date, "task_name": failed_task, "stage": current_stage}).fetchone()
                     if row and row[0] and "不可重试错误" in row[0]:
                         print(f"\n!!! 任务 {failed_task} 发生不可重试错误，终止重试 !!!")
+                        elapsed = (datetime.now() - start_time).total_seconds()
+                        _pid = task_logger.log_start('etl_pipeline', 0)
+                        task_logger.log_end(_pid, 'etl_pipeline', 0, False, 1,
+                                            f"不可重试错误: {failed_task}", None,
+                                            {"elapsed_seconds": round(elapsed, 1), "total_tasks": len(tasks), "failed_task": failed_task})
                         sys.exit(1)
 
             if attempt < MAX_RETRIES:
@@ -481,9 +491,14 @@ def main():
                 print(f"\n⏸ 等待 {RETRY_INTERVAL_SEC // 60} 分钟后重试... | 下次: {next_time.strftime('%H:%M:%S')}")
                 time.sleep(RETRY_INTERVAL_SEC)
 
+        elapsed = (datetime.now() - start_time).total_seconds()
         print("\n" + "=" * 60)
         print(f"【达到最大重试次数】{MAX_RETRIES}次后仍未全部成功 | 在 [{failed_task}] 中断")
         print("=" * 60)
+        _pid = task_logger.log_start('etl_pipeline', 0)
+        task_logger.log_end(_pid, 'etl_pipeline', 0, False, 1,
+                            f"重试{MAX_RETRIES}次后未全部成功，在 [{failed_task}] 中断", None,
+                            {"elapsed_seconds": round(elapsed, 1), "total_tasks": len(tasks), "failed_task": failed_task})
         sys.exit(1)
 
     finally:

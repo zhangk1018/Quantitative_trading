@@ -1,5 +1,5 @@
 import React from 'react'
-import { ConfigProvider } from 'antd'
+import { ConfigProvider, App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider } from 'react-router-dom'
 import { antdThemeConfig } from '@/styles/antd-theme'
@@ -18,11 +18,13 @@ const queryClient = new QueryClient({
 const App: React.FC = () => {
   return (
     <ConfigProvider theme={antdThemeConfig}>
-      <SettingsProvider>
-        <QueryClientProvider client={queryClient}>
-          <RouterProvider router={router} />
-        </QueryClientProvider>
-      </SettingsProvider>
+      <AntdApp>
+        <SettingsProvider>
+          <QueryClientProvider client={queryClient}>
+            <RouterProvider router={router} />
+          </QueryClientProvider>
+        </SettingsProvider>
+      </AntdApp>
     </ConfigProvider>
   )
 }

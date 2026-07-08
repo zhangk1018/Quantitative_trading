@@ -216,6 +216,7 @@ def get_stocks(
     offset: int = Query(0, ge=0, description="分页偏移量"),
     limit: int = Query(100, ge=1, le=200, description="每页数量"),
     as_of_date: str = Query(None, description="数据截止日期（YYYYMMDD），不传则使用最新交易日"),
+    stock_codes: str = Query(None, description="股票代码列表（逗号分隔，如 000001.SZ,600000.SH），按 ts_code 精确过滤"),
     screener: ScreenerService = Depends(get_screener_service),
 ) -> ApiResponse:
     try:
@@ -248,6 +249,12 @@ def get_stocks(
         # 注意：K 线形态 fieldKey 已从中移除，由下面的 pattern_* 循环独立处理
         cond_filters = _parse_condition_builder(request.query_params)
         filter_dict.update(cond_filters)
+
+        # stock_codes 筛选：转成 filter_dict 的 stock_code 列表，由 screener_service 在 Parquet 层过滤
+        if stock_codes:
+            codes = [c.strip() for c in stock_codes.split(",") if c.strip()]
+            if codes:
+                filter_dict["stock_code"] = codes
 
         # 解析技术指标 pattern 筛选参数（2026-06-16 新增）
         tech_pattern_map = {

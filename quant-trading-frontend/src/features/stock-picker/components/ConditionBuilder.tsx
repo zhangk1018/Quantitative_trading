@@ -21,7 +21,6 @@ import {
 import { CustomIndicator } from '../types/customIndicator';
 
 const { Text } = Typography;
-const { Panel } = Collapse;
 
 // 分组预设（技术指标 vs K线形态）
 const TECHNICAL_PRESETS = FILTER_PRESETS.filter(
@@ -202,40 +201,40 @@ const ConditionBuilder: React.FC = () => {
       className="border-b border-border-color"
       data-testid="condition-builder-collapse"
       onChange={() => dispatch({ type: 'TOGGLE_PANEL', payload: 'condition' })}
-    >
-      <Panel
-        header={
-          <span className="flex items-center justify-between w-full">
-            <span className="flex items-center gap-2">
-              <Text className="text-text-primary font-semibold" data-testid="condition-builder-header">
-                条件构建器
-              </Text>
-            </span>
-            <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-              <Text
-                className="text-text-secondary text-sm"
-                data-testid="condition-builder-count"
-              >
-                {conditionCount} 个条件
-              </Text>
-              <Tooltip title="重置所有条件">
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  onClick={handleReset}
-                  data-testid="condition-builder-reset"
-                  className="text-text-secondary hover:text-text-primary"
+      items={[
+        {
+          key: 'condition',
+          label: (
+            <span className="flex items-center justify-between w-full">
+              <span className="flex items-center gap-2">
+                <Text className="text-text-primary font-semibold" data-testid="condition-builder-header">
+                  条件构建器
+                </Text>
+              </span>
+              <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                <Text
+                  className="text-text-secondary text-sm"
+                  data-testid="condition-builder-count"
                 >
-                  重置
-                </Button>
-              </Tooltip>
+                  {conditionCount} 个条件
+                </Text>
+                <Tooltip title="重置所有条件">
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<ReloadOutlined />}
+                    onClick={handleReset}
+                    data-testid="condition-builder-reset"
+                    className="text-text-secondary hover:text-text-primary"
+                  >
+                    重置
+                  </Button>
+                </Tooltip>
+              </span>
             </span>
-          </span>
-        }
-        key="condition"
-      >
-        <div className="space-y-4">
+          ),
+          children: (
+            <div className="space-y-4">
           {/* 技术指标 */}
           <div>
             <div className="flex items-center gap-2 mb-2">
@@ -362,7 +361,10 @@ const ConditionBuilder: React.FC = () => {
             </div>
           )}
         </div>
-      </Panel>
+          ),
+        },
+      ]}
+    >
     </Collapse>
   );
 };

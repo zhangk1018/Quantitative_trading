@@ -315,6 +315,51 @@ dev_start() { dev_start_backend && dev_start_frontend; echo ""; dev_status; }
 dev_stop() { dev_stop_backend; dev_stop_frontend; }
 dev_restart() { dev_stop; sleep 1; dev_start; }
 
+# ---- 前台启动（调试用） ----
+dev_start_backend_fg() {
+    log_info "前台启动后端服务（调试模式）..."
+    if is_port_in_use "$BACKEND_PORT"; then
+        clean_port "$BACKEND_PORT" "$BACKEND_PID_FILE" || return 1
+    fi
+    rm -f "$BACKEND_PID_FILE"
+
+    if [ ! -d "$VENV_DIR" ]; then
+        log_err "虚拟环境不存在，请先执行 ./start.sh install"; return 1
+    fi
+    if [ ! -f "$BACKEND_DIR/core/api/main.py" ]; then
+        log_err "后端入口文件不存在"; return 1
+    fi
+
+    cd "$BACKEND_DIR"
+    export PYTHONPATH="$SCRIPT_DIR"
+    load_env "$SCRIPT_DIR/.env"
+
+    log_info "执行: uvicorn core.api.main:app --host 0.0.0.0 --port $BACKEND_PORT"
+    echo -e "${YELLOW}按 Ctrl+C 停止${NC}"
+    exec "$VENV_DIR/bin/python" -m uvicorn core.api.main:app \
+        --host 0.0.0.0 --port "$BACKEND_PORT"
+}
+
+dev_start_frontend_fg() {
+    log_info "前台启动前端服务（调试模式）..."
+    if is_port_in_use "$FRONTEND_PORT"; then
+        clean_port "$FRONTEND_PORT" "$FRONTEND_PID_FILE" || return 1
+    fi
+    rm -f "$FRONTEND_PID_FILE"
+
+    if ! command -v npm &>/dev/null; then log_err "npm 未安装"; return 1; fi
+    if [ ! -d "$FRONTEND_DIR" ]; then log_err "前端目录不存在"; return 1; fi
+    if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
+        log_info "安装前端依赖..."
+        cd "$FRONTEND_DIR" && npm install -q || { log_err "依赖安装失败"; return 1; }
+    fi
+
+    cd "$FRONTEND_DIR"
+    log_info "执行: npm run dev -- --host 0.0.0.0 --port $FRONTEND_PORT"
+    echo -e "${YELLOW}按 Ctrl+C 停止${NC}"
+    exec npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT"
+}
+
 # ---- 生产模式（保持原有） ----
 check_docker() {
     if ! command -v docker &> /dev/null; then log_err "Docker 未安装"; exit 1; fi
@@ -369,8 +414,10 @@ cmd_logs() {
 cmd_help() {
     cat <<'EOF'
 用法:
-  ./start.sh <mode> <command>
-  dev start|stop|restart|status
+  ./start.sh <mode> <command> [args]
+  dev start|stop|restart|status                           # 前后台全部启停
+  dev backend [bg|fg]                                     # 后端单独（默认后台）
+  dev frontend [bg|fg]                                    # 前端单独（默认后台）
   prod build|start|stop|down|restart|status|health|logs|psql|shell|clean|nuke
   install|check|logs <svc>|help
 EOF
@@ -380,11 +427,21 @@ EOF
 case "${1:-help}" in
     dev)
         case "${2:-start}" in
-            start)    dev_start ;;
-            stop)     dev_stop ;;
-            restart)  dev_restart ;;
-            status)   dev_status ;;
-            *)        log_err "未知 dev 命令"; cmd_help ;;
+            start)          dev_start ;;
+            stop)           dev_stop ;;
+            restart)        dev_restart ;;
+            status)         dev_status ;;
+            backend)         # 默认后台启动
+                case "${3:-bg}" in
+                    fg|foreground) dev_start_backend_fg ;;
+                    bg|background|*) dev_start_backend ;;
+                esac ;;
+            frontend)
+                case "${3:-bg}" in
+                    fg|foreground) dev_start_frontend_fg ;;
+                    bg|background|*) dev_start_frontend ;;
+                esac ;;
+            *)              log_err "未知 dev 命令"; cmd_help ;;
         esac
         ;;
     prod)
