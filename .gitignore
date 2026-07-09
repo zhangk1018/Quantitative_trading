@@ -49,6 +49,7 @@ venv/
 # Data & database files
 data/*.db
 data/backup/
+data/cache/
 *.sqlite
 *.sqlite3
 
@@ -64,6 +65,11 @@ temp/
 coverage/
 **/coverage/
 **/coverage/**
+
+# Test artifacts (E2E screenshots, debug output)
+test-artifacts/
+**/test-artifacts/
+**/test-artifacts/**
 
 # Do not commit to GitHub
 .trae/
