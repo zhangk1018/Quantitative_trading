@@ -3,8 +3,34 @@
 > 量化交易系统生产环境部署指南
 >
 > 创建日期：2026-06-10
+> 最后更新：2026-07-09
 >
 > 适用范围：Docker + Docker Compose 部署（Linux/macOS/Windows WSL2）
+
+---
+
+## 关于本地部署
+
+当前开发环境使用**本地部署模式**（非 Docker），详见 `scripts/start.sh` 和 `start_prod.sh`。
+
+**快速启动**：
+```bash
+# 启动后端（FastAPI）
+cd /Users/zhangk/workspace/Quantitative_trading
+source venv/bin/activate
+bash scripts/start.sh
+
+# 启动前端（Vite 开发服务器）
+cd quant-trading-frontend
+npm run dev
+```
+
+**生产环境启动**：
+```bash
+./start_prod.sh start
+```
+
+本文档后续内容适用于 Docker 生产部署方案。
 
 ## 📋 目录
 

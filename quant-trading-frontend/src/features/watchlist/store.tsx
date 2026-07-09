@@ -8,34 +8,22 @@
  */
 
 import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
+import { SYSTEM_GROUPS, SYSTEM_GROUP_SET, detectMarketGroup } from './utils/stock-utils';
+
+export { SYSTEM_GROUP_SET, detectMarketGroup };
+export type { SystemGroup } from './utils/stock-utils';
 
 // ============================================
-// Storage key
+// Storage key & schema version
 // ============================================
 const STORAGE_KEY = 'watchlist';
-
-// ============================================
-// 系统分组（硬编码，不可删除）
-// ============================================
-const SYSTEM_GROUPS = ['全部', '沪深', '港股', '美股'] as const;
-export type SystemGroup = (typeof SYSTEM_GROUPS)[number];
-export const SYSTEM_GROUP_SET: ReadonlySet<string> = new Set(SYSTEM_GROUPS);
-
-/** 根据代码前缀判断所属市场分组 */
-export function detectMarketGroup(code: string): string {
-  if (!code || code.length < 2) return '沪深';
-  const prefix = code.substring(0, 1);
-  // 沪深：6xxxx(上海), 0xxxx/3xxxx(深圳)
-  if (['6', '0', '3'].includes(prefix)) return '沪深';
-  // 港股：暂按代码规则预留
-  // 美股：暂按代码规则预留
-  return '沪深';
-}
+const STORAGE_VERSION = 1;
 
 // ============================================
 // 持久化结构
 // ============================================
 interface WatchlistStorage {
+  version: number;
   customGroups: string[];
   stocks: Record<string, string[]>;
 }
@@ -45,13 +33,18 @@ function loadStorage(): WatchlistStorage {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
+      // Schema 校验：版本号不匹配或结构无效时降级为空
+      if (!parsed || typeof parsed.version !== 'number' || parsed.version !== STORAGE_VERSION) {
+        return { version: STORAGE_VERSION, customGroups: [], stocks: {} };
+      }
       return {
+        version: STORAGE_VERSION,
         customGroups: Array.isArray(parsed.customGroups) ? parsed.customGroups : [],
         stocks: parsed.stocks && typeof parsed.stocks === 'object' ? parsed.stocks : {},
       };
     }
   } catch { /* ignore */ }
-  return { customGroups: [], stocks: {} };
+  return { version: STORAGE_VERSION, customGroups: [], stocks: {} };
 }
 
 function saveStorage(data: WatchlistStorage): void {
@@ -85,7 +78,7 @@ async function migrateFromBackend(): Promise<WatchlistStorage | null> {
         if (!stocks[market].includes(code)) stocks[market].push(code);
       }
       const customGroups = Object.keys(stocks).filter((g) => !SYSTEM_GROUP_SET.has(g));
-      const data: WatchlistStorage = { customGroups, stocks };
+      const data: WatchlistStorage = { version: STORAGE_VERSION, customGroups, stocks };
       saveStorage(data);
       return data;
     }
@@ -106,6 +99,7 @@ interface WatchlistState {
 type WatchlistAction =
   | { type: 'LOAD'; payload: WatchlistStorage }
   | { type: 'ADD_STOCK'; payload: { code: string; groupName: string } }
+  | { type: 'BATCH_ADD_STOCKS'; payload: { codes: string[]; groupName: string } }
   | { type: 'REMOVE_FROM_GROUP'; payload: { code: string; groupName: string } }
   | { type: 'CREATE_GROUP'; payload: { name: string } }
   | { type: 'DELETE_GROUP'; payload: { name: string } }
@@ -118,29 +112,35 @@ function reducer(state: WatchlistState, action: WatchlistAction): WatchlistState
 
     case 'ADD_STOCK': {
       const { code, groupName } = action.payload;
+      return addStockToState(state, code, groupName);
+    }
+
+    case 'BATCH_ADD_STOCKS': {
+      const { codes, groupName } = action.payload;
       const newStocks = { ...state.stocks };
-      const newCustomGroups = [...state.customGroups];
 
-      // 添加到目标分组
-      if (!newStocks[groupName]) newStocks[groupName] = [];
-      if (!newStocks[groupName].includes(code)) {
-        newStocks[groupName] = [...newStocks[groupName], code];
+      // 使用 Set 一次性收集所有去重代码，避免循环内重复拷贝
+      const targetSet = new Set(newStocks[groupName] || []);
+      const allSet = new Set(newStocks['全部'] || []);
+      const marketSets: Record<string, Set<string>> = {};
+
+      for (const code of codes) {
+        targetSet.add(code);
+        allSet.add(code);
+        const market = detectMarketGroup(code);
+        if (!marketSets[market]) {
+          marketSets[market] = new Set(newStocks[market] || []);
+        }
+        marketSets[market].add(code);
       }
 
-      // 自动添加到"全部"
-      if (!newStocks['全部']) newStocks['全部'] = [];
-      if (!newStocks['全部'].includes(code)) {
-        newStocks['全部'] = [...newStocks['全部'], code];
+      newStocks[groupName] = Array.from(targetSet);
+      newStocks['全部'] = Array.from(allSet);
+      for (const [market, codeSet] of Object.entries(marketSets)) {
+        newStocks[market] = Array.from(codeSet);
       }
 
-      // 自动添加到市场分组
-      const market = detectMarketGroup(code);
-      if (!newStocks[market]) newStocks[market] = [];
-      if (!newStocks[market].includes(code)) {
-        newStocks[market] = [...newStocks[market], code];
-      }
-
-      return { ...state, stocks: newStocks, customGroups: newCustomGroups };
+      return { ...state, stocks: newStocks };
     }
 
     case 'REMOVE_FROM_GROUP': {
@@ -212,6 +212,30 @@ function reducer(state: WatchlistState, action: WatchlistAction): WatchlistState
   }
 }
 
+/** 纯函数：向 state 添加一只股票到目标分组（同时自动加入"全部"和市场分组） */
+function addStockToState(state: WatchlistState, code: string, groupName: string): WatchlistState {
+  const newStocks = { ...state.stocks };
+  const newCustomGroups = [...state.customGroups];
+
+  if (!newStocks[groupName]) newStocks[groupName] = [];
+  if (!newStocks[groupName].includes(code)) {
+    newStocks[groupName] = [...newStocks[groupName], code];
+  }
+
+  if (!newStocks['全部']) newStocks['全部'] = [];
+  if (!newStocks['全部'].includes(code)) {
+    newStocks['全部'] = [...newStocks['全部'], code];
+  }
+
+  const market = detectMarketGroup(code);
+  if (!newStocks[market]) newStocks[market] = [];
+  if (!newStocks[market].includes(code)) {
+    newStocks[market] = [...newStocks[market], code];
+  }
+
+  return { ...state, stocks: newStocks, customGroups: newCustomGroups };
+}
+
 // ============================================
 // Context
 // ============================================
@@ -254,7 +278,7 @@ export function WatchlistProvider({ children }: { children: React.ReactNode }) {
   const migratedRef = useRef(false);
 
   const persist = useCallback((s: WatchlistState) => {
-    saveStorage({ customGroups: s.customGroups, stocks: s.stocks });
+    saveStorage({ version: STORAGE_VERSION, customGroups: s.customGroups, stocks: s.stocks });
   }, []);
 
   // 初始化：从 localStorage 加载，或从后端迁移
@@ -270,7 +294,7 @@ export function WatchlistProvider({ children }: { children: React.ReactNode }) {
         if (migrated) {
           dispatch({ type: 'LOAD', payload: migrated });
         } else {
-          dispatch({ type: 'LOAD', payload: { customGroups: [], stocks: {} } });
+          dispatch({ type: 'LOAD', payload: { version: STORAGE_VERSION, customGroups: [], stocks: {} } });
         }
       }
     })();
@@ -290,7 +314,8 @@ export function WatchlistProvider({ children }: { children: React.ReactNode }) {
 
   const addOne = useCallback(
     (code: string, groupName: string) => {
-      dispatch({ type: 'ADD_STOCK', payload: { code, groupName } });
+      const trimmedGroup = groupName.trim() || '全部';
+      dispatch({ type: 'ADD_STOCK', payload: { code: code.trim(), groupName: trimmedGroup } });
     },
     [],
   );
@@ -324,22 +349,43 @@ export function WatchlistProvider({ children }: { children: React.ReactNode }) {
   const addMany = useCallback(
     (codes: string[], groupName: string): { added: number; skipped: number; failed: number; errors: string[] } => {
       const targetGroup = groupName.trim() || '全部';
-      let added = 0;
+      const validCodes: string[] = [];
       let skipped = 0;
+      const errors: string[] = [];
+      const batchSeen = new Set<string>();
+
+      const existing = state.stocks[targetGroup] || [];
       for (const code of codes) {
-        if (!code || code.trim() === '') {
+        const trimmed = code.trim();
+        if (!trimmed) {
+          errors.push('空代码已跳过');
           skipped++;
           continue;
         }
-        const existing = state.stocks[targetGroup] || [];
-        if (existing.includes(code)) {
+        if (!/^\d{6}$/.test(trimmed)) {
+          errors.push(`${trimmed}: 格式无效（需6位数字）`);
           skipped++;
-        } else {
-          dispatch({ type: 'ADD_STOCK', payload: { code, groupName: targetGroup } });
-          added++;
+          continue;
         }
+        if (batchSeen.has(trimmed)) {
+          errors.push(`${trimmed}: 批次内重复`);
+          skipped++;
+          continue;
+        }
+        batchSeen.add(trimmed);
+        if (existing.includes(trimmed)) {
+          errors.push(`${trimmed}: 已在目标分组中`);
+          skipped++;
+          continue;
+        }
+        validCodes.push(trimmed);
       }
-      return { added, skipped, failed: 0, errors: [] };
+
+      if (validCodes.length > 0) {
+        dispatch({ type: 'BATCH_ADD_STOCKS', payload: { codes: validCodes, groupName: targetGroup } });
+      }
+
+      return { added: validCodes.length, skipped, failed: 0, errors };
     },
     [state.stocks],
   );

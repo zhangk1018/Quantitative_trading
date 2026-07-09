@@ -518,6 +518,6 @@
 
 | 编号 | 问题描述 | 类型 | 决策结果 | 责任人 | 截止时间 | 状态 |
 |:-----|:---------|:-----|:---------|:-------|:---------|:----:|
-| F1 | `useScreener()` 全量订阅导致无关状态变更触发消费者全局重渲染 | 性能缺陷 | **强制立即修复**：全项目扫描替换为 `useScreenerSelector`；老旧临时页面登记技术债限定下个迭代完成，旧 Hook 标记 `@deprecated` | 方舟 | 2026-07-03 | 📋 |
-| F2 | `TechnicalFilter.tsx` 中 `resolveMissingIndicators` 导入未使用 | 死代码 | **立即清理**：删除未使用的 import 语句 | 方舟 | 2026-07-03 | 📋 |
-| F3 | `TOGGLE_PATTERN` 中 `?? 3` 魔法数字 | 代码质量 | **本次迭代同步优化**：抽取全局常量 `DEFAULT_LOOKBACK_DAYS = 3`，统一配置语义 | 方舟 | 2026-07-03 | 📋 |
+| F1 | `useScreener()` 全量订阅导致无关状态变更触发消费者全局重渲染 | 性能缺陷 | **已修复**：全项目扫描替换为 `useScreenerSelector`；旧 Hook 标记 `@deprecated` | 方舟 | 2026-07-03 | ✅ |
+| F2 | `TechnicalFilter.tsx` 中 `resolveMissingIndicators` 导入未使用 | 死代码 | **已清理**：删除未使用的 import 语句 | 方舟 | 2026-07-03 | ✅ |
+| F3 | `TOGGLE_PATTERN` 中 `?? 3` 魔法数字 | 代码质量 | **已优化**：抽取全局常量 `DEFAULT_LOOKBACK_DAYS = 3` | 方舟 | 2026-07-03 | ✅ |

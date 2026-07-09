@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { Modal, Input, Typography, Select, App } from 'antd';
-import { useWatchlist, SYSTEM_GROUP_SET } from './store';
+import { useWatchlist, SYSTEM_GROUP_SET, detectMarketGroup } from './store';
 
 const { Text } = Typography;
 
@@ -65,7 +65,7 @@ const WatchlistSearchModal: React.FC<WatchlistSearchModalProps> = ({ open, onClo
         return;
       }
       addOne(trimmed, groupName);
-      message.success(`${trimmed} 已添加到 ${groupName}（同时加入"全部"和"${detectMarket(trimmed)}"）`);
+      message.success(`${trimmed} 已添加到 ${groupName}（同时加入"全部"和"${detectMarketGroup(trimmed)}"）`);
       setCode('');
       setNewGroupName('');
     } catch {
@@ -144,12 +144,5 @@ const WatchlistSearchModal: React.FC<WatchlistSearchModalProps> = ({ open, onClo
     </Modal>
   );
 };
-
-function detectMarket(code: string): string {
-  if (!code || code.length < 1) return '沪深';
-  const prefix = code.substring(0, 1);
-  if (['6', '0', '3'].includes(prefix)) return '沪深';
-  return '沪深';
-}
 
 export default WatchlistSearchModal;

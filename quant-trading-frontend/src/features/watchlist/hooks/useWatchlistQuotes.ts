@@ -62,9 +62,8 @@ export function useWatchlistQuotes(codes: string[]): UseWatchlistQuotesResult {
           // 忽略已中止的请求
           if (controller.signal.aborted) return;
           const map = new Map<string, StockItem>();
-          if (result.items) {
-            result.items.forEach((item) => map.set(item.stock_code, item));
-          }
+          const items = result?.items ?? [];
+          items.forEach((item) => map.set(item.stock_code, item));
           setQuotesMap(map);
           hasLoaded.current = true;
           setError(null);
@@ -80,7 +79,8 @@ export function useWatchlistQuotes(codes: string[]): UseWatchlistQuotesResult {
           message.error(msg);
         })
         .finally(() => {
-          if (!controller.signal.aborted) {
+          // 仅当当前 controller 仍是最新请求时才更新状态，避免过期请求污染
+          if (abortRef.current === controller) {
             setLoading(false);
             setRefreshing(false);
           }

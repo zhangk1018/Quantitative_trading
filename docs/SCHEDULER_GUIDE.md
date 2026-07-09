@@ -6,13 +6,16 @@
 
 | 调度方式 | 用途 | 复杂度 | 当前状态 |
 |----------|------|--------|----------|
-| **cron 定时任务** | 简单、可靠的固定时间执行（盘后同步/质量检查） | 低 | ✅ 生产使用 |
+| **cron 定时任务** | 简单、可靠的固定时间执行（盘后同步/质量检查） | 低 | ❌ 已废弃 (由 daily_job_runner.py 替代) |
+| **daily_job_runner** | 统一任务链调度，带断点续跑、重试、日志记录 | 低 | ✅ 生产使用 |
 | **APScheduler 调度器** | 程序内带重试、优先级、告警的复杂任务编排 | 中 | ⚡ 备选方案 |
 | **智能调度系统** | 多数据源轮换、熔断、动态权重的高级调度 | 高 | 📦 可用组件 |
 
 ---
 
-## 一、cron 定时任务（当前主力）
+## 一、cron 定时任务（已废弃）
+
+⚠️ 已废弃：cron 定时任务已被 `daily_job_runner.py` 替代。保留此节仅作历史参考。
 
 ### 1.1 配置方式
 
@@ -94,9 +97,11 @@ python backend/collector/etl/fill_industry.py
 python backend/clean/quality/check_data_quality.py
 ```
 
-### 1.5 配置参数
+### 1.5 配置参数（已废弃）
 
-定时任务的核心参数在 `backend/pipeline.yaml` 中配置：
+⚠️ `pipeline.yaml` 不再用于调度配置。当前调度逻辑由 `daily_job_runner.py` 内部硬编码的任务链控制。
+
+历史参考：cron 定时任务的核心参数曾在 `backend/pipeline.yaml` 中配置：
 
 ```yaml
 scheduler:
@@ -312,15 +317,155 @@ psql -h localhost -U quant_user -d quant_trading -c "
 
 ---
 
+## 五、daily_job_runner 统一调度（当前主力）
+
+### 5.1 概述
+
+`daily_job_runner.py` 位于 `backend/cron/daily_job_runner.py`，是当前生产环境使用的统一任务链调度器。它替代了旧的 cron 定时任务，提供以下核心能力：
+
+- **线性任务链**：按依赖顺序依次执行任务，前序失败则中断后续
+- **断点续跑（Resume from Breakpoint）**：通过 `task_run_log` 表记录状态，已成功的任务自动跳过
+- **自动重试**：最多 3 次重试，间隔 15 分钟，不可重试错误（语法错误、导入错误等）立即终止
+- **僵尸进程清理**：运行超过 2 小时的任务自动标记为失败并重新执行
+- **文件锁**：防止同一时刻多个实例同时运行
+- **dry-run 模式**：预览今日计划执行的任务，不实际执行
+
+### 5.2 任务链执行顺序
+
+任务分为两个阶段执行：
+
+**阶段 1（15:30）**：
+1. **健康检查** (`pipeline_health_check.py --pre-import`) — 检查数据库连接、磁盘空间等前置条件
+2. **股票列表同步** (`sync_stock_list_baostock.py`) — 同步最新股票列表
+
+**阶段 2（16:30）**：
+3. **行情数据导入** (`import_daily_data.py --incremental`) — 增量导入当日行情数据
+4. **缺失数据补全** (`fill_missing_data.py`，可选) — 补全历史缺失数据
+5. **复权因子同步** (`sync_adj_factor.py --incremental`) — 增量同步复权因子
+6. **基本面数据同步** (`sync_daily_basic.py --latest`) — 同步最新基本面数据
+7. **指标计算** (`compute_indicators_daily.py`) — 计算技术指标
+8. **信号预计算** (`signal_precompute.py`) — 预计算交易信号
+9. **宽表同步** (`daily_snapshot_sync.py --latest`) — 同步每日快照宽表
+10. **Parquet 导出** (`export_parquet.py`) — 导出 Parquet 格式数据
+
+### 5.3 task_run_log 表跟踪
+
+所有任务执行记录写入 `task_run_log` 表，包含以下字段：
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 自增主键 |
+| `task_name` | 任务名称 |
+| `stage` | 阶段编号（1/2） |
+| `batch_id` | 批次号（格式：`YYYYMMDD-xxxxxxxx`） |
+| `data_date` | 数据日期 |
+| `start_time` | 开始时间 |
+| `end_time` | 结束时间 |
+| `status` | 状态：`running` / `success` / `failed` / `pending` |
+| `exit_code` | 退出码 |
+| `error_message` | 错误信息 |
+| `rows_affected` | 影响行数 |
+| `extra_metrics` | 额外指标（JSON 格式） |
+
+### 5.4 batch_id 断点续跑机制
+
+每次运行生成唯一 `batch_id`（格式：`YYYYMMDD-xxxxxxxx`），用于：
+
+- **断点续跑**：重启时查询 `task_run_log` 表中各任务的最新状态，已成功的任务自动跳过
+- **状态隔离**：按 `stage` 过滤，避免跨阶段干扰
+- **僵尸检测**：`running` 状态超过 2 小时的任务视为僵尸进程，自动清理后重新执行
+
+### 5.5 文件锁机制
+
+启动时在 `logs/cron/.daily_job_runner.lock` 创建文件锁，防止调度器重复执行。锁文件包含 PID 和启动时间信息。
+
+### 5.6 手动执行
+
+```bash
+# 全量执行（阶段 1 + 阶段 2）
+cd /Users/zhangk/workspace/Quantitative_trading
+PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/cron/daily_job_runner.py
+
+# 仅执行阶段 1（健康检查 + 股票列表）
+PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/cron/daily_job_runner.py --stage 1
+
+# 仅执行阶段 2（数据导入 + 计算 + 导出）
+PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/cron/daily_job_runner.py --stage 2
+
+# 执行阶段 2 并包含缺失数据补全
+PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/cron/daily_job_runner.py --stage 2 --fill-missing
+
+# 试运行模式（预览任务，不实际执行）
+PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/cron/daily_job_runner.py --dry-run
+```
+
+### 5.7 查看执行状态
+
+```bash
+# 查看今日所有任务执行状态
+psql -h localhost -U quant_user -d quant_trading -c "
+    SELECT task_name, stage, status, batch_id,
+           to_char(start_time, 'HH24:MI:SS') AS start,
+           to_char(end_time, 'HH24:MI:SS') AS end,
+           rows_affected, error_message
+    FROM task_run_log
+    WHERE data_date = CURRENT_DATE
+    ORDER BY id;
+"
+
+# 查看今日失败的 task
+psql -h localhost -U quant_user -d quant_trading -c "
+    SELECT id, task_name, stage, batch_id, error_message, start_time, end_time
+    FROM task_run_log
+    WHERE data_date = CURRENT_DATE AND status = 'failed'
+    ORDER BY id;
+"
+
+# 查看最近批次的执行概况
+psql -h localhost -U quant_user -d quant_trading -c "
+    SELECT batch_id, task_name, status, rows_affected,
+           to_char(start_time, 'MM-DD HH24:MI:SS') AS start
+    FROM task_run_log
+    WHERE batch_id = (
+        SELECT batch_id FROM task_run_log
+        WHERE task_name = 'etl_pipeline'
+        ORDER BY id DESC LIMIT 1
+    )
+    ORDER BY id;
+"
+
+# 查看各任务日志
+tail -f logs/cron/stock_list_sync_$(date +%Y%m%d).log
+tail -f logs/cron/daily_import_$(date +%Y%m%d).log
+tail -f logs/cron/indicators_compute_$(date +%Y%m%d).log
+```
+
+### 5.8 日志位置
+
+每个任务独立日志文件，位于 `logs/cron/` 目录下，按任务名和日期命名，自动轮转（最大 10MB，保留 5 个备份）：
+
+- `logs/cron/pipeline_health_check_YYYYMMDD.log`
+- `logs/cron/stock_list_sync_YYYYMMDD.log`
+- `logs/cron/daily_import_YYYYMMDD.log`
+- `logs/cron/adj_factor_sync_YYYYMMDD.log`
+- `logs/cron/daily_basic_sync_YYYYMMDD.log`
+- `logs/cron/indicators_compute_YYYYMMDD.log`
+- `logs/cron/signal_precompute_YYYYMMDD.log`
+- `logs/cron/daily_sync_YYYYMMDD.log`
+- `logs/cron/parquet_export_YYYYMMDD.log`
+
+---
+
 ## 版本历史
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| 3.0 | 2026-07-09 | 废弃 cron 调度，迁移至 daily_job_runner.py 统一任务链调度；新增 task_run_log 表跟踪、batch_id 断点续跑机制 |
 | 2.0 | 2026-06-04 | 合并原 TASK_SCHEDULER_GUIDE 和 SMART_SCHEDULER_GUIDE；更新路径与实际一致；明确 cron 为主力调度 |
 | 1.0 | 2026-06-01 | 初始版本 |
 
 ---
 
-**文档版本**: 2.0  
-**最后更新**: 2026-06-04  
+**文档版本**: 3.0  
+**最后更新**: 2026-07-09  
 **位置**: `docs/SCHEDULER_GUIDE.md`

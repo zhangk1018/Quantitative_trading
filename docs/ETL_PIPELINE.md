@@ -4,12 +4,40 @@
 
 本文档描述从数据下载到生成 parquet 文件的完整流程，包括每个步骤的验证方法和常见问题修复。
 
-**执行顺序**（每日收盘后）：
+**执行顺序**（每日收盘后，由 `daily_job_runner.py` 自动按序执行）：
 ```
 1. 健康检查 → 2. 股票列表同步 → 3. 日线数据下载 → 4. 复权因子同步 → 
 5. 基本面数据同步 → 6. 缺失数据补全 → 7. 技术指标计算 → 
 8. 宽表同步 → 9. Parquet 导出
 ```
+
+---
+
+## 统一调度入口
+
+**脚本**：`backend/cron/daily_job_runner.py`
+
+**功能**：
+- 统一调度入口，按顺序自动执行所有 ETL 管道步骤
+- 每一步执行状态记录到 `task_run_log` 表（含开始时间、结束时间、状态、错误信息）
+- 内置自动重试机制，单步失败后自动重试 3 次
+- 完整的日志输出，便于排查问题
+
+**执行**：
+```bash
+PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/cron/daily_job_runner.py
+```
+
+**验证**：
+```sql
+-- 检查最近一次执行状态
+SELECT step_name, status, started_at, finished_at, error_message
+FROM task_run_log
+WHERE run_date = CURRENT_DATE
+ORDER BY step_name;
+```
+
+> **注意**：以下各阶段脚本均可独立手动执行，用于调试或补跑。日常运行推荐直接使用 `daily_job_runner.py` 一键完成全流程。
 
 ---
 
@@ -520,6 +548,7 @@ echo "✅ ETL 流程完成"
 
 | 问题 | 可能原因 | 解决方案 |
 |------|---------|---------|
+| 如何查看 daily_job_runner 执行状态 | 查询 task_run_log 表 | `SELECT * FROM task_run_log WHERE run_date = CURRENT_DATE ORDER BY step_name;` |
 | stock_basic 为空 | 未执行股票列表同步 | 执行 `sync_stock_list_baostock.py` |
 | stock_quotes 数据为空 | 未下载日线数据 | 执行 `import_daily_data.py --incremental` |
 | dif/dea/rsi12/rsi24 为 NULL | MACD/RSI 字段映射错误 | 检查 `compute_indicators_daily.py` 字段映射 |
