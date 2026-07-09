@@ -61,6 +61,8 @@ const WatchlistFilter: React.FC<WatchlistFilterProps> = ({ activeGroup, onGroupC
                 okText="删除"
                 cancelText="取消"
                 placement="bottom"
+                okButtonProps={{ 'data-testid': `watchlist-delete-group-ok-${group}` }}
+                cancelButtonProps={{ 'data-testid': `watchlist-delete-group-cancel-${group}` }}
               >
                 <Button
                   type="text"

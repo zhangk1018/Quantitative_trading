@@ -143,6 +143,8 @@ type PanelAction = { type: 'TOGGLE_PANEL'; payload: PanelKey };
 
 type ResetAction = { type: 'RESET_ALL' };
 
+type LoadStrategyAction = { type: 'LOAD_STRATEGY'; payload: Omit<ScreenerState, 'panels'> };
+
 export type ScreenerAction =
   | MarketAction
   | MarketIndicatorAction
@@ -153,7 +155,8 @@ export type ScreenerAction =
   | CustomAction
   | FactorAction
   | PanelAction
-  | ResetAction;
+  | ResetAction
+  | LoadStrategyAction;
 
 // ==================== 子 Reducer 实现 ====================
 function marketReducer(state: MarketState, action: MarketAction): MarketState {
@@ -503,6 +506,8 @@ const actionToSubReducer: Record<ScreenerAction['type'], keyof ScreenerState> = 
   IMPORT_CUSTOM_INDICATORS: 'custom',
   SET_FACTOR_WEIGHT: 'factor',
   TOGGLE_PANEL: 'panels',
+  RESET_ALL: 'panels', // 仅需要 key，根 reducer 已经处理
+  LOAD_STRATEGY: 'panels', // 仅需要 key，根 reducer 已经处理
 };
 
 // ==================== 根 Reducer（含后置钩子） ====================
@@ -511,6 +516,16 @@ function rootReducer(state: ScreenerState, action: ScreenerAction): ScreenerStat
   if (action.type === 'RESET_ALL') {
     const newState = createInitialState(true);
     return { ...newState, custom: state.custom };
+  }
+
+  // 加载策略：与默认值合并，确保缺失字段有默认值，保留当前 panels（UI 折叠偏好）
+  if (action.type === 'LOAD_STRATEGY') {
+    const defaults = createInitialState();
+    return {
+      ...defaults,          // 默认值：确保新增字段有回退
+      ...action.payload,    // 策略数据：覆盖默认值
+      panels: state.panels, // 保留当前 UI 状态
+    };
   }
 
   const subKey = actionToSubReducer[action.type];

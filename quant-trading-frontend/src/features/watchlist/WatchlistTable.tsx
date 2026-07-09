@@ -105,6 +105,8 @@ const TableRow = memo<{
           okText="删除"
           cancelText="取消"
           placement="left"
+          okButtonProps={{ 'data-testid': `watchlist-popconfirm-ok-${row.stock_code}` }}
+          cancelButtonProps={{ 'data-testid': `watchlist-popconfirm-cancel-${row.stock_code}` }}
         >
           <Button
             type="text"

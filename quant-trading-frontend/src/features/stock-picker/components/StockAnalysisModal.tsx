@@ -3,7 +3,7 @@
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Modal, Typography, Spin, Alert, Segmented, Tooltip } from 'antd';
-import { fetchKLineData, toFriendlyMessage, type StockItem, type PatternMarker, type KLineDataResult } from '@/features/stock-detail/api';
+import { fetchKLineData, toFriendlyMessage, type PatternMarker, type KLineDataResult } from '@/features/stock-detail/api';
 import { buildChartData, type ChartDataResult } from '@/lib/indicators/chart-adapter';
 import { sanitizeNumber, sanitizePct } from '@/lib/indicators/indicators';
 import { CHART_THEME } from '@/lib/indicators/chart-config';
@@ -13,9 +13,17 @@ import type { FilterCondition } from '../types/filterTree';
 
 const { Text } = Typography;
 
-// StockItem 的 stock_name 字段在 api.ts 中定义为必需，
-// 但父组件传递的 stock 可能是 null，用 typescript Pick 保持类型对齐
-type ModalStock = Pick<StockItem, 'stock_code' | 'stock_name' | 'close' | 'change_pct' | 'turnover_rate' | 'pe' | 'pb' | 'market_cap' | 'amount'> & {
+// 选股器传递的股票数据类型（与 ../types.ts 中 StockItem 对齐）
+type ModalStock = {
+  stock_code: string;
+  stock_name: string;
+  close: number | null;
+  change_pct: number | null;
+  turnover_rate: number | null;
+  pe: number | null;
+  pb: number | null;
+  market_cap: number | null;
+  amount: number | null;
   listed_board: string | null;
 };
 

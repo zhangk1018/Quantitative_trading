@@ -10,7 +10,7 @@
  * 6. 列排序 → 前端 useMemo
  */
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { Typography, Button, Spin, App, Modal, Input } from 'antd';
 import { PlusOutlined, ReloadOutlined, FolderAddOutlined } from '@ant-design/icons';
 import { useWatchlist, SYSTEM_GROUP_SET } from './store';
@@ -56,7 +56,17 @@ function toModalStock(row: WatchlistStockRow) {
 
 const Watchlist: React.FC = () => {
   const { message } = App.useApp();
-  const { state, addOne, removeOne, createGroup, allGroups, refresh: refreshWatchlist } = useWatchlist();
+  const { state, addOne, addMany, removeOne, createGroup, allGroups, refresh: refreshWatchlist } = useWatchlist();
+
+  // 暴露 addMany 到 window，供 E2E 性能测试使用
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).__watchlistHelpers__ = { addMany };
+    }
+    return () => {
+      delete (window as any).__watchlistHelpers__;
+    };
+  }, [addMany]);
 
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [analysisStock, setAnalysisStock] = useState<WatchlistStockRow | null>(null);
@@ -275,6 +285,8 @@ const Watchlist: React.FC = () => {
         onOk={handleCreateGroup}
         okText="创建"
         cancelText="取消"
+        okButtonProps={{ 'data-testid': 'watchlist-create-group-ok' }}
+        cancelButtonProps={{ 'data-testid': 'watchlist-create-group-cancel' }}
         data-testid="watchlist-create-group-modal"
       >
         <div className="py-2">
