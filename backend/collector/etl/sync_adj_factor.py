@@ -255,7 +255,7 @@ def sync_adj_factor(incremental: bool = False):
     })
     if not storage.connect():
         logger.error("❌ 数据库连接失败")
-        return
+        sys.exit(1)
     storage.init_tables()
 
     # 连接 Baostock
@@ -263,14 +263,14 @@ def sync_adj_factor(incremental: bool = False):
     if not source.connect():
         logger.error("❌ Baostock 连接失败")
         storage.disconnect()
-        return
+        sys.exit(1)
 
     try:
         # 1. 获取股票列表（优先数据库，备用 Baostock）
         all_stocks = get_active_stocks(storage, source)
         if all_stocks.empty:
             logger.error("❌ 无法获取股票列表，终止同步")
-            return
+            sys.exit(1)
 
         # 2. 确定日期范围
         today = datetime.now().date()

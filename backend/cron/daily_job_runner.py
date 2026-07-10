@@ -53,6 +53,11 @@ RETRY_INTERVAL_SEC = 15 * 60
 TASK_TIMEOUT_SEC = 3600       # 1 小时
 ZOMBIE_THRESHOLD_SEC = 7200   # 2 小时
 
+# ===================== Stage 常量 =====================
+STAGE_PRE_IMPORT = 1  # 阶段1：健康检查 + 股票列表同步
+STAGE_IMPORT = 2      # 阶段2：数据下载 + 指标计算 + 导出
+PIPELINE_STAGE = 0    # etl_pipeline 整体状态记录专用值，与子任务 stage 语义隔离
+
 # ===================== 阶段定义 =====================
 STAGE1_TASKS = [
     {"name": "pipeline_health_check", "script": os.path.join("backend", "collector", "etl", "pipeline_health_check.py"), "args": ["--pre-import"]},
@@ -365,16 +370,11 @@ def run_task_chain(task_logger: TaskLogger, engine, tasks: list, stage: int) -> 
             continue
             
         if db_status == "running":
-            # 检测僵尸进程并清理
-            if is_zombie_task(engine, data_date, task_name, stage):
-                print(f"  [{i}/{len(tasks)}] 💀 {task_name} — 检测到僵尸进程，自动清理并重新执行")
-                cleanup_zombie_task(engine, data_date, task_name, stage)
-                # 清理后重置状态为 pending，继续执行
-                db_status = "pending"
-            else:
-                print(f"  [{i}/{len(tasks)}] ⏳ {task_name} — 正在运行中，跳过")
-                failed_task = task_name
-                break
+            # 文件锁保证单实例，任何 running 状态都是遗留状态 → 直接清理并继续执行
+            print(f"  [{i}/{len(tasks)}] 💀 {task_name} — 检测到遗留 running 状态，自动清理并重新执行")
+            cleanup_zombie_task(engine, data_date, task_name, stage)
+            # 清理后重置状态为 pending，继续执行
+            db_status = "pending"
 
         print(f"\n--- [{i}/{len(tasks)}] 执行 {task_name} ---")
         success = run_task(task, task_logger, stage=stage, engine=engine)
@@ -390,18 +390,18 @@ def run_task_chain(task_logger: TaskLogger, engine, tasks: list, stage: int) -> 
 # ===================== 主函数 =====================
 def main():
     parser = argparse.ArgumentParser(description='每日盘后线性任务调度器 v6')
-    parser.add_argument('--stage', type=int, choices=[1, 2], help='执行阶段: 1=步骤1-2, 2=步骤3-11')
+    parser.add_argument('--stage', type=int, choices=[STAGE_PRE_IMPORT, STAGE_IMPORT], help='执行阶段: 1=步骤1-2, 2=步骤3-11')
     parser.add_argument('--fill-missing', action='store_true', help='在阶段2中执行缺失数据补全')
     parser.add_argument('--dry-run', action='store_true', help='试运行模式：只打印计划执行的任务')
     args = parser.parse_args()
 
-    if args.stage == 1:
+    if args.stage == STAGE_PRE_IMPORT:
         tasks = STAGE1_TASKS
-        current_stage = 1
+        current_stage = STAGE_PRE_IMPORT
         stage_label = "阶段1 (15:30) | 健康检查 + 股票列表同步"
-    elif args.stage == 2:
+    elif args.stage == STAGE_IMPORT:
         tasks = list(STAGE2_TASKS)
-        current_stage = 2
+        current_stage = STAGE_IMPORT
         # 动态注入 fill_missing_data 到 daily_import 之后
         if args.fill_missing:
             daily_import_idx = next((i for i, t in enumerate(tasks) if t["name"] == "daily_import"), None)
@@ -410,7 +410,7 @@ def main():
         stage_label = "阶段2 (16:30) | 数据下载 + 指标计算 + 导出"
     else:
         tasks = STAGE1_TASKS + STAGE2_TASKS
-        current_stage = None  # 全量模式，stage 过滤不生效
+        current_stage = None  # 全量模式，stage 过滤不生效（retry 循环中拆分 stage1→stage2 执行）
         stage_label = "全量 (全部任务)"
 
     file_lock = FileLock(LOCK_FILE)
@@ -430,6 +430,17 @@ def main():
         print(f"任务数: {len(tasks)} | batch_id: {task_logger.batch_id}")
         print(f"data_date: {task_logger.data_date}")
         print("=" * 60)
+
+        # 启动时清理：文件锁保证单实例，清理当前阶段所有遗留 running 记录
+        cleaned = 0
+        for task in tasks:
+            if get_task_db_status(engine, task_logger.data_date, task["name"], current_stage) == "running":
+                cleanup_zombie_task(engine, task_logger.data_date, task["name"], current_stage)
+                cleaned += 1
+        if cleaned:
+            print(f"[INFO] 启动时清理了 {cleaned} 个遗留 running 记录")
+        else:
+            print("[INFO] 无遗留 running 记录需清理")
 
         # Dry-run 模式
         if args.dry_run:
@@ -455,7 +466,13 @@ def main():
             if attempt > 1:
                 print(f"\n{'=' * 60}\n【第 {attempt}/{MAX_RETRIES} 次重试】\n{'=' * 60}")
                 
-            all_success, failed_task = run_task_chain(task_logger, engine, tasks, current_stage)
+            if current_stage is not None:
+                all_success, failed_task = run_task_chain(task_logger, engine, tasks, current_stage)
+            else:
+                # 全量模式：先执行阶段1，成功后执行阶段2，确保 stage 值正确写入 DB
+                all_success, failed_task = run_task_chain(task_logger, engine, STAGE1_TASKS, STAGE_PRE_IMPORT)
+                if all_success:
+                    all_success, failed_task = run_task_chain(task_logger, engine, STAGE2_TASKS, STAGE_IMPORT)
             
             if all_success:
                 elapsed = (datetime.now() - start_time).total_seconds()
@@ -463,8 +480,8 @@ def main():
                 print(f"【全部完成】{len(tasks)}/{len(tasks)} 任务成功 | 耗时 {elapsed:.1f}s | batch_id: {task_logger.batch_id}")
                 print("=" * 60)
                 # 记录整体流水线状态
-                _pid = task_logger.log_start('etl_pipeline', 0)
-                task_logger.log_end(_pid, 'etl_pipeline', 0, True, 0, None, None,
+                _pid = task_logger.log_start('etl_pipeline', PIPELINE_STAGE)
+                task_logger.log_end(_pid, 'etl_pipeline', PIPELINE_STAGE, True, 0, None, None,
                                     {"elapsed_seconds": round(elapsed, 1), "total_tasks": len(tasks), "failed_task": None})
                 sys.exit(0)
                 
@@ -480,8 +497,8 @@ def main():
                     if row and row[0] and "不可重试错误" in row[0]:
                         print(f"\n!!! 任务 {failed_task} 发生不可重试错误，终止重试 !!!")
                         elapsed = (datetime.now() - start_time).total_seconds()
-                        _pid = task_logger.log_start('etl_pipeline', 0)
-                        task_logger.log_end(_pid, 'etl_pipeline', 0, False, 1,
+                        _pid = task_logger.log_start('etl_pipeline', PIPELINE_STAGE)
+                        task_logger.log_end(_pid, 'etl_pipeline', PIPELINE_STAGE, False, 1,
                                             f"不可重试错误: {failed_task}", None,
                                             {"elapsed_seconds": round(elapsed, 1), "total_tasks": len(tasks), "failed_task": failed_task})
                         sys.exit(1)
@@ -495,8 +512,8 @@ def main():
         print("\n" + "=" * 60)
         print(f"【达到最大重试次数】{MAX_RETRIES}次后仍未全部成功 | 在 [{failed_task}] 中断")
         print("=" * 60)
-        _pid = task_logger.log_start('etl_pipeline', 0)
-        task_logger.log_end(_pid, 'etl_pipeline', 0, False, 1,
+        _pid = task_logger.log_start('etl_pipeline', PIPELINE_STAGE)
+        task_logger.log_end(_pid, 'etl_pipeline', PIPELINE_STAGE, False, 1,
                             f"重试{MAX_RETRIES}次后未全部成功，在 [{failed_task}] 中断", None,
                             {"elapsed_seconds": round(elapsed, 1), "total_tasks": len(tasks), "failed_task": failed_task})
         sys.exit(1)

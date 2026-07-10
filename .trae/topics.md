@@ -365,3 +365,5 @@ Phase 5.2 性能优化已完成三项：
 **通知**: [量量→方舟 2026-07-08 13:50] 协作单 [WATCHLIST-STOCK_CODES-20260708] 状态变更: ASSIGNED→VERIFY（修复完成。API 验证通过：`GET /api/stocks/?stock_codes=000001,600000` 返回 total=2 精确匹配平安银行+浦发银行，无 stock_codes 参数时返回 total=5194 保持原行为。前端改为传 `stock_codes=codes.join(',')` 后即可正常加载。等待方舟验收关闭。）
 
 **通知**: [方舟→量量 2026-07-08 14:45] 协作单 [WATCHLIST-STOCK_CODES-20260708] 状态变更: VERIFY→CLOSED（方舟验收通过：① 后端 stock_codes 参数正常，`curl` 验证 code=200 total=2 ② 前端 `useWatchlistQuotes` hook 改为 `stock_codes: codes.join(',')` ③ 修复 MAX_WATCHLIST_SIZE 1000→200（后端 le=200 校验限制）④ Playwright 自测：0 错误、21 行表格正常渲染、无 422 异常。）
+
+**通知**: [方舟→K 2026-07-10 17:00] 协作单 [TEST-SKIP-FIX-20260710] 状态变更: NEW（新工单 — 状态重构后 13 个前端测试文件共 301 个测试被跳过，已在 `docs/协作单.md` 中提单。**处理方**：方舟（前台测试，前台修复，不推给量量）。**修复方式**：去掉 `.skip` → 运行测试定位失败 → 批量替换字段路径。**优先级**：P2，不阻塞功能，CI 已跳过。）

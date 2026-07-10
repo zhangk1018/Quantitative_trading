@@ -31,7 +31,7 @@ def main():
     ts = TushareDataSource()
     if not ts.connect():
         logger.error("Tushare 连接失败，请检查 Token")
-        return
+        sys.exit(1)
 
     for code in MISSING_CODES:
         # 判断市场（Tushare格式）
