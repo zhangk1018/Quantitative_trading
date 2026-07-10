@@ -19,7 +19,9 @@ const KLineItemSchema = z.object({
 });
 
 const SignalItemSchema = z.object({
-  time: z.string().min(1),
+  time: z.string().min(1).refine((s) => !isNaN(Date.parse(s)), {
+    message: 'Invalid time string (must be parseable by Date)',
+  }),
   position: z.enum(['aboveBar', 'belowBar']),
   shape: z.enum(['arrowUp', 'arrowDown', 'circle', 'square']),
   color: z.string().min(1),
@@ -44,7 +46,7 @@ export function validateKLineData(data: unknown, strict = false): KLineItem[] {
     if (parsed.success) {
       result.push(parsed.data);
     } else {
-      const errorMsg = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
+      const errorMsg = parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
       console.warn(`[validateKLineData] Invalid item skipped: ${errorMsg}`, item);
       if (strict) {
         throw new ChartError(ChartErrorType.DATA_INVALID, `Invalid KLine item: ${errorMsg}`, parsed.error);
@@ -66,7 +68,7 @@ export function validateSignals(data: unknown, strict = false): SignalItem[] {
     if (parsed.success) {
       result.push(parsed.data);
     } else {
-      const errorMsg = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
+      const errorMsg = parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
       console.warn(`[validateSignals] Invalid signal skipped: ${errorMsg}`, item);
       if (strict) {
         throw new ChartError(ChartErrorType.DATA_INVALID, `Invalid signal item: ${errorMsg}`, parsed.error);

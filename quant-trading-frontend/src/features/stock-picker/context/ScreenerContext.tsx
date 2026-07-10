@@ -568,7 +568,7 @@ function isValidCustomIndicator(data: unknown): data is CustomIndicator {
   return (
     typeof obj.id === 'string' &&
     typeof obj.name === 'string' &&
-    typeof obj.expr === 'string' &&
+    typeof obj.formula === 'string' &&
     typeof obj.updatedAt === 'string'
   );
 }

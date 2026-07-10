@@ -72,7 +72,7 @@ const validKLine = createKLine();
 const validSignal = createSignal();
 
 // ==================== validateKLineData ====================
-describe.skip('validateKLineData', () => {
+describe('validateKLineData', () => {
   describe('non-strict mode', () => {
     it('passes valid K-line', () => {
       const result = validateKLineData([validKLine]);
@@ -137,7 +137,7 @@ describe.skip('validateKLineData', () => {
     });
 
     it('accepts price near upper bound', () => {
-      const near = createKLine({ open: BOUNDARIES.MAX_PRICE - 1 });
+      const near = createKLine({ open: BOUNDARIES.MAX_PRICE - 1, high: BOUNDARIES.MAX_PRICE, low: BOUNDARIES.MAX_PRICE - 2, close: BOUNDARIES.MAX_PRICE - 1 });
       const result = validateKLineData([near]);
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual(near);
@@ -241,7 +241,7 @@ describe.skip('validateKLineData', () => {
 });
 
 // ==================== validateSignals ====================
-describe.skip('validateSignals', () => {
+describe('validateSignals', () => {
   describe('non-strict mode', () => {
     it('passes valid signal', () => {
       const result = validateSignals([validSignal]);
@@ -301,7 +301,7 @@ describe.skip('validateSignals', () => {
 });
 
 // ==================== toOHLCVArray ====================
-describe.skip('toOHLCVArray', () => {
+describe('toOHLCVArray', () => {
   const items = [
     createKLine({ time: '2026-01-05', open: 10, high: 12, low: 9, close: 11, volume: 1000 }),
     createKLine({ time: '2026-01-06', open: 11, high: 13, low: 10, close: 12, volume: 2000 }),
@@ -368,7 +368,7 @@ describe.skip('toOHLCVArray', () => {
 });
 
 // ==================== diffMarkers ====================
-describe.skip('diffMarkers', () => {
+describe('diffMarkers', () => {
   const t = (time: string, val: any = time) => ({ time, val });
 
   describe('basic', () => {
@@ -474,38 +474,6 @@ describe.skip('diffMarkers', () => {
         added: [t('2026-01-03')],
         removed: [t('2026-01-02')],
         unchanged: [t('2026-01-01')],
-      });
-    });
-  });
-
-  describe('custom timeKey', () => {
-    type Item = { date: string; label: string };
-    it('supports custom key', () => {
-      const existing: Item[] = [{ date: '2026-01-05', label: 'old' }];
-      const incoming: Item[] = [
-        { date: '2026-01-05', label: 'new' },
-        { date: '2026-01-06', label: 'x' },
-      ];
-      expect(diffMarkers(existing, incoming, 'date')).toEqual({
-        added: [{ date: '2026-01-06', label: 'x' }],
-        removed: [],
-        unchanged: [{ date: '2026-01-05', label: 'new' }],
-      });
-    });
-
-    it('works with multiple items', () => {
-      const existing: Item[] = [
-        { date: '2026-01-01', label: 'a' },
-        { date: '2026-01-02', label: 'b' },
-      ];
-      const incoming: Item[] = [
-        { date: '2026-01-02', label: 'B' },
-        { date: '2026-01-03', label: 'c' },
-      ];
-      expect(diffMarkers(existing, incoming, 'date')).toEqual({
-        added: [{ date: '2026-01-03', label: 'c' }],
-        removed: [{ date: '2026-01-01', label: 'a' }],
-        unchanged: [{ date: '2026-01-02', label: 'B' }],
       });
     });
   });

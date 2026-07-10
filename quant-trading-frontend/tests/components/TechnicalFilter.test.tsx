@@ -16,7 +16,7 @@ import {
 /** 暴露 state 的小工具（使用 data-testid 避免污染组件结构） */
 function StateInspector({ testId = 'state-technical' }: { testId?: string }) {
   const { state } = useScreener();
-  return <div data-testid={testId}>{JSON.stringify(state.selectedTechnicalIndicators)}</div>;
+  return <div data-testid={testId}>{JSON.stringify(state.technical.selected)}</div>;
 }
 
 /** 解析 state JSON（low 13: 严格 JSON 解析避免子串误匹配） */
@@ -81,7 +81,7 @@ function MarketSwitcher({ target = 'hk' }: { target?: string }) {
 // TechnicalFilter 组件测试
 // ============================================================================
 
-describe.skip('TechnicalFilter', () => {
+describe('TechnicalFilter', () => {
   // 顶层 beforeEach：清理 disabled 残留
   // 备注：vitest 默认每个 test file 独立 module environment，
   // TECHNICAL_INDICATORS 在跨测试文件间不会污染；同文件内由 beforeEach 兜底
@@ -347,10 +347,10 @@ describe.skip('TechnicalFilter', () => {
   });
 
   // --------------------------------------------------------------------------
-  // 10. 切换市场
+  // 10. 切换市场（SET_MARKET 不再清除技术指标或关闭弹窗，仅委托给 market sub-reducer）
   // --------------------------------------------------------------------------
-  describe('切换市场清空技术指标', () => {
-    it('切换市场后已选技术指标全部清空', async () => {
+  describe('切换市场保留技术指标', () => {
+    it('切换市场后已选技术指标保持不变', async () => {
       const user = userEvent.setup();
       render(
         <ScreenerProvider>
@@ -367,16 +367,17 @@ describe.skip('TechnicalFilter', () => {
 
       await user.click(screen.getByTestId('switch-market'));
 
+      // 切换市场后已选指标应保留
       await waitFor(() => {
-        expect(readState()).toEqual({});
-        expect(screen.getByTestId('technical-filter-badge')).toHaveTextContent('0');
+        expect(readState()).toEqual({ ma: 'long_align' });
+        expect(screen.getByTestId('technical-filter-badge')).toHaveTextContent('1');
         const btn = screen.getByTestId('technical-btn-ma');
-        expect(btn).toHaveAttribute('data-selected', 'false');
+        expect(btn).toHaveAttribute('data-selected', 'true');
       });
     });
 
-    // 中 7: 切换市场时关闭打开中的弹窗
-    it('切换市场时关闭打开中的弹窗', async () => {
+    // 中 7: 切换市场保持弹窗打开
+    it('切换市场时保持弹窗继续打开', async () => {
       const user = userEvent.setup();
       render(
         <ScreenerProvider>
@@ -394,9 +395,9 @@ describe.skip('TechnicalFilter', () => {
       // 切换市场
       await user.click(screen.getByTestId('switch-market'));
 
-      // 弹窗应自动关闭
+      // 弹窗应保持打开
       await waitFor(() => {
-        expect(screen.queryByTestId('technical-modal-boll')).not.toBeInTheDocument();
+        expect(screen.getByTestId('technical-modal-boll')).toBeInTheDocument();
       });
       expect(readState()).toEqual({});
     });

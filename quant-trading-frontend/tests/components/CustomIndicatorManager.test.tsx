@@ -92,7 +92,7 @@ function StateInspector({ testId = 'state-manager' }: { testId?: string }) {
   return (
     <div data-testid={testId}>
       {JSON.stringify({
-        customIndicators: state.customIndicators.map((i) => ({ id: i.id, name: i.name })),
+        customIndicators: state.custom.indicators.map((i) => ({ id: i.id, name: i.name })),
       })}
     </div>
   );
@@ -137,7 +137,7 @@ beforeEach(() => {
 // 1. 基础渲染
 // ============================================================================
 
-describe.skip('CustomIndicatorManager - 基础渲染', () => {
+describe('CustomIndicatorManager - 基础渲染', () => {
   it('渲染容器 + 新建按钮 + 导入导出按钮 + 计数', () => {
     renderManager();
     expect(screen.getByTestId('custom-indicator-manager')).toBeInTheDocument();
@@ -171,7 +171,7 @@ describe.skip('CustomIndicatorManager - 基础渲染', () => {
 // 2. 快捷按钮打开弹窗
 // ============================================================================
 
-describe.skip('CustomIndicatorManager - 打开新建弹窗', () => {
+describe('CustomIndicatorManager - 打开新建弹窗', () => {
   it('点击"新建自编指标"按钮打开弹窗', async () => {
     const user = userEvent.setup();
     renderManager();
@@ -193,7 +193,7 @@ describe.skip('CustomIndicatorManager - 打开新建弹窗', () => {
 // 3. 路由参数 ?action=new 自动打开弹窗
 // ============================================================================
 
-describe.skip('CustomIndicatorManager - 路由参数自动唤起', () => {
+describe('CustomIndicatorManager - 路由参数自动唤起', () => {
   it('URL ?action=new 初始化时自动打开新建弹窗', async () => {
     renderManager({ initialEntries: ['/config?tab=indicators&action=new'] });
 
@@ -218,7 +218,7 @@ describe.skip('CustomIndicatorManager - 路由参数自动唤起', () => {
 // 4. 关闭弹窗
 // ============================================================================
 
-describe.skip('CustomIndicatorManager - 关闭弹窗', () => {
+describe('CustomIndicatorManager - 关闭弹窗', () => {
   it('点击"取消"关闭弹窗', async () => {
     const user = userEvent.setup();
     renderManager({ initialEntries: ['/config?tab=indicators&action=new'] });
@@ -242,7 +242,7 @@ describe.skip('CustomIndicatorManager - 关闭弹窗', () => {
 // 5. 编排逻辑：使用 useScreener + storage
 // ============================================================================
 
-describe.skip('CustomIndicatorManager - 编排逻辑', () => {
+describe('CustomIndicatorManager - 编排逻辑', () => {
   it('组件挂载时从 ScreenerContext 读取 customIndicators 并渲染列表', async () => {
     const saved = saveToStorage(makeIndicator({ name: '编排测试' }));
 
@@ -285,7 +285,7 @@ describe.skip('CustomIndicatorManager - 编排逻辑', () => {
     await waitFor(
       () => {
         const state = readState();
-        expect(state.customIndicators.find((i) => i.id === saved.id)).toBeUndefined();
+        expect(state.custom.indicators.find((i) => i.id === saved.id)).toBeUndefined();
       },
       { timeout: 8000 },
     );

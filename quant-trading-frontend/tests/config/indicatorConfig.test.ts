@@ -8,7 +8,7 @@ import {
   type FactorItem,
 } from '@/features/stock-picker/config/indicatorConfig';
 
-describe.skip('indicatorConfig', () => {
+describe('indicatorConfig', () => {
   describe('MARKET_INDICATORS', () => {
     it('包含行情指标基础字段', () => {
       expect(MARKET_INDICATORS.length).toBeGreaterThan(0);
@@ -70,10 +70,10 @@ describe.skip('indicatorConfig', () => {
   describe('TECHNICAL_INDICATORS', () => {
     it('包含技术指标基础字段', () => {
       expect(TECHNICAL_INDICATORS.length).toBeGreaterThan(0);
-      TECHNICAL_INDICATORS.forEach((indicator: IndicatorItem) => {
+      TECHNICAL_INDICATORS.forEach((indicator) => {
         expect(indicator).toHaveProperty('id');
         expect(indicator).toHaveProperty('label');
-        expect(indicator).toHaveProperty('field');
+        expect(indicator).toHaveProperty('options');
       });
     });
 
@@ -82,9 +82,9 @@ describe.skip('indicatorConfig', () => {
       expect(new Set(ids).size).toBe(ids.length);
     });
 
-    it('field 为 null（技术指标由配置面板单独管理，无单一后端字段）', () => {
+    it('field 为 undefined（技术指标由配置面板单独管理，无单一后端字段）', () => {
       TECHNICAL_INDICATORS.forEach((indicator) => {
-        expect(indicator.field).toBeNull();
+        expect(indicator.field).toBeUndefined();
       });
     });
   });

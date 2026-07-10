@@ -2,160 +2,188 @@
  * watchlist store 纯函数测试
  *
  * 验证：
- * - watchlistReducer 所有 action 分支（含 #4 修复的 SET_BATCH_SUMMARY）
+ * - watchlistReducer 所有 action 分支
  * - useWatchlist 在无 Provider 时抛错
  */
 import { describe, it, expect } from 'vitest';
 import { renderHook } from '@testing-library/react';
 
-// import 纯函数 reducer + useWatchlist hook
-// 注意：import WatchlistProvider 会引入 api.ts（含 axios），但在
-// 纯函数测试中无需 import provider；useWatchlist 在无 Provider 时
-// 立即抛出 TypeError，不需要 axios 实例化。
-import { watchlistReducer, useWatchlist, initialState } from '@/features/watchlist/store';
-import type { WatchlistItem } from '@/features/watchlist/api';
+import { watchlistReducer, INITIAL_STATE, useWatchlist } from '@/features/watchlist/store';
 
-// 构造 fixture item
-const makeItem = (code: string, overrides: Partial<WatchlistItem> = {}): WatchlistItem => ({
-  id: Number(code),
-  code,
-  group_name: '默认分组',
-  sort_order: 0,
-  ...overrides,
-});
+// 初始 state（纯函数测试用，loading 设为 false 避免干扰）
+const baseState = { ...INITIAL_STATE, loading: false };
 
-describe.skip('watchlistReducer', () => {
-  // ---------- load ----------
-  it('LOAD_START → loading:true, lastError:null', () => {
-    const state = watchlistReducer(initialState, { type: 'LOAD_START' });
-    expect(state.loading).toBe(true);
-    expect(state.lastError).toBeNull();
-    // items 保持不变
-    expect(state.items).toEqual([]);
-  });
-
-  it('LOAD_SUCCESS → items 替换, loading:false, lastError:null', () => {
-    const items = [makeItem('000001')];
-    const state = watchlistReducer(initialState, {
-      type: 'LOAD_SUCCESS',
-      payload: items,
-    });
-    expect(state.items).toEqual(items);
+describe('watchlistReducer', () => {
+  // ---------- LOAD ----------
+  it('LOAD → stocks/customGroups 被替换, loading:false, migrated:true', () => {
+    const payload = {
+      version: 1,
+      customGroups: ['我的分组'],
+      stocks: { '我的分组': ['000001'], '全部': ['000001'], '沪深': ['000001'] },
+    };
+    const state = watchlistReducer(baseState, { type: 'LOAD', payload });
+    expect(state.stocks).toEqual(payload.stocks);
+    expect(state.customGroups).toEqual(['我的分组']);
     expect(state.loading).toBe(false);
-    expect(state.lastError).toBeNull();
+    expect(state.migrated).toBe(true);
   });
 
-  it('LOAD_ERROR → lastError 设置, loading:false', () => {
-    const errMsg = '网络错误';
-    const state = watchlistReducer(initialState, {
-      type: 'LOAD_ERROR',
-      payload: errMsg,
+  // ---------- ADD_STOCK ----------
+  it('ADD_STOCK → 追加到目标分组、全部分组和市场分组', () => {
+    const state = watchlistReducer(baseState, {
+      type: 'ADD_STOCK',
+      payload: { code: '000001', groupName: '我的分组' },
     });
-    expect(state.lastError).toBe(errMsg);
-    expect(state.loading).toBe(false);
+    // 目标分组
+    expect(state.stocks['我的分组']).toEqual(['000001']);
+    // 自动加入"全部"
+    expect(state.stocks['全部']).toEqual(['000001']);
+    // 自动加入市场分组（沪深）
+    expect(state.stocks['沪深']).toEqual(['000001']);
   });
 
-  // ---------- add / dedup ----------
-  it('ADD_ITEM → 追加到 items 末尾', () => {
-    const pre = watchlistReducer(initialState, {
-      type: 'ADD_ITEM',
-      payload: makeItem('000001'),
+  it('ADD_STOCK 重复 code → stocks 不变', () => {
+    const pre = watchlistReducer(baseState, {
+      type: 'ADD_STOCK',
+      payload: { code: '000001', groupName: '我的分组' },
     });
-    expect(pre.items).toHaveLength(1);
-    expect(pre.items[0].code).toBe('000001');
-
     const post = watchlistReducer(pre, {
-      type: 'ADD_ITEM',
-      payload: makeItem('000002'),
+      type: 'ADD_STOCK',
+      payload: { code: '000001', groupName: '我的分组' },
     });
-    expect(post.items).toHaveLength(2);
-    expect(post.items.map((i) => i.code)).toEqual(['000001', '000002']);
+    expect(post.stocks).toEqual(pre.stocks);
   });
 
-  it('ADD_ITEM 重复 code → state 不变（去重）', () => {
-    const item = makeItem('000001');
-    const pre = watchlistReducer(initialState, { type: 'ADD_ITEM', payload: item });
-    const post = watchlistReducer(pre, { type: 'ADD_ITEM', payload: item });
-    expect(post.items).toHaveLength(1);
-    // 引用相等（直接返回原 state）
+  // ---------- BATCH_ADD_STOCKS ----------
+  it('BATCH_ADD_STOCKS → 批量添加到目标分组、全部和市场分组', () => {
+    const state = watchlistReducer(baseState, {
+      type: 'BATCH_ADD_STOCKS',
+      payload: { codes: ['000001', '000002'], groupName: '我的分组' },
+    });
+    expect(state.stocks['我的分组']).toEqual(['000001', '000002']);
+    expect(state.stocks['全部']).toEqual(['000001', '000002']);
+    expect(state.stocks['沪深']).toEqual(['000001', '000002']);
+  });
+
+  it('BATCH_ADD_STOCKS 部分已存在 → 去重', () => {
+    const pre = watchlistReducer(baseState, {
+      type: 'ADD_STOCK',
+      payload: { code: '000001', groupName: '我的分组' },
+    });
+    const post = watchlistReducer(pre, {
+      type: 'BATCH_ADD_STOCKS',
+      payload: { codes: ['000001', '000002'], groupName: '我的分组' },
+    });
+    expect(post.stocks['我的分组']).toEqual(['000001', '000002']);
+  });
+
+  // ---------- REMOVE_FROM_GROUP ----------
+  it('REMOVE_FROM_GROUP（系统分组）→ 从全部分组移除该股票', () => {
+    const pre = watchlistReducer(baseState, {
+      type: 'BATCH_ADD_STOCKS',
+      payload: { codes: ['000001', '000002'], groupName: '默认分组' },
+    });
+    const post = watchlistReducer(pre, {
+      type: 'REMOVE_FROM_GROUP',
+      payload: { code: '000001', groupName: '全部' },
+    });
+    // 从所有分组中移除
+    for (const codes of Object.values(post.stocks)) {
+      expect(codes).not.toContain('000001');
+    }
+    // 000002 还在
+    expect(post.stocks['全部']).toContain('000002');
+    expect(post.stocks['沪深']).toContain('000002');
+  });
+
+  it('REMOVE_FROM_GROUP（自建分组）→ 从该分组移除，若不在其他自建分组则同时从系统分组移除', () => {
+    const pre = watchlistReducer(baseState, {
+      type: 'BATCH_ADD_STOCKS',
+      payload: { codes: ['000001', '000002'], groupName: '我的分组' },
+    });
+    const post = watchlistReducer(pre, {
+      type: 'REMOVE_FROM_GROUP',
+      payload: { code: '000001', groupName: '我的分组' },
+    });
+    // 从我的分组中移除
+    expect(post.stocks['我的分组']).toEqual(['000002']);
+    // 000001 不在其他自建分组中 → 同时从系统分组移除
+    expect(post.stocks['全部']).not.toContain('000001');
+    expect(post.stocks['沪深']).not.toContain('000001');
+    // 000002 仍在
+    expect(post.stocks['全部']).toContain('000002');
+    expect(post.stocks['沪深']).toContain('000002');
+  });
+
+  // ---------- CREATE_GROUP ----------
+  it('CREATE_GROUP → 新增分组和空的 stocks 条目', () => {
+    const state = watchlistReducer(baseState, {
+      type: 'CREATE_GROUP',
+      payload: { name: '新分组' },
+    });
+    expect(state.customGroups).toContain('新分组');
+    expect(state.stocks['新分组']).toEqual([]);
+  });
+
+  it('CREATE_GROUP 重复名称 → state 不变', () => {
+    const pre = watchlistReducer(baseState, {
+      type: 'CREATE_GROUP',
+      payload: { name: '新分组' },
+    });
+    const post = watchlistReducer(pre, {
+      type: 'CREATE_GROUP',
+      payload: { name: '新分组' },
+    });
     expect(post).toBe(pre);
   });
 
-  // ---------- remove ----------
-  it('REMOVE_ITEM → 按 code 移除', () => {
-    const pre = watchlistReducer(initialState, {
-      type: 'ADD_ITEM',
-      payload: makeItem('000001'),
+  it('CREATE_GROUP 系统分组名 → state 不变', () => {
+    const state = watchlistReducer(baseState, {
+      type: 'CREATE_GROUP',
+      payload: { name: '全部' },
     });
-    const post = watchlistReducer(pre, { type: 'REMOVE_ITEM', payload: '000001' });
-    expect(post.items).toHaveLength(0);
+    expect(state).toBe(baseState);
   });
 
-  it('REMOVE_ITEM 不存在的 code → state 不变（值相等）', () => {
-    const pre = watchlistReducer(initialState, {
-      type: 'ADD_ITEM',
-      payload: makeItem('000001'),
+  // ---------- DELETE_GROUP ----------
+  it('DELETE_GROUP → 删除自建分组及其 stocks', () => {
+    const pre = watchlistReducer(baseState, {
+      type: 'CREATE_GROUP',
+      payload: { name: '临时分组' },
     });
-    const post = watchlistReducer(pre, { type: 'REMOVE_ITEM', payload: '999999' });
-    expect(post).toStrictEqual(pre);
+    const post = watchlistReducer(pre, {
+      type: 'DELETE_GROUP',
+      payload: { name: '临时分组' },
+    });
+    expect(post.customGroups).not.toContain('临时分组');
+    expect(post.stocks).not.toHaveProperty('临时分组');
   });
 
-  // ---------- SET_BATCH_SUMMARY（#4 修复核心） ----------
-  it('SET_BATCH_SUMMARY → lastBatchSummary 被设置', () => {
-    const summary = { added: 3, skipped: 1, failed: 1 };
-    const state = watchlistReducer(initialState, {
-      type: 'SET_BATCH_SUMMARY',
-      payload: summary,
+  it('DELETE_GROUP 系统分组名 → state 不变', () => {
+    const state = watchlistReducer(baseState, {
+      type: 'DELETE_GROUP',
+      payload: { name: '全部' },
     });
-    expect(state.lastBatchSummary).toEqual(summary);
-    // 不应影响其它字段
-    expect(state.items).toEqual([]);
-    expect(state.loading).toBe(false);
+    expect(state).toBe(baseState);
   });
 
-  it('SET_BATCH_SUMMARY 覆盖旧值', () => {
-    const state1 = watchlistReducer(initialState, {
-      type: 'SET_BATCH_SUMMARY',
-      payload: { added: 1, skipped: 0, failed: 0 },
-    });
-    const state2 = watchlistReducer(state1, {
-      type: 'SET_BATCH_SUMMARY',
-      payload: { added: 5, skipped: 2, failed: 0 },
-    });
-    expect(state2.lastBatchSummary).toEqual({ added: 5, skipped: 2, failed: 0 });
-  });
-
-  // ---------- CLEAR_BATCH_SUMMARY ----------
-  it('CLEAR_BATCH_SUMMARY → lastBatchSummary:null', () => {
-    const pre = watchlistReducer(initialState, {
-      type: 'SET_BATCH_SUMMARY',
-      payload: { added: 100, skipped: 0, failed: 0 },
-    });
-    const post = watchlistReducer(pre, { type: 'CLEAR_BATCH_SUMMARY' });
-    expect(post.lastBatchSummary).toBeNull();
-  });
-
-  // ---------- CLEAR_ERROR ----------
-  it('CLEAR_ERROR → lastError:null', () => {
-    const pre = watchlistReducer(initialState, {
-      type: 'LOAD_ERROR',
-      payload: '出错了',
-    });
-    const post = watchlistReducer(pre, { type: 'CLEAR_ERROR' });
-    expect(post.lastError).toBeNull();
+  // ---------- SET_LOADING ----------
+  it('SET_LOADING → loading 被设置', () => {
+    const state = watchlistReducer(baseState, { type: 'SET_LOADING', payload: true });
+    expect(state.loading).toBe(true);
   });
 
   // ---------- default ----------
   it('未知 action → state 不变', () => {
-    const state = watchlistReducer(initialState, { type: 'UNKNOWN' } as any);
-    expect(state).toBe(initialState);
+    const state = watchlistReducer(baseState, { type: 'UNKNOWN' } as any);
+    expect(state).toBe(baseState);
   });
 });
 
-describe.skip('useWatchlist', () => {
+describe('useWatchlist', () => {
   it('无 WatchlistProvider 时抛出可读错误', () => {
     expect(() => {
       renderHook(() => useWatchlist());
-    }).toThrow('useWatchlist must be used within a WatchlistProvider');
+    }).toThrow('useWatchlist must be used within WatchlistProvider');
   });
 });

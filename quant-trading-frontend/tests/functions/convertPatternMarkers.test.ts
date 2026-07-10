@@ -23,7 +23,7 @@ function makeCandles(dates: string[]): { time: string }[] {
 }
 
 // ==================== PATTERN_MARKER_VISUAL_MAP ====================
-describe.skip('PATTERN_MARKER_VISUAL_MAP (5 种形态配置完整性)', () => {
+describe('PATTERN_MARKER_VISUAL_MAP (5 种形态配置完整性)', () => {
   const expectedKeys = ['hammer', 'morning_star', 'evening_star', 'bullish_engulfing', 'bearish_engulfing'];
 
   it('包含全部 5 种形态', () => {
@@ -54,11 +54,11 @@ describe.skip('PATTERN_MARKER_VISUAL_MAP (5 种形态配置完整性)', () => {
 });
 
 // ==================== convertPatternMarkersToEvents ====================
-describe.skip('convertPatternMarkersToEvents', () => {
+describe('convertPatternMarkersToEvents', () => {
   const candles = makeCandles(['2026-07-01', '2026-07-02', '2026-07-03', '2026-07-06']);
 
   it('单个日期单种形态', () => {
-    const markers: PatternMarker[] = [{ date: '2026-07-03', patterns: ['hammer'] }];
+    const markers: PatternMarker[] = [{ trade_date: '2026-07-03', patterns: ['hammer'] }];
     const configs = [makeConfig('pattern_hammer')];
     const result = convertPatternMarkersToEvents(markers, configs, candles);
 
@@ -74,7 +74,7 @@ describe.skip('convertPatternMarkersToEvents', () => {
 
   it('单个日期多种形态', () => {
     const markers: PatternMarker[] = [{
-      date: '2026-07-06',
+      trade_date: '2026-07-06',
       patterns: ['morning_star', 'bullish_engulfing'],
     }];
     const configs = [makeConfig('pattern_morning_star'), makeConfig('pattern_bullish_engulfing')];
@@ -86,8 +86,8 @@ describe.skip('convertPatternMarkersToEvents', () => {
 
   it('多个日期各一种形态', () => {
     const markers: PatternMarker[] = [
-      { date: '2026-07-02', patterns: ['hammer'] },
-      { date: '2026-07-03', patterns: ['evening_star'] },
+      { trade_date: '2026-07-02', patterns: ['hammer'] },
+      { trade_date: '2026-07-03', patterns: ['evening_star'] },
     ];
     const configs = [makeConfig('pattern_hammer'), makeConfig('pattern_evening_star')];
     const result = convertPatternMarkersToEvents(markers, configs, candles);
@@ -98,7 +98,7 @@ describe.skip('convertPatternMarkersToEvents', () => {
   });
 
   it('仅转换用户选中的 pattern 条件，忽略未选中的', () => {
-    const markers: PatternMarker[] = [{ date: '2026-07-03', patterns: ['hammer', 'bullish_engulfing'] }];
+    const markers: PatternMarker[] = [{ trade_date: '2026-07-03', patterns: ['hammer', 'bullish_engulfing'] }];
     // 用户只选中了 hammer
     const configs = [makeConfig('pattern_hammer')];
     const result = convertPatternMarkersToEvents(markers, configs, candles);
@@ -109,8 +109,8 @@ describe.skip('convertPatternMarkersToEvents', () => {
 
   it('跳过 candle 集合之外的日期', () => {
     const markers: PatternMarker[] = [
-      { date: '2026-06-30', patterns: ['hammer'] },  // 不在 candle 中
-      { date: '2026-07-03', patterns: ['evening_star'] },
+      { trade_date: '2026-06-30', patterns: ['hammer'] },  // 不在 candle 中
+      { trade_date: '2026-07-03', patterns: ['evening_star'] },
     ];
     const configs = [makeConfig('pattern_hammer'), makeConfig('pattern_evening_star')];
     const result = convertPatternMarkersToEvents(markers, configs, candles);
@@ -120,7 +120,7 @@ describe.skip('convertPatternMarkersToEvents', () => {
   });
 
   it('不选中任何 pattern 时返回空数组', () => {
-    const markers: PatternMarker[] = [{ date: '2026-07-03', patterns: ['hammer'] }];
+    const markers: PatternMarker[] = [{ trade_date: '2026-07-03', patterns: ['hammer'] }];
     // 用户选中了非 pattern 条件（如 RSI），无 pattern 配置
     const configs = [makeConfig('rsi_oversold')];
     const result = convertPatternMarkersToEvents(markers, configs, candles);
@@ -134,12 +134,12 @@ describe.skip('convertPatternMarkersToEvents', () => {
   });
 
   it('空 candles 返回空数组', () => {
-    const markers: PatternMarker[] = [{ date: '2026-07-03', patterns: ['hammer'] }];
+    const markers: PatternMarker[] = [{ trade_date: '2026-07-03', patterns: ['hammer'] }];
     expect(convertPatternMarkersToEvents(markers, [makeConfig('pattern_hammer')], [])).toEqual([]);
   });
 
   it('空 configs 返回空数组', () => {
-    const markers: PatternMarker[] = [{ date: '2026-07-03', patterns: ['hammer'] }];
+    const markers: PatternMarker[] = [{ trade_date: '2026-07-03', patterns: ['hammer'] }];
     expect(convertPatternMarkersToEvents(markers, [], candles)).toEqual([]);
   });
 
@@ -149,7 +149,7 @@ describe.skip('convertPatternMarkersToEvents', () => {
 
   it('全 5 种形态同时转换', () => {
     const markers: PatternMarker[] = [{
-      date: '2026-07-06',
+      trade_date: '2026-07-06',
       patterns: ['hammer', 'morning_star', 'evening_star', 'bullish_engulfing', 'bearish_engulfing'],
     }];
     const configs = [

@@ -8,7 +8,7 @@ import { MARKET_INDICATORS } from '@/features/stock-picker/config/indicatorConfi
 // 暴露 state 的小工具组件（用于验证状态变化）
 function StateInspector({ id }: { id: string }) {
   const { state } = useScreener();
-  const range = state.marketIndicatorRanges[id];
+  const range = state.marketIndicators.ranges[id];
   return (
     <div data-testid={`state-${id}`}>
       {range ? `min=${range.min}|max=${range.max}` : 'none'}
@@ -37,7 +37,7 @@ async function expandPanel(user: ReturnType<typeof userEvent.setup>) {
   await user.click(header as HTMLElement);
 }
 
-describe.skip('IndicatorFilter', () => {
+describe('IndicatorFilter', () => {
   describe('基础渲染', () => {
     it('渲染 header 文本和 badge', () => {
       renderFilter();

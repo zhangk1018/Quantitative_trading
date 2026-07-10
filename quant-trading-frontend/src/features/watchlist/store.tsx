@@ -105,7 +105,14 @@ type WatchlistAction =
   | { type: 'DELETE_GROUP'; payload: { name: string } }
   | { type: 'SET_LOADING'; payload: boolean };
 
-function reducer(state: WatchlistState, action: WatchlistAction): WatchlistState {
+export const INITIAL_STATE: WatchlistState = {
+  customGroups: [],
+  stocks: {},
+  loading: true,
+  migrated: false,
+};
+
+export function watchlistReducer(state: WatchlistState, action: WatchlistAction): WatchlistState {
   switch (action.type) {
     case 'LOAD':
       return { ...state, ...action.payload, loading: false, migrated: true };
@@ -269,7 +276,7 @@ export function useWatchlist(): WatchlistContextValue {
 // Provider
 // ============================================
 export function WatchlistProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, {
+  const [state, dispatch] = useReducer(watchlistReducer, {
     customGroups: [],
     stocks: {},
     loading: true,

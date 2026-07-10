@@ -14,8 +14,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act, cleanup, waitFor, fireEvent } from '@testing-library/react';
 
+// jsdom 不支持 scrollTo，添加 polyfill 避免 unhandled rejection
+if (!Element.prototype.scrollTo) {
+  Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo;
+}
+
 // 直接 mock useSettings 返回 stub，避免 useSettings 必须包裹 SettingsProvider
 // 但保留 SettingsProvider 真实实现以渲染 children
+// Mock @tanstack/react-virtual 让虚拟表格在 jsdom 中渲染行
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: vi.fn((opts) => {
+    const count = opts?.count ?? 0;
+    return {
+      getVirtualItems: () => Array.from({ length: count }, (_, i) => ({
+        index: i,
+        size: 36,
+        start: i * 36,
+        key: i,
+        measureElement: vi.fn(),
+      })),
+      getTotalSize: () => count * 36,
+      scrollToIndex: vi.fn(),
+      measure: vi.fn(),
+    };
+  }),
+}));
 vi.mock('@/shared/contexts/SettingsContext', async () => {
   const actual = await vi.importActual<typeof import('@/shared/contexts/SettingsContext')>(
     '@/shared/contexts/SettingsContext',
@@ -31,30 +54,57 @@ vi.mock('@/shared/contexts/SettingsContext', async () => {
 });
 
 // Mock useScreener 返回固定 state
+// 结构与 ScreenerState 保持一致，确保 useScreenerSelector 的 selector 能正确取值
 const mockState = {
-  selectedMarket: 'cn',
-  selectedBoards: ['all'],
-  stockRange: 'all',
-  selectedMarketIndicators: [],
-  selectedFinancialIndicators: [],
-  selectedTechnicalIndicators: {},
-  marketIndicatorRanges: {},
-  financialIndicatorRanges: {},
-  filterGroup: null,
-  customIndicators: [],
-  // IndicatorFilter / FinancialFilter / TechnicalFilter / ConditionBuilder 等子组件
-  // 依赖 collapsedPanels，mock 必须提供默认值
-  collapsedPanels: {
-    market: false,
-    financial: false,
-    technical: false,
-    condition: false,
-    scoring: false,
+  market: {
+    selectedMarket: 'cn',
+    selectedBoards: ['all'],
+    stockRange: 'all',
+  },
+  marketIndicators: {
+    selected: [],
+    ranges: {},
+  },
+  financialIndicators: {
+    selected: [],
+    ranges: {},
+  },
+  technical: {
+    selected: {},
+    openModalId: null,
+  },
+  patterns: {
+    selected: {},
+    panelCollapsed: false,
+  },
+  condition: {
+    filterGroup: null,
+    nextOp: 'and',
+  },
+  custom: {
+    indicators: [],
+    activeTab: 'system',
+  },
+  factor: {
+    weights: {},
+  },
+  panels: {
+    collapsed: {
+      range: false,
+      market: false,
+      financial: false,
+      technical: false,
+      factor: false,
+      condition: false,
+      pattern: false,
+    },
   },
 };
 
 vi.mock('@/features/stock-picker/context/ScreenerContext', () => ({
   useScreener: () => ({ state: mockState, dispatch: vi.fn() }),
+  useScreenerDispatch: vi.fn(),
+  useScreenerSelector: (selector) => selector(mockState),
 }));
 
 // Mock useWatchlist（StockPickerView 现在通过它批量加入自选）
@@ -83,11 +133,46 @@ vi.mock('@/features/watchlist/store', () => ({
 
 // Mock 内部用 useNavigate / useLocation / 复杂依赖的子组件
 // K 2026-06-18 测试只关注 StockPickerView 行为（AbortController、排序、loading），
-// 不测 ConditionBuilder / FactorScoringConfig 等子组件的内部逻辑
+// 不测子组件/策略保存等内部逻辑
+vi.mock('@/features/stock-picker/hooks/useStrategyUI', () => ({
+  useStrategyUI: () => ({
+    saveModalVisible: false,
+    setSaveModalVisible: vi.fn(),
+    strategyDrawerVisible: false,
+    setStrategyDrawerVisible: vi.fn(),
+    strategies: [],
+    handleSaveStrategy: vi.fn(),
+    handleRenameStrategy: vi.fn(),
+    handleDeleteStrategy: vi.fn(),
+  }),
+}));
+// Mock useSelection 返回预选中的股票代码
+const mockSelectedCodes = new Set<string>();
+vi.mock('@/features/stock-picker/hooks/useSelection', () => ({
+  useSelection: vi.fn(() => ({
+    selectedCodes: mockSelectedCodes,
+    selectedCount: mockSelectedCodes.size,
+    handleToggle: vi.fn(),
+    handleToggleAll: vi.fn(),
+    clearSelection: vi.fn(),
+  })),
+}));
 vi.mock('@/features/stock-picker/components/ConditionBuilder', () => ({
   default: () => null,
 }));
 vi.mock('@/features/stock-picker/components/FactorScoringConfig', () => ({
+  default: () => null,
+}));
+vi.mock('@/features/stock-picker/components/RangeSelector', () => ({
+  default: () => null,
+}));
+vi.mock('@/features/stock-picker/components/IndicatorFilter', () => ({
+  default: () => null,
+}));
+vi.mock('@/features/stock-picker/components/FinancialFilter', () => ({
+  default: () => null,
+}));
+vi.mock('@/features/stock-picker/components/TechnicalFilter', () => ({
   default: () => null,
 }));
 
@@ -120,12 +205,17 @@ vi.mock('@/features/stock-detail/api', () => ({
   ),
 }));
 
-// Mock antd message（避免 console 噪音）
+// Mock antd message（避免 console 噪音）+ App.useApp() 返回 mock message
+const mockMessageApi = { error: vi.fn(), success: vi.fn(), warning: vi.fn(), info: vi.fn() };
 vi.mock('antd', async () => {
   const actual = await vi.importActual('antd');
   return {
     ...actual,
-    message: { error: vi.fn(), success: vi.fn(), warning: vi.fn(), info: vi.fn() },
+    message: mockMessageApi,
+    App: {
+      ...actual.App,
+      useApp: () => ({ message: mockMessageApi }),
+    },
   };
 });
 
@@ -135,6 +225,7 @@ beforeEach(() => {
   resolveFetches = [];
   rejectFetches = [];
   abortSignals = [];
+  mockSelectedCodes.clear();
   vi.mocked(fetchStocks).mockClear();
 });
 
@@ -155,7 +246,7 @@ function renderStockPickerView() {
   return render(<StockPickerView />);
 }
 
-describe.skip('K 2026-06-18 反馈 #1：AbortController + isMounted', () => {
+describe('K 2026-06-18 反馈 #1：AbortController + isMounted', () => {
   it('多次快速触发仅最后一次能 setState 列表数据', async () => {
     // render 默认会触发一次 useEffect + 首次拉取
     renderStockPickerView();
@@ -322,7 +413,7 @@ async function resolveInitialFetch(items: any[] = []) {
   });
 }
 
-describe.skip('K 2026-06-18 反馈 #2：排序点击统一发请求', () => {
+describe('K 2026-06-18 反馈 #2：排序点击统一发请求', () => {
   // K 反馈 #6：使用 screen.getByTestId 而非解构 getByTestId
   it('有数据后点击表头发请求', async () => {
     renderStockPickerView();
@@ -401,9 +492,12 @@ describe.skip('K 2026-06-18 反馈 #2：排序点击统一发请求', () => {
  * - 无选中时点击"添加自选" → 弹 Modal.info 提示"请先勾选股票"，不调 addMany
  * - 点击"导出结果" → 触发浏览器下载，文件名含日期戳（用 jsdom URL.createObjectURL 验证 a.download）
  */
-describe.skip('2026-06-22 添加自选 + 导出结果', () => {
+describe('2026-06-22 添加自选 + 导出结果', () => {
   it('复选框选中后点击"添加自选"调 addMany 传入 codes + 分组名', async () => {
     mockAddMany.mockClear();
+    // 预先设置选中股票，模拟用户已勾选 000001+600000
+    mockSelectedCodes.add('000001');
+    mockSelectedCodes.add('600000');
     renderStockPickerView();
 
     // 准备数据：让表格有 3 行可勾选
@@ -419,13 +513,7 @@ describe.skip('2026-06-22 添加自选 + 导出结果', () => {
       expect(screen.getByTestId('row-checkbox-000001')).toBeInTheDocument();
     });
 
-    // 勾选 2 行
-    await act(async () => {
-      screen.getByTestId('row-checkbox-000001').click();
-      screen.getByTestId('row-checkbox-600000').click();
-    });
-
-    // 点击"添加自选" → 弹 Modal
+    // 点击"添加自选" → 弹 Modal（useSelection 已 mock 返回预选中的 000001+600000）
     await act(async () => {
       screen.getByTestId('add-to-watchlist-btn').click();
     });
@@ -434,23 +522,19 @@ describe.skip('2026-06-22 添加自选 + 导出结果', () => {
     const modal = await waitFor(() => screen.getByTestId('add-to-watchlist-modal'));
     expect(modal).toBeInTheDocument();
 
-    // 输入分组名（用 fireEvent.change 触发 antd 受控 Input 状态更新）
-    const input = screen.getByTestId('add-to-watchlist-group-input') as HTMLInputElement;
-    fireEvent.change(input, { target: { value: '测试分组' } });
-
-    // 点击"确认添加"（Modal 的 ok 按钮文案是"确认添加"）
+    // 默认分组为 selectedMarketLabel='沪深'，直接点击"确认添加"
     const okButton = screen.getByText('确认添加');
     await act(async () => {
       okButton.click();
     });
 
-    // 验证 addMany 被以正确的 codes + group_name 调用
+    // 验证 addMany 被以正确的 codes + 默认分组名调用
     await waitFor(() => {
       expect(mockAddMany).toHaveBeenCalledTimes(1);
     });
     const [codes, groupName] = mockAddMany.mock.calls[0];
     expect([...codes].sort()).toEqual(['000001', '600000']);
-    expect(groupName).toBe('测试分组');
+    expect(groupName).toBe('沪深');
   });
 
   it('无选中点击"添加自选"弹 Modal.info 提示，不调 addMany', async () => {
@@ -507,7 +591,7 @@ describe.skip('2026-06-22 添加自选 + 导出结果', () => {
         .map((r) => r.value as HTMLAnchorElement)
         .find((el) => el && el.tagName === 'A' && el.download);
       expect(aElement).toBeDefined();
-      expect(aElement!.download).toMatch(/^screener-result-\d{8}-\d{4}\.csv$/);
+      expect(aElement!.download).toMatch(/^screener-result-\d{8}T\d{6}\.csv$/);
       // 验证 MIME
       const blobArg = createObjectURLSpy.mock.calls[0][0] as Blob;
       expect(blobArg.type).toBe('text/csv;charset=utf-8');

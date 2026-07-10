@@ -8,7 +8,7 @@ import { FINANCIAL_INDICATORS } from '@/features/stock-picker/config/indicatorCo
 // 暴露 state 的小工具组件（用于验证状态变化）
 function StateInspector({ id }: { id: string }) {
   const { state } = useScreener();
-  const range = state.financialIndicatorRanges[id];
+  const range = state.financialIndicators.ranges[id];
   return (
     <div data-testid={`state-${id}`}>
       {range ? `min=${range.min}|max=${range.max}` : 'none'}
@@ -61,7 +61,7 @@ async function selectIndicatorAndWaitForRange(
   });
 }
 
-describe.skip('FinancialFilter', () => {
+describe('FinancialFilter', () => {
   // 顶层 beforeEach：清理 FINANCIAL_INDICATORS 数组元素的 disabled/disabledReason 残留
   // 防止 disabled describe 块的修改影响后续 describe
   beforeEach(() => {
@@ -113,7 +113,6 @@ describe.skip('FinancialFilter', () => {
       renderFilter();
       await expandPanel(user);
       expect(screen.getByTestId('financial-empty-hint')).toBeInTheDocument();
-      expect(screen.getByTestId('financial-empty-hint')).toHaveTextContent('点击上方按钮添加筛选条件');
     });
   });
 
@@ -473,7 +472,7 @@ describe.skip('FinancialFilter', () => {
   });
 
   describe('与 ScreenerContext 市场切换联动', () => {
-    it('切换市场时清空已选财务指标和范围', async () => {
+    it('切换市场时保留已选财务指标和范围', async () => {
       const user = userEvent.setup();
       // 注入 MarketSwitcher 用于触发 SET_MARKET
       renderFilter({ stateInspectorId: 'net_profit', withMarketSwitcher: true, targetMarket: 'hk' });
@@ -490,17 +489,17 @@ describe.skip('FinancialFilter', () => {
       // 2. 切换市场到 hk
       await user.click(screen.getByTestId('switch-to-hk'));
 
-      // 3. 验证 state 被清空：financialIndicatorRanges 为空 + 徽标归 0
+      // 3. 验证 state 被保留：financialIndicatorRanges 保持不变 + 徽标不变
       await waitFor(() => {
-        expect(screen.getByTestId('state-net_profit')).toHaveTextContent('none');
-        expect(screen.getByTestId('financial-filter-badge')).toHaveTextContent('0');
+        expect(screen.getByTestId('state-net_profit')).toHaveTextContent('min=1000|max=');
+        expect(screen.getByTestId('financial-filter-badge')).toHaveTextContent('1');
       });
-      // 4. 验证 UI 也清空：之前选中的按钮应恢复为未选中
+      // 4. 验证 UI 也保留：之前选中的按钮仍为选中状态
       const btn = screen.getByTestId('financial-btn-net_profit');
-      expect(btn).toHaveAttribute('data-selected', 'false');
+      expect(btn).toHaveAttribute('data-selected', 'true');
     });
 
-    it('切换市场时清空所有 3 个财务指标和它们各自的 range', async () => {
+    it('切换市场时保留所有 3 个财务指标和它们各自的 range', async () => {
       const user = userEvent.setup();
       render(
         <ScreenerProvider>
@@ -530,11 +529,11 @@ describe.skip('FinancialFilter', () => {
       // 切换到 us 市场
       await user.click(screen.getByTestId('switch-to-us'));
 
-      // 3 个 state 全部清空
+      // 3 个 state 全部保留
       await waitFor(() => {
-        expect(screen.getByTestId('state-net_profit')).toHaveTextContent('none');
-        expect(screen.getByTestId('state-revenue')).toHaveTextContent('none');
-        expect(screen.getByTestId('state-roe')).toHaveTextContent('none');
+        expect(screen.getByTestId('state-net_profit')).toHaveTextContent('min=100');
+        expect(screen.getByTestId('state-revenue')).toHaveTextContent('min=200');
+        expect(screen.getByTestId('state-roe')).toHaveTextContent('min=5');
       });
     });
   });

@@ -28,7 +28,7 @@ function basePayload(overrides: Partial<ScreenerFilterPayload> = {}): ScreenerFi
   };
 }
 
-describe.skip('buildScreeningParams', () => {
+describe('buildScreeningParams', () => {
   // ---------- 上市地映射 ----------
   it('selectedBoards=["all"] → 无 listed_board 参数', () => {
     const params = buildScreeningParams(basePayload(), 'change_pct', false, 20);
@@ -92,7 +92,7 @@ describe.skip('buildScreeningParams', () => {
   // ---------- 单位换算 ----------
   it('market_cap 输入亿→转为万元（×10000）', () => {
     const params = buildScreeningParams(basePayload({
-      marketIndicatorRanges: { market_cap: { min: 50, max: 500 } },
+      marketIndicatorRanges: { market_cap: { min: '50', max: '500' } },
     }), 'change_pct', false, 20);
     expect(params.market_cap_min).toBe(500000);   // 50 × 10000
     expect(params.market_cap_max).toBe(5000000);  // 500 × 10000
@@ -100,7 +100,7 @@ describe.skip('buildScreeningParams', () => {
 
   it('amount 输入亿→转为万元（×10000）', () => {
     const params = buildScreeningParams(basePayload({
-      marketIndicatorRanges: { amount: { min: 1 } },
+      marketIndicatorRanges: { amount: { min: '1' } },
     }), 'change_pct', false, 20);
     expect(params.amount_min).toBe(10000);  // 1 × 10000
     expect(params.amount_max).toBeUndefined();
@@ -108,7 +108,7 @@ describe.skip('buildScreeningParams', () => {
 
   it('普通指标（如 pe）无单位换算', () => {
     const params = buildScreeningParams(basePayload({
-      financialIndicatorRanges: { pe: { min: 0, max: 15 } },
+      financialIndicatorRanges: { pe: { min: '0', max: '15' } },
     }), 'change_pct', false, 20);
     expect(params.pe_min).toBe(0);
     expect(params.pe_max).toBe(15);
@@ -117,7 +117,7 @@ describe.skip('buildScreeningParams', () => {
   // ---------- 范围逻辑校验 ----------
   it('min > max 时跳过该指标', () => {
     const params = buildScreeningParams(basePayload({
-      marketIndicatorRanges: { market_cap: { min: 500, max: 50 } },
+      marketIndicatorRanges: { market_cap: { min: '500', max: '50' } },
     }), 'change_pct', false, 20);
     expect(params.market_cap_min).toBeUndefined();
     expect(params.market_cap_max).toBeUndefined();
@@ -126,8 +126,8 @@ describe.skip('buildScreeningParams', () => {
   it('isFinite 校验：NaN/Infinity 忽略', () => {
     const params = buildScreeningParams(basePayload({
       marketIndicatorRanges: {
-        market_cap: { min: NaN, max: 100 },
-        turnover_rate: { min: Infinity, max: 50 },
+        market_cap: { min: 'NaN', max: '100' },
+        turnover_rate: { min: 'Infinity', max: '50' },
       },
     }), 'change_pct', false, 20);
     expect(params.market_cap_min).toBeUndefined();
@@ -150,16 +150,23 @@ describe.skip('buildScreeningParams', () => {
     expect(Object.keys(params).filter((k) => k.startsWith('tech_'))).toHaveLength(0);
   });
 
-  // ---------- K线形态参数 ----------
-  it('selectedPatterns → pattern_{id}=lookbackDays', () => {
+  // ---------- K线形态参数（通过 filterGroup.conditions 传递） ----------
+  it('filterGroup.conditions 含 pattern_ 前缀 → pattern_{id}=lookbackDays', () => {
     const params = buildScreeningParams(basePayload({
-      selectedPatterns: { hammer: 5, morning_star: 10 },
+      filterGroup: {
+        conditions: [
+          { fieldKey: 'pattern_hammer', op: 'AND', lookbackDays: 5 },
+          { fieldKey: 'pattern_morning_star', op: 'AND', lookbackDays: 10 },
+        ],
+      },
     }), 'change_pct', false, 20);
     expect(params.pattern_hammer).toBe(5);
     expect(params.pattern_morning_star).toBe(10);
+    expect(params.cond_pattern_hammer).toBe('AND');
+    expect(params.cond_pattern_morning_star).toBe('AND');
   });
 
-  it('空 selectedPatterns → 无 pattern_* 参数', () => {
+  it('无 pattern_ 条件 → 无 pattern_* 参数', () => {
     const params = buildScreeningParams(basePayload(), 'change_pct', false, 20);
     expect(Object.keys(params).filter((k) => k.startsWith('pattern_'))).toHaveLength(0);
   });
@@ -210,12 +217,14 @@ describe.skip('buildScreeningParams', () => {
     const params = buildScreeningParams(basePayload({
       selectedBoards: ['上海主板', '深圳主板'],
       stockRange: 'watchlist',
-      marketIndicatorRanges: { market_cap: { min: 10 }, volume: { max: 10000 } },
-      financialIndicatorRanges: { pe: { max: 20 } },
+      marketIndicatorRanges: { market_cap: { min: '10' }, volume: { max: '10000' } },
+      financialIndicatorRanges: { pe: { max: '20' } },
       selectedTechnicalIndicators: { ma: 'golden_cross' },
-      selectedPatterns: { hammer: 3 },
       filterGroup: {
-        conditions: [{ fieldKey: 'volume_breakout', op: 'AND' }],
+        conditions: [
+          { fieldKey: 'volume_breakout', op: 'AND' },
+          { fieldKey: 'pattern_hammer', op: 'AND', lookbackDays: 3 },
+        ],
       },
     }), 'change_pct', false, 20);
 
@@ -226,6 +235,7 @@ describe.skip('buildScreeningParams', () => {
     expect(params.pe_max).toBe(20);
     expect(params.tech_ma).toBe('golden_cross');
     expect(params.pattern_hammer).toBe(3);
+    expect(params.cond_pattern_hammer).toBe('AND');
     expect(params.cond_volume_breakout).toBe('AND');
     expect(params.sort_by).toBe('change_pct');
     expect(params.sort_asc).toBe(false);

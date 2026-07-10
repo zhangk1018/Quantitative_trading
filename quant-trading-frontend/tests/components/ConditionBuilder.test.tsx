@@ -32,7 +32,7 @@ function renderBuilder() {
 // Tests
 // ============================================================================
 
-describe.skip('ConditionBuilder', () => {
+describe('ConditionBuilder', () => {
   // --------------------------------------------------------------------------
   // 1. 基础渲染
   // --------------------------------------------------------------------------
@@ -44,10 +44,10 @@ describe.skip('ConditionBuilder', () => {
       expect(screen.getByTestId('condition-builder-reset')).toBeInTheDocument();
     });
 
-    it('默认折叠时不显示 6 个预设按钮', () => {
+    it('默认展开时显示 6 个预设按钮', () => {
       renderBuilder();
       FILTER_PRESETS.forEach((p) => {
-        expect(screen.queryByTestId(`condition-preset-${p.fieldKey}`)).not.toBeInTheDocument();
+        expect(screen.getByTestId(`condition-preset-${p.fieldKey}`)).toBeInTheDocument();
       });
     });
   });

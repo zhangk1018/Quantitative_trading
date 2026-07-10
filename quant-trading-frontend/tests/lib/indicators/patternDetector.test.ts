@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  isHammer,
-  isBullishEngulfing,
-  isBearishEngulfing,
-  isMorningStar,
-  isEveningStar,
   detectAllPatterns,
   hasAnyPattern,
 } from '@/lib/indicators/patternDetector';
@@ -28,7 +23,67 @@ function makeBar({
   return [time, open, high, low, close, volume];
 }
 
-describe.skip('patternDetector', () => {
+// ---------- 本地 helper：将原独立函数映射到 detectAllPatterns ----------
+
+/** 保证至少 2 根有效 K 线，用于单根检测的场景 */
+function isHammer(bar: OHLCVArray): boolean {
+  // null/undefined 提前返回，避免进入 detectAllPatterns 时报错
+  if (!bar) return false;
+  // 用一根与锤子线无关的 dummy bar 凑足 2 根
+  const dummy = makeBar({ open: 100, high: 110, low: 90, close: 105 });
+  const result = detectAllPatterns([bar, dummy]);
+  return result.hitDays.hammer.includes(0);
+}
+
+function isBullishEngulfing(prev: OHLCVArray, curr: OHLCVArray): boolean {
+  const result = detectAllPatterns([prev, curr]);
+  return result.hitDays.bullish_engulfing.includes(1);
+}
+
+function isBearishEngulfing(prev: OHLCVArray, curr: OHLCVArray): boolean {
+  const result = detectAllPatterns([prev, curr]);
+  return result.hitDays.bearish_engulfing.includes(1);
+}
+
+function isMorningStar(
+  b1: OHLCVArray,
+  b2: OHLCVArray,
+  b3: OHLCVArray,
+  penetration = 0.3,
+  dojiRatio = 0.1,
+  largeBodyRatio = 0.6,
+  requireGap = false,
+): boolean {
+  const result = detectAllPatterns([b1, b2, b3], {
+    morningStarPenetration: penetration,
+    dojiBodyRatio: dojiRatio,
+    largeBodyRatio,
+    requireGapForStar: requireGap,
+  });
+  return result.hitDays.morning_star.includes(2);
+}
+
+function isEveningStar(
+  b1: OHLCVArray,
+  b2: OHLCVArray,
+  b3: OHLCVArray,
+  penetration = 0.3,
+  dojiRatio = 0.1,
+  largeBodyRatio = 0.6,
+  requireGap = false,
+): boolean {
+  const result = detectAllPatterns([b1, b2, b3], {
+    eveningStarPenetration: penetration,
+    dojiBodyRatio: dojiRatio,
+    largeBodyRatio,
+    requireGapForStar: requireGap,
+  });
+  return result.hitDays.evening_star.includes(2);
+}
+
+// ---------- 测试用例 ----------
+
+describe('patternDetector', () => {
   describe('isHammer', () => {
     it('标准锤子线（阳线）→ true', () => {
       const bar = makeBar({ open: 100, high: 102.1, low: 95, close: 102 });
@@ -327,34 +382,22 @@ describe.skip('patternDetector', () => {
   });
 
   describe('detectAllPatterns', () => {
-    it('空数组 → 空结果', () => {
-      const result = detectAllPatterns('TEST', []);
-      expect(result.code).toBe('TEST');
-      expect(result.hits).toEqual([]);
+    it('空数组 → 抛出错误', () => {
+      expect(() => detectAllPatterns([])).toThrow();
     });
 
-    it('1根K线（锤子线）→ 只检测到锤子线', () => {
-      const bars = [makeBar({ open: 100, high: 102.1, low: 95, close: 102 })];
-      const result = detectAllPatterns('TEST', bars);
+    it('1根K线（锤子线）+ dummy → 只检测到锤子线', () => {
+      const hammer = makeBar({ open: 100, high: 102.1, low: 95, close: 102 });
+      const dummy = makeBar({ open: 100, high: 110, low: 90, close: 105 });
+      const result = detectAllPatterns([hammer, dummy]);
       expect(result.hits).toContain('hammer');
       expect(result.hits).not.toContain('bullish_engulfing');
-    });
-
-    // 【新增】验证窗口语义修正：lookbackDays=2 时，3根K线的晨星不应被检测
-    it('lookbackDays=2 时，完整晨星形态不应被检测（窗口语义严格）', () => {
-      const bars = [
-        makeBar({ open: 110, high: 111, low: 100, close: 100 }),
-        makeBar({ open: 102, high: 103, low: 101, close: 102 }),
-        makeBar({ open: 101, high: 108, low: 100, close: 108 }),
-      ];
-      const result = detectAllPatterns('TEST', bars, { lookbackDays: 2 });
-      expect(result.hits).not.toContain('morning_star');
     });
 
     it('2根K线（看跌吞没）→ 检测到看跌吞没', () => {
       const prev = makeBar({ open: 100, high: 108, low: 99, close: 108 }); // body=8, 阳线
       const curr = makeBar({ open: 109, high: 110, low: 95, close: 95 }); // body=14 > 8, 阴线
-      const result = detectAllPatterns('TEST', [prev, curr]);
+      const result = detectAllPatterns([prev, curr]);
       expect(result.hits).toContain('bearish_engulfing');
       expect(result.hitDays.bearish_engulfing).toEqual([1]);
     });
@@ -363,25 +406,15 @@ describe.skip('patternDetector', () => {
       const b1 = makeBar({ open: 100, high: 116, low: 100, close: 116 }); // 大阳线
       const b2 = makeBar({ open: 114, high: 115, low: 113, close: 114 }); // 十字星
       const b3 = makeBar({ open: 114, high: 115, low: 95, close: 95 }); // 大阴线
-      const result = detectAllPatterns('TEST', [b1, b2, b3]);
+      const result = detectAllPatterns([b1, b2, b3]);
       expect(result.hits).toContain('evening_star');
       expect(result.hitDays.evening_star).toEqual([2]);
-    });
-
-    it('lookbackDays 参数生效', () => {
-      const bars = [
-        makeBar({ open: 100, high: 102.1, low: 95, close: 102 }),
-        makeBar({ open: 105, high: 106, low: 100, close: 101 }),
-        makeBar({ open: 100, high: 108, low: 99, close: 107 }),
-      ];
-      const result = detectAllPatterns('TEST', bars, { lookbackDays: 1 });
-      expect(result.hitDays.hammer.length).toBe(0);
     });
 
     it('多形态同时命中', () => {
       const prev = makeBar({ open: 105, high: 106, low: 100, close: 100 }); // body=5
       const curr = makeBar({ open: 99, high: 109, low: 80, close: 108 }); // body=9, lower=19 >= 9*2=18
-      const result = detectAllPatterns('TEST', [prev, curr]);
+      const result = detectAllPatterns([prev, curr]);
       expect(result.hits).toContain('bullish_engulfing');
       expect(result.hits).toContain('hammer');
     });
@@ -392,7 +425,7 @@ describe.skip('patternDetector', () => {
         [1, NaN, NaN, NaN, NaN, 0] as unknown as OHLCVArray,
         makeBar({ open: 99, high: 108, low: 98, close: 108 }),
       ];
-      expect(() => detectAllPatterns('TEST', bars)).not.toThrow();
+      expect(() => detectAllPatterns(bars)).not.toThrow();
     });
 
     it('自定义阈值：放宽大实体比例 → 原不通过的变为通过', () => {
@@ -401,8 +434,8 @@ describe.skip('patternDetector', () => {
         makeBar({ open: 105, high: 106, low: 104, close: 105 }), // body=1, range=2, ratio=0.5 (十字星)
         makeBar({ open: 104, high: 105, low: 100, close: 105 }), // body=1, range=5, ratio=0.2 (非大实体)
       ];
-      const resultDefault = detectAllPatterns('TEST', bars);
-      const resultRelaxed = detectAllPatterns('TEST', bars, { lookbackDays: 3, largeBodyRatio: 0.15 });
+      const resultDefault = detectAllPatterns(bars);
+      const resultRelaxed = detectAllPatterns(bars, { largeBodyRatio: 0.15 });
       expect(resultDefault.hits).not.toContain('morning_star');
       expect(resultRelaxed.hits).toContain('morning_star');
     });
@@ -413,7 +446,7 @@ describe.skip('patternDetector', () => {
         makeBar({ open: 105, high: 106, low: 100, close: 101 }),
         makeBar({ open: 99, high: 108, low: 98, close: 108 }), // 锤子线 + 看涨吞没 index 2
       ];
-      const result = detectAllPatterns('TEST', bars, { lookbackDays: 3 }, ['hammer']);
+      const result = detectAllPatterns(bars, {}, ['hammer']);
       expect(result.hits).toContain('hammer');
       expect(result.hitDays.hammer.length).toBe(1);
     });
@@ -424,8 +457,8 @@ describe.skip('patternDetector', () => {
         makeBar({ open: 98, high: 99, low: 97, close: 98 }),
         makeBar({ open: 99, high: 108, low: 98, close: 107 }),
       ];
-      const resultNoGap = detectAllPatterns('TEST', bars, { lookbackDays: 3, requireGapForStar: false });
-      const resultWithGap = detectAllPatterns('TEST', bars, { lookbackDays: 3, requireGapForStar: true });
+      const resultNoGap = detectAllPatterns(bars, { requireGapForStar: false });
+      const resultWithGap = detectAllPatterns(bars, { requireGapForStar: true });
       expect(resultNoGap.hits).toContain('morning_star');
       expect(resultWithGap.hits).not.toContain('morning_star');
     });
@@ -433,23 +466,15 @@ describe.skip('patternDetector', () => {
 
   describe('hasAnyPattern', () => {
     it('有命中 → true', () => {
-      const bars = [makeBar({ open: 100, high: 102.1, low: 95, close: 102 })];
-      expect(hasAnyPattern('TEST', bars, ['hammer'])).toBe(true);
+      const hammer = makeBar({ open: 100, high: 102.1, low: 95, close: 102 });
+      const dummy = makeBar({ open: 100, high: 110, low: 90, close: 105 });
+      expect(hasAnyPattern([hammer, dummy], ['hammer'])).toBe(true);
     });
 
     // 【新增】验证空数组保护逻辑
     it('传入空目标数组 [] → 返回 false', () => {
       const bars = [makeBar({ open: 100, high: 102.1, low: 95, close: 102 })];
-      expect(hasAnyPattern('TEST', bars, [])).toBe(false);
-    });
-
-    it('lookbackDays 参数传递正确', () => {
-      const bars = [
-        makeBar({ open: 100, high: 102.1, low: 95, close: 102 }),
-        makeBar({ open: 100, high: 105, low: 95, close: 102 }),
-      ];
-      expect(hasAnyPattern('TEST', bars, ['hammer'], 1)).toBe(false);
-      expect(hasAnyPattern('TEST', bars, ['hammer'], 2)).toBe(true);
+      expect(hasAnyPattern(bars, [])).toBe(false);
     });
   });
 });
