@@ -746,3 +746,5 @@ export function useScreener() {
 }
 
 export { rootReducer };
+// 向下兼容旧测试的别名
+export const screenerReducer = rootReducer;

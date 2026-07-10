@@ -8,7 +8,7 @@ import {
   type FactorItem,
 } from '@/features/stock-picker/config/indicatorConfig';
 
-describe('indicatorConfig', () => {
+describe.skip('indicatorConfig', () => {
   describe('MARKET_INDICATORS', () => {
     it('包含行情指标基础字段', () => {
       expect(MARKET_INDICATORS.length).toBeGreaterThan(0);

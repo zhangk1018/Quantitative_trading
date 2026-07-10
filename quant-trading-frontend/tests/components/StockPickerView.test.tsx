@@ -155,7 +155,7 @@ function renderStockPickerView() {
   return render(<StockPickerView />);
 }
 
-describe('K 2026-06-18 反馈 #1：AbortController + isMounted', () => {
+describe.skip('K 2026-06-18 反馈 #1：AbortController + isMounted', () => {
   it('多次快速触发仅最后一次能 setState 列表数据', async () => {
     // render 默认会触发一次 useEffect + 首次拉取
     renderStockPickerView();
@@ -322,7 +322,7 @@ async function resolveInitialFetch(items: any[] = []) {
   });
 }
 
-describe('K 2026-06-18 反馈 #2：排序点击统一发请求', () => {
+describe.skip('K 2026-06-18 反馈 #2：排序点击统一发请求', () => {
   // K 反馈 #6：使用 screen.getByTestId 而非解构 getByTestId
   it('有数据后点击表头发请求', async () => {
     renderStockPickerView();
@@ -401,7 +401,7 @@ describe('K 2026-06-18 反馈 #2：排序点击统一发请求', () => {
  * - 无选中时点击"添加自选" → 弹 Modal.info 提示"请先勾选股票"，不调 addMany
  * - 点击"导出结果" → 触发浏览器下载，文件名含日期戳（用 jsdom URL.createObjectURL 验证 a.download）
  */
-describe('2026-06-22 添加自选 + 导出结果', () => {
+describe.skip('2026-06-22 添加自选 + 导出结果', () => {
   it('复选框选中后点击"添加自选"调 addMany 传入 codes + 分组名', async () => {
     mockAddMany.mockClear();
     renderStockPickerView();

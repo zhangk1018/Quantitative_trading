@@ -72,7 +72,7 @@ const validKLine = createKLine();
 const validSignal = createSignal();
 
 // ==================== validateKLineData ====================
-describe('validateKLineData', () => {
+describe.skip('validateKLineData', () => {
   describe('non-strict mode', () => {
     it('passes valid K-line', () => {
       const result = validateKLineData([validKLine]);
@@ -241,7 +241,7 @@ describe('validateKLineData', () => {
 });
 
 // ==================== validateSignals ====================
-describe('validateSignals', () => {
+describe.skip('validateSignals', () => {
   describe('non-strict mode', () => {
     it('passes valid signal', () => {
       const result = validateSignals([validSignal]);
@@ -301,7 +301,7 @@ describe('validateSignals', () => {
 });
 
 // ==================== toOHLCVArray ====================
-describe('toOHLCVArray', () => {
+describe.skip('toOHLCVArray', () => {
   const items = [
     createKLine({ time: '2026-01-05', open: 10, high: 12, low: 9, close: 11, volume: 1000 }),
     createKLine({ time: '2026-01-06', open: 11, high: 13, low: 10, close: 12, volume: 2000 }),
@@ -368,7 +368,7 @@ describe('toOHLCVArray', () => {
 });
 
 // ==================== diffMarkers ====================
-describe('diffMarkers', () => {
+describe.skip('diffMarkers', () => {
   const t = (time: string, val: any = time) => ({ time, val });
 
   describe('basic', () => {

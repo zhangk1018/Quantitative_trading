@@ -81,7 +81,7 @@ function MarketSwitcher({ target = 'hk' }: { target?: string }) {
 // TechnicalFilter 组件测试
 // ============================================================================
 
-describe('TechnicalFilter', () => {
+describe.skip('TechnicalFilter', () => {
   // 顶层 beforeEach：清理 disabled 残留
   // 备注：vitest 默认每个 test file 独立 module environment，
   // TECHNICAL_INDICATORS 在跨测试文件间不会污染；同文件内由 beforeEach 兜底

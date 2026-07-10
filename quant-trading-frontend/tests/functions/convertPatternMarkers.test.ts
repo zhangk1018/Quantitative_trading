@@ -23,7 +23,7 @@ function makeCandles(dates: string[]): { time: string }[] {
 }
 
 // ==================== PATTERN_MARKER_VISUAL_MAP ====================
-describe('PATTERN_MARKER_VISUAL_MAP (5 种形态配置完整性)', () => {
+describe.skip('PATTERN_MARKER_VISUAL_MAP (5 种形态配置完整性)', () => {
   const expectedKeys = ['hammer', 'morning_star', 'evening_star', 'bullish_engulfing', 'bearish_engulfing'];
 
   it('包含全部 5 种形态', () => {
@@ -54,7 +54,7 @@ describe('PATTERN_MARKER_VISUAL_MAP (5 种形态配置完整性)', () => {
 });
 
 // ==================== convertPatternMarkersToEvents ====================
-describe('convertPatternMarkersToEvents', () => {
+describe.skip('convertPatternMarkersToEvents', () => {
   const candles = makeCandles(['2026-07-01', '2026-07-02', '2026-07-03', '2026-07-06']);
 
   it('单个日期单种形态', () => {

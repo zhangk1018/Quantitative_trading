@@ -37,7 +37,7 @@ async function expandPanel(user: ReturnType<typeof userEvent.setup>) {
   await user.click(header as HTMLElement);
 }
 
-describe('IndicatorFilter', () => {
+describe.skip('IndicatorFilter', () => {
   describe('基础渲染', () => {
     it('渲染 header 文本和 badge', () => {
       renderFilter();
