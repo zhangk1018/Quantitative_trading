@@ -257,8 +257,8 @@ export function purgeCustomIndicator(
  */
 export function isDuplicateIndicator(
   ind: CustomIndicator,
-  existingIds: Set<string>,
-  existingNames: Set<string>,
+  existingIds: ReadonlySet<string>,
+  existingNames: ReadonlySet<string>,
 ): boolean {
   const id = (ind as { id?: unknown }).id;
   if (typeof id === 'string' && id.length > 0) {

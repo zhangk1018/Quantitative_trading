@@ -21,7 +21,7 @@ export interface IndicatorItem {
   disabledReason?: string;
 }
 
-export const MARKET_INDICATORS = [
+export const MARKET_INDICATORS: readonly IndicatorItem[] = [
   { id: 'market_cap', label: '市值', field: 'market_cap', unit: '亿元' },
   { id: 'price', label: '价格', field: 'close', unit: '元' },
   { id: 'change_pct', label: '涨跌幅', field: 'change_pct', unit: '%' },
@@ -32,13 +32,13 @@ export const MARKET_INDICATORS = [
   { id: 'amount', label: '成交额', field: 'amount', unit: '亿元' },
   { id: 'volume', label: '成交量', field: 'volume', unit: '手' },
   { id: 'turnover', label: '换手率', field: 'turnover_rate', unit: '%' },
-] as const satisfies readonly IndicatorItem[];
+] as const;
 
-export const FINANCIAL_INDICATORS = [
+export const FINANCIAL_INDICATORS: readonly IndicatorItem[] = [
   { id: 'net_profit', label: '净利润', field: 'net_profit', unit: '元' },
   { id: 'revenue', label: '营业收入', field: 'revenue', unit: '元' },
   { id: 'roe', label: '净资产收益率', field: 'roe', unit: '%' },
-] as const satisfies readonly IndicatorItem[];
+] as const;
 
 // ==================== 技术指标 ====================
 export type TechnicalOptionValue =
@@ -63,7 +63,7 @@ export interface TechnicalIndicatorItem extends IndicatorItem {
   options: readonly TechnicalOption[];
 }
 
-export const TECHNICAL_INDICATORS = [
+export const TECHNICAL_INDICATORS: readonly TechnicalIndicatorItem[] = [
   {
     id: 'ma',
     label: 'MA',
@@ -102,7 +102,7 @@ export const TECHNICAL_INDICATORS = [
       { value: 'top_divergence', label: '顶背离' },
     ] as const,
   },
-] as const satisfies readonly TechnicalIndicatorItem[];
+] as const;
 
 // ==================== K 线形态 ====================
 export type PatternType =

@@ -1,7 +1,11 @@
 import React, { memo, useCallback, useMemo } from 'react';
 import { Collapse, Button } from 'antd';
 import clsx from 'clsx';
-import { useScreenerSelector, useScreenerDispatch } from '../context/ScreenerContext';
+import {
+  useScreenerSelector,
+  useScreenerDispatch,
+  type TechnicalState,
+} from '../context/ScreenerContext';
 import {
   TECHNICAL_INDICATORS,
   PANEL_KEYS,

@@ -6,6 +6,8 @@ import {
   rootReducer,
   ScreenerProvider,
   useScreener,
+  useScreenerDispatch,
+  useScreenerSelector,
   type ScreenerState,
 } from '@/features/stock-picker/context/ScreenerContext';
 import { FACTOR_CONFIG } from '@/features/stock-picker/config/indicatorConfig';
@@ -432,6 +434,59 @@ describe('ScreenerProvider / useScreener', () => {
       min: '',
       max: '',
     });
+  });
+
+  it('selector 订阅抛错时记录错误且不阻断其他 selector 更新', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const BadSelector = () => {
+      useScreenerSelector((state) => {
+        if (state.marketIndicators.selected.includes('market_cap')) {
+          throw new Error('selector exploded');
+        }
+        return 'stable';
+      });
+      return <div>bad selector mounted</div>;
+    };
+
+    const GoodSelector = () => {
+      const count = useScreenerSelector((state) => state.marketIndicators.selected.length);
+      return <div data-testid="selected-count">{count}</div>;
+    };
+
+    const DispatchButton = () => {
+      const dispatch = useScreenerDispatch();
+      return (
+        <button
+          type="button"
+          onClick={() => dispatch({ type: 'TOGGLE_MARKET_INDICATOR', payload: 'market_cap' })}
+        >
+          toggle
+        </button>
+      );
+    };
+
+    render(
+      <ScreenerProvider>
+        <BadSelector />
+        <GoodSelector />
+        <DispatchButton />
+      </ScreenerProvider>
+    );
+
+    expect(screen.getByTestId('selected-count')).toHaveTextContent('0');
+
+    act(() => {
+      screen.getByText('toggle').click();
+    });
+
+    expect(screen.getByTestId('selected-count')).toHaveTextContent('1');
+    expect(consoleError).toHaveBeenCalledWith(
+      '[Screener] selector 订阅执行失败',
+      expect.any(Error)
+    );
+
+    consoleError.mockRestore();
   });
 });
 

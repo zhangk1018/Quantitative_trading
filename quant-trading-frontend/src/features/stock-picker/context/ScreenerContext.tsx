@@ -4,9 +4,9 @@ import React, {
   useReducer,
   ReactNode,
   useCallback,
-  useSyncExternalStore,
   useRef,
   useEffect,
+  useSyncExternalStore,
 } from 'react';
 import { MARKET_CONFIG, STOCK_RANGE_OPTIONS } from '../config/marketConfig';
 import {
@@ -23,6 +23,24 @@ import {
 import { FilterOp, FilterCondition, FilterGroup, genConditionId } from '../types/filterTree';
 import { CustomIndicator } from '../types/customIndicator';
 import { listCustomIndicators as loadFromStorage } from '../utils/customIndicatorStorage';
+
+// ==================== 浅比较工具（避免引入 react-redux） ====================
+function shallowEqual<T>(a: T, b: T): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) {
+    return false;
+  }
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i++) {
+    const key = keysA[i];
+    if (!Object.prototype.hasOwnProperty.call(b, key) || !Object.is((a as any)[key], (b as any)[key])) {
+      return false;
+    }
+  }
+  return true;
+}
 
 // ==================== 子状态类型 ====================
 export interface IndicatorRange {
@@ -46,7 +64,7 @@ interface FinancialIndicatorState {
   ranges: Record<string, IndicatorRange>;
 }
 
-interface TechnicalState {
+export interface TechnicalState {
   selected: Record<string, TechnicalOptionValue>;
   openModalId: string | null;
 }
@@ -126,7 +144,6 @@ type ConditionAction =
   | { type: 'UPDATE_CONDITION_OP'; payload: { id: string; op: FilterOp } }
   | { type: 'CLEAR_CONDITIONS' }
   | { type: 'APPLY_PRESET'; payload: Omit<FilterCondition, 'id'>[] }
-  // 新增：批量更新所有 K线形态条件的回看天数
   | { type: 'UPDATE_PATTERN_LOOKBACKS'; payload: number };
 
 type CustomAction =
@@ -363,7 +380,6 @@ function conditionReducer(state: ConditionState, action: ConditionAction): Condi
       if (newGroup === state.filterGroup) return state;
       return { ...state, filterGroup: newGroup };
     }
-    // 新增：批量更新所有 K线形态条件的回看天数
     case 'UPDATE_PATTERN_LOOKBACKS': {
       const newLookback = action.payload;
       const current = state.filterGroup?.conditions || [];
@@ -497,7 +513,7 @@ const actionToSubReducer: Record<ScreenerAction['type'], keyof ScreenerState> = 
   UPDATE_CONDITION_OP: 'condition',
   CLEAR_CONDITIONS: 'condition',
   APPLY_PRESET: 'condition',
-  UPDATE_PATTERN_LOOKBACKS: 'condition', // 新增
+  UPDATE_PATTERN_LOOKBACKS: 'condition',
   LOAD_CUSTOM_INDICATORS: 'custom',
   ADD_CUSTOM_INDICATOR: 'custom',
   UPDATE_CUSTOM_INDICATOR: 'custom',
@@ -506,8 +522,8 @@ const actionToSubReducer: Record<ScreenerAction['type'], keyof ScreenerState> = 
   IMPORT_CUSTOM_INDICATORS: 'custom',
   SET_FACTOR_WEIGHT: 'factor',
   TOGGLE_PANEL: 'panels',
-  RESET_ALL: 'panels', // 仅需要 key，根 reducer 已经处理
-  LOAD_STRATEGY: 'panels', // 仅需要 key，根 reducer 已经处理
+  RESET_ALL: 'panels',
+  LOAD_STRATEGY: 'panels',
 };
 
 // ==================== 根 Reducer（含后置钩子） ====================
@@ -522,9 +538,9 @@ function rootReducer(state: ScreenerState, action: ScreenerAction): ScreenerStat
   if (action.type === 'LOAD_STRATEGY') {
     const defaults = createInitialState();
     return {
-      ...defaults,          // 默认值：确保新增字段有回退
-      ...action.payload,    // 策略数据：覆盖默认值
-      panels: state.panels, // 保留当前 UI 状态
+      ...defaults,
+      ...action.payload,
+      panels: state.panels,
     };
   }
 
@@ -534,13 +550,17 @@ function rootReducer(state: ScreenerState, action: ScreenerAction): ScreenerStat
     return state;
   }
 
-  const subReducer = subReducerMap[subKey];
-  const newSubState = subReducer(state[subKey], action);
-  if (newSubState === state[subKey]) {
+  const subReducer = subReducerMap[subKey] as (
+    subState: ScreenerState[keyof ScreenerState],
+    reducerAction: ScreenerAction
+  ) => ScreenerState[keyof ScreenerState];
+  const currentSubState = state[subKey];
+  const newSubState = subReducer(currentSubState, action);
+  if (newSubState === currentSubState) {
     return state;
   }
 
-  let newState = { ...state, [subKey]: newSubState };
+  let newState = { ...state, [subKey]: newSubState } as ScreenerState;
   newState = afterDispatch(newState, action);
   return newState;
 }
@@ -649,12 +669,21 @@ export function resolveMissingIndicators(
   return { conditions: nextConditions };
 }
 
-// ==================== Store 类 ====================
+// ==================== Store 类（核心修改） ====================
 type Listener = () => void;
+type SelectorListener<T = any> = (value: T) => void;
+
+interface SelectorSubscription<T = any> {
+  selector: (state: ScreenerState) => T;
+  listener: SelectorListener<T>;
+  snapshot: T;
+}
 
 class Store {
   private state: ScreenerState;
   private listeners: Set<Listener> = new Set();
+  private selectorSubscriptions: Map<SelectorListener, SelectorSubscription> = new Map();
+
   constructor(initialState: ScreenerState) {
     this.state = initialState;
     this.dispatch = this.dispatch.bind(this);
@@ -669,12 +698,42 @@ class Store {
     if (newState !== this.state) {
       this.state = newState;
       this.listeners.forEach(listener => listener());
+      this.selectorSubscriptions.forEach((sub) => {
+        try {
+          const newValue = sub.selector(this.state);
+          if (!shallowEqual(sub.snapshot, newValue)) {
+            sub.snapshot = newValue;
+            sub.listener(newValue);
+          }
+        } catch (error) {
+          console.error('[Screener] selector 订阅执行失败', error);
+        }
+      });
     }
   }
 
   subscribe(listener: Listener) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeWithSelector<T>(
+    selector: (state: ScreenerState) => T,
+    listener: SelectorListener<T>
+  ): () => void {
+    const sub: SelectorSubscription<T> = {
+      selector,
+      listener,
+      snapshot: selector(this.state),
+    };
+    this.selectorSubscriptions.set(listener, sub);
+    return () => {
+      this.selectorSubscriptions.delete(listener);
+    };
+  }
+
+  getSelectorSnapshot<T>(listener: SelectorListener<T>): T | undefined {
+    return this.selectorSubscriptions.get(listener)?.snapshot as T | undefined;
   }
 }
 
@@ -718,14 +777,31 @@ export function useScreenerSelector<T>(selector: (state: ScreenerState) => T): T
   if (!store) throw new Error('useScreenerSelector must be used within ScreenerProvider');
 
   const selectorRef = useRef(selector);
+  const prevSnapshotRef = useRef<T | undefined>(undefined);
   selectorRef.current = selector;
 
-  const getSnapshot = useCallback(() => selectorRef.current(store.getState()), [store]);
-  const subscribe = useCallback((onStoreChange: () => void) => {
-    return store.subscribe(onStoreChange);
+  const listenerRef = useRef<() => void>(() => {});
+  listenerRef.current = () => {};
+
+  const getSnapshot = useCallback((): T => {
+    const cached = store.getSelectorSnapshot(listenerRef.current);
+    if (cached !== undefined) return cached as T;
+    const newValue = selectorRef.current(store.getState());
+    if (prevSnapshotRef.current !== undefined && shallowEqual(prevSnapshotRef.current, newValue)) {
+      return prevSnapshotRef.current;
+    }
+    prevSnapshotRef.current = newValue;
+    return newValue;
   }, [store]);
 
-  return useSyncExternalStore(subscribe, getSnapshot);
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      return store.subscribeWithSelector(selectorRef.current, onStoreChange);
+    },
+    [store]
+  );
+
+  return useSyncExternalStore<T>(subscribe, getSnapshot);
 }
 
 export function useScreenerDispatch() {

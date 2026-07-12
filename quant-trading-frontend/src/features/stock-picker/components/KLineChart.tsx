@@ -166,6 +166,19 @@ function mkHistSeriesOptions(opts: {
   };
 }
 
+export function buildSortedSeriesMarkers(markers: ConditionEvent[]): SeriesMarker<string>[] {
+  return markers
+    .map((m) => ({
+      time: m.time,
+      position: (m.direction === 'sell' ? 'aboveBar' : 'belowBar') as 'aboveBar' | 'belowBar',
+      shape: m.shape as 'circle' | 'square' | 'arrowUp' | 'arrowDown',
+      color: m.color,
+      text: m.label,
+      size: m.direction === 'buy' ? 1.5 : 1,
+    }))
+    .sort((a, b) => String(a.time).localeCompare(String(b.time)));
+}
+
 // ---- 十字光标浮窗组件 ----
 
 const CrosshairOverlay: React.FC<{ info: CrosshairInfo | null; oscType: OscType; side: 'left' | 'right' }> = ({ info, oscType, side }) => {
@@ -467,15 +480,7 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
 
     // 标记
     if (markers && markers.length > 0) {
-      const lwcMarkers: SeriesMarker<string>[] = markers.map((m) => ({
-        time: m.time,
-        position: (m.direction === 'sell' ? 'aboveBar' : 'belowBar') as 'aboveBar' | 'belowBar',
-        shape: m.shape as 'circle' | 'square' | 'arrowUp' | 'arrowDown',
-        color: m.color,
-        text: m.label,
-        size: m.direction === 'buy' ? 1.5 : 1,
-      }));
-      candle.setMarkers(lwcMarkers);
+      candle.setMarkers(buildSortedSeriesMarkers(markers));
     }
 
     // 十字光标事件
@@ -563,15 +568,7 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
     if (!seriesRef.current) return;
     const candle = seriesRef.current.candle;
     if (markers && markers.length > 0) {
-      const lwcMarkers: SeriesMarker<string>[] = markers.map((m) => ({
-        time: m.time,
-        position: (m.direction === 'sell' ? 'aboveBar' : 'belowBar') as 'aboveBar' | 'belowBar',
-        shape: m.shape as 'circle' | 'square' | 'arrowUp' | 'arrowDown',
-        color: m.color,
-        text: m.label,
-        size: m.direction === 'buy' ? 1.5 : 1,
-      }));
-      candle.setMarkers(lwcMarkers);
+      candle.setMarkers(buildSortedSeriesMarkers(markers));
     } else {
       candle.setMarkers([]);
     }

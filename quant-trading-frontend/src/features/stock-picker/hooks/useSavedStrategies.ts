@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import type { ScreenerState } from '../context/ScreenerContext';
 
 // ==================== 存储抽象层 ====================
@@ -89,7 +89,10 @@ export function serializeState(state: ScreenerState): Omit<ScreenerState, 'panel
  */
 export function useSavedStrategies(storage?: IStrategyStorage) {
   const [strategies, setStrategies] = useState<SavedStrategy[]>([]);
-  const store = storage ?? new LocalStorageStrategyStorage();
+  const store = useMemo(
+    () => storage ?? new LocalStorageStrategyStorage(),
+    [storage]
+  );
 
   /**
    * 校验策略数据完整性

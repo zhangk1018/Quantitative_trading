@@ -4,13 +4,75 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { MemoryRouter } from 'react-router-dom';
 import { server } from '../mocks/server';
+import { App as AntdApp } from 'antd';
 import StockPickerView from '@/features/stock-picker/StockPickerView';
-import { ScreenerProvider, useScreener } from '@/features/stock-picker/context/ScreenerContext';
+import { ScreenerProvider } from '@/features/stock-picker/context/ScreenerContext';
 import { SettingsProvider } from '@/shared/contexts/SettingsContext';
-// 注意：StockPickerView 依赖 useWatchlistAdd → useWatchlist → WatchlistProvider
-// 测试中不提供 WatchlistProvider 会导致 useWatchlist 报错。
-// 当前测试聚焦 ScreenerContext 状态 ⇒ 选股请求参数映射，不涉及 watchlist 交互逻辑，
-// 因此跳过该文件，待后续为 WatchlistProvider 的测试基础设施就绪后修复。
+
+// ================================================================
+// StockPickerView 集成测试（行情指标 + runScreening）
+// 共 13 个测试：A10 参数映射 (7) + A10b 技术指标 (2) + A11 表格渲染 (3) + A12 重置 (1)
+//
+// 修复关键点：
+// 1. vi.mock('@/features/stock-detail/api') 替代 vi.spyOn：vi.spyOn 只作用于
+//    测试文件的 namespace import，无法影响 useScreenerData 的 named import
+// 2. vi.mock('@tanstack/react-virtual')：jsdom 无真实布局，getVirtualItems() 返回
+//    空数组，mock 为返回所有 items 绕过 DOM 尺寸依赖
+// ================================================================
+
+// 模拟 fetchStocks，默认走真实实现（让 MSW 拦截 A10 测试），
+// A11 测试中通过 mockImplementation 覆盖返回值
+const { fetchStocksRef } = vi.hoisted(() => ({
+  fetchStocksRef: { current: null as ((...args: any[]) => any) | null },
+}));
+
+vi.mock('@/features/stock-detail/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/features/stock-detail/api')>();
+  return {
+    ...actual,
+    fetchStocks: vi.fn((...args: any[]) => {
+      if (fetchStocksRef.current) {
+        return fetchStocksRef.current(...args);
+      }
+      return (actual.fetchStocks as Function)(...args);
+    }),
+  };
+});
+
+// 模拟 useWatchlist，避免 WatchlistProvider 的异步初始化在测试环境挂起
+vi.mock('@/features/watchlist/store', () => {
+  const mockState = { customGroups: [], stocks: {}, loading: false, migrated: true };
+  return {
+    useWatchlist: () => ({
+      state: mockState,
+      allGroups: [],
+      addOne: vi.fn(),
+      addMany: vi.fn(() => ({ added: 0, skipped: 0, failed: 0, errors: [] })),
+      removeOne: vi.fn(),
+      createGroup: vi.fn(() => true),
+      deleteGroup: vi.fn(),
+      refresh: vi.fn(),
+    }),
+    WatchlistProvider: ({ children }: { children: React.ReactNode }) => children,
+  };
+});
+
+// 模拟 @tanstack/react-virtual：jsdom 无真实布局，虚拟滚动 getVirtualItems 永远返回空数组。
+// 直接 mock 为返回所有 items，绕过 DOM 尺寸依赖。
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: vi.fn((options: { count: number }) => ({
+    getVirtualItems: () => Array.from({ length: options.count }, (_, i) => ({
+      index: i,
+      size: 48,
+      start: i * 48,
+      key: i,
+      measureElement: vi.fn(),
+    })),
+    getTotalSize: () => options.count * 48,
+    scrollToIndex: vi.fn(),
+    measure: vi.fn(),
+  })),
+}));
 
 // 覆盖默认 5000ms timeout：coverage 模式下 MSW + jsdom 比正常慢，5s 不够
 vi.setConfig({ testTimeout: 15000 });
@@ -76,7 +138,7 @@ beforeEach(() => {
         message: 'ok',
         data: { items, total: all.length },
       });
-    })
+    }),
   );
 });
 
@@ -87,14 +149,17 @@ afterEach(() => {
 // 包装完整 providers
 // K 2026-06-17 变更：ConditionBuilder 使用 useNavigate（跳转 /config），
 // 需要 MemoryRouter 提供 Router 上下文
+// StockPickerView 使用 antd App.useApp()，需要 AntdApp 包装
 function renderView() {
   return render(
     <MemoryRouter>
-      <SettingsProvider>
-        <ScreenerProvider>
-          <StockPickerView />
-        </ScreenerProvider>
-      </SettingsProvider>
+      <AntdApp>
+        <SettingsProvider>
+          <ScreenerProvider>
+            <StockPickerView />
+          </ScreenerProvider>
+        </SettingsProvider>
+      </AntdApp>
     </MemoryRouter>
   );
 }
@@ -107,7 +172,7 @@ async function expandIndicatorPanel(user: ReturnType<typeof userEvent.setup>) {
   }
 }
 
-describe.skip('StockPickerView 集成测试（行情指标 + runScreening）', () => {
+describe('StockPickerView 集成测试（行情指标 + runScreening）', () => {
   describe('A10: runScreening 参数映射', () => {
     it('未传任何筛选条件时请求参数不带 listed_board / *_min / *_max', async () => {
       const user = userEvent.setup();
@@ -289,16 +354,35 @@ describe.skip('StockPickerView 集成测试（行情指标 + runScreening）', (
   });
 
   describe('A11: loading → 成功 → 表格渲染', () => {
+    const mockItems = [
+      { stock_code: '000001', stock_name: '平安银行', close: 12.5, change_pct: 2.5, market_cap: 2.5e11, pe_ttm: 6.5, pb: 0.8, turnover_rate: 3.2, trade_date: '2026-07-11', amount: 1e9, pe: 6.5, listed_board: '主板' },
+      { stock_code: '600036', stock_name: '招商银行', close: 42.0, change_pct: -1.2, market_cap: 8.956e11, pe_ttm: 5.8, pb: 0.9, turnover_rate: 1.5, trade_date: '2026-07-11', amount: 2e9, pe: 5.8, listed_board: '主板' },
+    ];
+
+    beforeEach(() => {
+      fetchStocksRef.current = () => Promise.resolve({ items: mockItems, total: 2 });
+    });
+
+    afterEach(() => {
+      fetchStocksRef.current = null;
+    });
+
     it('点击"开始选股"后表格渲染 mock 数据', async () => {
       const user = userEvent.setup();
       renderView();
 
       await user.click(screen.getByTestId('start-screener'));
 
-      // 等待数据加载完成，表格行出现
+      // 等待 loading 状态结束 → 数据渲染
+      await waitFor(() => {
+        expect(screen.queryByText('正在加载数据...')).not.toBeInTheDocument();
+      }, { timeout: 10000 });
+
+      // 检查数据是否渲染
       await waitFor(() => {
         expect(screen.getByText('招商银行')).toBeInTheDocument();
-      });
+      }, { timeout: 5000 });
+
       expect(screen.getByText('平安银行')).toBeInTheDocument();
 
       // 验证表头
@@ -316,7 +400,6 @@ describe.skip('StockPickerView 集成测试（行情指标 + runScreening）', (
       await screen.findByText('招商银行');
 
       // 然后断言"共 N 只"已经更新（顶部工具栏的 span）
-      // 注意：message.success 中也包含"共 2 只"，要用 ^...$ 精确匹配
       expect(await screen.findByText(/^共\s*2\s*只$/)).toBeInTheDocument();
     });
 
@@ -330,7 +413,6 @@ describe.skip('StockPickerView 集成测试（行情指标 + runScreening）', (
       });
 
       // 招商银行 market_cap=895600000000 → 89560.00亿
-      // 用正则匹配避免硬编码
       const row = screen.getByText('招商银行').closest('tr')!;
       const cells = within(row).getAllByText(/亿$/);
       expect(cells.length).toBeGreaterThan(0);
@@ -338,6 +420,19 @@ describe.skip('StockPickerView 集成测试（行情指标 + runScreening）', (
   });
 
   describe('A12: 重置清空非 context 状态', () => {
+    const mockItems = [
+      { stock_code: '000001', stock_name: '平安银行', close: 12.5, change_pct: 2.5, market_cap: 2.5e11, pe_ttm: 6.5, pb: 0.8, turnover_rate: 3.2, trade_date: '2026-07-11', amount: 1e9, pe: 6.5, listed_board: '主板' },
+      { stock_code: '600036', stock_name: '招商银行', close: 42.0, change_pct: -1.2, market_cap: 8.956e11, pe_ttm: 5.8, pb: 0.9, turnover_rate: 1.5, trade_date: '2026-07-11', amount: 2e9, pe: 5.8, listed_board: '主板' },
+    ];
+
+    beforeEach(() => {
+      fetchStocksRef.current = () => Promise.resolve({ items: mockItems, total: 2 });
+    });
+
+    afterEach(() => {
+      fetchStocksRef.current = null;
+    });
+
     it('点击重置后清空表格，回到"暂无数据"提示', async () => {
       const user = userEvent.setup();
       renderView();

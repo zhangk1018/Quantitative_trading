@@ -40,7 +40,7 @@ describe('ConditionBuilder', () => {
     it('渲染 header、count 徽标、reset 按钮', () => {
       renderBuilder();
       expect(screen.getByTestId('condition-builder-header')).toHaveTextContent('条件构建器');
-      expect(screen.getByTestId('condition-builder-count')).toHaveTextContent('0 个条件');
+      expect(screen.getByTestId('condition-builder-count')).toHaveTextContent('0');
       expect(screen.getByTestId('condition-builder-reset')).toBeInTheDocument();
     });
 

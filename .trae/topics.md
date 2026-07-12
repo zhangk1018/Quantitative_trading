@@ -367,3 +367,7 @@ Phase 5.2 性能优化已完成三项：
 **通知**: [方舟→量量 2026-07-08 14:45] 协作单 [WATCHLIST-STOCK_CODES-20260708] 状态变更: VERIFY→CLOSED（方舟验收通过：① 后端 stock_codes 参数正常，`curl` 验证 code=200 total=2 ② 前端 `useWatchlistQuotes` hook 改为 `stock_codes: codes.join(',')` ③ 修复 MAX_WATCHLIST_SIZE 1000→200（后端 le=200 校验限制）④ Playwright 自测：0 错误、21 行表格正常渲染、无 422 异常。）
 
 **通知**: [方舟→K 2026-07-10 17:00] 协作单 [TEST-SKIP-FIX-20260710] 状态变更: NEW（新工单 — 状态重构后 13 个前端测试文件共 301 个测试被跳过，已在 `docs/协作单.md` 中提单。**处理方**：方舟（前台测试，前台修复，不推给量量）。**修复方式**：去掉 `.skip` → 运行测试定位失败 → 批量替换字段路径。**优先级**：P2，不阻塞功能，CI 已跳过。）
+
+**通知**: [方舟→方舟 2026-07-12 08:53] 协作单 [TECH-DEBT-BUILD-20260712] 状态变更: NEW（前端 `npm run build` 剩余 TypeScript 错误治理：`ScreenerContext.tsx` 本次触碰文件错误已消除，剩余错误来自 stock-detail、筛选器配置类型、ImportExport、StockAnalysisModal、customIndicatorStorage、chartConstants 等未触碰模块。处理方方舟，P1，验收为 `npm run build` 退出码 0 + 相关测试通过。）
+
+**通知**: [方舟→K 2026-07-12 09:25] 协作单 [TECH-DEBT-BUILD-20260712] 状态变更: NEW→VERIFY（前端构建 TypeScript 错误治理已完成：`npm run build` 退出码 0；`ScreenerContext.test.tsx` 49 passed / 5 skipped；`StockPickerView.test.tsx` 9 passed；`FinancialFilter + TechnicalFilter + indicatorConfig` 73 passed。修复范围覆盖配置项类型、TechnicalState 导出、ImportResult 导入、ReadonlySet 签名、Pattern time 类型、DetectionConfig 可写类型、新增 stock-detail `useStockChart` hook。请 K 验证后关闭。）

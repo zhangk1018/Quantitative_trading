@@ -210,14 +210,14 @@ const ConditionBuilder: React.FC = () => {
                 <Text className="text-text-primary font-semibold" data-testid="condition-builder-header">
                   条件构建器
                 </Text>
-              </span>
-              <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                <Text
-                  className="text-text-secondary text-sm"
+                <span
                   data-testid="condition-builder-count"
+                  className="px-1.5 py-0.5 bg-color-up/20 text-color-up text-xs rounded-full"
                 >
-                  {conditionCount} 个条件
-                </Text>
+                  {conditionCount}
+                </span>
+              </span>
+              <span onClick={(e) => e.stopPropagation()}>
                 <Tooltip title="重置所有条件">
                   <Button
                     type="text"

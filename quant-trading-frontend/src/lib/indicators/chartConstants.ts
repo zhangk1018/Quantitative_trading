@@ -14,8 +14,19 @@ export const CHART_CONFIG = {
   RESIZE_DEBOUNCE_MS: 100,
 } as const;
 
+export interface DetectionConfig {
+  morningStarPenetration: number;
+  eveningStarPenetration: number;
+  dojiBodyRatio: number;
+  largeBodyRatio: number;
+  hammerLowerShadowRatio: number;
+  hammerUpperShadowRatio: number;
+  requireGapForStar: boolean;
+  hammerUpperTolerance: number;
+}
+
 /** 形态检测默认阈值（所有比例必须 >0，且建议 ≤10） */
-export const DETECTION_CONFIG = {
+export const DETECTION_CONFIG: DetectionConfig = {
   morningStarPenetration: 0.3,
   eveningStarPenetration: 0.3,
   dojiBodyRatio: 0.1,
@@ -24,7 +35,7 @@ export const DETECTION_CONFIG = {
   hammerUpperShadowRatio: 0.1,
   requireGapForStar: false,
   hammerUpperTolerance: 0.01,
-} as const;
+};
 
 /** 配置参数合法范围约束（用于校验） */
 export const CONFIG_RANGES = {
@@ -40,15 +51,16 @@ export const CONFIG_RANGES = {
 
 /** 校验配置参数，非法值自动修正为默认 */
 export function validateConfig(
-  config: Partial<typeof DETECTION_CONFIG>
-): typeof DETECTION_CONFIG {
+  config: Partial<DetectionConfig>
+): DetectionConfig {
   const defaultCfg = { ...DETECTION_CONFIG };
   const result = { ...defaultCfg, ...config };
-  for (const key of Object.keys(defaultCfg) as (keyof typeof DETECTION_CONFIG)[]) {
+  const mutableResult = result as Record<keyof DetectionConfig, number | boolean>;
+  for (const key of Object.keys(defaultCfg) as (keyof DetectionConfig)[]) {
     const value = result[key];
     if (typeof value !== 'boolean' && typeof value !== 'number') {
       console.warn(`[validateConfig] Invalid type for ${key}, reset to default ${defaultCfg[key]}`);
-      result[key] = defaultCfg[key];
+      mutableResult[key] = defaultCfg[key];
       continue;
     }
     if (typeof value === 'number') {
@@ -56,7 +68,7 @@ export function validateConfig(
       if (range) {
         if (value < range.min || value > range.max) {
           console.warn(`[validateConfig] ${key}=${value} out of range [${range.min}, ${range.max}], reset to ${defaultCfg[key]}`);
-          result[key] = defaultCfg[key];
+          mutableResult[key] = defaultCfg[key];
         }
       }
     }

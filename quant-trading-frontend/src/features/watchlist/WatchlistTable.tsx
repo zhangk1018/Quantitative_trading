@@ -160,7 +160,7 @@ const WatchlistTable: React.FC<WatchlistTableProps> = ({
   if (rows.length === 0) return null;
 
   return (
-    <div className="w-full overflow-auto" data-testid="watchlist-table">
+    <div className="w-full" data-testid="watchlist-table">
       <table className="w-full text-sm border-collapse">
         <thead className="sticky top-0 z-10 bg-bg-panel">
           <tr className="text-text-secondary text-xs border-b border-border-color">

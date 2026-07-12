@@ -51,6 +51,7 @@ describe('StrategyListDrawer', () => {
       />
     );
     expect(screen.queryByTestId('strategy-list-drawer')).not.toBeInTheDocument();
+    expect(document.body.querySelector('.ant-drawer')).not.toBeInTheDocument();
   });
 
   it('空策略列表显示空状态', () => {

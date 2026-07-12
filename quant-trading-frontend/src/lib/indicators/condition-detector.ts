@@ -119,7 +119,9 @@ function detectVolumeBreakout(cache: ComputedCache, bars: KlineBar[]): Condition
   const events: ConditionEvent[] = [];
   const config = CONDITION_VISUAL_CONFIG.volume_breakout;
   for (let i = 0; i < cache.volumes.length; i++) {
-    if (cache.volMa5[i] !== null && cache.volumes[i] > cache.volMa5[i]! * 2) {
+    if (cache.volMa5[i] === null) continue;
+    const volRatio5 = cache.volumes[i] / cache.volMa5[i]!;
+    if (volRatio5 >= 1.5) {
       events.push({
         time: bars[i].time,
         label: config.label,
@@ -127,7 +129,7 @@ function detectVolumeBreakout(cache: ComputedCache, bars: KlineBar[]): Condition
         color: config.color,
         shape: config.shape,
         direction: config.direction,
-        value: `量 ${cache.volumes[i].toFixed(0)}`,
+        value: `量比 ${volRatio5.toFixed(2)}`,
       });
     }
   }
@@ -185,18 +187,15 @@ function detectConsecutiveUp(cache: ComputedCache, bars: KlineBar[]): ConditionE
     if (cache.closes[i] > cache.closes[i - 1]) {
       streak++;
       if (streak >= 3) {
-        const startIdx = i - streak + 1;
-        for (let j = startIdx; j <= i; j++) {
-          events.push({
-            time: bars[j].time,
-            label: config.label,
-            fieldKey: 'consecutive_up',
-            color: config.color,
-            shape: config.shape,
-            direction: config.direction,
-            value: `连涨${streak}天`,
-          });
-        }
+        events.push({
+          time: bars[i].time,
+          label: config.label,
+          fieldKey: 'consecutive_up',
+          color: config.color,
+          shape: config.shape,
+          direction: config.direction,
+          value: `连涨${streak}天`,
+        });
       }
     } else {
       streak = 0;

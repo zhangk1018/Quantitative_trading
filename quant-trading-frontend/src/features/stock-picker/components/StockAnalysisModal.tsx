@@ -102,15 +102,13 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
 
         // 1) 非 pattern 条件（RSI/MACD 等）— 始终使用本地检测
         if (nonPatternConfigs.length > 0 && data.candles.length > 0) {
-          const volLookup = new Map<string, number>();
-          data.volume.forEach(v => volLookup.set(String(v.time), v.value));
-          const bars = data.candles.map(c => ({
-            time: String(c.time),
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
-            volume: volLookup.get(String(c.time)) ?? 0,
+          const bars = klineResult.items.map(item => ({
+            time: item.time,
+            open: item.open,
+            high: item.high,
+            low: item.low,
+            close: item.close,
+            volume: item.volume,
           }));
           bars.sort((a, b) => a.time.localeCompare(b.time));
           const result = detectConditions(bars, nonPatternConfigs);
@@ -327,7 +325,7 @@ export const PATTERN_MARKER_VISUAL_MAP: Record<string, {
 export function convertPatternMarkersToEvents(
   markers: PatternMarker[],
   allConfigs: ConditionConfig[],
-  candles: { time: string | number }[],
+  candles: { time: unknown }[],
 ): ConditionEvent[] {
   const activePatternKeys = new Set(
     allConfigs.filter(c => c.fieldKey.startsWith('pattern_')).map(c => c.fieldKey)

@@ -80,6 +80,10 @@ export function StrategyListDrawer({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renamingText, setRenamingText] = useState('');
 
+  if (!visible) {
+    return null;
+  }
+
   const handleStartRename = (strategy: SavedStrategy) => {
     setRenamingId(strategy.id);
     setRenamingText(strategy.name);

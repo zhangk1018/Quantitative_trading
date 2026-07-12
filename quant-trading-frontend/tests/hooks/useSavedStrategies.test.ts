@@ -133,6 +133,18 @@ describe('useSavedStrategies', () => {
     expect(result.current.strategies[0].name).toBe('已有策略');
   });
 
+  it('默认 storage 在 rerender 时保持稳定，避免加载 effect 反复触发 setState', () => {
+    localStorage.clear();
+    const loadSpy = vi.spyOn(LocalStorageStrategyStorage.prototype, 'load');
+
+    const { rerender } = renderHook(() => useSavedStrategies());
+    rerender();
+    rerender();
+
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+    loadSpy.mockRestore();
+  });
+
   it('saveStrategy 创建新策略', () => {
     const { result } = renderHook(() => useSavedStrategies(storage));
     let saveResult: { ok: boolean; error?: string };
