@@ -5,6 +5,19 @@ import { fetchStocks } from '../../stock-detail/api';
 import { buildScreeningParams, CONFIG, ScreenerFilterPayload } from '../utils/screener';
 import type { StockItem, FetchStocksResponse } from '../types';
 
+// ==================== 自选股代码读取 ====================
+/** 从 localStorage 读取用户自选股代码列表（与 watchlist/store.tsx 共用 STORAGE_KEY） */
+function getWatchlistCodes(): string[] {
+  try {
+    const raw = localStorage.getItem('watchlist');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return parsed.stocks?.['全部'] || [];
+    }
+  } catch { /* ignore */ }
+  return [];
+}
+
 // ==================== 错误类型守卫 ====================
 interface ApiErrorLike {
   message?: string;
@@ -111,7 +124,8 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
 
       try {
         const state = stateRef.current;
-        const requestParams = buildScreeningParams(state, sortByParam, sortAscParam, PAGE_SIZE, offsetParam);
+        const watchlistCodes = state.stockRange === 'watchlist' ? getWatchlistCodes() : undefined;
+        const requestParams = buildScreeningParams(state, sortByParam, sortAscParam, PAGE_SIZE, offsetParam, watchlistCodes);
         const result = (await fetchStocks(requestParams, finalSignal)) as FetchStocksResponse;
 
         setItems((prev) => (append ? [...prev, ...result.items] : result.items));

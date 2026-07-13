@@ -73,20 +73,32 @@ describe('buildScreeningParams', () => {
   });
 
   // ---------- 自选范围 ----------
-  it('stockRange="watchlist" → watchlist_only=true', () => {
+  it('stockRange="watchlist" + watchlistCodes → stock_codes 参数', () => {
     const params = buildScreeningParams(
       basePayload({ stockRange: 'watchlist' }),
-      'change_pct', false, 20,
+      'change_pct', false, 20, 0,
+      ['000001', '600000', '300001'],
     );
-    expect(params.watchlist_only).toBe(true);
+    expect(params.stock_codes).toBe('000001,600000,300001');
+    expect(params.watchlist_only).toBeUndefined();
   });
 
-  it('stockRange="all" → 无 watchlist_only', () => {
+  it('stockRange="watchlist" 但 watchlistCodes 为空 → 无 stock_codes', () => {
+    const params = buildScreeningParams(
+      basePayload({ stockRange: 'watchlist' }),
+      'change_pct', false, 20, 0,
+      [],
+    );
+    expect(params.stock_codes).toBeUndefined();
+  });
+
+  it('stockRange="all" → 无 stock_codes', () => {
     const params = buildScreeningParams(
       basePayload({ stockRange: 'all' }),
-      'change_pct', false, 20,
+      'change_pct', false, 20, 0,
+      ['000001'],
     );
-    expect(params.watchlist_only).toBeUndefined();
+    expect(params.stock_codes).toBeUndefined();
   });
 
   // ---------- 单位换算 ----------
@@ -226,10 +238,10 @@ describe('buildScreeningParams', () => {
           { fieldKey: 'pattern_hammer', op: 'AND', lookbackDays: 3 },
         ],
       },
-    }), 'change_pct', false, 20);
+    }), 'change_pct', false, 20, 0, ['000001', '600000']);
 
     expect(params.listed_board).toBe('主板');
-    expect(params.watchlist_only).toBe(true);
+    expect(params.stock_codes).toBe('000001,600000');
     expect(params.market_cap_min).toBe(100000);  // 10 × 10000
     expect(params.volume_max).toBe(10000);
     expect(params.pe_max).toBe(20);

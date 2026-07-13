@@ -416,7 +416,7 @@ def search_stocks(
         logger.info("股票搜索请求: keyword=%s", keyword)
 
         df = screener.df
-        required_cols = ["ts_code", "name"]
+        required_cols = ["code", "stock_name"]
         missing = [col for col in required_cols if col not in df.columns]
         if missing:
             return ApiResponse(code=500, message=f"数据源缺少字段: {missing}", data=None)

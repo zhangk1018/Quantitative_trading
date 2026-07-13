@@ -1,11 +1,10 @@
-import React from 'react';
+// backtest/index.tsx — 回测分析页签入口
 
-const Backtest: React.FC = () => {
-  return (
-    <div className="h-full flex items-center justify-center text-text-secondary">
-      回测模块 - 待开发
-    </div>
-  );
+import React from 'react';
+import BacktestView from './BacktestView';
+
+const BacktestPage: React.FC = () => {
+  return <BacktestView />;
 };
 
-export default Backtest;
+export default BacktestPage;

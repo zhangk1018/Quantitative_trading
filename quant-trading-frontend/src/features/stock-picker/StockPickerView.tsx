@@ -74,6 +74,8 @@ const StockPickerContent: React.FC = () => {
             selectedCount={actions.selectedCount}
             loading={loading}
             itemsLength={items.length}
+            items={items}
+            selectedCodes={actions.selectedCodes}
             onAddToWatchlist={actions.handleAddClick}
             onExport={actions.handleExport}
             onRefresh={() => fetchFirstPage()}

@@ -237,3 +237,28 @@ export const fetchSignals = async (code: string): Promise<SignalItem[]> => {
   const list = unwrap(data);
   return Array.isArray(list) ? list : [];
 };
+
+// ==================== 4. 股票搜索（代码/名称模糊匹配） ====================
+export interface StockSearchItem {
+  stock_code: string;  // e.g., "000001" (不含后缀)
+  stock_name: string;  // e.g., "平安银行"
+  close?: number;
+  change_pct?: number;
+  [key: string]: any;
+}
+
+export interface StockSearchResponse {
+  items: StockSearchItem[];
+  total: number;
+}
+
+export const searchStocks = async (
+  keyword: string,
+  page = 1,
+  pageSize = 20,
+): Promise<StockSearchResponse> => {
+  const { data } = await api.get<ApiResponse<StockSearchResponse>>('/stocks/search', {
+    params: { keyword, page, page_size: pageSize },
+  });
+  return unwrap(data);
+};

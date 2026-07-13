@@ -3,7 +3,6 @@
 // ==================== 枚举常量 ====================
 export enum RequestParamKeys {
   ListedBoard = 'listed_board',
-  WatchlistOnly = 'watchlist_only',
   SortBy = 'sort_by',
   SortAsc = 'sort_asc',
   Offset = 'offset',
@@ -67,6 +66,7 @@ export function buildScreeningParams(
   sortAsc: boolean,
   limit: number,
   offset: number = 0,
+  watchlistCodes?: string[],
 ): Record<string, unknown> {
   const {
     selectedBoards = [],
@@ -91,8 +91,10 @@ export function buildScreeningParams(
     }
   }
 
-  if (stockRange === 'watchlist') {
-    params[RequestParamKeys.WatchlistOnly] = true;
+  // "仅看自选"：将自选股代码通过 stock_codes 传给后端，
+  // 与其他筛选条件（listed_board/指标等）取交集，实现"在自选股中筛选"
+  if (stockRange === 'watchlist' && watchlistCodes && watchlistCodes.length > 0) {
+    params['stock_codes'] = watchlistCodes.join(',');
   }
 
   // 行情指标（单位转换 + 数值校验 + 范围逻辑）

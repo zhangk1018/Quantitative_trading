@@ -13,10 +13,11 @@
 
 import React, { useState } from 'react';
 import { Card, Radio, Space, Typography, Divider, Tag, Tabs } from 'antd';
-import { BgColorsOutlined, CodeOutlined } from '@ant-design/icons';
+import { BgColorsOutlined, CodeOutlined, ExperimentOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
 import { useSettings, COLOR_SCHEMES, ColorScheme } from '@/shared/contexts/SettingsContext';
 import { CustomIndicatorManager } from './components/CustomIndicatorManager';
+import BacktestDefaultsPanel from './components/BacktestDefaultsPanel';
 
 const { Title, Text } = Typography;
 
@@ -116,7 +117,9 @@ const Config: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // 从 URL 读取初始 activeKey（K 2026-06-17 决策：URL 是状态唯一来源）
-  const initialTab = searchParams.get('tab') === 'indicators' ? 'indicators' : 'color';
+  const initialTab = searchParams.get('tab') === 'indicators' ? 'indicators'
+    : searchParams.get('tab') === 'backtest' ? 'backtest'
+    : 'color';
   const [activeTab, setActiveTab] = useState(initialTab);
 
   /**
@@ -130,6 +133,8 @@ const Config: React.FC = () => {
     const next = new URLSearchParams(searchParams);
     if (key === 'indicators') {
       next.set('tab', 'indicators');
+    } else if (key === 'backtest') {
+      next.set('tab', 'backtest');
     } else {
       next.delete('tab');
     }
@@ -139,16 +144,10 @@ const Config: React.FC = () => {
 
   return (
     <div className="h-full overflow-auto bg-bg-base p-6">
-      <div className="max-w-3xl mx-auto">
-        <Title level={3} className="!text-text-primary !mb-2">
-          <BgColorsOutlined className="mr-2" />
+      <div className="max-w-2xl mx-auto">
+        <Title level={4} className="!text-text-primary !mb-4">
           系统设置
         </Title>
-        <Text className="text-text-secondary">
-          个性化配置项，设置会保存在浏览器本地，跨会话生效。
-        </Text>
-
-        <Divider className="!border-border-color" />
 
         <Tabs
           activeKey={activeTab}
@@ -164,6 +163,16 @@ const Config: React.FC = () => {
                 </span>
               ),
               children: <ColorSchemePanel />,
+            },
+            {
+              key: 'backtest',
+              label: (
+                <span data-testid="config-tab-backtest">
+                  <ExperimentOutlined className="mr-1" />
+                  回测默认设置
+                </span>
+              ),
+              children: <BacktestDefaultsPanel />,
             },
             {
               key: 'indicators',

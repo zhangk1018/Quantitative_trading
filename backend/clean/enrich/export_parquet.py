@@ -6,16 +6,21 @@ import os
 import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from pathlib import Path
+
 import pandas as pd
 from sqlalchemy import create_engine, text
 from utils.config import load_config
+
+# 项目根目录（与 DataLoader 使用同一路径）
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 
 def export_to_parquet():
     config = load_config()
     db_url = config.get('database', {}).get('url', 'postgresql://quant_user:quant_password@localhost:5432/quant_trading')
     engine = create_engine(db_url)
     
-    output_path = 'data/price/daily/latest_quotes.parquet'
+    output_path = str(PROJECT_ROOT / 'data' / 'price' / 'daily' / 'latest_quotes.parquet')
     
     print("📤 导出数据到Parquet...")
     

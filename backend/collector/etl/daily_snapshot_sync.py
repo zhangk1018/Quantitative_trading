@@ -150,7 +150,7 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                 COALESCE(c.consec_up_days, 0) AS consec_up_days,
                 CASE WHEN s.vol_5_avg IS NOT NULL AND s.vol_5_avg > 0
                      THEN ROUND((q.volume / s.vol_5_avg)::numeric, 2) ELSE NULL END AS vol_ratio_5,
-                NULL::boolean AS is_st,
+                CASE WHEN b.name LIKE '%ST%' THEN TRUE ELSE FALSE END AS is_st,
                 CASE WHEN b.list_date IS NOT NULL 
                      AND b.list_date >= CAST(:target_date AS DATE) - INTERVAL '365 days' 
                      THEN TRUE ELSE FALSE END AS is_new,

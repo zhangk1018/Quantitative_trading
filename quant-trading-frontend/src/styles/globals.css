@@ -19,3 +19,8 @@ body {
 ::-webkit-scrollbar-thumb {
   @apply bg-bg-card rounded-full hover:bg-border-hover transition-colors;
 }
+
+/* 回测配置页：RangePicker 只显示单月 */
+.single-month-range .ant-picker-panel:last-child {
+  display: none;
+}
