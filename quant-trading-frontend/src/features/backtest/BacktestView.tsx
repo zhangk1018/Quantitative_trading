@@ -237,13 +237,13 @@ const BacktestView: React.FC = () => {
           <div style={{ padding: 16 }}>
             {/* 进度条 */}
             {loading && progress && (
-              <Card size="small" style={{ marginBottom: 12 }}>
+              <Card size="small" className="!bg-bg-panel !border-border-color !mb-3">
                 <Progress
                   percent={progress.percent}
                   status="active"
-                  strokeColor="#1677ff"
+                  strokeColor="#2962FF"
                 />
-                <Text type="secondary" style={{ fontSize: 12 }}>
+                <Text style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                   {progress.message}
                 </Text>
               </Card>
@@ -332,19 +332,12 @@ const BacktestView: React.FC = () => {
             )}
 
             {!output && !loading && (
-              <Card
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  height: 300,
-                  backgroundColor: '#fafafa',
-                }}
+              <div
+                className="flex items-center justify-center h-[300px] rounded
+                           bg-bg-panel border border-border-color text-text-secondary"
               >
-                <Text type="secondary">
-                  请在左侧配置策略后点击"开始回测"
-                </Text>
-              </Card>
+                <span>请在左侧配置策略后点击"开始回测"</span>
+              </div>
             )}
           </div>
         </div>
