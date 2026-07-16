@@ -24,8 +24,7 @@ export const StockPickerSidebar: React.FC<StockPickerSidebarProps> = React.memo(
   loading, onStartScreening, onReset,
 }) => (
   <div
-    className="w-[280px] flex-shrink-0 bg-bg-panel border-r border-border-color flex flex-col"
-    style={{ height: 'calc(100vh - 56px)' }}
+    className="w-[280px] flex-shrink-0 bg-bg-panel border-r border-border-color flex flex-col h-full"
   >
     <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
       <RangeSelector />

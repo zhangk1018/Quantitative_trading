@@ -70,6 +70,7 @@ STAGE2_TASKS = [
     {"name": "adj_factor_sync", "script": os.path.join("backend", "collector", "etl", "sync_adj_factor.py"), "args": ["--incremental"]},
     {"name": "daily_basic_sync", "script": os.path.join("backend", "collector", "etl", "sync_daily_basic.py"), "args": ["--latest"]},
     {"name": "indicators_compute", "script": os.path.join("backend", "clean", "etl", "compute_indicators_daily.py"), "args": []},
+    {"name": "pattern_precompute", "script": os.path.join("backend", "clean", "etl", "pattern_precompute.py"), "args": []},
     {"name": "signal_precompute", "script": os.path.join("backend", "clean", "etl", "signal_precompute.py"), "args": []},
     {"name": "daily_sync", "script": os.path.join("backend", "collector", "etl", "daily_snapshot_sync.py"), "args": ["--latest"]},
     {"name": "parquet_export", "script": os.path.join("backend", "clean", "enrich", "export_parquet.py"), "args": []},

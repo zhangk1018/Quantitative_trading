@@ -29,8 +29,8 @@ export type IdleCashReturn = 'none' | 'moneyMarket';
 /** 顺延超时失败处理 */
 export type DeferFailAction = 'abandon' | 'atClose';
 
-/** 技术形态类型（引擎支持的4种基础形态） */
-export type TechPattern = 'ma_bullish' | 'macd_golden_cross' | 'rsi_golden_cross' | 'boll_break_upper';
+/** 技术形态类型（引擎支持的5种基础形态 + 1个自编指标） */
+export type TechPattern = 'ma_bullish' | 'macd_golden_cross' | 'rsi_golden_cross' | 'boll_break_upper' | 'ths_6_buy_signal';
 
 /** K线形态类型（后端 pattern_markers 提供） */
 export type KlinePattern = 'morning_star' | 'hammer' | 'bullish_engulfing' | 'piercing_line' | 'three_white_soldiers';
@@ -125,7 +125,8 @@ export type FilterNode =
   | { type: 'range'; field: RangeField; min?: number; max?: number }
   | { type: 'pattern'; pattern: TechPattern }
   | { type: 'kline'; pattern: KlinePattern; lookbackDays: number }
-  | { type: 'market'; boards?: string[]; watchlistOnly?: boolean };
+  | { type: 'market'; boards?: string[]; watchlistOnly?: boolean }
+  | { type: 'custom_indicator'; scriptId: string; version: number; min?: number; max?: number };
 
 /**
  * ============================================

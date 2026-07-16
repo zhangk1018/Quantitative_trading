@@ -82,7 +82,7 @@ interface FormState {
 const defaultFormState: FormState = {
   name: '',
   category: 'trend',
-  syntax: 'tdx',
+  syntax: 'python_talib',
   formula: '',
   params: [],
   operator: '>',
@@ -97,29 +97,32 @@ interface FieldCandidate {
   label: string;
   /** 插入时的文本（光标位置替换为该文本） */
   insertText: string;
-  group: 'params' | 'quote' | 'indicator';
+  group: 'params' | 'data' | 'numpy' | 'pattern';
 }
 
 /**
- * V1.0 公式中可引用的"股票字段候选"
- *  - 行情字段：CLOSE / OPEN / HIGH / LOW / VOL / AMOUNT
- *  - 指标字段：MA / EMA / RSI / MACD / BOLL / KDJ
- *  注：V1.0 公式解析层尚未实现（仅做基础非空 + 危险字符检查），
- *     此处候选列表用于编辑器辅助，不做沙箱执行。
+ * Python 自编指标可插入的代码片段
+ * 数据字段：close/high/low/open/volume 均为 list[list[float]]（股票×天数）
  */
-const QUOTE_FIELDS: FieldCandidate[] = [
-  { key: 'CLOSE', label: 'CLOSE 收盘价', insertText: 'CLOSE', group: 'quote' },
-  { key: 'OPEN', label: 'OPEN 开盘价', insertText: 'OPEN', group: 'quote' },
-  { key: 'HIGH', label: 'HIGH 最高价', insertText: 'HIGH', group: 'quote' },
-  { key: 'LOW', label: 'LOW 最低价', insertText: 'LOW', group: 'quote' },
-  { key: 'VOL', label: 'VOL 成交量', insertText: 'VOL', group: 'quote' },
-  { key: 'AMOUNT', label: 'AMOUNT 成交额', insertText: 'AMOUNT', group: 'quote' },
-  { key: 'MA', label: 'MA 均线', insertText: 'MA(CLOSE, 5)', group: 'indicator' },
-  { key: 'EMA', label: 'EMA 指数均线', insertText: 'EMA(CLOSE, 12)', group: 'indicator' },
-  { key: 'RSI', label: 'RSI 相对强弱', insertText: 'RSI(CLOSE, 12)', group: 'indicator' },
-  { key: 'MACD', label: 'MACD 异同移动平均', insertText: 'MACD(CLOSE, 12, 26, 9)', group: 'indicator' },
-  { key: 'BOLL', label: 'BOLL 布林带', insertText: 'BOLL(CLOSE, 20, 2)', group: 'indicator' },
-  { key: 'KDJ', label: 'KDJ 随机指标', insertText: 'KDJ(9, 3, 3)', group: 'indicator' },
+const PYTHON_HELPERS: FieldCandidate[] = [
+  // 行情数据
+  { key: 'close', label: 'close[si] 收盘价', insertText: 'close[stock_idx]', group: 'data' },
+  { key: 'high', label: 'high[si] 最高价', insertText: 'high[stock_idx]', group: 'data' },
+  { key: 'low', label: 'low[si] 最低价', insertText: 'low[stock_idx]', group: 'data' },
+  { key: 'open', label: 'open[si] 开盘价', insertText: 'open[stock_idx]', group: 'data' },
+  { key: 'volume', label: 'volume[si] 成交量', insertText: 'volume[stock_idx]', group: 'data' },
+  // numpy 函数
+  { key: 'np_array', label: 'np.array()', insertText: 'np.array(close[stock_idx])', group: 'numpy' },
+  { key: 'np_mean', label: 'np.mean()', insertText: 'np.mean(', group: 'numpy' },
+  { key: 'np_max', label: 'np.max()', insertText: 'np.max(', group: 'numpy' },
+  { key: 'np_min', label: 'np.min()', insertText: 'np.min(', group: 'numpy' },
+  { key: 'np_std', label: 'np.std()', insertText: 'np.std(', group: 'numpy' },
+  { key: 'np_convolve', label: 'np.convolve()', insertText: 'np.convolve(', group: 'numpy' },
+  // 常用模式
+  { key: 'for_loop', label: 'for 循环', insertText: 'for i in range(n):', group: 'pattern' },
+  { key: 'range_len', label: 'range(len())', insertText: 'range(len(c))', group: 'pattern' },
+  { key: 'tolist', label: '.tolist()', insertText: '.tolist()', group: 'pattern' },
+  { key: 'none_pad', label: '[None] * n', insertText: '[None] * n', group: 'pattern' },
 ];
 
 // Monaco editor 配置：使用 @monaco-editor/react 默认 CDN loader（unpkg.com）
@@ -188,11 +191,10 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
   };
 
   /**
-   * 公式 OnBlur 校验（K 2026-06-17 决策：OnBlur 而非 onChange）
+   * 公式 OnBlur 校验
    * - 非空校验
-   * - 长度限制（≤ 2000 字符）
+   * - 长度限制（≤ 8000 字符）
    * - 危险关键字检测（import/exec/eval 等）
-   * - 字符集校验（TDX 仅允许 A-Z 0-9 _ ( ) + - * / 等）
    */
   const handleFormulaBlur = () => {
     const v = formState.formula;
@@ -211,19 +213,20 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
     }
   };
 
-  /**
-   * Monaco 挂载回调：保存 editor 实例
-   */
+  // 存储最新的 handleFormulaBlur 引用，避免 Monaco 闭包陈旧问题
+  const handleFormulaBlurRef = useRef<() => void>(() => {});
+  handleFormulaBlurRef.current = handleFormulaBlur;
+
   /**
    * Monaco 挂载回调：
    * - 保存 editor 实例到 ref（用于字段插入）
-   * - 绑定 onDidBlurEditorWidget 事件做 OnBlur 校验（K 2026-06-17 决策）
-   *   @monaco-editor/react v4.6.0 不支持 onBlur prop，必须通过 editor.onDidBlurEditorWidget 手动绑定
+   * - 绑定 onDidBlurEditorWidget 事件做 OnBlur 校验
+   *   通过 ref 调用最新 handleFormulaBlur，避免闭包捕获旧 formState
    */
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
     editor.onDidBlurEditorWidget(() => {
-      handleFormulaBlur();
+      handleFormulaBlurRef.current();
     });
   };
 
@@ -350,8 +353,8 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
   const submitDisabled =
     !formState.name.trim() || !formState.formula.trim() || !!nameError || !!formulaError;
 
-  // Monaco 语言选择：TDX 用 cpp（C-like 高亮），Python 用 python
-  const monacoLanguage = formState.syntax === 'python_talib' ? 'python' : 'cpp';
+  // Monaco 语言始终为 Python
+  const monacoLanguage = 'python';
 
   // 字段插入候选项：参数名 + 行情字段 + 指标字段
   const paramCandidates: FieldCandidate[] = formState.params
@@ -412,26 +415,15 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
           />
         </Form.Item>
 
-        {/* 2. 指标分类 + 公式语法（同行布局节省空间） */}
-        <div className="grid grid-cols-2 gap-3">
-          <Form.Item label="指标分类" required>
-            <Select
-              value={formState.category}
-              onChange={(v) => updateField('category', v)}
-              options={INDICATOR_CATEGORIES.map((c) => ({ value: c.value, label: c.label }))}
-              data-testid="custom-indicator-modal-category"
-            />
-          </Form.Item>
-
-          <Form.Item label="公式语法" required>
-            <Select
-              value={formState.syntax}
-              onChange={(v) => updateField('syntax', v)}
-              options={INDICATOR_SYNTAXES}
-              data-testid="custom-indicator-modal-syntax"
-            />
-          </Form.Item>
-        </div>
+        {/* 2. 指标分类 */}
+        <Form.Item label="指标分类" required>
+          <Select
+            value={formState.category}
+            onChange={(v) => updateField('category', v)}
+            options={INDICATOR_CATEGORIES.map((c) => ({ value: c.value, label: c.label }))}
+            data-testid="custom-indicator-modal-category"
+          />
+        </Form.Item>
 
         {/* 3. 指标公式 + 字段插入按钮 */}
         <Form.Item
@@ -439,12 +431,12 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
             <span className="flex items-center justify-between w-full">
               <span>
                 指标公式{' '}
-                <Tooltip title="支持通达信公式或 Python Ta-Lib 表达式，禁止 import/exec/eval 等危险关键字">
+                <Tooltip title="Python 脚本，定义 calculate(close, high, low, open, volume) 函数，返回 list[float]">
                   <QuestionCircleOutlined className="text-text-secondary" />
                 </Tooltip>
               </span>
               <span className="text-text-secondary text-xs font-normal">
-                Monaco · {formState.syntax === 'python_talib' ? 'Python' : '通达信'}
+                Python · Monaco Editor
               </span>
             </span>
           }
@@ -490,7 +482,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
             />
           </div>
 
-          {/* 字段插入按钮区（K 2026-06-17 决策：必带） */}
+          {/* 字段插入按钮区 */}
           <div className="mt-2 space-y-1.5" data-testid="custom-indicator-modal-field-insert">
             {paramCandidates.length > 0 && (
               <div className="flex items-start gap-2 flex-wrap">
@@ -512,14 +504,13 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
             )}
             <div className="flex items-start gap-2 flex-wrap">
               <span className="text-text-secondary text-xs mt-1 w-14 flex-shrink-0">
-                行情字段：
+                行情数据：
               </span>
               <Space size={4} wrap>
-                {QUOTE_FIELDS.filter((c) => c.group === 'quote').map((c) => (
+                {PYTHON_HELPERS.filter((c) => c.group === 'data').map((c) => (
                   <Button
                     key={c.key}
                     size="small"
-                    icon={<ThunderboltOutlined />}
                     onClick={() => insertAtCursor(c.insertText)}
                     data-testid={`custom-indicator-modal-insert-${c.key}`}
                   >
@@ -530,14 +521,30 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
             </div>
             <div className="flex items-start gap-2 flex-wrap">
               <span className="text-text-secondary text-xs mt-1 w-14 flex-shrink-0">
-                指标函数：
+                NumPy 函数：
               </span>
               <Space size={4} wrap>
-                {QUOTE_FIELDS.filter((c) => c.group === 'indicator').map((c) => (
+                {PYTHON_HELPERS.filter((c) => c.group === 'numpy').map((c) => (
                   <Button
                     key={c.key}
                     size="small"
-                    icon={<ThunderboltOutlined />}
+                    onClick={() => insertAtCursor(c.insertText)}
+                    data-testid={`custom-indicator-modal-insert-${c.key}`}
+                  >
+                    {c.label}
+                  </Button>
+                ))}
+              </Space>
+            </div>
+            <div className="flex items-start gap-2 flex-wrap">
+              <span className="text-text-secondary text-xs mt-1 w-14 flex-shrink-0">
+                常用模式：
+              </span>
+              <Space size={4} wrap>
+                {PYTHON_HELPERS.filter((c) => c.group === 'pattern').map((c) => (
+                  <Button
+                    key={c.key}
+                    size="small"
                     onClick={() => insertAtCursor(c.insertText)}
                     data-testid={`custom-indicator-modal-insert-${c.key}`}
                   >

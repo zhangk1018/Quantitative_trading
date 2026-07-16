@@ -15,19 +15,19 @@ import {
   calcEqualWeight,
   calcBuyCommission,
   calcSellCommission,
-} from '../../src/features/backtest/strategyBacktestEngine';
+} from '../../src/features/strategy-backtest/engine';
 import type {
   StrategyBacktestInput,
   ProgressInfo,
-} from '../../src/features/backtest/strategyBacktestEngine';
+} from '../../src/features/strategy-backtest/engine';
 import type {
   StrategyBacktestDefaults,
   FilterNode,
   StockSnapshot,
   SellReason,
-} from '../../src/features/backtest/strategyBacktestTypes';
-import { IndicatorCache } from '../../src/features/backtest/strategyBacktestTypes';
-import { DEFAULT_STRATEGY_BACKTEST_DEFAULTS } from '../../src/features/backtest/strategyBacktestSettingsStorage';
+} from '../../src/features/strategy-backtest/types';
+import { IndicatorCache } from '../../src/features/strategy-backtest/types';
+import { DEFAULT_STRATEGY_BACKTEST_DEFAULTS } from '../../src/features/strategy-backtest/storage';
 
 // ==================== 测试数据生成器 ====================
 
@@ -46,12 +46,15 @@ function generateOhlcv(
 ): number[][] {
   const bars: number[][] = [];
   let price = startPrice;
-  const start = new Date(startDate + 'T00:00:00Z');
+  // P2-3.1: 使用 Date.UTC 生成固定时间戳，避免时区歧义
+  const startMs = Date.UTC(
+    parseInt(startDate.slice(0, 4)),
+    parseInt(startDate.slice(5, 7)) - 1,
+    parseInt(startDate.slice(8, 10))
+  );
 
   for (let i = 0; i < days; i++) {
-    const date = new Date(start);
-    date.setUTCDate(date.getUTCDate() + i);
-    const ts = date.getTime();
+    const ts = startMs + i * 86400000;
 
     const open = price;
     const close = price * (1 + dailyChange);
@@ -72,11 +75,14 @@ function generateOhlcv(
  */
 function generateOhlcvWithPrices(prices: number[], startDate = '2025-01-02'): number[][] {
   const bars: number[][] = [];
-  const start = new Date(startDate + 'T00:00:00Z');
+  // P2-3.1: 使用 Date.UTC 生成固定时间戳
+  const startMs = Date.UTC(
+    parseInt(startDate.slice(0, 4)),
+    parseInt(startDate.slice(5, 7)) - 1,
+    parseInt(startDate.slice(8, 10))
+  );
   for (let i = 0; i < prices.length; i++) {
-    const date = new Date(start);
-    date.setUTCDate(date.getUTCDate() + i);
-    const ts = date.getTime();
+    const ts = startMs + i * 86400000;
     const price = prices[i];
     const preClose = i > 0 ? prices[i - 1] : price;
     bars.push([ts, price, price * 1.01, price * 0.99, price, 1000000, preClose]);
@@ -224,22 +230,22 @@ describe('isSuspended', () => {
 });
 
 describe('isLimitUp', () => {
-  it('开盘价等于涨停价时判定为涨停', () => {
+  it('一字涨停时判定为涨停（所有价格均达到涨停价）', () => {
     const bar = generateLimitUpBar(1000, 10, 0.10);
     expect(isLimitUp(bar, 10, 0.10)).toBe(true);
   });
-  it('开盘价低于涨停价时不是涨停', () => {
-    const bar = [1000, 10.5, 11, 10.5, 11, 1000000, 10];
+  it('盘中打开涨停（open < upLimit）时不是涨停', () => {
+    const bar = [1000, 10.5, 11, 10.5, 10.8, 1000000, 10];
     expect(isLimitUp(bar, 10, 0.10)).toBe(false);
   });
 });
 
 describe('isLimitDown', () => {
-  it('开盘价等于跌停价时判定为跌停', () => {
+  it('一字跌停时判定为跌停（所有价格均达到跌停价）', () => {
     const bar = generateLimitDownBar(1000, 10, 0.10);
     expect(isLimitDown(bar, 10, 0.10)).toBe(true);
   });
-  it('开盘价高于跌停价时不是跌停', () => {
+  it('盘中打开跌停（open > downLimit）时不是跌停', () => {
     const bar = [1000, 9.5, 10, 9.5, 10, 1000000, 10];
     expect(isLimitDown(bar, 10, 0.10)).toBe(false);
   });

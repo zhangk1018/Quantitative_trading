@@ -3,6 +3,7 @@ import { App } from 'antd';
 import { useScreenerSelector } from '../context/ScreenerContext';
 import { fetchStocks } from '../../stock-detail/api';
 import { buildScreeningParams, CONFIG, ScreenerFilterPayload } from '../utils/screener';
+import { extractCustomConditions, applyCustomIndicatorFilter } from '../utils/applyCustomIndicatorFilter';
 import type { StockItem, FetchStocksResponse } from '../types';
 
 // ==================== 自选股代码读取 ====================
@@ -57,16 +58,21 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
   const financialIndicatorRanges = useScreenerSelector((s) => s.financialIndicators.ranges);
   const selectedTechnicalIndicators = useScreenerSelector((s) => s.technical.selected);
   const filterGroup = useScreenerSelector((s) => s.condition.filterGroup);
+  const customIndicators = useScreenerSelector((s) => s.custom.indicators);
 
-  const stateRef = useRef<ScreenerFilterPayload>({
+  const stateRef = useRef<ScreenerFilterPayload & {
+    customIndicators: typeof customIndicators;
+  }>({
     selectedBoards, stockRange, marketIndicatorRanges,
     financialIndicatorRanges, selectedTechnicalIndicators, filterGroup,
+    customIndicators,
   });
   // ref 更新不涉及 UI，使用 useEffect 即可，避免同步渲染阻塞
   useEffect(() => {
     stateRef.current = {
       selectedBoards, stockRange, marketIndicatorRanges,
       financialIndicatorRanges, selectedTechnicalIndicators, filterGroup,
+      customIndicators,
     };
   });
 
@@ -128,8 +134,35 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
         const requestParams = buildScreeningParams(state, sortByParam, sortAscParam, PAGE_SIZE, offsetParam, watchlistCodes);
         const result = (await fetchStocks(requestParams, finalSignal)) as FetchStocksResponse;
 
-        setItems((prev) => (append ? [...prev, ...result.items] : result.items));
-        setTotal(result.total || 0);
+        // 自编指标客户端筛选
+        let filteredItems = result.items;
+        let filteredTotal = result.total || 0;
+        const currentFilterGroup = stateRef.current.filterGroup;
+        const currentCustomIndicators = stateRef.current.customIndicators;
+        if (currentFilterGroup?.conditions && currentCustomIndicators && !append) {
+          const customConditions = extractCustomConditions(currentFilterGroup.conditions, currentCustomIndicators);
+          if (customConditions.length > 0) {
+            const stockCodes = result.items.map((item) => item.stock_code).filter(Boolean);
+            const filterResult = await applyCustomIndicatorFilter(stockCodes, customConditions);
+            if (filterResult.executed) {
+              const passedSet = filterResult.passedCodes;
+              filteredItems = result.items.filter((item) => passedSet.has(item.stock_code));
+              // 调整总数：按比例估算（精确值需客户端全量过滤，当前仅首屏）
+              filteredTotal = Math.max(
+                Math.round((result.total || 0) * (filteredItems.length / Math.max(result.items.length, 1))),
+                filteredItems.length,
+              );
+            } else if (filterResult.error) {
+              console.warn('自编指标筛选警告:', filterResult.error);
+            }
+          }
+        }
+
+        setItems((prev) => (append ? [...prev, ...filteredItems] : filteredItems));
+        // 仅首次加载时更新 total，追加分页时保留首次过滤后的 total
+        if (!append) {
+          setTotal(filteredTotal);
+        }
         setSortBy(sortByParam);
         setSortAsc(sortAscParam);
         setOffset(offsetParam);

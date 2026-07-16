@@ -75,11 +75,10 @@ export interface CustomIndicatorParam {
 // 5. 自编指标实体（PRD 5.2 表核心字段）
 // =====================================================================
 
-export type IndicatorSyntax = 'tdx' | 'python_talib';
+export type IndicatorSyntax = 'python_talib';
 
 export const INDICATOR_SYNTAXES: { value: IndicatorSyntax; label: string }[] = [
-  { value: 'tdx', label: '通达信' },
-  { value: 'python_talib', label: 'Python (Ta-Lib)' },
+  { value: 'python_talib', label: 'Python' },
 ];
 
 export interface CustomIndicator {
@@ -164,34 +163,12 @@ export interface ScreenerPlan {
 // 8. 公式语法预校验（V1.0 仅做基础非空 + 长度 + 危险字符检查）
 // =====================================================================
 
-/**
- * 通达信公式 V1.0 标准函数白名单（P3.2 增强）
- * 覆盖 K 常用函数 + 公式编辑器插入候选项
- */
-const STANDARD_FUNCS = new Set([
-  'REF', 'MA', 'EMA', 'SMA', 'WMA', 'DMA', 'AMA',
-  'HHV', 'LLV', 'HHVBARS', 'LLVBARS', 'SUM', 'ABS', 'MAX', 'MIN', 'IF', 'IIF',
-  'BARSLAST', 'BARSCOUNT', 'BARSLASTCOUNT', 'BARSSINCE',
-  'COUNT', 'EVERY', 'EXIST', 'FILTER', 'TFILTER',
-  'CROSS', 'LONGCROSS', 'NOT', 'AND', 'OR',
-  'STD', 'STDP', 'VAR', 'VARP',
-  'KDJ', 'MACD', 'RSI', 'BOLL', 'WR', 'BIAS', 'CCI', 'ATR', 'OBV', 'PSY', 'CR', 'DMI', 'ARBR', 'TRIX', 'VR', 'EMV', 'ROC', 'MFI',
-  'COST', 'WINNER', 'LWINNER', 'PWINNER',
-  'SAR', 'ZIG', 'PEAK', 'TROUGH',
-  'FINANCE', 'CAPITAL',
-]);
-
-/**
- * 公式标准字段白名单（P3.2 增强）
- * 兼容通达信字段简写（C/O/H/L/V/AMO）
- */
-const STANDARD_FIELDS = new Set([
-  'CLOSE', 'OPEN', 'HIGH', 'LOW', 'VOL', 'VOLUME', 'AMOUNT', 'AMO',
-  'C', 'O', 'H', 'L', 'V',
-]);
+// 允许 import 的模块白名单
+const ALLOWED_IMPORT_MODULES = ['numpy', 'pandas'];
 
 const DANGEROUS_KEYWORDS = [
-  'import', 'from', 'exec', 'eval', 'os.', 'subprocess', '__', 'system', 'open(',
+  'exec', 'eval', 'os.', 'subprocess', '__', 'system', 'open(',
+  'compile(', 'globals(', 'locals(', 'getattr(', 'setattr(', 'delattr(',
 ];
 
 export interface FormulaValidation {
@@ -200,7 +177,7 @@ export interface FormulaValidation {
   warnings: string[];
 }
 
-export function validateFormula(formula: string, syntax: IndicatorSyntax): FormulaValidation {
+export function validateFormula(formula: string, _syntax: IndicatorSyntax): FormulaValidation {
   const errors: string[] = [];
   const warnings: string[] = [];
 
@@ -210,40 +187,30 @@ export function validateFormula(formula: string, syntax: IndicatorSyntax): Formu
   }
 
   if (formula.length > 8000) {
-    // V1.0 限制说明：通达信公式常达 5000+ 字符（K 反馈：原 2000 太短）
-    // 8000 字符 ≈ 16KB JSON 序列化，可存储 300+ 条指标（localStorage 5MB 限制下）
     errors.push('公式长度不能超过 8000 字符');
   }
 
-  if (syntax === 'tdx') {
-    if (!/^[A-Z0-9_\(\)\+\-\*\/\s,\.<>=&|!?:]+$/i.test(formula)) {
-      warnings.push('通达信公式包含非标准字符，请检查');
-    }
-  }
-
-  // P3.2 增强 1：括号配对检查
+  // 括号配对检查
   const parenResult = checkParensBalance(formula);
   if (!parenResult.ok) {
     errors.push(parenResult.error!);
   }
 
-  // P3.2 增强 2：未关闭函数检测（标识符后跟 ( 但没有对应 )）
+  // 未关闭函数检测
   const funcResult = checkUnclosedFunction(formula);
   if (!funcResult.ok) {
     errors.push(funcResult.error!);
   }
 
-  // P3.2 增强 3：未知符号提示
-  const unknownResult = checkUnknownSymbols(formula);
-  if (unknownResult.warnings.length > 0) {
-    warnings.push(...unknownResult.warnings);
-  }
-
   for (const kw of DANGEROUS_KEYWORDS) {
     if (formula.toLowerCase().includes(kw)) {
-      warnings.push(`公式包含潜在风险关键字"${kw}"，建议检查`);
+      errors.push(`公式包含禁止的关键字「${kw}」，请移除后重试`);
     }
   }
+
+  // import 白名单校验：只允许 import numpy / import pandas
+  const importErrors = checkImports(formula);
+  errors.push(...importErrors);
 
   return { valid: errors.length === 0, errors, warnings };
 }
@@ -271,9 +238,8 @@ function checkParensBalance(formula: string): { ok: boolean; error?: string } {
 }
 
 /**
- * 未关闭函数检测（P3.2 增强）
+ * 未关闭函数检测
  * 检查形如 IDENTIFIER( 的模式 — 如果函数名后跟 ( 但缺少对应 )，视为未关闭
- * 不同于 checkParensBalance：该函数精确定位"看起来是函数但参数未闭合"的情况
  */
 function checkUnclosedFunction(formula: string): { ok: boolean; error?: string } {
   // 匹配 字母数字下划线 后跟 ( 但内部 ( 数量不匹配的函数
@@ -296,37 +262,46 @@ function checkUnclosedFunction(formula: string): { ok: boolean; error?: string }
 }
 
 /**
- * 未知符号提示（P3.2 增强）
- * 提取所有连续字母数字下划线 token，检查是否在白名单中
- * 不在白名单的 token 视为"未知符号"（warning 而非 error）
+ * import 白名单校验
+ * 只允许 import numpy / import pandas（及其别名）
+ * 格式: import numpy, import numpy as np, from numpy import ..., from pandas import ...
  */
-function checkUnknownSymbols(formula: string): { warnings: string[] } {
-  const warnings: string[] = [];
-  // 提取 token（连续字母数字下划线，长度 >= 2 视为可能的标识符）
-  const tokens = new Set<string>();
-  const tokenRegex = /\b[A-Za-z_][A-Za-z0-9_]{1,}\b/g;
-  let m;
-  while ((m = tokenRegex.exec(formula)) !== null) {
-    tokens.add(m[0].toUpperCase());
+function checkImports(formula: string): string[] {
+  const errors: string[] = [];
+  const lower = formula.toLowerCase();
+
+  // 1. 匹配 from ... import 语句，验证 from 的模块名
+  const fromRegex = /\bfrom\s+([a-zA-Z_][a-zA-Z0-9_.]*)\s+import\b/gi;
+  let match;
+  while ((match = fromRegex.exec(lower)) !== null) {
+    const module = match[1].split('.')[0];
+    if (!ALLOWED_IMPORT_MODULES.includes(module)) {
+      errors.push(`不允许 from 模块「${module}」，仅支持 from numpy / from pandas`);
+    }
   }
-  const unknown: string[] = [];
-  for (const token of tokens) {
-    if (STANDARD_FUNCS.has(token) || STANDARD_FIELDS.has(token)) continue;
-    // 数字 / 关键字跳过（关键字如 AND/OR 已在 STANDARD_FUNCS）
-    if (/^\d+$/.test(token)) continue;
-    unknown.push(token);
+
+  // 2. 移除所有 from ... import ... 语句，再检查剩余的独立 import
+  const stripped = lower.replace(/\bfrom\s+[a-zA-Z_][a-zA-Z0-9_.]*\s+import\b[^;\n]*/gi, '');
+  const importRegex = /\bimport\s+([a-zA-Z_][a-zA-Z0-9_.]*)/gi;
+  while ((match = importRegex.exec(stripped)) !== null) {
+    const module = match[1].split('.')[0];
+    if (!ALLOWED_IMPORT_MODULES.includes(module)) {
+      errors.push(`不允许 import 模块「${module}」，仅支持 import numpy / import pandas`);
+    }
   }
-  if (unknown.length > 0) {
-    const preview = unknown.slice(0, 3).join('、');
-    const more = unknown.length > 3 ? ` 等 ${unknown.length} 个` : '';
-    warnings.push(`公式包含未识别的符号：${preview}${more}（请检查是否拼写错误）`);
-  }
-  return { warnings };
+
+  return errors;
 }
 
 // =====================================================================
 // 9. 参数名校验
 // =====================================================================
+
+/** 系统保留字段名，参数名不得与之冲突 */
+const RESERVED_PARAM_NAMES = new Set([
+  'close', 'high', 'low', 'open', 'volume',
+  'n', 'stock_idx', 'np', 'result', 'results', 'calculate',
+]);
 
 export function validateParamName(name: string): string | null {
   if (!name) return '参数名不能为空';
@@ -334,6 +309,9 @@ export function validateParamName(name: string): string | null {
     return '参数名须以字母/下划线开头，只能包含字母数字下划线';
   }
   if (name.length > 20) return '参数名长度不能超过 20 字符';
+  if (RESERVED_PARAM_NAMES.has(name.toLowerCase())) {
+    return `参数名「${name}」为系统保留字段，请更换`;
+  }
   return null;
 }
 

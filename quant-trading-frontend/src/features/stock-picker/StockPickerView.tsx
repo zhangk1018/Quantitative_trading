@@ -1,5 +1,6 @@
-import React, { useRef } from 'react';
+import React, { useRef, useMemo, useCallback } from 'react';
 import { Modal, Input, Select, App } from 'antd';
+import { useNavigate } from 'react-router-dom';
 import { useScreenerDispatch, useScreener } from './context/ScreenerContext';
 import { useScreenerData } from './hooks/useScreenerData';
 import { useStockPickerActions } from './hooks/useStockPickerActions';
@@ -10,12 +11,50 @@ import { StockPickerBottomBar } from './components/StockPickerBottomBar';
 import { SaveStrategyModal } from './components/SaveStrategyModal';
 import { StrategyListDrawer } from './components/StrategyListDrawer';
 import StockAnalysisModal from './components/StockAnalysisModal';
+import { screenerStateToFilterNode } from '@/features/strategy-backtest/utils/screenerToFilterNode';
+import { encodeTreeParam } from '@/features/strategy-backtest/utils/filterTreeAdapter';
 
 const StockPickerContent: React.FC = () => {
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const dispatch = useScreenerDispatch();
-  const screenerState = useScreener();
+  const { state: screenerState } = useScreener();
   const tableContainerRef = useRef<HTMLDivElement>(null!);
+
+  const { tree: filterTree, warnings: conversionWarnings, hardErrors: conversionHardErrors } = useMemo(
+    () => screenerStateToFilterNode(screenerState),
+    [screenerState],
+  );
+
+  const handleNavigateToBacktest = useCallback(() => {
+    if (!filterTree) {
+      if (conversionHardErrors.length > 0) {
+        message.error(conversionHardErrors[0]);
+        return;
+      }
+      message.warning('请先设置至少一个筛选条件（如板块、行情指标或技术形态）');
+      return;
+    }
+    if (conversionHardErrors.length > 0) {
+      message.error(conversionHardErrors[0]);
+      return;
+    }
+    try {
+      const encoded = encodeTreeParam(filterTree);
+      if (conversionWarnings.length > 0) {
+        const warningList = conversionWarnings.map((w, i) => `${i + 1}. ${w}`).join('\n');
+        message.warning({
+          content: `${conversionWarnings.length}个条件不支持回测，已自动忽略`,
+          duration: 5,
+        });
+        // 同时输出到 console 供调试
+        console.warn('回测条件转换警告:', warningList);
+      }
+      navigate(`/strategy-backtest?tree=${encoded}`);
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  }, [filterTree, conversionWarnings, conversionHardErrors, navigate, message]);
 
   // 数据层
   const {
@@ -31,8 +70,8 @@ const StockPickerContent: React.FC = () => {
   );
 
   return (
-    <div className="min-h-screen flex flex-col bg-bg-base">
-      <div className="flex-1 flex overflow-hidden min-h-[calc(100vh-56px)]">
+    <div className="h-full flex flex-col bg-bg-base">
+      <div className="flex-1 flex overflow-hidden min-h-0">
         {/* 左侧筛选区 */}
         <StockPickerSidebar
           loading={loading}
@@ -41,12 +80,14 @@ const StockPickerContent: React.FC = () => {
         />
 
         {/* 右侧数据展示区 */}
-        <div className="flex-1 flex flex-col" style={{ height: 'calc(100vh - 56px)' }}>
+        <div className="flex-1 flex flex-col h-full min-h-0">
           <StockPickerToolbar
             totalFiltersCount={actions.totalFiltersCount}
             total={total}
             onOpenSaveModal={() => actions.setSaveModalVisible(true)}
             onOpenStrategyDrawer={() => actions.setStrategyDrawerVisible(true)}
+            onNavigateToBacktest={handleNavigateToBacktest}
+            backtestWarningsCount={conversionWarnings.length}
           />
           <StockPickerTable
             items={items}

@@ -22,22 +22,23 @@ import type {
   TechPattern,
 } from './strategyBacktestTypes';
 import { IndicatorCache } from './strategyBacktestTypes';
+import { runTonghuashun6Strategy } from './strategies/tonghuashun6Strategy';
 
 // ==================== 常量定义 ====================
 
 const TRADING_DAYS_PER_YEAR = 252;
-const LOT_SIZE = 100; // A股最小交易单位
 /** P1-2: 兜底交易日历构建时的市值阈值（亿元），仅用于无后端交易日历时的降级方案 */
 const FALLBACK_MARKET_CAP_THRESHOLD = 100;
 
 /** OHLCV 数组索引常量（后端返回 number[]） */
-const OHLCV_TS = 0;
-const OHLCV_OPEN = 1;
-const OHLCV_HIGH = 2;
-const OHLCV_LOW = 3;
-const OHLCV_CLOSE = 4;
-const OHLCV_VOLUME = 5;
-const OHLCV_PRE_CLOSE = 6;
+export const OHLCV_TS = 0;
+export const OHLCV_OPEN = 1;
+export const OHLCV_HIGH = 2;
+export const OHLCV_LOW = 3;
+export const OHLCV_CLOSE = 4;
+export const OHLCV_VOLUME = 5;
+export const LOT_SIZE = 100;
+export const OHLCV_PRE_CLOSE = 6;
 
 // ==================== 进度回调类型 ====================
 
@@ -68,8 +69,23 @@ export interface StrategyBacktestInput {
   allOhlcv: Map<string, number[][]>;
   /** 股票快照（含 is_st, listed_board 等） */
   snapshots: Map<string, StockSnapshot>;
-  /** 选股条件 AST */
-  filterTree: FilterNode;
+  /** 选股条件 AST（仅 filterTree 策略使用） */
+  filterTree?: FilterNode;
+  /** 策略类型 */
+  strategyType?: 'filterTree' | 'tonghuashun6' | 'filterTreeLayeredTP';
+  /** 退出模式（仅 filterTree 策略使用） */
+  exitMode?: 'standard' | 'layeredTakeProfit';
+  /** 分层止盈参数（仅 exitMode='layeredTakeProfit' 时使用） */
+  layeredTPParams?: {
+    minHoldDays: number;
+    maxDrawdown: number;
+    firstProfitTarget: number;
+    secondProfitTarget: number;
+    fullProfitTarget: number;
+    rsiHigh: number;
+  };
+  /** 同花顺6重买入策略参数（仅 tonghuashun6 策略使用） */
+  tonghuashun6Params?: import('./strategies/tonghuashun6Strategy').Tonghuashun6Params;
   /** 回测配置 */
   config: StrategyBacktestDefaults;
   /** 回测起止日期 YYYY-MM-DD */
@@ -81,6 +97,8 @@ export interface StrategyBacktestInput {
   tradeDates?: string[];
   /** 进度回调 */
   onProgress?: (info: ProgressInfo) => void;
+  /** 自编指标预计算值: Map<scriptId, Map<stockCode, values[]>> */
+  customIndicatorValues?: Map<string, Map<string, (number | null)[]>>;
 }
 
 // ==================== 辅助函数 ====================
@@ -152,7 +170,7 @@ export function isLimitDown(bar: number[], preClose: number, limitPct: number): 
  * @param ts 时间戳
  * @returns YYYY-MM-DD 格式字符串
  */
-function parseTimestamp(ts: number): string {
+export function parseTimestamp(ts: number): string {
   // YYYYMMDD 格式范围判断（1990-01-01 到 2099-12-31）
   // 注意：YYYYMMDD 最大值为 20991231（约 2千万），远小于秒级时间戳（1e9+）
   if (ts >= 19900101 && ts <= 20991231) {
@@ -329,6 +347,96 @@ function getFieldValue(
  * 检查技术形态（Phase 1 支持 4 种基础形态）
  * @param bars OHLCV 数组，用于获取 close 等价格数据
  */
+function checkThs6BuySignal(
+  bars: number[][],
+  idx: number,
+): boolean {
+  if (idx < 1 || idx >= bars.length) return false;
+
+  const closes = bars.map(b => b[OHLCV_CLOSE]);
+  const highs = bars.map(b => b[OHLCV_HIGH]);
+  const volumes = bars.map(b => b[OHLCV_VOLUME]);
+
+  // 计算 EMA5、EMA48
+  const ema5Arr = ema(closes, 5);
+  const ema48Arr = ema(closes, 48);
+  if (ema5Arr[idx] === null || ema48Arr[idx] === null) return false;
+
+  // 计算 MACD (12, 26, 9)
+  const ema12 = ema(closes, 12);
+  const ema26 = ema(closes, 26);
+  const macdDif: (number | null)[] = new Array(bars.length).fill(null);
+  for (let i = 0; i < bars.length; i++) {
+    if (ema12[i] !== null && ema26[i] !== null) {
+      macdDif[i] = ema12[i]! - ema26[i]!;
+    }
+  }
+  const macdDea = ema(macdDif, 9);
+  const macdHist: (number | null)[] = new Array(bars.length).fill(null);
+  for (let i = 0; i < bars.length; i++) {
+    if (macdDif[i] !== null && macdDea[i] !== null) {
+      macdHist[i] = (macdDif[i]! - macdDea[i]!) * 2;
+    }
+  }
+  if (macdDif[idx] === null || macdDea[idx] === null || macdHist[idx] === null) return false;
+
+  // 计算 RSI14
+  const rsi14 = calcRSI(closes, 14);
+  if (rsi14[idx] === null) return false;
+
+  // 计算 SMA(volume, 15)
+  const volAvg15 = sma(volumes, 15);
+  if (volAvg15[idx] === null || volAvg15[idx]! <= 0) return false;
+
+  // 计算 HHV20（20 日最高价）
+  let hhv20 = highs[idx];
+  for (let j = Math.max(0, idx - 19); j <= idx; j++) {
+    if (highs[j] > hhv20) hhv20 = highs[j];
+  }
+
+  const close = bars[idx][OHLCV_CLOSE];
+  const volume = bars[idx][OHLCV_VOLUME];
+
+  // 6 重条件判断
+  const trendUp = ema5Arr[idx]! > ema48Arr[idx]!;
+  const macdGold = macdDif[idx]! > macdDea[idx]! && macdHist[idx]! > 0;
+  const rsiValid = rsi14[idx]! > 25 && rsi14[idx]! < 70;
+  const volUp = volume > 1.05 * volAvg15[idx]!;
+  const priceBreak = close >= hhv20 * 0.98;
+
+  const buyCond = trendUp && macdGold && rsiValid && volUp && priceBreak;
+  if (!buyCond) return false;
+
+  // CROSS 检查：前一日不满足
+  if (idx - 1 < 0) return true;
+  const prevClose = bars[idx - 1][OHLCV_CLOSE];
+  const prevVol = bars[idx - 1][OHLCV_VOLUME];
+  const prevEma5 = ema5Arr[idx - 1];
+  const prevEma48 = ema48Arr[idx - 1];
+  const prevMacdDif = macdDif[idx - 1];
+  const prevMacdDea = macdDea[idx - 1];
+  const prevMacdHist = macdHist[idx - 1];
+  const prevRsi14 = rsi14[idx - 1];
+  const prevVolAvg15 = volAvg15[idx - 1];
+
+  // 计算前一日 HHV20
+  let prevHhv20 = highs[idx - 1];
+  for (let j = Math.max(0, idx - 20); j <= idx - 1; j++) {
+    if (highs[j] > prevHhv20) prevHhv20 = highs[j];
+  }
+
+  const prevTrendUp = prevEma5 !== null && prevEma48 !== null && prevEma5! > prevEma48!;
+  const prevMacdGold = prevMacdDif !== null && prevMacdDea !== null && prevMacdHist !== null
+    && prevMacdDif! > prevMacdDea! && prevMacdHist! > 0;
+  const prevRsiValid = prevRsi14 !== null && prevRsi14! > 25 && prevRsi14! < 70;
+  const prevVolUp = prevVolAvg15 !== null && prevVolAvg15! > 0
+    && prevVol > 1.05 * prevVolAvg15!;
+  const prevPriceBreak = prevClose >= prevHhv20 * 0.98;
+  const prevBuyCond = prevTrendUp && prevMacdGold && prevRsiValid && prevVolUp && prevPriceBreak;
+
+  return !prevBuyCond; // CROSS: 从 false 到 true
+}
+
 function checkTechPattern(
   pattern: TechPattern,
   cache: IndicatorCache,
@@ -374,6 +482,8 @@ function checkTechPattern(
       if (Number.isNaN(close) || Number.isNaN(prevClose)) return false;
       return prevClose <= prevUpper && close > upper;
     }
+    case 'ths_6_buy_signal':
+      return checkThs6BuySignal(bars, idx);
     default:
       return false;
   }
@@ -387,26 +497,24 @@ export function evaluateFilter(
   snapshot: StockSnapshot,
   bars: number[][],
   cache: IndicatorCache,
-  idx: number
+  idx: number,
+  /** 自编指标预计算值: Map<scriptId, Map<stockCode, values[]>> */
+  customIndicatorValues?: Map<string, Map<string, (number | null)[]>>,
 ): boolean {
   switch (node.type) {
     case 'and':
-      return node.children.every(c => evaluateFilter(c, snapshot, bars, cache, idx));
+      return node.children.every(c => evaluateFilter(c, snapshot, bars, cache, idx, customIndicatorValues));
     case 'or':
-      return node.children.some(c => evaluateFilter(c, snapshot, bars, cache, idx));
+      return node.children.some(c => evaluateFilter(c, snapshot, bars, cache, idx, customIndicatorValues));
     case 'not': {
-      // P0-4: NOT 分支显式处理子节点返回值，确保原子性阻断
-      const childResult = evaluateFilter(node.child, snapshot, bars, cache, idx);
-      // 若子节点因 NaN 阻断返回 false，NOT(false) = true，符合预期
-      // 但需确保子节点不会返回 null/undefined（当前类型定义为 boolean，此处做防御性检查）
+      const childResult = evaluateFilter(node.child, snapshot, bars, cache, idx, customIndicatorValues);
       if (childResult === null || childResult === undefined) {
-        return false; // 异常情况，直接阻断
+        return false;
       }
       return !childResult;
     }
     case 'range': {
       const val = getFieldValue(node.field, snapshot, bars, cache, idx);
-      // 关键：NaN/undefined 直接返回 false，不参与布尔运算
       if (val === null || val === undefined || Number.isNaN(val)) return false;
       const meetsMin = node.min === undefined || val >= node.min;
       const meetsMax = node.max === undefined || val <= node.max;
@@ -416,17 +524,25 @@ export function evaluateFilter(
       return checkTechPattern(node.pattern, cache, bars, idx);
     }
     case 'kline': {
-      // Phase 1 暂不实现 K 线形态
       return false;
     }
     case 'market': {
       const boards = node.boards ?? [];
-      if (node.watchlistOnly) {
-        // 自选股过滤（需要外部传入 watchlist）
-        return false; // Phase 1 简化处理
-      }
+      if (node.watchlistOnly) return false;
       if (boards.length === 0) return true;
       return boards.includes(snapshot.listedBoard);
+    }
+    case 'custom_indicator': {
+      if (!customIndicatorValues) return false;
+      const scriptValues = customIndicatorValues.get(node.scriptId);
+      if (!scriptValues) return false;
+      const stockValues = scriptValues.get(snapshot.code);
+      if (!stockValues || idx >= stockValues.length) return false;
+      const val = stockValues[idx];
+      if (val === null || val === undefined || Number.isNaN(val)) return false;
+      const meetsMin = node.min === undefined || val >= node.min;
+      const meetsMax = node.max === undefined || val <= node.max;
+      return meetsMin && meetsMax;
     }
     default:
       return false;
@@ -530,8 +646,23 @@ export function calcSellCommission(
  * 主循环：预计算指标 → 逐日模拟交易
  */
 export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBacktestResult {
+  // 策略类型分发
+  if (input.strategyType === 'tonghuashun6') {
+    return runTonghuashun6Strategy({
+      allOhlcv: input.allOhlcv,
+      snapshots: input.snapshots,
+      config: input.config,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      benchmarkOhlcv: input.benchmarkOhlcv,
+      tradeDates: input.tradeDates,
+      onProgress: input.onProgress,
+      params: input.tonghuashun6Params,
+    });
+  }
+
   const startTime = performance.now();
-  const { allOhlcv, snapshots, filterTree, config, startDate, endDate, benchmarkOhlcv, tradeDates } = input;
+  const { allOhlcv, snapshots, filterTree, config, startDate, endDate, benchmarkOhlcv, tradeDates, exitMode, layeredTPParams, customIndicatorValues } = input;
   const warnings: string[] = [];
 
   // P0-2: onProgress 空值保护，提供安全的默认实现
@@ -612,6 +743,16 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
   let peakEquityFen = config.initialCapital;
   let forceLiquidate = false; // 组合级风控触发
   let forceStop = false; // 最大回撤止损触发
+
+  // 分层止盈状态（仅 exitMode='layeredTakeProfit' 使用）
+  const layeredTPState = new Map<string, {
+    hasForceStopped: boolean;
+    hasFirstProfit: boolean;
+    hasSecondProfit: boolean;
+    hasFullProfit: boolean;
+    hasStopLoss: boolean;
+    peakPrice: number;
+  }>();
 
   // P2-6: 调仓日计算（转为 Set 优化查找为 O(1)）
   const rebalanceDaysSet = new Set<number>();
@@ -783,6 +924,17 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
           entryDateIdx: i,
           holdDays: 0,
         });
+        // 初始化分层止盈状态
+        if (exitMode === 'layeredTakeProfit') {
+          layeredTPState.set(order.code, {
+            hasForceStopped: false,
+            hasFirstProfit: false,
+            hasSecondProfit: false,
+            hasFullProfit: false,
+            hasStopLoss: false,
+            peakPrice: buyPrice,
+          });
+        }
       }
     }
 
@@ -860,22 +1012,74 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
       const currentPrice = bar[OHLCV_CLOSE];
       const pnlPct = (currentPrice - pos.avgCost) / pos.avgCost;
 
-      // 止损检查
-      if (pnlPct <= config.stopLossPct) {
-        riskControlSells.push({ code, reason: 'stop_loss' });
-        continue;
-      }
+      if (exitMode === 'layeredTakeProfit') {
+        // 分层止盈/止损退出逻辑
+        const tpState = layeredTPState.get(code);
+        if (!tpState) continue;
 
-      // 止盈检查
-      if (pnlPct >= config.takeProfitPct) {
-        riskControlSells.push({ code, reason: 'take_profit' });
-        continue;
-      }
+        // 更新持仓峰值
+        if (currentPrice > tpState.peakPrice) {
+          tpState.peakPrice = currentPrice;
+        }
 
-      // 超时检查
-      if (pos.holdDays >= config.maxHoldDays) {
-        riskControlSells.push({ code, reason: 'timeout' });
-        continue;
+        const drawdown = (currentPrice - tpState.peakPrice) / tpState.peakPrice;
+        const lp = layeredTPParams ?? { minHoldDays: 3, maxDrawdown: 0.05, firstProfitTarget: 0.04, secondProfitTarget: 0.08, fullProfitTarget: 0.10, rsiHigh: 80 };
+
+        // 1. 强制止损（持仓 < minHoldDays 且回撤超过阈值）
+        if (!tpState.hasForceStopped && pos.holdDays < lp.minHoldDays && drawdown < -lp.maxDrawdown) {
+          riskControlSells.push({ code, reason: 'stop_loss' });
+          continue;
+        }
+
+        // 2. 全止盈
+        if (!tpState.hasFullProfit && pos.holdDays >= lp.minHoldDays && pnlPct >= lp.fullProfitTarget) {
+          riskControlSells.push({ code, reason: 'take_profit' });
+          continue;
+        }
+
+        // 3. 第二止盈（需第一止盈已触发）
+        if (!tpState.hasSecondProfit && tpState.hasFirstProfit
+          && pos.holdDays >= lp.minHoldDays && pnlPct >= lp.secondProfitTarget) {
+          riskControlSells.push({ code, reason: 'take_profit' });
+          continue;
+        }
+
+        // 4. 第一止盈
+        if (!tpState.hasFirstProfit && pos.holdDays >= lp.minHoldDays && pnlPct >= lp.firstProfitTarget) {
+          riskControlSells.push({ code, reason: 'take_profit' });
+          continue;
+        }
+
+        // 5. 常规止损（持仓 >= minHoldDays 且回撤超阈值 或 RSI > rsiHigh）
+        if (!tpState.hasStopLoss && pos.holdDays >= lp.minHoldDays) {
+          const cache = indicatorCaches.get(code);
+          const rsiVal = cache ? cache.getRSI(12, barIdx) : null;
+          const rsiTrigger = rsiVal !== null && rsiVal > lp.rsiHigh;
+          if (drawdown < -lp.maxDrawdown || rsiTrigger) {
+            riskControlSells.push({ code, reason: 'stop_loss' });
+            continue;
+          }
+        }
+
+        // 超时检查
+        if (pos.holdDays >= config.maxHoldDays) {
+          riskControlSells.push({ code, reason: 'timeout' });
+          continue;
+        }
+      } else {
+        // 标准退出逻辑（止损/止盈/超时）
+        if (pnlPct <= config.stopLossPct) {
+          riskControlSells.push({ code, reason: 'stop_loss' });
+          continue;
+        }
+        if (pnlPct >= config.takeProfitPct) {
+          riskControlSells.push({ code, reason: 'take_profit' });
+          continue;
+        }
+        if (pos.holdDays >= config.maxHoldDays) {
+          riskControlSells.push({ code, reason: 'timeout' });
+          continue;
+        }
       }
     }
 
@@ -954,7 +1158,7 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
           if (isLimitUp(bar, preClose, limitPct)) continue;
 
           // AST 评估
-          if (evaluateFilter(filterTree, snapshot, bars, cache, barIdx)) {
+          if (evaluateFilter(filterTree!, snapshot, bars, cache, barIdx, customIndicatorValues)) {
             targetPool.add(code);
           }
         }
@@ -1070,7 +1274,7 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
 
 // ==================== 绩效指标计算 ====================
 
-function calcMetrics(
+export function calcMetrics(
   equityCurve: EquityPoint[],
   trades: Trade[],
   config: StrategyBacktestDefaults,
@@ -1235,7 +1439,7 @@ function calcMonthlyReturns(equityCurve: EquityPoint[]): number[] {
 
 // ==================== 空结果构建 ====================
 
-function buildEmptyResult(config: StrategyBacktestDefaults, warning: string): StrategyBacktestResult {
+export function buildEmptyResult(config: StrategyBacktestDefaults, warning: string): StrategyBacktestResult {
   return {
     config,
     equityCurve: [],
@@ -1247,7 +1451,7 @@ function buildEmptyResult(config: StrategyBacktestDefaults, warning: string): St
   };
 }
 
-function buildEmptyMetrics(): StrategyMetrics {
+export function buildEmptyMetrics(): StrategyMetrics {
   return {
     totalReturn: 0,
     annualReturn: 0,

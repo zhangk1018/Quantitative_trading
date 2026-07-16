@@ -184,7 +184,7 @@ const Watchlist: React.FC = () => {
   const hasData = totalStocks > 0;
 
   return (
-    <div className="h-screen flex flex-col bg-bg-base">
+    <div className="h-full flex flex-col bg-bg-base">
       {/* 顶部工具栏 */}
       <div className="h-12 px-4 flex items-center justify-between border-b border-border-color bg-bg-panel">
         <div className="flex items-center gap-4">

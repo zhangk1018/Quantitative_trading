@@ -180,12 +180,11 @@ const BacktestView: React.FC = () => {
   }, []);
 
   return (
-    <div className="min-h-screen flex flex-col bg-bg-base">
-      <div className="flex-1 flex overflow-hidden" style={{ height: 'calc(100vh - 56px)' }}>
+    <div className="h-full flex flex-col bg-bg-base">
+      <div className="flex-1 flex overflow-hidden min-h-0">
         {/* 左侧配置面板 — 参照选股视图侧边栏设计 */}
         <div
-          className="w-[280px] flex-shrink-0 bg-bg-panel border-r border-border-color flex flex-col"
-          style={{ height: 'calc(100vh - 56px)' }}
+          className="w-[280px] flex-shrink-0 bg-bg-panel border-r border-border-color flex flex-col h-full"
         >
           <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
             <BacktestConfigPanel
@@ -233,7 +232,7 @@ const BacktestView: React.FC = () => {
         </div>
 
         {/* 右侧结果区 */}
-        <div className="flex-1 flex flex-col overflow-y-auto" style={{ height: 'calc(100vh - 56px)' }}>
+        <div className="flex-1 flex flex-col h-full min-h-0 overflow-y-auto">
           <div style={{ padding: 16 }}>
             {/* 进度条 */}
             {loading && progress && (

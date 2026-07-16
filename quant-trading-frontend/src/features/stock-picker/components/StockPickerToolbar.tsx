@@ -1,6 +1,6 @@
 import React from 'react';
-import { Typography, Button, Divider } from 'antd';
-import { SaveOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import { Typography, Button, Divider, Tooltip } from 'antd';
+import { SaveOutlined, FolderOpenOutlined, ExperimentOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
@@ -9,15 +9,18 @@ interface StockPickerToolbarProps {
   total: number;
   onOpenSaveModal: () => void;
   onOpenStrategyDrawer: () => void;
+  onNavigateToBacktest: () => void;
+  backtestWarningsCount?: number;
 }
 
 /**
  * 选股器顶部工具栏
  *
- * 显示筛选条件数量、结果总数，以及策略保存/加载按钮
+ * 显示筛选条件数量、结果总数，以及策略保存/加载/回测按钮
  */
 export const StockPickerToolbar: React.FC<StockPickerToolbarProps> = React.memo(({
   totalFiltersCount, total, onOpenSaveModal, onOpenStrategyDrawer,
+  onNavigateToBacktest, backtestWarningsCount = 0,
 }) => (
   <div className="h-12 px-4 flex items-center justify-between border-b border-border-color bg-bg-panel">
     <div className="flex items-center gap-4">
@@ -30,6 +33,17 @@ export const StockPickerToolbar: React.FC<StockPickerToolbarProps> = React.memo(
       </div>
     </div>
     <div className="flex items-center gap-2">
+      <Tooltip title={backtestWarningsCount > 0 ? `${backtestWarningsCount}个条件不支持回测，将被忽略` : '使用当前筛选条件进行策略回测'}>
+        <Button
+          type="primary"
+          icon={<ExperimentOutlined />}
+          onClick={onNavigateToBacktest}
+          className="bg-color-accent"
+        >
+          策略回测
+          {backtestWarningsCount > 0 && <span className="ml-1 text-yellow-200">({backtestWarningsCount})</span>}
+        </Button>
+      </Tooltip>
       <Divider type="vertical" className="h-6 bg-border-color" />
       <Button
         icon={<SaveOutlined />}

@@ -426,6 +426,7 @@ class SnapshotAllData(BaseModel):
 
     latest_trade_date: str = Field(..., description="最新交易日期（YYYY-MM-DD）")
     total: int = Field(..., description="股票总数")
+    trade_dates: List[str] = Field(default_factory=list, description="回测可用交易日列表（YYYY-MM-DD）")
     stocks: List[SnapshotStock] = Field(..., description="全市场股票快照列表")
 
 

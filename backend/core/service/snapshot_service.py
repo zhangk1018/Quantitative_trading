@@ -51,7 +51,7 @@ CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "cache")
 OHLCV_CACHE_FILE = os.path.join(CACHE_DIR, "ohlcv.pkl")
 SNAPSHOT_CACHE_FILE = os.path.join(CACHE_DIR, "snapshot.pkl")
 CACHE_META_FILE = os.path.join(CACHE_DIR, "cache_meta.json")
-CACHE_VERSION = 3                       # 升级版本号（因双缓存与安全改进）
+CACHE_VERSION = 5                       # v5: _load_from_db + _load_raw_data 新增 pre_close 字段
 
 # HMAC 密钥（生产环境应通过环境变量注入）
 HMAC_KEY = os.environ.get("CACHE_HMAC_KEY", "change_me_in_production").encode()
@@ -245,7 +245,7 @@ class SnapshotService:
                     query = """
                         SELECT code,
                                EXTRACT(EPOCH FROM trade_date) AS ts,
-                               open, high, low, close, volume
+                               open, high, low, close, volume, pre_close
                         FROM stock_quotes
                         WHERE cycle = '1d'
                           AND trade_date >= CAST(%s AS DATE) - CAST(%s AS INTERVAL)
@@ -265,10 +265,10 @@ class SnapshotService:
                         # 将 batch 转为 DataFrame 进行向量化处理
                         batch_df = pd.DataFrame(
                             batch,
-                            columns=["code", "ts", "open", "high", "low", "close", "volume"],
+                            columns=["code", "ts", "open", "high", "low", "close", "volume", "pre_close"],
                         )
                         grouped = batch_df.groupby("code").apply(
-                            lambda g: g[["ts", "open", "high", "low", "close", "volume"]]
+                            lambda g: g[["ts", "open", "high", "low", "close", "volume", "pre_close"]]
                             .fillna(0).values.tolist()
                         )
                         for code, bars in grouped.items():
@@ -594,7 +594,8 @@ class SnapshotService:
     # ================================================================
     # 公开 API（入参校验完整）
     # ================================================================
-    def get_all_snapshot(self, board: Optional[str] = None, industry: Optional[str] = None) -> SnapshotAllData:
+    def get_all_snapshot(self, board: Optional[str] = None, industry: Optional[str] = None,
+                         codes: Optional[List[str]] = None) -> SnapshotAllData:
         if board is not None and board not in BOARD_VALUES:
             raise ValueError(f"board 参数无效，允许值: {BOARD_VALUES}")
         if industry is not None:
@@ -611,22 +612,33 @@ class SnapshotService:
             ohlcv_cache = self._ohlcv_cache
             latest = self._latest_trade_date
 
+        code_set = set(codes) if codes else None
         stocks = []
+        date_set = set()
         for code, row in snapshot_cache.items():
+            if code_set and code not in code_set:
+                continue
             if board and row.get('listed_board', '') != board:
                 continue
             if industry and row.get('industry', '') != industry:
                 continue
             ohlcv = ohlcv_cache.get(code, [])
+            for bar in ohlcv:
+                ts = float(bar[OHLCV_TIME])
+                date_str = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+                date_set.add(date_str)
             stocks.append(self._build_stock_snapshot(code, row, ohlcv))
 
+        trade_dates = sorted(date_set)
         return SnapshotAllData(
             latest_trade_date=latest or '',
             total=len(stocks),
+            trade_dates=trade_dates,
             stocks=stocks,
         )
 
-    def get_incremental_snapshot(self, since: str, board: Optional[str] = None, industry: Optional[str] = None) -> SnapshotIncrementalData:
+    def get_incremental_snapshot(self, since: str, board: Optional[str] = None, industry: Optional[str] = None,
+                                codes: Optional[List[str]] = None) -> SnapshotIncrementalData:
         try:
             since_ts = int(datetime.strptime(since, '%Y-%m-%d').timestamp())
         except ValueError:
@@ -647,9 +659,12 @@ class SnapshotService:
             ohlcv_cache = self._ohlcv_cache
             latest = self._latest_trade_date
 
+        code_set = set(codes) if codes else None
         stocks = []
         days_set = set()
         for code, row in snapshot_cache.items():
+            if code_set and code not in code_set:
+                continue
             if board and row.get('listed_board', '') != board:
                 continue
             if industry and row.get('industry', '') != industry:

@@ -315,7 +315,7 @@ class ScreenerService:
                     f"SELECT DISTINCT code FROM stock_indicators "
                     f"WHERE cycle = '1d' "
                     f"AND {pattern_col} != 0 "
-                    f"AND (%(target_date)s - trade_date) < %(lb_{pattern_col})s"
+                    f"AND (%(target_date)s - trade_date) <= %(lb_{pattern_col})s"
                 )
                 params[f"lb_{pattern_col}"] = lookback
 

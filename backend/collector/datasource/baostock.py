@@ -168,16 +168,27 @@ class BaostockDataSource(BaseDataSource):
                 logger.warning(f"⚠️ Baostock 重连失败（第 {i+1}/{self._max_reconnect} 次）: {str(e)}")
         return False
 
-    def connect(self) -> bool:
+    def connect(self, retry: bool = True) -> bool:
+        """连接 Baostock，支持重试
+
+        Args:
+            retry: 是否在首次失败后自动重试（默认 True，最多 _max_reconnect 次）
+        """
         try:
             def do_login(): return bs.login()
             lg = _run_baostock_with_timeout(do_login, timeout=15)
             if lg is not None and lg.error_code == '0':
                 self.connected = True
+                self._last_request_time = time.time()
                 return True
-            return False
+            if not retry:
+                return False
+            # 首次失败后调用 _ensure_connected 的重试逻辑
+            return self._ensure_connected()
         except Exception:
-            return False
+            if not retry:
+                return False
+            return self._ensure_connected()
 
     def disconnect(self) -> bool:
         try:

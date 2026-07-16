@@ -176,6 +176,24 @@ vi.mock('@/features/stock-picker/components/TechnicalFilter', () => ({
   default: () => null,
 }));
 
+// Mock react-router-dom 的 useNavigate（StockPickerView 新增策略回测跳转使用）
+const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }));
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+  };
+});
+
+// Mock strategy-backtest 模块依赖（避免 StockPickerView 间接引入 worker 等非测试模块）
+vi.mock('@/features/strategy-backtest/utils/screenerToFilterNode', () => ({
+  screenerStateToFilterNode: () => ({ tree: null, warnings: [] }),
+}));
+vi.mock('@/features/strategy-backtest/utils/filterTreeAdapter', () => ({
+  encodeTreeParam: () => '',
+}));
+
 // Mock fetchStocks：返回受控 Promise + 暴露 resolve/reject 句柄 + 模拟 AbortSignal
 // K 2026-06-18 反馈 #1+#2：mock 需声明 abortSignals、捕获 signal、监听 abort 事件 reject
 let resolveFetches: Array<(v: any) => void> = [];
@@ -226,6 +244,7 @@ beforeEach(() => {
   rejectFetches = [];
   abortSignals = [];
   mockSelectedCodes.clear();
+  mockNavigate.mockClear();
   vi.mocked(fetchStocks).mockClear();
 });
 

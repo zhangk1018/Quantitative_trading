@@ -8,6 +8,7 @@ const StockPicker = React.lazy(() => import('@/features/stock-picker'));
 const Backtest = React.lazy(() => import('@/features/backtest'));
 const Watchlist = React.lazy(() => import('@/features/watchlist'));
 const Config = React.lazy(() => import('@/features/config'));
+const StrategyBacktest = React.lazy(() => import('@/features/strategy-backtest'));
 
 // 加载中组件
 const Loading = () => (
@@ -59,6 +60,14 @@ export const router = createBrowserRouter([
         element: (
           <Suspense fallback={<Loading />}>
             <StockDetail />
+          </Suspense>
+        ) 
+      },
+      { 
+        path: 'strategy-backtest', 
+        element: (
+          <Suspense fallback={<Loading />}>
+            <StrategyBacktest />
           </Suspense>
         ) 
       },

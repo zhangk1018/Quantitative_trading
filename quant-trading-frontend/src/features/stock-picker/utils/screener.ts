@@ -142,8 +142,12 @@ export function buildScreeningParams(
     params[`${RequestParamKeys.TechPrefix}${id}`] = option;
   });
   // 条件构建器（含 K线形态 — 统一由 filterGroup.conditions 管理，不再有独立 patterns.selected）
+  // 自编指标（custom_*）由客户端 Pyodide 筛选，不发送到后端
   if (filterGroup?.conditions) {
     filterGroup.conditions.forEach((cond) => {
+      if (cond.fieldKey.startsWith('custom_')) {
+        return; // 自编指标由客户端 Pyodide 筛选，不发送到后端
+      }
       params[`${RequestParamKeys.CondPrefix}${cond.fieldKey}`] = cond.op;
       // K线形态：额外发送 pattern_* 参数（PatternPrefix 已含 pattern_ 前缀）
       if (cond.fieldKey.startsWith('pattern_')) {

@@ -370,4 +370,18 @@ Phase 5.2 性能优化已完成三项：
 
 **通知**: [方舟→方舟 2026-07-12 08:53] 协作单 [TECH-DEBT-BUILD-20260712] 状态变更: NEW（前端 `npm run build` 剩余 TypeScript 错误治理：`ScreenerContext.tsx` 本次触碰文件错误已消除，剩余错误来自 stock-detail、筛选器配置类型、ImportExport、StockAnalysisModal、customIndicatorStorage、chartConstants 等未触碰模块。处理方方舟，P1，验收为 `npm run build` 退出码 0 + 相关测试通过。）
 
-**通知**: [方舟→K 2026-07-12 09:25] 协作单 [TECH-DEBT-BUILD-20260712] 状态变更: NEW→VERIFY（前端构建 TypeScript 错误治理已完成：`npm run build` 退出码 0；`ScreenerContext.test.tsx` 49 passed / 5 skipped；`StockPickerView.test.tsx` 9 passed；`FinancialFilter + TechnicalFilter + indicatorConfig` 73 passed。修复范围覆盖配置项类型、TechnicalState 导出、ImportResult 导入、ReadonlySet 签名、Pattern time 类型、DetectionConfig 可写类型、新增 stock-detail `useStockChart` hook。请 K 验证后关闭。）
+**通知**: [方舟→量量 2026-07-15 17:30] 协作单 [7.1-SNAPSHOT-API-20260715] 状态变更: NEW（P0阻塞 — 策略回测联调发现 `/api/snapshot/all` 缺少 `trade_dates` 字段和 `pre_close` 列，前端 dataLoader 无法获取交易日历导致回测阻断。详见协作单描述，含完整修复方案+验收方式。）
+
+**通知**: [方舟→量量 2026-07-15 17:30] 协作单 [7.1-SNAPSHOT-API-20260715] 状态变更: VERIFY→CLOSED（方舟验证通过：API total=5197, trade_dates=196条, ohlcv_len=7 ✅；前端策略回测页面无"交易日历为空"错误 ✅；Playwright 端到端验证通过 ✅。回测阻断已解除。）
+
+**通知**: [量量→方舟 2026-07-15 17:30] 协作单 [7.2-SNAPSHOT-CODES-20260715] 状态变更: NEW→ASSIGNED→VERIFY（已实现：`/api/snapshot/all` 和 `/api/snapshot/incremental` 添加 `codes=000001,600000` 逗号分隔过滤参数。验证通过：全量5197→codes过滤后2只 ✅；增量接口codes过滤后1只 ✅。请方舟在前端验证。）
+
+**通知**: [量量→方舟 2026-07-15 17:30] 协作单 [7.1-SNAPSHOT-API-20260715] 状态变更: NEW→VERIFY（已修复：`_load_raw_data` 补齐 `pre_close` SQL查询/列映射/字段选择 + CACHE_VERSION 3→4 使旧缓存失效；后端重启验证通过 — total=5197, trade_dates=196个, ohlcv[7]含pre_close。请方舟在前端验证。）
+
+**通知**: [量量→方舟 2026-07-15 17:30] 协作单 [7.3-SNAPSHOT-FILTER-20260715] 状态变更: NEW→ASSIGNED→VERIFY（根因：`_load_from_db` 初始加载路径 SQL/DataFrame columns/groupby lambda 全部缺少 pre_close，导致缓存 ohlcv_len=6。修复：`_load_from_db` 三处补全 pre_close + CACHE_VERSION 3→5 使旧缓存失效。验证通过：codes过滤路径 ohlcv_len=7 ✅, trade_dates=196条 ✅, pre_close=11.65/13.43 ✅。请方舟验证。）
+
+**通知**: [方舟→量量 2026-07-15 18:00] 协作单 [7.2-SNAPSHOT-CODES-20260715] 状态变更: VERIFY→CLOSED（方舟验证通过：curl `?codes=000001,600000` total=2 ✅；codes过滤路径 trade_dates=196条 ✅；ohlcv_len=7(含pre_close) ✅。回测数据加载性能问题已解决。）
+
+**通知**: [方舟→量量 2026-07-15 18:00] 协作单 [7.3-SNAPSHOT-FILTER-20260715] 状态变更: VERIFY→CLOSED（方舟验证通过：curl `?codes=000001,600000` trade_dates=196条 ✅, ohlcv_len=7(含pre_close=11.65) ✅。codes 过滤路径完整修复。）
+
+**通知**: [量量→方舟 2026-07-16 10:06] 协作单 [8.1-PATTERN-PRECOMPUTE-20260716] 状态变更: NEW→ASSIGNED→VERIFY（手动运行 pattern_precompute.py 完成：5213只成功，更新86180行，耗时2.3分 ✅；已纳入 ETL 管道 STAGE2_TASKS 中 indicators_compute 之后。验证：`pattern_hammer != 0` 在最近10天返回10+只股票 ✅，3412只股票/4903行有形态数据。请方舟在前端验证选股器K线形态筛选。）

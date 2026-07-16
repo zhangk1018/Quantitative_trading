@@ -24,3 +24,20 @@ body {
 .single-month-range .ant-picker-panel:last-child {
   display: none;
 }
+
+/* 系统设置页 Tabs：填满父容器高度，让内容区滚动 */
+.config-tabs {
+  overflow: hidden;
+}
+.config-tabs .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.config-tabs .ant-tabs-content {
+  height: 100%;
+}
+.config-tabs .ant-tabs-tabpane {
+  height: 100%;
+  overflow: hidden;
+}

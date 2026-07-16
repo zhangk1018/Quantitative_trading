@@ -1,7 +1,7 @@
 import React from 'react';
 import { Layout, Typography, Space } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { DashboardOutlined, StockOutlined, StarOutlined, LineChartOutlined, SettingOutlined } from '@ant-design/icons';
+import { DashboardOutlined, StockOutlined, StarOutlined, LineChartOutlined, SettingOutlined, ExperimentOutlined } from '@ant-design/icons';
 import { ScreenerProvider } from '@/features/stock-picker/context/ScreenerContext';
 import { WatchlistProvider } from '@/features/watchlist/store';
 
@@ -16,6 +16,7 @@ const AppLayout: React.FC = () => {
     { key: '/picker', icon: <StockOutlined />, label: '选股视图' },
     { key: '/watchlist', icon: <StarOutlined />, label: '自选股' },
     { key: '/backtest', icon: <LineChartOutlined />, label: '回测分析' },
+    { key: '/strategy-backtest', icon: <ExperimentOutlined />, label: '策略回测' },
     { key: '/config', icon: <SettingOutlined />, label: '系统配置' },
   ];
 
@@ -28,7 +29,7 @@ const AppLayout: React.FC = () => {
     // 中 useWatchlist() 拿不到 Context（React 只向下查找）
     <ScreenerProvider>
     <WatchlistProvider>
-    <Layout style={{ minHeight: '100vh', background: '#131722' }}>
+    <Layout style={{ height: '100vh', overflow: 'hidden', background: '#131722' }}>
       {/* 顶部通栏：Logo + 菜单栏 */}
       <Header className="h-14 px-6 flex items-center justify-between bg-bg-panel border-b border-border-color !leading-none">
         {/* 左侧：Logo */}
@@ -73,8 +74,8 @@ const AppLayout: React.FC = () => {
       </Header>
 
       {/* 主工作区（全宽，无侧边栏） */}
-      <Content className="flex-1 bg-bg-base">
-        <div className="h-full min-h-[calc(100vh-56px)]">
+      <Content className="flex-1 flex flex-col min-h-0 bg-bg-base">
+        <div className="flex-1 min-h-0">
           <Outlet />
         </div>
       </Content>

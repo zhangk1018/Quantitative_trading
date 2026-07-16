@@ -17,7 +17,7 @@ import { BgColorsOutlined, CodeOutlined, ExperimentOutlined } from '@ant-design/
 import { useSearchParams } from 'react-router-dom';
 import { useSettings, COLOR_SCHEMES, ColorScheme } from '@/shared/contexts/SettingsContext';
 import { CustomIndicatorManager } from './components/CustomIndicatorManager';
-import BacktestDefaultsPanel from './components/BacktestDefaultsPanel';
+import CombinedBacktestPanel from './components/CombinedBacktestPanel';
 
 const { Title, Text } = Typography;
 
@@ -143,9 +143,9 @@ const Config: React.FC = () => {
   };
 
   return (
-    <div className="h-full overflow-auto bg-bg-base p-6">
-      <div className="max-w-2xl mx-auto">
-        <Title level={4} className="!text-text-primary !mb-4">
+    <div className="flex flex-col h-full bg-bg-base p-6">
+      <div className="max-w-2xl w-full mx-auto flex flex-col h-full">
+        <Title level={4} className="!text-text-primary !mb-0 !flex-shrink-0">
           系统设置
         </Title>
 
@@ -153,6 +153,7 @@ const Config: React.FC = () => {
           activeKey={activeTab}
           onChange={handleTabChange}
           data-testid="config-tabs"
+          className="config-tabs flex-1 flex flex-col min-h-0 mt-4"
           items={[
             {
               key: 'color',
@@ -162,17 +163,21 @@ const Config: React.FC = () => {
                   涨跌颜色方案
                 </span>
               ),
-              children: <ColorSchemePanel />,
+              children: (
+                <div className="h-full overflow-auto pr-1">
+                  <ColorSchemePanel />
+                </div>
+              ),
             },
             {
               key: 'backtest',
               label: (
                 <span data-testid="config-tab-backtest">
                   <ExperimentOutlined className="mr-1" />
-                  回测默认设置
+                  回测设置
                 </span>
               ),
-              children: <BacktestDefaultsPanel />,
+              children: <CombinedBacktestPanel />,
             },
             {
               key: 'indicators',
@@ -182,7 +187,11 @@ const Config: React.FC = () => {
                   自编指标
                 </span>
               ),
-              children: <CustomIndicatorManager />,
+              children: (
+                <div className="h-full overflow-auto pr-1">
+                  <CustomIndicatorManager />
+                </div>
+              ),
             },
           ]}
         />

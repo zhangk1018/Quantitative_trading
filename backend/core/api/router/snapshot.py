@@ -20,11 +20,13 @@ router = APIRouter(tags=["全量快照接口"])
 def get_all_snapshot(
     snapshot: SnapshotServiceDep,
     board: str | None = Query(None, description="板块过滤 main_board/gem/beijing"),
-    industry: str | None = Query(None, description="行业名称过滤")
+    industry: str | None = Query(None, description="行业名称过滤"),
+    codes: str | None = Query(None, description="股票代码过滤，逗号分隔，如 000001,600000")
 ):
     board = validate_board(board)
+    code_list = codes.split(",") if codes else None
     start = time.time()
-    result = snapshot.get_all_snapshot(board=board, industry=industry)
+    result = snapshot.get_all_snapshot(board=board, industry=industry, codes=code_list)
     elapsed = time.time() - start
 
     if elapsed > SLOW_REQUEST_THRESHOLD:
@@ -40,13 +42,15 @@ def get_incremental_snapshot(
     snapshot: SnapshotServiceDep,
     since: str = Query(..., description="起始日期 YYYY-MM-DD", examples=["2026-06-20"]),
     board: str | None = Query(None, description="板块过滤 main_board/gem/beijing"),
-    industry: str | None = Query(None, description="行业名称过滤")
+    industry: str | None = Query(None, description="行业名称过滤"),
+    codes: str | None = Query(None, description="股票代码过滤，逗号分隔，如 000001,600000")
 ):
     since = validate_required_date(since, label="since")
     board = validate_board(board)
+    code_list = codes.split(",") if codes else None
     start = time.time()
     try:
-        result = snapshot.get_incremental_snapshot(since=since, board=board, industry=industry)
+        result = snapshot.get_incremental_snapshot(since=since, board=board, industry=industry, codes=code_list)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     elapsed = time.time() - start
