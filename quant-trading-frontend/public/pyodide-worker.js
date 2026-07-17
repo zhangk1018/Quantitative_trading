@@ -1,103 +1,147 @@
 /**
  * Pyodide Worker
  * 在 Web Worker 中加载 CPython 解释器（WASM），执行用户自编指标脚本。
- *
- * 协议：
- *   Main → Worker:   { type, batchId, scripts, timeoutMs }
- *   Worker → Main:   { type, batchId, ... }
- *
- * 状态机：
- *   loading → ready → (executing → ready)* → terminated
  */
 self.importScripts('/pyodide/pyodide.js');
 
-/** @type {any} */
 let pyodide = null;
 let ready = false;
 let abortController = null;
-
-// ---- 初始化 ----
 
 async function init() {
   try {
     pyodide = await self.loadPyodide({
       indexURL: '/pyodide/',
     });
-    // 预加载常用科学计算库（按需加载，不阻塞初始化）
-    pyodide.loadPackage(['numpy', 'pandas']).catch(err => {
-      console.warn('Pyodide 预加载 numpy/pandas 失败:', err.message);
-    });
+    await pyodide.loadPackage(['numpy']);
     ready = true;
     self.postMessage({ type: 'ready' });
   } catch (err) {
+    console.error('[pyodide-worker] 初始化失败:', err);
     self.postMessage({ type: 'error', error: 'Pyodide 初始化失败: ' + err.message });
   }
 }
 
 init();
 
-// ---- 脚本执行 ----
+function toJsValue(pyResult) {
+  if (pyResult === null || pyResult === undefined) {
+    return null;
+  }
+  if (typeof pyResult === 'object' && typeof pyResult.toJs === 'function') {
+    const jsVal = pyResult.toJs();
+    if (typeof pyResult.destroy === 'function') {
+      pyResult.destroy();
+    }
+    return jsVal;
+  }
+  return pyResult;
+}
 
-/**
- * 执行单条脚本，返回结果矩阵。
- * 脚本入参: close, high, low, open, volume (均为 list[list[float]], 股票×天数)
- * 脚本返回值: list[list[float]] 或 list[float]
- */
 async function executeScript(scriptCode, stockData, signal) {
   const { close, high, low, open, volume } = stockData;
 
-  // 构建安全的 globals 上下文
+  const needsNumpy = /\bnumpy\b/.test(scriptCode) || /\bnp\./.test(scriptCode);
+  const needsPandas = /\bpandas\b/.test(scriptCode) || /\bpd\./.test(scriptCode);
+  if (needsNumpy || needsPandas) {
+    const pkgs = [];
+    if (needsNumpy) pkgs.push('numpy');
+    if (needsPandas) pkgs.push('pandas');
+    await pyodide.loadPackage(pkgs);
+  }
+
   const code = `
-import json, math, sys
-
-# 允许的库白名单检查
-_allowed_modules = {'numpy', 'pandas', 'math', 'json', 'itertools', 'collections', 'statistics', 'typing', 'datetime'}
-
-def calculate(close, high, low, open, volume):
-    # 用户实现
-    pass
+def calculate(open_prices, high_prices, low_prices, close_prices, volumes):
+    return 0
 
 ${scriptCode}
 
-# 执行
-_result = calculate(close, high, low, open, volume)
+def _calculate_single(o, h, l, c, v):
+    try:
+        import sys
+        def _type_name(x):
+            return type(x).__name__
+        def _safe_len(x):
+            try:
+                return len(x)
+            except:
+                return -1
+        # 调试：打印参数类型和长度（仅第一只股票）
+        if not hasattr(_calculate_single, '_debug_printed'):
+            _calculate_single._debug_printed = True
+            print(f'[DEBUG] o type={_type_name(o)}, len={_safe_len(o)}, first3={list(o[:3]) if _safe_len(o) > 0 else "N/A"}')
+            print(f'[DEBUG] h type={_type_name(h)}, len={_safe_len(h)}, first3={list(h[:3]) if _safe_len(h) > 0 else "N/A"}')
+            print(f'[DEBUG] l type={_type_name(l)}, len={_safe_len(l)}, first3={list(l[:3]) if _safe_len(l) > 0 else "N/A"}')
+            print(f'[DEBUG] c type={_type_name(c)}, len={_safe_len(c)}, first3={list(c[:3]) if _safe_len(c) > 0 else "N/A"}')
+            print(f'[DEBUG] v type={_type_name(v)}, len={_safe_len(v)}, first3={list(v[:3]) if _safe_len(v) > 0 else "N/A"}')
+            sys.stdout.flush()
+        result = calculate(o, h, l, c, v)
+        if isinstance(result, (int, float)):
+            return result
+        elif isinstance(result, list):
+            return result
+        else:
+            return float(result) if result else 0
+    except Exception as e:
+        import traceback
+        return '__ERROR__:' + traceback.format_exc()
 `;
 
-  // 传入数据到 Python 全局
-  const globals = {
-    close: close,
-    high: high,
-    low: low,
-    open: open,
-    volume: volume,
-    __builtins__: pyodide.globals.get('__builtins__'),
-  };
-
   try {
-    // 在独立 globals 中执行
-    const pyGlobals = pyodide.toPy(globals);
-    pyodide.runPython(code, { globals: pyGlobals });
-    const result = pyGlobals.get('_result');
+    pyodide.runPython(code);
+    const calcFunc = pyodide.globals.get('_calculate_single');
 
-    // 释放 Python 对象
-    pyGlobals.destroy();
+    const numStocks = close.length;
+    const results = [];
+    
+    // JS 端调试：打印第一只股票的数据结构
+    if (numStocks > 0) {
+      console.log('[pyodide-worker] 数据结构调试:', {
+        股票数: numStocks,
+        close_是否二维数组: Array.isArray(close) && Array.isArray(close[0]),
+        close_第一只长度: close[0]?.length,
+        close_第一只前3个值: close[0]?.slice(0, 3),
+        open_第一只前3个值: open[0]?.slice(0, 3),
+      });
+    }
+    
+    for (let i = 0; i < numStocks; i++) {
+      if (signal && signal.aborted) break;
+      const o = open[i] || [];
+      const h = high[i] || [];
+      const l = low[i] || [];
+      const c = close[i] || [];
+      const v = volume[i] || [];
 
-    if (result === null || result === undefined) {
-      return null;
+      try {
+        const pyResult = calcFunc(
+          pyodide.toPy(o),
+          pyodide.toPy(h),
+          pyodide.toPy(l),
+          pyodide.toPy(c),
+          pyodide.toPy(v)
+        );
+        const jsResult = toJsValue(pyResult);
+        
+        if (typeof jsResult === 'string' && jsResult.startsWith('__ERROR__:')) {
+          console.error('[pyodide-worker] Python执行错误:', jsResult.substring(10));
+          results.push(null);
+        } else {
+          results.push(jsResult);
+        }
+      } catch (err) {
+        console.error('[pyodide-worker] JS执行错误:', err.message);
+        results.push(null);
+      }
     }
 
-    // 转换为 JS 数组
-    const jsResult = result.toJs();
-    result.destroy();
-    return jsResult;
+    return results;
   } catch (err) {
-    throw new Error('脚本执行错误: ' + err.message);
+    console.error('[pyodide-worker] 脚本加载错误:', err.message);
+    throw new Error('脚本加载错误: ' + err.message);
   }
 }
 
-/**
- * 检查脚本安全性（import 白名单）
- */
 function validateScript(code) {
   const importRegex = /^(?:from\s+(\S+)\s+)?import\s+(\S+)/gm;
   let match;
@@ -105,12 +149,10 @@ function validateScript(code) {
   while ((match = importRegex.exec(code)) !== null) {
     const module = match[1] || match[2].split('.')[0];
     if (!allowed.has(module)) {
-      throw new Error('导入不被允许的模块: ' + module + '（仅允许: ' + Array.from(allowed).join(', ') + '）');
+      throw new Error('导入不被允许的模块: ' + module);
     }
   }
 }
-
-// ---- 消息处理 ----
 
 self.onmessage = async function (event) {
   const { type, batchId, scripts, timeoutMs } = event.data;
@@ -124,7 +166,6 @@ self.onmessage = async function (event) {
     abortController = new AbortController();
     const signal = abortController.signal;
 
-    // 设置超时
     const timeout = setTimeout(() => {
       if (abortController) {
         abortController.abort();
@@ -146,7 +187,6 @@ self.onmessage = async function (event) {
           results.push({ id, values: null, error: err.message });
         }
 
-        // 报告进度
         self.postMessage({
           type: 'progress',
           batchId,

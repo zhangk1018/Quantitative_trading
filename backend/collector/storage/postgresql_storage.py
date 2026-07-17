@@ -704,15 +704,18 @@ class PostgreSQLStorage(BaseStorage):
         df['trade_datetime'] = df['trade_datetime'].apply(self._to_tz_aware)
         if 'volume' in df.columns:
             df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0).astype(int)
+        if 'ah_vol' in df.columns:
+            df['ah_vol'] = pd.to_numeric(df['ah_vol'], errors='coerce').fillna(0).astype(int)
 
-        numeric_cols = ['open', 'high', 'low', 'close', 'pre_close', 'amount']
+        numeric_cols = ['open', 'high', 'low', 'close', 'pre_close', 'amount', 'ah_amount']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = df[col].apply(lambda x: Decimal(str(x)) if pd.notnull(x) else None)
 
         # 确保所有需要列存在
         required_cols = ['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close',
-                         'pre_close', 'volume', 'amount', 'adjust_type', 'trade_datetime']
+                         'pre_close', 'volume', 'amount', 'adjust_type', 'trade_datetime',
+                         'ah_vol', 'ah_amount']
         for c in required_cols:
             if c not in df.columns:
                 df[c] = np.nan
@@ -727,7 +730,7 @@ class PostgreSQLStorage(BaseStorage):
                 # 使用 execute_values 批量插入，每批 5000 条
                 execute_values(cursor, """
                     INSERT INTO stock_quotes (code, cycle, trade_date, open, high, low, close, pre_close,
-                                              volume, amount, adjust_type, trade_datetime)
+                                              volume, amount, adjust_type, trade_datetime, ah_vol, ah_amount)
                     VALUES %s
                     ON CONFLICT (code, cycle, trade_date, adjust_type) DO UPDATE SET
                         open = EXCLUDED.open,
@@ -737,6 +740,8 @@ class PostgreSQLStorage(BaseStorage):
                         pre_close = EXCLUDED.pre_close,
                         volume = EXCLUDED.volume,
                         amount = EXCLUDED.amount,
+                        ah_vol = EXCLUDED.ah_vol,
+                        ah_amount = EXCLUDED.ah_amount,
                         trade_datetime = EXCLUDED.trade_datetime
                 """, values, page_size=5000)
             conn.commit()

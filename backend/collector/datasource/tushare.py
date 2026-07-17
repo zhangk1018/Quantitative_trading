@@ -220,7 +220,7 @@ class TushareDataSource(BaseDataSource):
             ts_date = trade_date.replace('-', '')
             df = self._pro.daily(
                 trade_date=ts_date,
-                fields='ts_code,trade_date,open,high,low,close,pre_close,vol,amount'
+                fields='ts_code,trade_date,open,high,low,close,pre_close,vol,amount,ah_vol,ah_amount'
             )
             return df
         except Exception as e:

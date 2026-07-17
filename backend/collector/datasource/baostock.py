@@ -154,6 +154,12 @@ class BaostockDataSource(BaseDataSource):
             
         for i in range(self._max_reconnect):
             try:
+                # 🟢 修复：重试之间加入延迟，给 Baostock 服务器恢复时间
+                if i > 0:
+                    delay = min(5 * i, 15)  # 第1次重试等5s，第2次等10s，第3次等15s
+                    logger.debug(f"⏸ 等待 {delay}s 后重试连接...")
+                    time.sleep(delay)
+                    
                 def do_login(): return bs.login()
                 lg = _run_baostock_with_timeout(do_login, timeout=15)
                 if lg is None:

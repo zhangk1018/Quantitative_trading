@@ -264,7 +264,7 @@ class DailyDataImporter(BaseDataImporter):
         df['cycle'] = self.CYCLE
         df['adjust_type'] = self.ADJUST_TYPE
         cols = ['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close',
-                'pre_close', 'volume', 'amount', 'adjust_type']
+                'pre_close', 'volume', 'amount', 'adjust_type', 'ah_vol', 'ah_amount']
         return df[[c for c in cols if c in df.columns]]
 
     def _process_kline_data(self, df: pd.DataFrame) -> pd.DataFrame:

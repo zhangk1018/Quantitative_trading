@@ -143,17 +143,26 @@ export async function applyCustomIndicatorFilter(
         if (!passedCodes.has(stockCode)) continue;
 
         const values = scriptResult.values.get(stockCode);
-        if (!values || values.length === 0) {
+        if (values === null || values === undefined) {
           passedCodes.delete(stockCode);
           continue;
         }
 
-        // 取最后一个有效值
         let lastVal: number | null = null;
-        for (let i = values.length - 1; i >= 0; i--) {
-          if (values[i] !== null && values[i] !== undefined && !Number.isNaN(values[i])) {
-            lastVal = values[i] as number;
-            break;
+
+        if (typeof values === 'number') {
+          lastVal = Number.isNaN(values) ? null : values;
+        } else if (Array.isArray(values)) {
+          if (values.length === 0) {
+            passedCodes.delete(stockCode);
+            continue;
+          }
+          for (let i = values.length - 1; i >= 0; i--) {
+            const v = values[i];
+            if (v !== null && v !== undefined && !Number.isNaN(v)) {
+              lastVal = v as number;
+              break;
+            }
           }
         }
 
@@ -162,7 +171,6 @@ export async function applyCustomIndicatorFilter(
           continue;
         }
 
-        // 阈值比较
         if (!meetsThreshold(lastVal, cond.operator, cond.threshold)) {
           passedCodes.delete(stockCode);
         }
@@ -201,8 +209,14 @@ function meetsThreshold(
       if (Array.isArray(threshold) && threshold.length >= 2) {
         return value >= threshold[0] && value <= threshold[1];
       }
-      return true;
+      console.warn(`[自编指标筛选] range 操作符需要区间阈值，实际收到:`, threshold);
+      return false;
+    case 'cross_up':
+    case 'cross_down':
+      console.warn(`[自编指标筛选] ${operator} 操作符暂不支持自编指标选股，请使用 >, >=, <, <=, ==, range`);
+      return false;
     default:
-      return true;
+      console.warn(`[自编指标筛选] 未知操作符: "${operator}"，跳过筛选`);
+      return false;
   }
 }

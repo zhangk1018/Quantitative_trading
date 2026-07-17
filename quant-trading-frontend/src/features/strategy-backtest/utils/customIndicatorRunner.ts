@@ -25,8 +25,8 @@ export interface ScriptResult {
   id: string;
   /** 脚本名称 */
   name: string;
-  /** 预计算矩阵: Map<股票代码, (number|null)[]> */
-  values: Map<string, (number | null)[]>;
+  /** 预计算矩阵: Map<股票代码, (number|null)[] | number> */
+  values: Map<string, (number | null)[] | number | null>;
   /** 错误列表（按股票索引） */
   errors: string[];
 }
@@ -129,7 +129,7 @@ export class CustomIndicatorRunner {
 
       // 分批处理股票
       const stockBatches = this.chunkArray(stockCodes, BATCH_SIZE);
-      const allValues = new Map<string, (number | null)[]>();
+      const allValues = new Map<string, (number | null)[] | number | null>();
       const errors: string[] = [];
       let batchId = `batch_${this.batchIdCounter++}`;
 
@@ -274,7 +274,7 @@ export class CustomIndicatorRunner {
     },
     batchId: string,
     timeoutMs: number,
-  ): Promise<{ values?: (number | null)[][]; error?: string }> {
+  ): Promise<{ values?: ((number | null)[] | number | null)[]; error?: string }> {
     return new Promise((resolve, reject) => {
       if (!this.worker) {
         reject(new Error('Worker 已终止'));
