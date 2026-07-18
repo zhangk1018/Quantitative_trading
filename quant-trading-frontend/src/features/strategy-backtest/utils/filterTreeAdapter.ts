@@ -277,6 +277,7 @@ const TREE_MAX_DEPTH = 10;
 const FILTER_NODE_STANDARD_FIELDS = new Set([
   'type', 'children', 'child', 'field', 'min', 'max',
   'pattern', 'lookbackDays', 'boards', 'watchlistOnly',
+  'scriptId', 'version',
 ]);
 
 /**

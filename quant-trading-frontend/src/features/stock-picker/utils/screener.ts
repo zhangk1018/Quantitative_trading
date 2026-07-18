@@ -53,6 +53,14 @@ export const CONFIG = {
     pe: false,
     amount: false,
   } as Record<string, boolean>,
+  /** 分批拉取候选股的每批大小（受后端 limit<=200 限制） */
+  CANDIDATE_BATCH_SIZE: 200,
+  /** 自编指标软上限：超过此数量弹窗提示用户 */
+  CUSTOM_SCREEN_SOFT_LIMIT: 2000,
+  /** 自编指标计算阶段权重（用于进度条分配：拉取+OHLCV占60%，计算占40%） */
+  CANDIDATE_FETCH_WEIGHT: 0.3,
+  OHLCV_LOAD_WEIGHT: 0.3,
+  CUSTOM_COMPUTE_WEIGHT: 0.4,
 } as const;
 
 // ==================== 核心函数 ====================

@@ -33,8 +33,11 @@ import {
   QuestionCircleOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
-import Editor, { OnMount } from '@monaco-editor/react';
-import type { editor as MonacoEditor } from 'monaco-editor';
+import Editor, { loader } from '@monaco-editor/react';
+import * as monaco from 'monaco-editor';
+import type { editor } from 'monaco-editor';
+
+loader.config({ monaco });
 import {
   CustomIndicator,
   CustomIndicatorParam,
@@ -125,10 +128,10 @@ const PYTHON_HELPERS: FieldCandidate[] = [
   { key: 'none_pad', label: '[None] * n', insertText: '[None] * n', group: 'pattern' },
 ];
 
-// Monaco editor 配置：使用 @monaco-editor/react 默认 CDN loader（unpkg.com）
-// - 首屏不加载（@monaco-editor/react 内部 useEffect 按需加载）
-// - 抽屉打开时下载 ~500KB gzip（vs 静态 TextArea 多 ~600ms 加载）
-// - V1.0 暂不打包 monaco-editor 到 bundle（避免首屏体积膨胀）
+// Monaco Editor 加载配置：
+// - 通过 loader.config({ monaco }) 直接传入本地 ESM 版本的 monaco-editor
+// - 完全本地加载，不依赖 CDN
+// - vite-plugin-monaco-editor 处理 Worker 加载
 
 /**
  * 自编指标创建/编辑抽屉
@@ -153,7 +156,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
   const [formulaError, setFormulaError] = useState<string | null>(null);
 
   // Monaco editor 实例引用
-  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
 
   // 抽屉打开时同步 editing 状态
   useEffect(() => {
@@ -223,9 +226,9 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
    * - 绑定 onDidBlurEditorWidget 事件做 OnBlur 校验
    *   通过 ref 调用最新 handleFormulaBlur，避免闭包捕获旧 formState
    */
-  const handleEditorMount: OnMount = (editor) => {
-    editorRef.current = editor;
-    editor.onDidBlurEditorWidget(() => {
+  const handleEditorMount = (editorInstance: editor.IStandaloneCodeEditor) => {
+    editorRef.current = editorInstance;
+    editorInstance.onDidBlurEditorWidget(() => {
       handleFormulaBlurRef.current();
     });
   };
@@ -465,20 +468,12 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
                 scrollBeyondLastLine: false,
                 wordWrap: 'on',
                 tabSize: 2,
-                automaticLayout: true,
                 renderLineHighlight: 'gutter',
                 folding: true,
                 lineDecorationsWidth: 6,
                 lineNumbersMinChars: 3,
               }}
-              // K 2026-06-17 反馈：vs 主题白底黑字与深色 Drawer 冲突，改为 vs-dark
-              // 配合 bg-bg-elevated 容器底色与 Antd 主题色协调（深灰底 + 浅色语法高亮）
               theme="vs-dark"
-              loading={
-                <div className="p-3 text-text-secondary text-sm bg-bg-elevated">
-                  Monaco Editor 正在加载（~500KB gzip，首开抽屉时按需下载）...
-                </div>
-              }
             />
           </div>
 

@@ -11,7 +11,7 @@
  *   values 内维 = 天数，长度与入参 OHLCV 一致
  */
 
-import { getScript, getScriptCacheKey } from '../../settings/custom-indicators/scriptStore';
+
 
 export interface BatchProgress {
   total: number;   // 总脚本数

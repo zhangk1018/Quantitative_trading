@@ -17,7 +17,7 @@ import type { ProgressInfo } from './components/ProgressSection';
 import PerformanceMetrics from './components/PerformanceMetrics';
 import ChartTabs from './components/ChartTabs';
 import { getCustomIndicatorRunner, type BatchProgress } from './utils/customIndicatorRunner';
-import { getScript } from '../settings/custom-indicators/scriptStore';
+import { getCustomIndicatorById } from '../stock-picker/utils/customIndicatorStorage';
 
 // ==================== 回测会话管理器（竞态条件防护） ====================
 
@@ -207,12 +207,12 @@ const StrategyBacktestView: React.FC = () => {
         const uniqueScripts = new Map<string, { id: string; name: string; code: string }>();
         for (const node of customIndicatorNodes) {
           if (!uniqueScripts.has(node.scriptId)) {
-            const script = getScript(node.scriptId);
-            if (script) {
+            const indicator = getCustomIndicatorById(node.scriptId);
+            if (indicator) {
               uniqueScripts.set(node.scriptId, {
-                id: script.id,
-                name: script.name,
-                code: script.code,
+                id: indicator.id,
+                name: indicator.name,
+                code: indicator.formula,
               });
             }
           }

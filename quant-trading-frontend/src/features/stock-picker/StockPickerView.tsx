@@ -60,8 +60,12 @@ const StockPickerContent: React.FC = () => {
   const {
     items, total, loading, loadingMore, error, loadMoreError,
     sortBy, sortAsc, PAGE_SIZE,
+    phase, progress, progressText,
     fetchFirstPage, fetchNextPage, clearResults, retry, retryLoadMore,
+    cancelScreening,
   } = useScreenerData(message);
+
+  const showProgressBar = phase !== 'idle' && phase !== 'ready' && phase !== ('' as any);
 
   // 操作层
   const actions = useStockPickerActions(
@@ -89,6 +93,28 @@ const StockPickerContent: React.FC = () => {
             onNavigateToBacktest={handleNavigateToBacktest}
             backtestWarningsCount={conversionWarnings.length}
           />
+          {showProgressBar && (
+            <div className="px-4 py-2 bg-bg-card border-b border-border-color flex items-center gap-3">
+              <div className="flex-1 h-1.5 bg-bg-base rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-color-accent rounded-full transition-all duration-300 ease-out"
+                  style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
+                />
+              </div>
+              <span className="text-text-secondary text-xs whitespace-nowrap min-w-0 truncate max-w-[240px]">
+                {progressText || '加载中...'}
+              </span>
+              <span className="text-text-tertiary text-xs font-mono">
+                {Math.round(progress)}%
+              </span>
+              <button
+                onClick={cancelScreening}
+                className="text-text-secondary text-xs hover:text-text-primary transition-colors px-2 py-0.5 border border-border-color rounded"
+              >
+                取消
+              </button>
+            </div>
+          )}
           <StockPickerTable
             items={items}
             total={total}
