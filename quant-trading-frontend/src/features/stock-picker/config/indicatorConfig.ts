@@ -25,12 +25,12 @@ export const MARKET_INDICATORS: readonly IndicatorItem[] = [
   { id: 'market_cap', label: '市值', field: 'market_cap', unit: '亿元' },
   { id: 'price', label: '价格', field: 'close', unit: '元' },
   { id: 'change_pct', label: '涨跌幅', field: 'change_pct', unit: '%' },
-  { id: 'pe_static', label: '市盈率(静)', field: 'pe', unit: '' },
-  { id: 'pe_ttm', label: '市盈率(TTM)', field: 'pe_ttm', unit: '' },
-  { id: 'pb', label: '市净率', field: 'pb', unit: '' },
-  { id: 'volume_ratio', label: '量比', field: 'volume_ratio', unit: '' },
-  { id: 'amount', label: '成交额', field: 'amount', unit: '亿元' },
-  { id: 'volume', label: '成交量', field: 'volume', unit: '手' },
+  { id: 'pe_static', label: '市盈率(静)', field: 'pe', unit: '倍' },
+  { id: 'pe_ttm', label: '市盈率(TTM)', field: 'pe_ttm', unit: '倍' },
+  { id: 'pb', label: '市净率', field: 'pb', unit: '倍' },
+  { id: 'volume_ratio', label: '量比', field: 'volume_ratio', unit: '倍' },
+  { id: 'amount', label: '成交额', field: 'amount', unit: '万元' },
+  { id: 'volume', label: '成交量', field: 'volume', unit: '万股' },
   { id: 'turnover', label: '换手率', field: 'turnover_rate', unit: '%' },
 ] as const;
 
