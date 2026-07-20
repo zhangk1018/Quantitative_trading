@@ -28,15 +28,15 @@ DATASOURCE_RATE_LIMITS = {
         'min_interval': 0.15,           # 建议间隔 0.1-0.2秒
         'burst_size': 3,
     },
-    'AKShare': {
-        'max_requests_per_minute': 60,  # 东方财富限制约60次/分钟
-        'min_interval': 0.1,
-        'burst_size': 5,
-    },
     'Tushare': {
-        'max_requests_per_minute': 30,  # 免费用户限制
-        'min_interval': 0.2,
-        'burst_size': 2,
+        'max_requests_per_minute': 45,  # 免费版 daily 接口限 50次/分钟，留余量
+        'min_interval': 1.4,
+        'burst_size': 1,
+    },
+    'Pytdx': {
+        'max_requests_per_minute': 60,  # 通达信无严格限制，保守设置
+        'min_interval': 1.0,
+        'burst_size': 3,
     },
     'default': {
         'max_requests_per_minute': 30,
@@ -438,16 +438,14 @@ def create_smart_dsm(
     创建智能数据源管理器的便捷函数
     """
     from collector.datasource.baostock import BaostockDataSource
-    from collector.datasource.akshare import AkshareDataSource
-    from collector.datasource.sina import SinaDataSource
-    from collector.datasource.tencent import TencentDataSource
-    
-    # 配置多数据源
+    from collector.datasource.tushare import TushareDataSource
+    from collector.datasource.pytdx import PytdxDataSource
+
+    # 配置多数据源：Baostock 主（前复权），Tushare 备1（不复权→转换），pytdx 备2
     sources = [
         {'source': BaostockDataSource(), 'priority': 0},
-        {'source': AkshareDataSource(), 'priority': 1},
-        {'source': TencentDataSource(), 'priority': 2},
-        {'source': SinaDataSource(), 'priority': 3}
+        {'source': TushareDataSource(), 'priority': 1},
+        {'source': PytdxDataSource(), 'priority': 2}
     ]
     
     strategy_enum = {

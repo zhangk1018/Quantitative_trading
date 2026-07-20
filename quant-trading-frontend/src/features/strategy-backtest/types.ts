@@ -7,7 +7,7 @@
  * ============================================
  */
 
-/** 卖出原因（7种分类，用于交易日志彩色Tag） */
+/** 卖出原因（9种分类，用于交易日志彩色Tag） */
 export type SellReason =
   | 'rebalance'      // 调仓换股
   | 'stop_loss'      // 止损
@@ -15,7 +15,9 @@ export type SellReason =
   | 'timeout'        // 超时平仓
   | 'portfolio_risk' // 组合级风控（单日亏损/最大回撤）
   | 'delisted'       // 退市强平
-  | 'end';           // 期末清仓
+  | 'end'            // 期末清仓
+  | 'trailing_stop'  // 峰值回撤止盈
+  | 'ma_cross';      // 均线破位
 
 /** 调仓频率（底层交易日间隔） */
 export type RebalanceInterval = 1 | 5 | 21; // 1=每日, 5=每周, 21=每月
@@ -29,8 +31,8 @@ export type IdleCashReturn = 'none' | 'moneyMarket';
 /** 顺延超时失败处理 */
 export type DeferFailAction = 'abandon' | 'atClose';
 
-/** 技术形态类型（引擎支持的5种基础形态 + 1个自编指标） */
-export type TechPattern = 'ma_bullish' | 'macd_golden_cross' | 'rsi_golden_cross' | 'boll_break_upper' | 'ths_6_buy_signal';
+/** 技术形态类型（引擎支持的4种基础形态） */
+export type TechPattern = 'ma_bullish' | 'macd_golden_cross' | 'rsi_golden_cross' | 'boll_break_upper';
 
 /** K线形态类型（后端 pattern_markers 提供） */
 export type KlinePattern = 'morning_star' | 'hammer' | 'bullish_engulfing' | 'piercing_line' | 'three_white_soldiers';
@@ -348,6 +350,15 @@ export class IndicatorCache {
       case 20: return this.ma20[idx];
       case 60: return this.ma60[idx];
     }
+  }
+
+  /** 安全获取任意周期 MA（仅支持预计算的 5/10/20/60 周期，其余返回 null） */
+  getMASafe(period: number, idx: number): number | null {
+    if (period === 5) return this.getMA(5, idx);
+    if (period === 10) return this.getMA(10, idx);
+    if (period === 20) return this.getMA(20, idx);
+    if (period === 60) return this.getMA(60, idx);
+    return null;
   }
 
   /** 获取 MACD 值，未就绪返回 null */

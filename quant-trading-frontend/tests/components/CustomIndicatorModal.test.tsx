@@ -98,10 +98,6 @@ function getCategorySelect() {
   return screen.getByTestId('custom-indicator-modal-category');
 }
 
-function getSyntaxSelect() {
-  return screen.getByTestId('custom-indicator-modal-syntax');
-}
-
 function getOperatorSelect() {
   return screen.getByTestId('custom-indicator-modal-operator');
 }
@@ -127,8 +123,8 @@ function makeIndicatorData(overrides: Partial<any> = {}) {
   return {
     name: '测试指标',
     category: 'trend' as const,
-    syntax: 'tdx' as const,
-    formula: 'CLOSE > MA(CLOSE, 5)',
+    syntax: 'python_talib' as const,
+    formula: 'close > talib.MA(close, 5)',
     params: [],
     operator: '>' as const,
     defaultThreshold: 0,
@@ -153,13 +149,12 @@ afterEach(() => {
 // ============================================================================
 
 describe('CustomIndicatorModal - 抽屉打开/关闭', () => {
-  it('默认打开时显示 8 字段表单', () => {
+  it('默认打开时显示 7 字段表单', () => {
     renderModal();
     expect(screen.getByTestId('custom-indicator-modal')).toBeInTheDocument();
     expect(getNameInput()).toBeInTheDocument();
     expect(getFormulaEditor()).toBeInTheDocument();
     expect(getCategorySelect()).toBeInTheDocument();
-    expect(getSyntaxSelect()).toBeInTheDocument();
     expect(getOperatorSelect()).toBeInTheDocument();
     expect(screen.getByTestId('custom-indicator-modal-visibility')).toBeInTheDocument();
   });
@@ -283,26 +278,26 @@ describe('CustomIndicatorModal - 公式 OnBlur 校验', () => {
 // ============================================================================
 
 describe('CustomIndicatorModal - 字段插入按钮', () => {
-  it('行情字段按钮（CLOSE）触发 Monaco executeEdits', async () => {
+  it('行情字段按钮（close）触发 Monaco executeEdits', async () => {
     const user = userEvent.setup();
     renderModal();
     // Monaco 已被 mock，executeEdits 会触发 onChange 追加文本
-    const closeBtn = screen.getByTestId('custom-indicator-modal-insert-CLOSE');
+    const closeBtn = screen.getByTestId('custom-indicator-modal-insert-close');
     await user.click(closeBtn);
     await waitFor(() => {
       const editor = getFormulaEditor();
-      expect(editor.value).toContain('CLOSE');
+      expect(editor.value).toContain('close[stock_idx]');
     });
   });
 
-  it('指标函数按钮（MA）插入完整函数调用', async () => {
+  it('NumPy 函数按钮（np_mean）插入函数调用', async () => {
     const user = userEvent.setup();
     renderModal();
-    const maBtn = screen.getByTestId('custom-indicator-modal-insert-MA');
-    await user.click(maBtn);
+    const npMeanBtn = screen.getByTestId('custom-indicator-modal-insert-np_mean');
+    await user.click(npMeanBtn);
     await waitFor(() => {
       const editor = getFormulaEditor();
-      expect(editor.value).toContain('MA(CLOSE, 5)');
+      expect(editor.value).toContain('np.mean(');
     });
   });
 
@@ -399,7 +394,7 @@ describe('CustomIndicatorModal - 提交逻辑', () => {
     await user.type(getNameInput(), '我的指标');
     const editor = getFormulaEditor();
     // 直接 fireEvent.change（比 user.type 快）
-    fireEvent.change(editor, { target: { value: 'CLOSE > MA(CLOSE, 5)' } });
+    fireEvent.change(editor, { target: { value: 'close > 0' } });
     await waitFor(() => {
       expect(getConfirmButton()).not.toBeDisabled();
     });
@@ -408,8 +403,8 @@ describe('CustomIndicatorModal - 提交逻辑', () => {
       expect(onConfirm).toHaveBeenCalledWith(
         expect.objectContaining({
           name: '我的指标',
-          formula: 'CLOSE > MA(CLOSE, 5)',
-          syntax: 'tdx',
+          formula: 'close > 0',
+          syntax: 'python_talib',
         }),
       );
     });

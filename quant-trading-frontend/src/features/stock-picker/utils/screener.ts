@@ -179,6 +179,11 @@ export function formatMarketCap(value: number | null | undefined): string {
   return `${(value / 10000).toFixed(2)}亿`;
 }
 
+export function formatAmount(value: number | null | undefined): string {
+  if (value == null || !isFinite(value)) return '-';
+  return `${(value / 10000).toFixed(0)}万`;
+}
+
 export function formatNumber(value: number | null | undefined, decimals = 2): string {
   if (value == null || !isFinite(value)) return '-';
   return Number(value).toFixed(decimals);

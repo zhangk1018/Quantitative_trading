@@ -1,7 +1,7 @@
 # 数据采集与校验设计文档
 
 **创建日期**：2026-06-04  
-**最后更新**：2026-06-08
+**最后更新**：2026-07-18
 
 ---
 
@@ -153,16 +153,16 @@
 ### 6.1 架构概览
 
 ```
-┌─────────────────────────────────────────────┐
-│              DataSourceManager               │
-│    策略: FAILOVER (故障切换)                  │
-│    优先级: Baostock(PRIMARY) > Tushare(备用)  │
-└──────┬──────────────┬──────────────┬─────────┘
+┌──────────────────────────────────────────────────────┐
+│                    DataSourceManager                 │
+│    策略: FAILOVER (故障切换)                          │
+│    优先级: Baostock(主) > Tushare(备1) > pytdx(备2)   │
+└──────┬──────────────┬──────────────┬─────────────────┘
        │              │              │
        ▼              ▼              ▼
 ┌──────────┐  ┌──────────┐  ┌──────────┐
-│ Baostock │  │ Tushare  │  │ AkShare  │
-│ (主力)   │  │ (日线)   │  │ (备用)   │
+│ Baostock │  │ Tushare  │  │  pytdx   │
+│ (主)     │  │ (备1)    │  │ (备2)    │
 └──────────┘  └──────────┘  └──────────┘
 ```
 
@@ -175,33 +175,35 @@
 
 | 数据源 | 优先级 | 当前状态 | 支持接口 | 限制说明 |
 |--------|--------|----------|----------|----------|
-| **Baostock** | PRIMARY | ✅ 生产使用 | get_stock_list, get_kline, get_adj_factor, get_trade_calendar, get_stock_industry | 免费，无Token，每分钟≤20次 |
-| **Tushare** | 备用 | ✅ 生产使用（仅日线） | get_kline (daily) | 免费用户200次/分钟，仅支持日线 |
-| **AkShare** | 备用 | 📦 可用组件 | 完整行情 | 免费，依赖网络稳定性 |
+| **Baostock** | 主 | ✅ 生产使用 | get_stock_list, get_kline, get_adj_factor, get_trade_calendar, get_stock_industry, get_daily_basic | 免费，无Token，每分钟≤20次 |
+| **Tushare** | 备1 | ✅ 生产使用（仅日线/daily_basic） | get_kline (daily), get_daily_basic | 免费用户 daily 限45次/分钟，daily_basic 限5次/天 |
+| **pytdx（通达信）** | 备2（兜底） | ✅ 已集成 | get_kline (daily/5min/15min/30min/60min), get_stock_list | 免费，无需Token，无配额限制，不支持北交所 |
+
+> **说明**：已移除 AkShare / Tencent / Sina / PyWenCai 数据源，保持数据源层整洁。
 
 ### 6.3 接口清单
 
-| 接口方法 | Baostock | Tushare | 说明 |
-|----------|----------|---------|------|
-| `connect()` | ✅ | ✅ | 建立连接 |
-| `disconnect()` | ✅ | ✅ | 断开连接 |
-| `get_stock_list()` | ✅ | ❌（权限受限） | 获取股票列表 |
-| `get_kline()` | ✅ | ✅ 仅日线 | 获取K线数据 |
-| `get_trade_calendar()` | ✅ | ❌（权限受限） | 获取交易日历 |
-| `get_adj_factor()` | ✅ | ❌（权限受限） | 获取复权因子 |
-| `get_stock_industry()` | ✅ | ❌（权限受限） | 获取行业分类 |
-| `get_daily_basic()` | ❌ | ✅（需Pro） | 获取每日基本面指标（PE/PB/dv/ps等），**限5次/天** |
+| 接口方法 | Baostock | Tushare | pytdx(通达信) | 说明 |
+|----------|----------|---------|:---:|------|
+| `connect()` | ✅ | ✅ | ✅ | 建立连接 |
+| `disconnect()` | ✅ | ✅ | ✅ | 断开连接 |
+| `get_stock_list()` | ✅ | ❌（权限受限） | ✅ | 获取股票列表 |
+| `get_kline()` | ✅ | ✅ 仅日线 | ✅ 日线+分钟线 | 获取K线数据 |
+| `get_trade_calendar()` | ✅ | ❌（权限受限） | ❌（需外部注入） | 获取交易日历 |
+| `get_adj_factor()` | ✅ | ❌（权限受限） | ❌ | 获取复权因子 |
+| `get_stock_industry()` | ✅ | ❌（权限受限） | ❌ | 获取行业分类 |
+| `get_daily_basic()` | ✅（PE/PB/换手率） | ✅（需Pro，全量字段） | ❌ | 获取每日基本面指标（PE/PB/dv/ps等） |
 
 ### 6.4 频率限制（Rate Limiter）
 
 所有数据源使用令牌桶算法实现请求频率控制：
 
-| 参数 | Baostock | Tushare | Tushare `daily_basic` |
-|------|----------|---------|-----------------------|
-| 最小请求间隔 | 0.15秒 | 0.35秒 | — |
-| 每分钟最大请求数 | 20次 | 180次 | — |
-| 每日最大请求数 | 无限制 | 200次 | **5次/天**（Tushare Pro 官方限制） |
-| 突发容量 | 3 | 5 | — |
+| 参数 | Baostock | Tushare `daily` | Tushare `daily_basic` |
+|------|----------|-----------------|-----------------------|
+| 最小请求间隔 | 0.15秒 | 1.4秒 | — |
+| 每分钟最大请求数 | 20次 | 45次 | — |
+| 每日最大请求数 | 无限制 | 无限制 | **5次/天**（Tushare Pro 官方限制） |
+| 突发容量 | 3 | 1 | — |
 
 > **注意**：`daily_basic` 接口每日配额仅 5 次（Tushare Pro 官方限制），同步完整历史数据需分多天执行。建议优先同步最新交易日，待配额刷新后再补历史。
 
@@ -278,11 +280,16 @@ Baostock.query_adjust_factor(code)
 | 文件 | 说明 |
 |------|------|
 | `collector/datasource/base.py` | 数据源抽象基类 & DataSourceManager |
-| `collector/datasource/tushare.py` | Tushare 数据源实现（仅日线） |
-| `collector/datasource/baostock.py` | Baostock 数据源实现（主力） |
+| `collector/datasource/tushare.py` | Tushare 数据源实现（主力日线） |
+| `collector/datasource/baostock.py` | Baostock 数据源实现（备用） |
+| `collector/datasource/pytdx.py` | pytdx（通达信）数据源实现（兜底） |
+| `collector/config/tdx_hosts.yaml` | pytdx 主机列表配置 |
+| `collector/config/tdx_market_mapping.yaml` | pytdx 市场-品种映射配置 |
+| `collector/etl/import_daily_data.py` | 数据导入主脚本（Tushare/Baostock） |
+| `collector/etl/import_tdx_daily.py` | pytdx 全量日线数据下载脚本 |
 | `collector/etl/sync_adj_factor.py` | 复权因子同步脚本 |
 | `collector/etl/fill_industry.py` | 行业数据补全脚本 |
-| `collector/etl/import_daily_data.py` | 数据导入主脚本 |
+| `clean/processor/technical_indicator.py` | 技术指标计算器（MA/EMA/MACD/RSI/BOLL/KDJ/ATR/量比/换手率） |
 | `clean/processor/data_validator.py` | 数据校验器 |
 | `collector/scheduler/` | 调度相关代码 |
 | `storage/postgresql_storage.py` | 数据库存储 |

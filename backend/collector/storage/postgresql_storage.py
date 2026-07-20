@@ -806,7 +806,9 @@ class PostgreSQLStorage(BaseStorage):
         df['trade_datetime'] = df['trade_datetime'].combine_first(df['trade_time'])
 
         numeric_cols = ['ma5', 'ma10', 'ma20', 'ma60', 'macd', 'dif', 'dea',
-                        'rsi6', 'rsi12', 'rsi24', 'boll_upper', 'boll_mid', 'boll_lower']
+                        'rsi6', 'rsi12', 'rsi24', 'boll_upper', 'boll_mid', 'boll_lower',
+                        'ema5', 'ema10', 'ema20', 'ema60', 'atr', 'vol_ratio', 'turnover_rate',
+                        'kdj_k', 'kdj_d', 'kdj_j']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = df[col].apply(lambda x: Decimal(str(x)) if pd.notnull(x) else None)
@@ -828,6 +830,8 @@ class PostgreSQLStorage(BaseStorage):
                         code, cycle, trade_date, ma5, ma10, ma20, ma60,
                         macd, dif, dea, rsi6, rsi12, rsi24,
                         boll_upper, boll_mid, boll_lower,
+                        ema5, ema10, ema20, ema60, atr, vol_ratio, turnover_rate,
+                        kdj_k, kdj_d, kdj_j,
                         trade_time, trade_datetime
                     ) VALUES %s
                     ON CONFLICT (code, cycle, trade_date, trade_datetime) DO UPDATE SET
@@ -843,7 +847,17 @@ class PostgreSQLStorage(BaseStorage):
                         rsi24 = EXCLUDED.rsi24,
                         boll_upper = EXCLUDED.boll_upper,
                         boll_mid = EXCLUDED.boll_mid,
-                        boll_lower = EXCLUDED.boll_lower
+                        boll_lower = EXCLUDED.boll_lower,
+                        ema5 = EXCLUDED.ema5,
+                        ema10 = EXCLUDED.ema10,
+                        ema20 = EXCLUDED.ema20,
+                        ema60 = EXCLUDED.ema60,
+                        atr = EXCLUDED.atr,
+                        vol_ratio = EXCLUDED.vol_ratio,
+                        turnover_rate = EXCLUDED.turnover_rate,
+                        kdj_k = EXCLUDED.kdj_k,
+                        kdj_d = EXCLUDED.kdj_d,
+                        kdj_j = EXCLUDED.kdj_j
                 """, values, page_size=5000)
             conn.commit()
             logger.info(f"✅ 保存技术指标: {len(values)} 条")
@@ -852,6 +866,36 @@ class PostgreSQLStorage(BaseStorage):
             conn.rollback()
             logger.error(f"❌ 保存技术指标失败: {str(e)}")
             return 0
+        finally:
+            self._return_conn(conn)
+
+    @_retry_on_error()
+    def get_float_shares(self, code: str) -> Optional[float]:
+        """
+        获取最新流通股本（股）。
+
+        从 stock_daily_basic 表查询最新一条记录的 float_share 字段。
+
+        Args:
+            code: 股票代码（纯数字，如 '000001'）
+
+        Returns:
+            流通股本（股），若无法获取则返回 None
+        """
+        self._ensure_connection()
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT float_share FROM stock_daily_basic "
+                    "WHERE code = %s ORDER BY trade_date DESC LIMIT 1",
+                    (code,),
+                )
+                row = cursor.fetchone()
+                return float(row[0]) if row and row[0] else None
+        except Exception as e:
+            logger.warning(f"获取 {code} 流通股本失败: {e}")
+            return None
         finally:
             self._return_conn(conn)
 
@@ -1168,7 +1212,9 @@ class PostgreSQLStorage(BaseStorage):
         cycle = self._normalize_cycle(cycle)
         query = """
             SELECT code, cycle, trade_date, ma5, ma10, ma20, ma60, macd, dif, dea,
-                   rsi6, rsi12, rsi24, boll_upper, boll_mid, boll_lower
+                   rsi6, rsi12, rsi24, boll_upper, boll_mid, boll_lower,
+                   ema5, ema10, ema20, ema60, atr, vol_ratio, turnover_rate,
+                   kdj_k, kdj_d, kdj_j
             FROM stock_indicators
             WHERE code = %s AND cycle = %s
         """
@@ -1202,7 +1248,9 @@ class PostgreSQLStorage(BaseStorage):
         cycle = self._normalize_cycle(cycle)
         query = """
             SELECT code, cycle, trade_date, ma5, ma10, ma20, ma60, macd, dif, dea,
-                   rsi6, rsi12, rsi24, boll_upper, boll_mid, boll_lower
+                   rsi6, rsi12, rsi24, boll_upper, boll_mid, boll_lower,
+                   ema5, ema10, ema20, ema60, atr, vol_ratio, turnover_rate,
+                   kdj_k, kdj_d, kdj_j
             FROM stock_indicators
             WHERE code = ANY(%s) AND cycle = %s
         """

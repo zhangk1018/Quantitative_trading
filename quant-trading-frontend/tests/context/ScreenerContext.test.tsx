@@ -609,66 +609,6 @@ describe('screenerReducer - V1.0 自编指标', () => {
     expect(after.custom.activeTab).toBe('system');
   });
 
-  // RESOLVE_MISSING_INDICATORS action 已在重构中移除，测试跳过
-  it.skip('RESOLVE_MISSING_INDICATORS 自编条件引用的 sourceId 存在则无 invalid', () => {
-    const state = getInitialState();
-    state.custom.indicators = [makeIndicator({ id: 'ind_1', name: 'A' })];
-    state.condition.filterGroup = {
-      conditions: [
-        {
-          id: 'c1',
-          op: 'AND',
-          fieldKey: 'custom_ind_1',
-          label: 'A',
-          source: 'custom',
-          sourceId: 'ind_1',
-        },
-      ],
-    };
-    const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
-    expect(after.condition.filterGroup?.conditions[0].invalid).toBeFalsy();
-    expect(after.condition.filterGroup?.conditions[0].invalidReason).toBeUndefined();
-  });
-
-  // RESOLVE_MISSING_INDICATORS action 已在重构中移除，测试跳过
-  it.skip('RESOLVE_MISSING_INDICATORS 自编条件引用的 sourceId 缺失则标记 invalid', () => {
-    const state = getInitialState();
-    // customIndicators 为空，sourceId='ind_missing' 找不到
-    state.condition.filterGroup = {
-      conditions: [
-        {
-          id: 'c1',
-          op: 'AND',
-          fieldKey: 'custom_ind_missing',
-          label: '缺失指标',
-          source: 'custom',
-          sourceId: 'ind_missing',
-        },
-      ],
-    };
-    const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
-    expect(after.condition.filterGroup?.conditions[0].invalid).toBe(true);
-    expect(after.condition.filterGroup?.conditions[0].invalidReason).toBe('引用的自编指标已被删除');
-  });
-
-  it('RESOLVE_MISSING_INDICATORS 系统预设条件不参与失效检测', () => {
-    const state = getInitialState();
-    state.condition.filterGroup = {
-      conditions: [
-        { id: 'c1', op: 'AND', fieldKey: 'rsi_oversold', label: 'RSI超卖' },
-      ],
-    };
-    const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
-    expect(after.condition.filterGroup?.conditions[0].invalid).toBeFalsy();
-  });
-
-  it('RESOLVE_MISSING_INDICATORS filterGroup 为 null 时直接返回原 state', () => {
-    const state = getInitialState();
-    state.condition.filterGroup = null;
-    const after = screenerReducer(state, { type: 'RESOLVE_MISSING_INDICATORS' });
-    expect(after.condition.filterGroup).toBeNull();
-  });
-
   it('IMPORT_CUSTOM_INDICATORS 合并新指标（去重 id）', () => {
     const state = getInitialState();
     state.custom.indicators = [makeIndicator({ id: 'ind_1', name: 'A' })];
@@ -719,59 +659,6 @@ describe('screenerReducer - V1.0 自编指标', () => {
     const state = getInitialState();
     expect(state.custom.indicators).toEqual([]);
     expect(state.custom.activeTab).toBe('system');
-  });
-});
-
-// =====================================================================
-// ScreenerProvider autoLoad 行为
-// =====================================================================
-// autoLoad 功能已在重构中移除，相关测试跳过
-describe('ScreenerProvider - V1.0 autoLoad', () => {
-  beforeEach(() => {
-    window.localStorage.clear();
-  });
-
-  it.skip('autoLoad=true 时启动自动从 localStorage 加载自编指标', async () => {
-    // 预存指标
-    const seed = makeIndicator({ id: 'ind_seed', name: '预存指标' });
-    window.localStorage.setItem(
-      'qt_custom_indicators_v1_mock_user_default',
-      JSON.stringify([seed]),
-    );
-
-    const { result } = renderHook(() => useScreener(), { wrapper: Wrapper });
-
-    // useEffect 异步执行
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
-
-    expect(result.current.state.custom.indicators).toHaveLength(1);
-    expect(result.current.state.custom.indicators[0].id).toBe('ind_seed');
-  });
-
-  it.skip('localStorage 为空时 customIndicators 保持空', async () => {
-    const { result } = renderHook(() => useScreener(), { wrapper: Wrapper });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
-    expect(result.current.state.custom.indicators).toEqual([]);
-  });
-
-  it.skip('autoLoad=false 时不自动加载', async () => {
-    const seed = makeIndicator({ id: 'ind_seed', name: 'A' });
-    window.localStorage.setItem(
-      'qt_custom_indicators_v1_mock_user_default',
-      JSON.stringify([seed]),
-    );
-    const NoAuto = ({ children }: { children: ReactNode }) => (
-      <ScreenerProvider autoLoad={false}>{children}</ScreenerProvider>
-    );
-    const { result } = renderHook(() => useScreener(), { wrapper: NoAuto });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
-    expect(result.current.state.custom.indicators).toEqual([]);
   });
 });
 

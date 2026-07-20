@@ -385,3 +385,9 @@ Phase 5.2 性能优化已完成三项：
 **通知**: [方舟→量量 2026-07-15 18:00] 协作单 [7.3-SNAPSHOT-FILTER-20260715] 状态变更: VERIFY→CLOSED（方舟验证通过：curl `?codes=000001,600000` trade_dates=196条 ✅, ohlcv_len=7(含pre_close=11.65) ✅。codes 过滤路径完整修复。）
 
 **通知**: [量量→方舟 2026-07-16 10:06] 协作单 [8.1-PATTERN-PRECOMPUTE-20260716] 状态变更: NEW→ASSIGNED→VERIFY（手动运行 pattern_precompute.py 完成：5213只成功，更新86180行，耗时2.3分 ✅；已纳入 ETL 管道 STAGE2_TASKS 中 indicators_compute 之后。验证：`pattern_hammer != 0` 在最近10天返回10+只股票 ✅，3412只股票/4903行有形态数据。请方舟在前端验证选股器K线形态筛选。）
+
+**通知**: [方舟→量量 2026-07-19 21:30] 协作单 [9.1-ADJ-FACTOR-BUG-20260719] 状态变更: NEW（**P0 紧急** — `stock_adj_factor` 表复权因子全量错误，存的是后复权因子(turn/backAdjustFactor)而非前复权因子(adjfactor/foreAdjustFactor)。问题暴露：300795米奥会展数据库原始价10.89元，前台K线前复权显示3.31元，偏差3.3倍。根因已定位：Baostock `query_adjust_factor` 返回字段 row[2]=foreAdjustFactor(前复权，300795值=1.0)，row[3]=backAdjustFactor(后复权/turn，值=3.29)，数据库存的是turn值。影响：全市场所有股票前复权K线价格均存在错误。附带发现：`baostock.py` 第322/334行 `float(row_data[1])` 索引bug（row[1]是日期字符串非数值）。修复方案详见协作单：① TRUNCATE表 → ② fix_adj_factor_full.py 重新全量同步（row[2]正确） → ③ 修复baostock.py索引 → ④ 验证。请量量尽快处理。）
+
+**通知**: [量量→方舟 2026-07-20 21:05] 协作单 [9.1-ADJ-FACTOR-BUG-20260719] 处理进展：stock_adj_factor 全量同步已完成（5220只/5061万条），stock_quotes 全量重导已启动（PID 43670，日志 logs/etl/import_full_baostock_20260720_v10.log）。同时修复了 v2 全量导入中 Terminal#995-1003 出现的 Baostock/Tushare 双不可用问题：Tushare 限流降至45次/分钟+频率超限60s等待、Baostock/Tushare 禁用阈值放宽至10次、已退市股票过滤及请求范围截断。当前 v10 进度约 1919/5220，待全量重导完成后进入 VERIFY。
+
+**通知**: [量量→K 2026-07-20 21:18] 协作单 [9.1-ADJ-FACTOR-BUG-20260719] 紧急更新：学习 Baostock 官方文档后发现 `baostock.py` 复权标志错误 —— `_ADJUST_FLAG = '3'` 实际拉取的是**不复权**数据，但系统当作前复权入库。v10 进程已立即停止，代码已修复为 `'2'`（前复权）。v10 已写入的 stock_quotes 为未复权价格，必须清空后重新全量导入。请 K 确认是否清空 stock_quotes 并启动 v11。

@@ -82,14 +82,14 @@ DO $$ BEGIN
     END IF;
 END $$;
 
--- 创建年度分区（2000~2027年）
+-- 创建年度分区（1990~2027年，覆盖A股完整历史）
 DO $$
 DECLARE
     y INTEGER;
     start_date DATE;
     end_date DATE;
 BEGIN
-    FOR y IN 2000..2027 LOOP
+    FOR y IN 1990..2027 LOOP
         start_date := make_date(y, 1, 1);
         end_date := make_date(y + 1, 1, 1);
         EXECUTE format(
@@ -168,6 +168,11 @@ CREATE TABLE IF NOT EXISTS stock_indicators (
     rsi6 NUMERIC(6,2), rsi12 NUMERIC(6,2), rsi24 NUMERIC(6,2),
     kdj_k REAL, kdj_d REAL, kdj_j REAL,
     boll_upper NUMERIC(10, 2), boll_mid NUMERIC(10, 2), boll_lower NUMERIC(10, 2),
+    ema5 NUMERIC(12, 4) DEFAULT NULL, ema10 NUMERIC(12, 4) DEFAULT NULL,
+    ema20 NUMERIC(12, 4) DEFAULT NULL, ema60 NUMERIC(12, 4) DEFAULT NULL,
+    atr NUMERIC(12, 4) DEFAULT NULL,
+    vol_ratio NUMERIC(12, 4) DEFAULT NULL,
+    turnover_rate NUMERIC(12, 4) DEFAULT NULL,
     calc_version VARCHAR(10),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     trade_time TIMESTAMPTZ,

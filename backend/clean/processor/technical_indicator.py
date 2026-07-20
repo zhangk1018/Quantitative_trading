@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""技术指标计算模块 - 支持 MA/MACD/KDJ/BOLL 等常用指标
+"""技术指标计算模块 - 支持 MA/EMA/MACD/KDJ/BOLL/RSI/ATR/量比/换手率等常用指标
 注意：技术指标必须基于复权后价格计算，本模块强制验证复权数据"""
+from typing import Optional
 import numpy as np
 import pandas as pd
 from utils.logger import setup_logger
@@ -291,6 +292,98 @@ class TechnicalIndicator:
         return result
     
     @staticmethod
+    def calculate_ema(df: pd.DataFrame, periods: list = None, require_adjust: bool = True) -> pd.DataFrame:
+        """
+        计算指数移动平均线 (EMA)。
+
+        优化：单次遍历 close，对每个周期调用 ewm()。
+        使用 adjust=False 递推公式，避免重复计算中间状态。
+
+        Args:
+            df: 包含 'close' 列的 DataFrame，必须包含复权标识
+            periods: 周期列表，默认 [5, 10, 20, 60]
+            require_adjust: 是否强制要求复权数据
+
+        Returns:
+            添加了 EMA5/EMA10/EMA20/EMA60 列的 DataFrame
+        """
+        if not TechnicalIndicator._validate_adjust_data(df, require_adjust):
+            raise ValueError("数据验证失败：技术指标必须基于复权后价格计算")
+
+        if periods is None:
+            periods = [5, 10, 20, 60]
+
+        result = df.copy()
+        close = result["close"].astype(float)
+
+        for p in periods:
+            result[f"EMA{p}"] = close.ewm(span=p, adjust=False).mean().values
+
+        return result
+
+    @staticmethod
+    def calculate_volume_ratio(df: pd.DataFrame, n: int = 5, require_adjust: bool = True) -> pd.DataFrame:
+        """
+        计算量比 = 当日成交量 / 前n日平均成交量。
+
+        前置条件：df 必须为交易日序列完备且按日期升序排列。
+        使用 shift(1) 确保前 n 日平均不含当日成交量。
+
+        Args:
+            df: 包含 'volume' 列的 DataFrame
+            n: 平均窗口，默认 5
+            require_adjust: 是否强制要求复权数据
+
+        Returns:
+            添加了 VOL_RATIO 列的 DataFrame
+        """
+        if not TechnicalIndicator._validate_adjust_data(df, require_adjust=False):
+            raise ValueError("数据验证失败")
+
+        result = df.copy()
+        vol = result["volume"].astype(float)
+
+        # 前 n 日平均成交量（不含当日，shift(1) 按物理行号偏移）
+        avg_vol = vol.shift(1).rolling(window=n, min_periods=1).mean()
+
+        # 避免除零
+        result["VOL_RATIO"] = (vol / avg_vol.where(avg_vol > 0, float("nan"))).values
+
+        return result
+
+    @staticmethod
+    def calculate_turnover_rate(
+        df: pd.DataFrame,
+        float_shares: Optional[float] = None,
+        require_adjust: bool = True,
+    ) -> pd.DataFrame:
+        """
+        计算换手率 = 成交量(股) / 流通股本(股) × 100%。
+
+        若流通股本缺失，该列填充 -1（显式标识数据缺失，而非 NaN）。
+
+        Args:
+            df: 包含 'volume' 列的 DataFrame
+            float_shares: 流通股本（股），若为 None 则填充 -1
+            require_adjust: 是否强制要求复权数据
+
+        Returns:
+            添加了 TURNOVER_RATE 列的 DataFrame
+        """
+        if not TechnicalIndicator._validate_adjust_data(df, require_adjust=False):
+            raise ValueError("数据验证失败")
+
+        result = df.copy()
+        vol = result["volume"].astype(float)
+
+        if float_shares is None or float_shares <= 0:
+            result["TURNOVER_RATE"] = -1.0
+        else:
+            result["TURNOVER_RATE"] = (vol / float_shares * 100).values
+
+        return result
+
+    @staticmethod
     def calculate_all(df: pd.DataFrame, require_adjust: bool = True) -> pd.DataFrame:
         """
         计算所有技术指标
@@ -312,12 +405,14 @@ class TechnicalIndicator:
         
         # 计算各类指标（复用已验证的数据，不再重复验证）
         result = TechnicalIndicator.calculate_ma(result, require_adjust=False)
+        result = TechnicalIndicator.calculate_ema(result, require_adjust=False)
         result = TechnicalIndicator.calculate_macd(result, require_adjust=False)
         result = TechnicalIndicator.calculate_kdj(result, require_adjust=False)
         result = TechnicalIndicator.calculate_boll(result, require_adjust=False)
         result = TechnicalIndicator.calculate_rsi(result, require_adjust=False)
         result = TechnicalIndicator.calculate_atr(result, require_adjust=False)
         result = TechnicalIndicator.calculate_volume_ma(result, require_adjust=False)
+        result = TechnicalIndicator.calculate_volume_ratio(result, require_adjust=False)
         
         logger.debug(f"技术指标计算完成，新增 {len(result.columns) - len(df.columns)} 列")
         

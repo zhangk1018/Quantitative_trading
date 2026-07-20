@@ -7,6 +7,8 @@ import {
   pushdownToQueryString,
   detectFundamentalFields,
   validateFilterNode,
+  stripUnsupportedFieldsForEngine,
+  FUNDAMENTAL_FIELD_LABELS,
   type FilterAuditTrail,
 } from './filterTreeAdapter';
 
@@ -220,13 +222,17 @@ export async function loadBacktestData(
   // 0. 校验 FilterNode 结构
   validateFilterNode(filterTree, 0);
 
-  // 1. 检测基本面字段
+  const warnings: string[] = [];
+  const softErrors: string[] = [];
+  const hardErrors: string[] = [];
+
+  // 1. 检测基本面字段（不再硬阻断，仅记录警告；字段将在传入引擎前被自动过滤）
   const fundamentalFields = detectFundamentalFields(filterTree);
   if (fundamentalFields.length > 0) {
-    throw new Error(
-      `选股条件包含高风险基本面字段（${fundamentalFields.join(', ')}），` +
-      '回测引擎无法获取历史时点的基本面数据。请移除这些条件后重试，' +
-      '仅保留技术指标（MA/MACD/RSI/BOLL）和行情数据等可基于OHLCV计算的指标。',
+    const labels = fundamentalFields.map(f => FUNDAMENTAL_FIELD_LABELS[f] || f);
+    warnings.push(
+      `以下基本面/行情字段无法获取历史时点数据，回测时已自动过滤：${labels.join('、')}。` +
+      '这些条件仅用于初始股票池筛选（基于最新数据），不参与每日调仓判断。'
     );
   }
 
@@ -260,6 +266,24 @@ export async function loadBacktestData(
   let tradeDates: string[];
 
   /**
+   * 为OHLCV数据补全pre_close列（第7列，index=6）
+   * 后端返回6列：[ts, open, high, low, close, volume]
+   * 补全为7列：[ts, open, high, low, close, volume, pre_close]
+   * pre_close规则：第0根K线用open替代，后续用前一根K线的close
+   */
+  function fillPreClose(bars: number[][]): number[][] {
+    if (!bars || bars.length === 0) return bars;
+    if (bars[0].length >= 7) return bars;
+    const filled: number[][] = [];
+    for (let i = 0; i < bars.length; i++) {
+      const bar = bars[i];
+      const preClose = i === 0 ? bar[1] : bars[i - 1][4];
+      filled.push([...bar.slice(0, 6), preClose]);
+    }
+    return filled;
+  }
+
+  /**
    * 将后端 SnapshotStock 数组转换为前端需要的 Map 格式
    * 后端返回结构：{ code, name, ohlcv, market_cap, pe_ttm, pb, turnover_rate, listed_board, ... }
    * 前端需要：allOhlcv = Map<code, ohlcv[][]>, snapshots = Map<code, StockSnapshot>
@@ -276,7 +300,7 @@ export async function loadBacktestData(
     };
     for (const s of stocks) {
       if (s.ohlcv && Array.isArray(s.ohlcv)) {
-        ohlcvMap.set(s.code, s.ohlcv);
+        ohlcvMap.set(s.code, fillPreClose(s.ohlcv));
       }
       snapMap.set(s.code, {
         code: s.code,
@@ -317,7 +341,14 @@ export async function loadBacktestData(
   }
 
   // 5. 数据完整性校验
-  const validation = validateDataIntegrity(allOhlcv, snapshots, tradeDates);
+  const integrityValidation = validateDataIntegrity(allOhlcv, snapshots, tradeDates);
+
+  // 合并校验结果
+  const validation: ValidationResult = {
+    hardErrors: [...hardErrors, ...integrityValidation.hardErrors],
+    softErrors: [...softErrors, ...integrityValidation.softErrors],
+    warnings: [...warnings, ...integrityValidation.warnings],
+  };
 
   // 6. 构建审计报告
   const auditTrail: FilterAuditTrail = {

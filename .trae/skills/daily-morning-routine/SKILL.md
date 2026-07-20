@@ -45,10 +45,10 @@ venv/bin/python backend/scripts/daily_check.py --no-color
 #### 保存报告到文件（可选）
 
 ```bash
-venv/bin/python backend/scripts/daily_check.py --output /tmp/daily_check_report.json
+venv/bin/python backend/scripts/daily_check.py --output /temp/daily_check_report.json
 ```
 
-查看 JSON 报告可直接读取 `/tmp/daily_check_report.json`，包含每个检查项的详细结果和汇总信息。
+查看 JSON 报告可直接读取 `/temp/daily_check_report.json`，包含每个检查项的详细结果和汇总信息。
 
 #### 跳过特定检查项
 

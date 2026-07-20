@@ -39,20 +39,32 @@ const StockPickerContent: React.FC = () => {
       message.error(conversionHardErrors[0]);
       return;
     }
-    try {
-      const encoded = encodeTreeParam(filterTree);
-      if (conversionWarnings.length > 0) {
-        const warningList = conversionWarnings.map((w, i) => `${i + 1}. ${w}`).join('\n');
-        message.warning({
-          content: `${conversionWarnings.length}个条件不支持回测，已自动忽略`,
-          duration: 5,
-        });
-        // 同时输出到 console 供调试
-        console.warn('回测条件转换警告:', warningList);
+
+    const doNavigate = () => {
+      try {
+        const encoded = encodeTreeParam(filterTree);
+        navigate(`/strategy-backtest?tree=${encoded}`);
+      } catch (e) {
+        message.error((e as Error).message);
       }
-      navigate(`/strategy-backtest?tree=${encoded}`);
-    } catch (e) {
-      message.error((e as Error).message);
+    };
+
+    if (conversionWarnings.length > 0) {
+      const warningItems = conversionWarnings.map((w, i) => <div key={i} className="text-xs text-text-secondary py-0.5">• {w}</div>);
+      Modal.warning({
+        title: `${conversionWarnings.length}个筛选条件不支持回测，已自动过滤`,
+        content: (
+          <div className="mt-2">
+            <div className="text-xs text-text-secondary mb-2">以下条件将不参与回测运算，剩余条件将正常参与回测：</div>
+            {warningItems}
+          </div>
+        ),
+        okText: '继续回测',
+        onOk: doNavigate,
+      });
+      console.warn('回测条件转换警告:', conversionWarnings);
+    } else {
+      doNavigate();
     }
   }, [filterTree, conversionWarnings, conversionHardErrors, navigate, message]);
 

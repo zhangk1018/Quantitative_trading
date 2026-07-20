@@ -25,8 +25,8 @@ export interface ScriptResult {
   id: string;
   /** 脚本名称 */
   name: string;
-  /** 预计算矩阵: Map<股票代码, (number|null)[] | number> */
-  values: Map<string, (number | null)[] | number | null>;
+  /** 预计算矩阵: Map<股票代码, (number|null)[]> — 内维=天数，长度与入参 OHLCV 一致 */
+  values: Map<string, (number | null)[]>;
   /** 错误列表（按股票索引） */
   errors: string[];
 }
@@ -129,13 +129,14 @@ export class CustomIndicatorRunner {
 
       // 分批处理股票
       const stockBatches = this.chunkArray(stockCodes, BATCH_SIZE);
-      const allValues = new Map<string, (number | null)[] | number | null>();
+      const allValues = new Map<string, (number | null)[]>();
       const errors: string[] = [];
       let batchId = `batch_${this.batchIdCounter++}`;
 
       for (let bi = 0; bi < stockBatches.length; bi++) {
         const batchCodes = stockBatches[bi];
         const batchData = this.prepareBatchData(batchCodes, allOhlcv);
+        const daysCount = batchData.close[0]?.length ?? 0;
 
         const scriptResult = await this.executeSingleBatch(
           code,
@@ -144,13 +145,17 @@ export class CustomIndicatorRunner {
           DEFAULT_TIMEOUT,
         );
 
-        // 解析结果
+        // 解析结果：标量值包装为等长数组，null 填充全 null 数组
         if (scriptResult.values) {
           for (let ci = 0; ci < batchCodes.length; ci++) {
             const stockCode = batchCodes[ci];
-            const stockValues = scriptResult.values[ci];
-            if (stockValues !== undefined) {
-              allValues.set(stockCode, stockValues);
+            const rawVal = scriptResult.values[ci];
+            if (rawVal === undefined || rawVal === null) {
+              allValues.set(stockCode, new Array(daysCount).fill(null));
+            } else if (Array.isArray(rawVal)) {
+              allValues.set(stockCode, rawVal as (number | null)[]);
+            } else {
+              allValues.set(stockCode, new Array(daysCount).fill(rawVal as number));
             }
           }
         }

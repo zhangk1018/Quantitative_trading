@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      'monaco-editor': path.resolve(__dirname, './tests/mocks/monaco-editor.ts'),
     },
   },
   test: {
@@ -14,6 +15,11 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./tests/setup.ts'],
     css: true,
+    server: {
+      deps: {
+        inline: ['@monaco-editor/react'],
+      },
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'json-summary'],

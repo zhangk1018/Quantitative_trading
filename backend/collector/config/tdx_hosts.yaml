@@ -1,0 +1,25 @@
+# pytdx 通达信主机列表（按优先级排序，自动轮询）
+hosts:
+  - host: "119.147.212.81"
+    port: 7709
+    label: "default"
+  - host: "115.238.56.198"
+    port: 7709
+    label: "server_1"
+  - host: "115.238.90.165"
+    port: 7709
+    label: "server_2"
+  - host: "180.153.18.170"
+    port: 7709
+    label: "server_3"
+
+# 连接参数
+connection:
+  timeout: 30          # 单次连接超时（秒）
+  retry_count: 3       # 重试次数
+  retry_delay: 5       # 重试间隔（秒）
+
+# 下载参数
+download:
+  kline_timeout: 60    # 单只K线下载超时（秒）
+  batch_size: 50       # 批量下载每批数量

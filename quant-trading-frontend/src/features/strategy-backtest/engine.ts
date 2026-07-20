@@ -22,7 +22,6 @@ import type {
   TechPattern,
 } from './types';
 import { IndicatorCache } from './types';
-import { runTonghuashun6Strategy } from '../backtest/strategies/tonghuashun6Strategy';
 
 // ==================== 常量定义 ====================
 
@@ -72,20 +71,26 @@ export interface StrategyBacktestInput {
   /** 选股条件 AST（仅 filterTree 策略使用） */
   filterTree?: FilterNode;
   /** 策略类型 */
-  strategyType?: 'filterTree' | 'tonghuashun6' | 'filterTreeLayeredTP';
+  strategyType?: 'filterTree';
   /** 退出模式（仅 filterTree 策略使用） */
   exitMode?: 'standard' | 'layeredTakeProfit';
   /** 分层止盈参数（仅 exitMode='layeredTakeProfit' 时使用） */
   layeredTPParams?: {
-    minHoldDays: number;
-    maxDrawdown: number;
-    firstProfitTarget: number;
-    secondProfitTarget: number;
-    fullProfitTarget: number;
-    rsiHigh: number;
+    initialStopLossPct: number;    // 初始止损比例（如 -0.08 = -8%）
+    firstProfitPct: number;        // 第一止盈目标（如 0.08 = +8%）
+    firstSellPct: number;          // 第一止盈卖出比例（如 0.25 = 25%）
+    secondProfitPct: number;       // 第二止盈目标（如 0.15 = +15%）
+    secondSellPct: number;         // 第二止盈卖出比例（如 0.25 = 25%）
+    breakevenStopPct: number;      // TP1后保本止损比例（如 0.00 = 成本价）
+    lockProfitPct: number;         // TP2后锁定利润比例（如 0.06 = +6%，保证至少赚6%）
+    hardFloorPct: number;          // TP2后硬性底线安全阀（如 0.03 = +3%）
+    trailingDrawdownPct: number;   // TP2后峰值回撤阈值（如 0.05 = 5%）
+    maPeriod: number;              // 均线兜底周期（如 20）
+    maConfirmDays: number;         // 均线破位确认天数（如 2）
+    maExceptionDropPct: number;    // 均线例外：单日跌幅超过此值则当天卖（如 0.07 = 7%）
+    maxHoldDays: number;           // 时间止损天数（仅建仓期，如 20）
+    stopSlippagePct: number;       // 止损成交价滑点（如 0.02 = 2%，保守回测）
   };
-  /** 同花顺6重买入策略参数（仅 tonghuashun6 策略使用） */
-  tonghuashun6Params?: import('../backtest/strategies/tonghuashun6Strategy').Tonghuashun6Params;
   /** 回测配置 */
   config: StrategyBacktestDefaults;
   /** 回测起止日期 YYYY-MM-DD */
@@ -392,99 +397,9 @@ function getFieldValue(
 }
 
 /**
- * 检查技术形态（Phase 1 支持 4 种基础形态）
+ * 检查技术形态（支持 4 种基础形态）
  * @param bars OHLCV 数组，用于获取 close 等价格数据
  */
-function checkThs6BuySignal(
-  bars: number[][],
-  idx: number,
-): boolean {
-  if (idx < 1 || idx >= bars.length) return false;
-
-  const closes = bars.map(b => b[OHLCV_CLOSE]);
-  const highs = bars.map(b => b[OHLCV_HIGH]);
-  const volumes = bars.map(b => b[OHLCV_VOLUME]);
-
-  // 计算 EMA5、EMA48
-  const ema5Arr = ema(closes, 5);
-  const ema48Arr = ema(closes, 48);
-  if (ema5Arr[idx] === null || ema48Arr[idx] === null) return false;
-
-  // 计算 MACD (12, 26, 9)
-  const ema12 = ema(closes, 12);
-  const ema26 = ema(closes, 26);
-  const macdDif: (number | null)[] = new Array(bars.length).fill(null);
-  for (let i = 0; i < bars.length; i++) {
-    if (ema12[i] !== null && ema26[i] !== null) {
-      macdDif[i] = ema12[i]! - ema26[i]!;
-    }
-  }
-  const macdDea = ema(macdDif, 9);
-  const macdHist: (number | null)[] = new Array(bars.length).fill(null);
-  for (let i = 0; i < bars.length; i++) {
-    if (macdDif[i] !== null && macdDea[i] !== null) {
-      macdHist[i] = (macdDif[i]! - macdDea[i]!) * 2;
-    }
-  }
-  if (macdDif[idx] === null || macdDea[idx] === null || macdHist[idx] === null) return false;
-
-  // 计算 RSI14
-  const rsi14 = calcRSI(closes, 14);
-  if (rsi14[idx] === null) return false;
-
-  // 计算 SMA(volume, 15)
-  const volAvg15 = sma(volumes, 15);
-  if (volAvg15[idx] === null || volAvg15[idx]! <= 0) return false;
-
-  // 计算 HHV20（20 日最高价）
-  let hhv20 = highs[idx];
-  for (let j = Math.max(0, idx - 19); j <= idx; j++) {
-    if (highs[j] > hhv20) hhv20 = highs[j];
-  }
-
-  const close = bars[idx][OHLCV_CLOSE];
-  const volume = bars[idx][OHLCV_VOLUME];
-
-  // 6 重条件判断
-  const trendUp = ema5Arr[idx]! > ema48Arr[idx]!;
-  const macdGold = macdDif[idx]! > macdDea[idx]! && macdHist[idx]! > 0;
-  const rsiValid = rsi14[idx]! > 25 && rsi14[idx]! < 70;
-  const volUp = volume > 1.05 * volAvg15[idx]!;
-  const priceBreak = close >= hhv20 * 0.98;
-
-  const buyCond = trendUp && macdGold && rsiValid && volUp && priceBreak;
-  if (!buyCond) return false;
-
-  // CROSS 检查：前一日不满足
-  if (idx - 1 < 0) return true;
-  const prevClose = bars[idx - 1][OHLCV_CLOSE];
-  const prevVol = bars[idx - 1][OHLCV_VOLUME];
-  const prevEma5 = ema5Arr[idx - 1];
-  const prevEma48 = ema48Arr[idx - 1];
-  const prevMacdDif = macdDif[idx - 1];
-  const prevMacdDea = macdDea[idx - 1];
-  const prevMacdHist = macdHist[idx - 1];
-  const prevRsi14 = rsi14[idx - 1];
-  const prevVolAvg15 = volAvg15[idx - 1];
-
-  // 计算前一日 HHV20
-  let prevHhv20 = highs[idx - 1];
-  for (let j = Math.max(0, idx - 20); j <= idx - 1; j++) {
-    if (highs[j] > prevHhv20) prevHhv20 = highs[j];
-  }
-
-  const prevTrendUp = prevEma5 !== null && prevEma48 !== null && prevEma5! > prevEma48!;
-  const prevMacdGold = prevMacdDif !== null && prevMacdDea !== null && prevMacdHist !== null
-    && prevMacdDif! > prevMacdDea! && prevMacdHist! > 0;
-  const prevRsiValid = prevRsi14 !== null && prevRsi14! > 25 && prevRsi14! < 70;
-  const prevVolUp = prevVolAvg15 !== null && prevVolAvg15! > 0
-    && prevVol > 1.05 * prevVolAvg15!;
-  const prevPriceBreak = prevClose >= prevHhv20 * 0.98;
-  const prevBuyCond = prevTrendUp && prevMacdGold && prevRsiValid && prevVolUp && prevPriceBreak;
-
-  return !prevBuyCond; // CROSS: 从 false 到 true
-}
-
 function checkTechPattern(
   pattern: TechPattern,
   cache: IndicatorCache,
@@ -530,8 +445,6 @@ function checkTechPattern(
       if (Number.isNaN(close) || Number.isNaN(prevClose)) return false;
       return prevClose <= prevUpper && close > upper;
     }
-    case 'ths_6_buy_signal':
-      return checkThs6BuySignal(bars, idx);
     default:
       return false;
   }
@@ -697,21 +610,6 @@ export function calcSellCommission(
  * 主循环：预计算指标 → 逐日模拟交易
  */
 export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBacktestResult {
-  // 策略类型分发
-  if (input.strategyType === 'tonghuashun6') {
-    return runTonghuashun6Strategy({
-      allOhlcv: input.allOhlcv,
-      snapshots: input.snapshots,
-      config: input.config,
-      startDate: input.startDate,
-      endDate: input.endDate,
-      benchmarkOhlcv: input.benchmarkOhlcv,
-      tradeDates: input.tradeDates,
-      onProgress: input.onProgress,
-      params: input.tonghuashun6Params,
-    });
-  }
-
   const startTime = performance.now();
   const { allOhlcv, snapshots, filterTree, config, startDate, endDate, benchmarkOhlcv, tradeDates, strippedFields, exitMode, layeredTPParams, customIndicatorValues } = input;
   const warnings: string[] = [];
@@ -802,12 +700,11 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
 
   // 分层止盈状态（仅 exitMode='layeredTakeProfit' 使用）
   const layeredTPState = new Map<string, {
-    hasForceStopped: boolean;
-    hasFirstProfit: boolean;
-    hasSecondProfit: boolean;
-    hasFullProfit: boolean;
-    hasStopLoss: boolean;
-    peakPrice: number;
+    phase: 'initial' | 'tp1_done' | 'tp2_done' | 'closed';
+    entryPrice: number;         // 原始入场价（永不改变，所有百分比计算基准）
+    totalShares: number;        // 初始买入总股数
+    peakPrice: number;          // 持仓期间最高价（用于峰值回撤计算）
+    maBreakDays: number;        // 连续跌破均线天数（用于均线确认）
   }>();
 
   // P2-6: 调仓日计算（转为 Set 优化查找为 O(1)）
@@ -933,6 +830,10 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
           sellReason: order.sellReason ?? 'rebalance',
         });
         positions.delete(order.code);
+        // 清理分层止盈状态
+        if (exitMode === 'layeredTakeProfit') {
+          layeredTPState.delete(order.code);
+        }
       } else if (order.action === 'buy') {
         // 检查是否涨停（无法买入）
         if (isLimitUp(bar, preClose, limitPct)) {
@@ -983,12 +884,11 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
         // 初始化分层止盈状态
         if (exitMode === 'layeredTakeProfit') {
           layeredTPState.set(order.code, {
-            hasForceStopped: false,
-            hasFirstProfit: false,
-            hasSecondProfit: false,
-            hasFullProfit: false,
-            hasStopLoss: false,
+            phase: 'initial',
+            entryPrice: buyPrice,
+            totalShares: shares,
             peakPrice: buyPrice,
+            maBreakDays: 0,
           });
         }
       }
@@ -1045,8 +945,24 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
     }
 
     // P2-8: 个股风控检查（止损/止盈/超时）
-    const riskControlSells: Array<{ code: string; reason: SellReason }> = [];
+    // 盘中触发的信号（止损/止盈/回撤）当日执行；收盘确认的信号（均线/超时）次日执行
+    // 先收集已有待执行卖出指令的股票，防止重复生成卖出指令
+    const pendingSellCodes = new Set<string>();
+    for (const po of pendingOrders) {
+      if (po.action === 'sell') pendingSellCodes.add(po.code);
+    }
+
+    const intradayActions: Array<{
+      code: string;
+      reason: SellReason;
+      shares: number;       // 卖出股数
+      execPrice: number;    // 成交价（盘中触发的近似价）
+    }> = [];
+    const nextDaySells: Array<{ code: string; reason: SellReason }> = [];
     for (const [code, pos] of positions) {
+      // 如果已有待执行的卖出指令（如跌停顺延中），不再生成新的卖出指令
+      if (pendingSellCodes.has(code)) continue;
+
       const dateIndexMap = stockDateIndexMap.get(code);
       if (!dateIndexMap) continue;
       const barIdx = dateIndexMap.get(currentDate);
@@ -1069,78 +985,239 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
       const pnlPct = (currentPrice - pos.avgCost) / pos.avgCost;
 
       if (exitMode === 'layeredTakeProfit') {
-        // 分层止盈/止损退出逻辑
         const tpState = layeredTPState.get(code);
-        if (!tpState) continue;
+        if (!tpState || tpState.phase === 'closed') continue;
 
-        // 更新持仓峰值
-        if (currentPrice > tpState.peakPrice) {
-          tpState.peakPrice = currentPrice;
+        const lp = layeredTPParams ?? {
+          initialStopLossPct: -0.08,
+          firstProfitPct: 0.08,
+          firstSellPct: 0.25,
+          secondProfitPct: 0.15,
+          secondSellPct: 0.25,
+          breakevenStopPct: 0.00,
+          lockProfitPct: 0.06,
+          hardFloorPct: 0.03,
+          trailingDrawdownPct: 0.05,
+          maPeriod: 20,
+          maConfirmDays: 2,
+          maExceptionDropPct: 0.07,
+          maxHoldDays: 20,
+          stopSlippagePct: 0.02,
+        };
+
+        const highPrice = bar[OHLCV_HIGH];
+        const lowPrice = bar[OHLCV_LOW];
+        const closePrice = bar[OHLCV_CLOSE];
+
+        // 更新峰值（用当日最高价）
+        if (highPrice > tpState.peakPrice) {
+          tpState.peakPrice = highPrice;
         }
 
-        const drawdown = (currentPrice - tpState.peakPrice) / tpState.peakPrice;
-        const lp = layeredTPParams ?? { minHoldDays: 3, maxDrawdown: 0.05, firstProfitTarget: 0.04, secondProfitTarget: 0.08, fullProfitTarget: 0.10, rsiHigh: 80 };
-
-        // 1. 强制止损（持仓 < minHoldDays 且回撤超过阈值）
-        if (!tpState.hasForceStopped && pos.holdDays < lp.minHoldDays && drawdown < -lp.maxDrawdown) {
-          riskControlSells.push({ code, reason: 'stop_loss' });
-          continue;
+        const entryPrice = tpState.entryPrice;
+        // 跟踪本日已在intradayActions中承诺卖出的股数（用于同日TP1+TP2股数计算）
+        let committedSellShares = 0;
+        for (const a of intradayActions) {
+          if (a.code === code) committedSellShares += a.shares;
         }
+        const effectiveRemaining = pos.shares - committedSellShares;
 
-        // 2. 全止盈
-        if (!tpState.hasFullProfit && pos.holdDays >= lp.minHoldDays && pnlPct >= lp.fullProfitTarget) {
-          riskControlSells.push({ code, reason: 'take_profit' });
-          continue;
-        }
-
-        // 3. 第二止盈（需第一止盈已触发）
-        if (!tpState.hasSecondProfit && tpState.hasFirstProfit
-          && pos.holdDays >= lp.minHoldDays && pnlPct >= lp.secondProfitTarget) {
-          riskControlSells.push({ code, reason: 'take_profit' });
-          continue;
-        }
-
-        // 4. 第一止盈
-        if (!tpState.hasFirstProfit && pos.holdDays >= lp.minHoldDays && pnlPct >= lp.firstProfitTarget) {
-          riskControlSells.push({ code, reason: 'take_profit' });
-          continue;
-        }
-
-        // 5. 常规止损（持仓 >= minHoldDays 且回撤超阈值 或 RSI > rsiHigh）
-        if (!tpState.hasStopLoss && pos.holdDays >= lp.minHoldDays) {
-          const cache = indicatorCaches.get(code);
-          const rsiVal = cache ? cache.getRSI(12, barIdx) : null;
-          const rsiTrigger = rsiVal !== null && rsiVal > lp.rsiHigh;
-          if (drawdown < -lp.maxDrawdown || rsiTrigger) {
-            riskControlSells.push({ code, reason: 'stop_loss' });
+        // ========== 优先级 1：初始硬止损（仅建仓期，最低价 ≤ 止损价）==========
+        if (tpState.phase === 'initial') {
+          const stopLossPrice = entryPrice * (1 + lp.initialStopLossPct);
+          if (lowPrice <= stopLossPrice) {
+            const execPrice = Math.max(stopLossPrice * (1 - lp.stopSlippagePct), lowPrice);
+            intradayActions.push({
+              code, reason: 'stop_loss', shares: pos.shares, execPrice,
+            });
+            tpState.phase = 'closed';
             continue;
           }
         }
 
-        // 超时检查
-        if (pos.holdDays >= config.maxHoldDays) {
-          riskControlSells.push({ code, reason: 'timeout' });
+        // ========== 优先级 2：TP1后保本止损（成本价，确保不亏钱）==========
+        if (tpState.phase === 'tp1_done') {
+          const breakevenPrice = entryPrice * (1 + lp.breakevenStopPct);
+          if (lowPrice <= breakevenPrice) {
+            const execPrice = Math.max(breakevenPrice * (1 - lp.stopSlippagePct), lowPrice);
+            intradayActions.push({
+              code, reason: 'stop_loss', shares: pos.shares, execPrice,
+            });
+            tpState.phase = 'closed';
+            continue;
+          }
+        }
+
+        // ========== 优先级 3：TP2后三重保护（锁定利润+峰值回撤 / 硬底线+3% / 均线兜底）==========
+        if (tpState.phase === 'tp2_done') {
+          // 3a. 动态跟踪止盈线 = max(锁定利润+6%, 峰值回撤-5%)
+          //   - 价格创新高时，峰值回撤线上移，锁定更多利润
+          //   - 价格未创新高时，至少保证6%利润不丢失
+          const lockPrice = entryPrice * (1 + lp.lockProfitPct);
+          const trailingPrice = tpState.peakPrice * (1 - lp.trailingDrawdownPct);
+          const dynamicStopPrice = Math.max(lockPrice, trailingPrice);
+          if (lowPrice <= dynamicStopPrice) {
+            const execPrice = Math.max(dynamicStopPrice * (1 - lp.stopSlippagePct), lowPrice);
+            intradayActions.push({
+              code, reason: 'trailing_stop', shares: pos.shares, execPrice,
+            });
+            tpState.phase = 'closed';
+            continue;
+          }
+
+          // 3b. 硬性底线 +3%（最终安全阀，正常不应触发）
+          const hardFloorPrice = entryPrice * (1 + lp.hardFloorPct);
+          if (lowPrice <= hardFloorPrice) {
+            const execPrice = Math.max(hardFloorPrice * (1 - lp.stopSlippagePct), lowPrice);
+            intradayActions.push({
+              code, reason: 'stop_loss', shares: pos.shares, execPrice,
+            });
+            tpState.phase = 'closed';
+            continue;
+          }
+
+          // 3c. 均线兜底（收盘确认，次日开盘执行；例外：单日暴跌>7%当日卖）
+          const cache = indicatorCaches.get(code);
+          const maVal = cache ? cache.getMASafe(lp.maPeriod, barIdx) : null;
+          const dayDropPct = (closePrice - preClose) / preClose;
+
+          if (maVal !== null) {
+            const isBelowMA = closePrice < maVal;
+            if (isBelowMA) {
+              tpState.maBreakDays += 1;
+            } else {
+              tpState.maBreakDays = 0;
+            }
+
+            // 例外：单日暴跌不等确认
+            if (dayDropPct <= -lp.maExceptionDropPct) {
+              intradayActions.push({
+                code, reason: 'ma_cross', shares: pos.shares, execPrice: closePrice,
+              });
+              tpState.phase = 'closed';
+              continue;
+            }
+
+            // 连续N天跌破 → 次日开盘清仓
+            if (tpState.maBreakDays >= lp.maConfirmDays) {
+              nextDaySells.push({ code, reason: 'ma_cross' });
+              continue;
+            }
+          }
+        }
+
+        // ========== 优先级 4：止盈检查（止损优先，止盈在后）==========
+
+        // 第一止盈（仅 initial 阶段）：卖出 firstSellPct 比例
+        if (tpState.phase === 'initial') {
+          const tp1Price = entryPrice * (1 + lp.firstProfitPct);
+          if (highPrice >= tp1Price) {
+            const sellShares = Math.floor(tpState.totalShares * lp.firstSellPct / LOT_SIZE) * LOT_SIZE;
+            if (sellShares > 0 && sellShares <= pos.shares) {
+              intradayActions.push({
+                code, reason: 'take_profit', shares: sellShares, execPrice: tp1Price,
+              });
+              tpState.phase = 'tp1_done';
+              committedSellShares += sellShares;
+              // 不 continue，可能同日触发第二止盈
+            }
+          }
+        }
+
+        // 第二止盈（仅 tp1_done 阶段）：卖到底仓剩余50%（考虑同日TP1已承诺的卖出）
+        if (tpState.phase === 'tp1_done') {
+          const tp2Price = entryPrice * (1 + lp.secondProfitPct);
+          if (highPrice >= tp2Price) {
+            // 目标：TP1+TP2合计卖出 totalShares * (firstSellPct + secondSellPct)，剩余50%
+            const targetTotalSold = Math.floor(
+              tpState.totalShares * (lp.firstSellPct + lp.secondSellPct) / LOT_SIZE
+            ) * LOT_SIZE;
+            const alreadyCommitted = committedSellShares;
+            const sellShares = Math.min(
+              Math.max(targetTotalSold - alreadyCommitted, 0),
+              effectiveRemaining
+            );
+            // 向下取整到100股
+            const roundedSellShares = Math.floor(sellShares / LOT_SIZE) * LOT_SIZE;
+            if (roundedSellShares > 0 && roundedSellShares <= effectiveRemaining) {
+              intradayActions.push({
+                code, reason: 'take_profit', shares: roundedSellShares, execPrice: tp2Price,
+              });
+              tpState.phase = 'tp2_done';
+            }
+          }
+        }
+
+        // ========== 优先级 5：时间止损（仅建仓期，未触发任何止盈时生效）==========
+        if (tpState.phase === 'initial' && pos.holdDays >= lp.maxHoldDays) {
+          nextDaySells.push({ code, reason: 'timeout' });
           continue;
         }
       } else {
-        // 标准退出逻辑（止损/止盈/超时）
+        // 标准退出逻辑（止损/止盈/超时）—— 次日开盘执行
         if (pnlPct <= config.stopLossPct) {
-          riskControlSells.push({ code, reason: 'stop_loss' });
+          nextDaySells.push({ code, reason: 'stop_loss' });
           continue;
         }
         if (pnlPct >= config.takeProfitPct) {
-          riskControlSells.push({ code, reason: 'take_profit' });
+          nextDaySells.push({ code, reason: 'take_profit' });
           continue;
         }
         if (pos.holdDays >= config.maxHoldDays) {
-          riskControlSells.push({ code, reason: 'timeout' });
+          nextDaySells.push({ code, reason: 'timeout' });
           continue;
         }
       }
     }
 
-    // 生成个股风控卖出指令（T+1 执行）
-    for (const { code, reason } of riskControlSells) {
+    // 执行日内风控动作（盘中触发，当日按指定价成交）
+    for (const { code, reason, shares, execPrice } of intradayActions) {
+      const pos = positions.get(code);
+      if (!pos || pos.shares < shares) continue;
+
+      const snapshot = snapshots.get(code);
+      if (!snapshot) continue;
+
+      const sellAmountFen = shares * execPrice * 100;
+      const commission = calcSellCommission(
+        sellAmountFen,
+        config.feeRate,
+        config.slippage,
+        config.stampDuty,
+        config.minCommission
+      );
+      const pnlFen = sellAmountFen - shares * pos.avgCost * 100 - commission;
+      cashFen += sellAmountFen - commission;
+
+      trades.push({
+        code,
+        name: snapshot.name,
+        entryDate: allTradeDates[pos.entryDateIdx],
+        exitDate: currentDate,
+        entryPrice: pos.avgCost,
+        exitPrice: execPrice,
+        shares,
+        pnl: pnlFen / 100,
+        pnlPct: pnlFen / (shares * pos.avgCost * 100),
+        holdDays: pos.holdDays,
+        sellReason: reason,
+      });
+
+      if (shares >= pos.shares) {
+        // 全部清仓
+        positions.delete(code);
+        // 清理分层止盈状态
+        if (exitMode === 'layeredTakeProfit') {
+          layeredTPState.delete(code);
+        }
+      } else {
+        // 部分卖出，更新持仓（avgCost 保持不变，因为是原始成本基准）
+        pos.shares -= shares;
+      }
+    }
+
+    // 生成次日卖出指令（T+1 开盘执行）
+    for (const { code, reason } of nextDaySells) {
       const pos = positions.get(code);
       if (!pos) continue;
       pendingOrders.push({

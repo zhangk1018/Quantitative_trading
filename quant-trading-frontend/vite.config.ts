@@ -1,7 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
-import monacoEditorPlugin from 'vite-plugin-monaco-editor'
+import monacoEditorPluginModule from 'vite-plugin-monaco-editor'
+
+const monacoEditorPlugin = (monacoEditorPluginModule as any).default ?? monacoEditorPluginModule
 
 export default defineConfig({
   plugins: [

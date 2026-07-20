@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-量化交易 - 每日盘后线性任务调度脚本（v6）
-任务顺序：1.健康检查 → 2.股票列表 → 3.行情导入 → 4.缺失补全 → 5.复权因子
-→ 6.基本面 → 7.指标计算 → 8.信号 → 9.宽表 → 10.Parquet
+量化交易 - 每日盘后线性任务调度脚本（v7）
+任务顺序：1.健康检查 → 2.股票列表 → 3.行情导入 → 4.复权因子 → 5.缺失补全
+→ 6.基本面 → 7.指标计算 → 8.形态识别 → 9.信号 → 10.宽表 → 11.Parquet
 
-v6 核心改进：
-- 修复状态查询逻辑：基于任务最新状态判断，忽略批次混合问题
-- 所有状态查询增加 stage 过滤，避免跨阶段干扰
-- 动态任务 fill_missing_data 移至行情导入之后，确保指标计算前数据完整
-- 僵尸清理后重置状态判断
-- dry-run 模式状态图标优化
-- 环境变量显式加载
+v7 核心改进：
+- 数据源链升级：Akshare(前复权) → Baostock(前复权) → Tushare(不复权→自动转换) → pytdx(不复权→自动转换)
+- 不复权数据源自动通过 stock_adj_factor 表转换为前复权后存储
 """
 import os
 import sys
@@ -393,6 +389,7 @@ def main():
     parser = argparse.ArgumentParser(description='每日盘后线性任务调度器 v6')
     parser.add_argument('--stage', type=int, choices=[STAGE_PRE_IMPORT, STAGE_IMPORT], help='执行阶段: 1=步骤1-2, 2=步骤3-11')
     parser.add_argument('--fill-missing', action='store_true', help='在阶段2中执行缺失数据补全')
+    parser.add_argument('--skip-adj-factor', action='store_true', help='跳过复权因子同步（使用 pytdx 前复权数据时不需要）')
     parser.add_argument('--dry-run', action='store_true', help='试运行模式：只打印计划执行的任务')
     args = parser.parse_args()
 
@@ -413,6 +410,12 @@ def main():
         tasks = STAGE1_TASKS + STAGE2_TASKS
         current_stage = None  # 全量模式，stage 过滤不生效（retry 循环中拆分 stage1→stage2 执行）
         stage_label = "全量 (全部任务)"
+
+    # 跳过复权因子同步（pytdx 前复权数据不需要）
+    if args.skip_adj_factor:
+        tasks = [t for t in tasks if t["name"] != "adj_factor_sync"]
+        if current_stage == STAGE_IMPORT or current_stage is None:
+            print(f"⏭️  已跳过复权因子同步（--skip-adj-factor）")
 
     file_lock = FileLock(LOCK_FILE)
     if not file_lock.acquire():

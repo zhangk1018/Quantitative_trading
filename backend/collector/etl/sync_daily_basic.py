@@ -4,13 +4,12 @@ sync_daily_basic.py - 日频基本面数据同步脚本
 
 从数据源拉取日频基本面数据（PE/PB/换手率/市值/dv/ps等），写入 stock_daily_basic 表。
 
-数据源优先级：
-  1. PyWenCai（同花顺问财）— 主用，全市场一次性拉取（~45秒/次）
-  2. Baostock — 备用，逐只股票拉取（较慢但稳定）
-  3. Tushare Pro — 全量基本面（含dv_ratio/ps_ttm/float_share等），限速1次/小时
+数据源优先级（仅保留 Baostock / Tushare）：
+  1. Baostock — 主用，逐只股票拉取 PE/PB/换手率（稳定、免费）
+  2. Tushare Pro — 备用，全量基本面（含 dv_ratio/ps_ttm/float_share 等），限速 5次/天
 
-注意：PyWenCai/Baostock 不提供 dv_ratio/ps/ps_ttm/float_share，
-      这些字段由 Tushare Pro 的 daily_basic 接口补充。
+注意：Baostock 仅提供 pe、pb、turnover_rate；
+      dv_ratio/ps/ps_ttm/float_share 等字段仅在 Tushare Pro 可用时补充。
 
 用法：
     python scripts/sync_daily_basic.py --latest       # 同步最新交易日
@@ -29,7 +28,6 @@ from typing import Optional, List
 from collector.datasource.base import DataSourceManager, SwitchStrategy
 from collector.datasource.tushare import TushareDataSource
 from collector.datasource.baostock import BaostockDataSource
-from collector.datasource.pywencai_ds import PyWencaiDataSource
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
 from utils.logger import setup_logger
@@ -45,12 +43,11 @@ class DailyBasicSync:
 
     def __init__(self):
         self.storage = PostgreSQLStorage(config.get('storage'))
-        # 数据源优先级：Tushare（Pro，全量基本面）→ PyWenCai（全市场~45s）→ Baostock（兜底补差，逐只拉取）
+        # 数据源优先级：Baostock（免费稳定，PE/PB/换手率）→ Tushare Pro（全量基本面，限速）
         self.dsm = DataSourceManager(
             sources=[
-                {'source': TushareDataSource(), 'weight': 1, 'priority': 0},
-                {'source': PyWencaiDataSource(), 'weight': 1, 'priority': 1},
-                {'source': BaostockDataSource(), 'weight': 1, 'priority': 2},
+                {'source': BaostockDataSource(), 'weight': 1, 'priority': 0},
+                {'source': TushareDataSource(), 'weight': 1, 'priority': 1},
             ],
             strategy=SwitchStrategy.FAILOVER,
             auto_recovery=True

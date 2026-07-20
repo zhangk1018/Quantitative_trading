@@ -7,10 +7,19 @@ import type { FilterNode, RangeField, TechPattern, KlinePattern } from '../types
 
 // ==================== 常量 ====================
 
-/** 高风险基本面字段（硬阻断，需前端验证） */
+/** 高风险基本面字段（仅最新快照，无法历史时点回溯，引擎侧每日过滤会不准确） */
 export const HIGH_RISK_FUNDAMENTAL_FIELDS: Set<string> = new Set([
-  'pe', 'pe_ttm', 'pb', 'market_cap', 'turnover_rate', 'vol_ratio_5',
+  'pe', 'pe_ttm', 'pb', 'market_cap', 'turnover_rate',
 ]);
+
+/** 高风险字段的中文标签映射（用于警告提示） */
+export const FUNDAMENTAL_FIELD_LABELS: Record<string, string> = {
+  market_cap: '市值',
+  pe: 'PE(静)',
+  pe_ttm: 'PE(TTM)',
+  pb: 'PB',
+  turnover_rate: '换手率',
+};
 
 /** 低风险属性字段（允许通过，可用历史快照回溯） */
 export const LOW_RISK_FUNDAMENTAL_FIELDS: Set<string> = new Set([
@@ -169,6 +178,57 @@ export function detectFundamentalFields(node: FilterNode): string[] {
 
   walk(node);
   return found;
+}
+
+/**
+ * 从FilterNode中递归剥离高风险基本面字段（不可变操作，返回新的树）
+ * 高风险字段仅最新快照可用，无法在回测引擎每日调仓时做历史时点判断
+ * 这些字段可通过pushdown下推至后端API用于初始股票池筛选（用最新值）
+ * @param node 原始FilterNode
+ * @returns 清理后的FilterNode（可能为null如果所有条件都被剥离）和被剥离的字段列表
+ */
+export function stripUnsupportedFieldsForEngine(
+  node: FilterNode,
+): { tree: FilterNode | null; strippedFields: string[] } {
+  const stripped: string[] = [];
+
+  function walk(n: FilterNode): FilterNode | null {
+    switch (n.type) {
+      case 'and':
+      case 'or': {
+        const filteredChildren = n.children
+          .map(walk)
+          .filter((c): c is FilterNode => c !== null);
+        if (filteredChildren.length === 0) return null;
+        if (filteredChildren.length === 1 && n.type === 'and') return filteredChildren[0];
+        return { ...n, children: filteredChildren } as FilterNode;
+      }
+      case 'not': {
+        const child = walk(n.child);
+        if (child === null) return null;
+        return { ...n, child } as FilterNode;
+      }
+      case 'range': {
+        if (HIGH_RISK_FUNDAMENTAL_FIELDS.has(n.field)) {
+          if (!stripped.includes(n.field)) {
+            stripped.push(n.field);
+          }
+          return null;
+        }
+        return n;
+      }
+      case 'pattern':
+      case 'kline':
+      case 'market':
+      case 'custom_indicator':
+        return n;
+      default:
+        return n;
+    }
+  }
+
+  const tree = walk(node);
+  return { tree, strippedFields: stripped };
 }
 
 // ==================== 条件下推 ====================

@@ -75,7 +75,7 @@ class BaostockDataSource(BaseDataSource):
     _CYCLE_MAP = {
         'daily': 'd', 'min5': '5', 'min15': '15', 'min30': '30', 'min60': '60'
     }
-    _ADJUST_FLAG = '3'  # 前复权
+    _ADJUST_FLAG = '2'  # 前复权（Baostock: 1=后复权, 2=前复权, 3=不复权）
 
     def __init__(self, rate_limit_config: Dict = None):
         self.connected = False
@@ -319,8 +319,9 @@ class BaostockDataSource(BaseDataSource):
                     if rs2 is not None and rs2.error_code == '0':
                         rows2 = self._fetch_all_rows(rs2)
                         for row_data in rows2:
-                            if len(row_data) >= 2 and row_data[1] and row_data[1] != '':
-                                adj_val = float(row_data[1])
+                            # row_data = [code, dividOperateDate, foreAdjustFactor, backAdjustFactor, parValue]
+                            if len(row_data) >= 3 and row_data[2] and row_data[2] != '':
+                                adj_val = float(row_data[2])
                                 break
                                 
                     if adj_val is None:
@@ -331,8 +332,8 @@ class BaostockDataSource(BaseDataSource):
                             rows3 = self._fetch_all_rows(rs3)
                             # 倒序查找最新的一条
                             for row_data in reversed(rows3):
-                                if len(row_data) >= 2 and row_data[1] and row_data[1] != '':
-                                    adj_val = float(row_data[1])
+                                if len(row_data) >= 3 and row_data[2] and row_data[2] != '':
+                                    adj_val = float(row_data[2])
                                     break
                                     
                     if adj_val is not None:
@@ -348,6 +349,62 @@ class BaostockDataSource(BaseDataSource):
                 logger.info(f"  📊 复权因子进度: {idx+1}/{total}，已获取 {len(results)} 条 (缓存命中:{len(self._adj_cache)})")
                 
         return pd.DataFrame(results) if results else pd.DataFrame()
+
+    def get_adj_factor_history(
+        self,
+        code: str,
+        start_date: str,
+        end_date: str
+    ) -> pd.DataFrame:
+        """获取单只股票历史复权因子（变更日数据）
+
+        基于 Baostock query_adjust_factor，返回 foreAdjustFactor（前复权因子）。
+        数据仅包含复权因子发生变更的日期，调用方需自行前向填充到每日。
+
+        Args:
+            code: 股票代码（如 600000 或 sh.600000）
+            start_date: 开始日期 YYYY-MM-DD
+            end_date: 结束日期 YYYY-MM-DD
+
+        Returns:
+            DataFrame: columns = [code, trade_date, adj_factor]
+        """
+        if not self._ensure_connected():
+            raise RuntimeError("未连接到 Baostock")
+
+        bs_code = self._normalize_code(code)
+        if not bs_code:
+            raise ValueError(f"无效的股票代码: {code}")
+
+        self._wait_for_rate_limit()
+
+        def do_query():
+            return bs.query_adjust_factor(code=bs_code, start_date=start_date, end_date=end_date)
+
+        try:
+            rs = _run_baostock_with_timeout(do_query, timeout=15)
+            if rs is None or rs.error_code != '0':
+                return pd.DataFrame()
+
+            rows = self._fetch_all_rows(rs)
+            results = []
+            for row_data in rows:
+                # row_data = [code, dividOperateDate, foreAdjustFactor, backAdjustFactor, parValue]
+                if len(row_data) >= 3 and row_data[1] and row_data[2]:
+                    results.append({
+                        'code': normalize_code(row_data[0]) or code,
+                        'trade_date': str(row_data[1])[:10],
+                        'adj_factor': float(row_data[2])
+                    })
+
+            df = pd.DataFrame(results)
+            if not df.empty:
+                df = df.sort_values('trade_date').reset_index(drop=True)
+            return df
+
+        except Exception as e:
+            logger.warning(f"  {code}: Baostock 复权因子历史查询失败: {e}")
+            return pd.DataFrame()
 
     def get_stock_basic(self) -> pd.DataFrame:
         if not self._ensure_connected():

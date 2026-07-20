@@ -6,8 +6,10 @@ pipeline_health_check.py - 数据管道前置条件检查器
 - 数据库连接
 - stock_basic 表是否有数据（避免下载无股票代码的数据）
 - 数据库分区是否覆盖目标日期
-- 数据源（tushare/baostock）是否可用
+- 数据源（Baostock/Tushare/pytdx）是否可用
 - 必需目录是否存在
+
+数据源优先级：Baostock(前复权,主) → Tushare(不复权,备1) → pytdx(不复权,备2)
 
 用法：
     python pipeline_health_check.py                      # 完整检查
@@ -30,8 +32,9 @@ import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# 项目根目录
+# 项目根目录与 backend 目录（确保 collector 等包可被导入）
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / 'backend'))
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import psycopg2
@@ -174,37 +177,48 @@ def check_partitions(result: HealthCheckResult, target_date: str = None):
 
 
 def check_data_sources(result: HealthCheckResult):
-    """检查数据源可用性"""
+    """检查数据源可用性（按优先级顺序：Baostock → Tushare → pytdx）"""
     print('\n[4/6] 🔌 数据源连接检查')
-    # Tushare
-    try:
-        tushare_token = os.getenv('TUSHARE_TOKEN')
-        if not tushare_token:
-            result.warn('Tushare Token', '未配置 TUSHARE_TOKEN，将仅使用 Baostock')
-        else:
-            import tushare as ts
-            pro = ts.pro_api(tushare_token)
-            # 修复：使用 trade_cal 替代 stock_basic 验证 Tushare 连接
-            # stock_basic 接口限制严格（免费用户1次/小时），trade_cal 限制较宽松
-            df = pro.query('trade_cal', exchange='SSE', start_date='20260101', end_date='20260101')
-            if df is not None and not df.empty:
-                result.ok('Tushare', '可用')
-            else:
-                result.warn('Tushare', '返回空数据')
-    except Exception as e:
-        result.warn('Tushare', f'连接异常: {str(e)[:80]}')
 
-    # Baostock
+    # Baostock（主数据源，前复权）
     try:
         import baostock as bs
         lg = bs.login()
         if lg.error_code == '0':
-            result.ok('Baostock', '可用')
+            result.ok('Baostock (主)', '可用（前复权）')
             bs.logout()
         else:
-            result.warn('Baostock', f'登录失败: {lg.error_msg}')
+            result.warn('Baostock (主)', f'登录失败: {lg.error_msg}')
     except Exception as e:
-        result.warn('Baostock', f'连接异常: {str(e)[:80]}')
+        result.warn('Baostock (主)', f'连接异常: {str(e)[:80]}')
+
+    # Tushare（备1，不复权→自动转换）
+    try:
+        tushare_token = os.getenv('TUSHARE_TOKEN')
+        if not tushare_token:
+            result.warn('Tushare (备1)', '未配置 TUSHARE_TOKEN，跳过')
+        else:
+            import tushare as ts
+            pro = ts.pro_api(tushare_token)
+            # 仅验证 pro_api 对象创建成功，避免调用 trade_cal 等受限接口消耗配额
+            if pro is not None:
+                result.ok('Tushare (备1)', '已配置 TOKEN（不复权→自动转换）')
+            else:
+                result.warn('Tushare (备1)', 'pro_api 初始化失败')
+    except Exception as e:
+        result.warn('Tushare (备1)', f'连接异常: {str(e)[:80]}')
+
+    # pytdx（备2，不复权→自动转换）
+    try:
+        from collector.datasource.pytdx import PytdxDataSource
+        pdx = PytdxDataSource()
+        if pdx.connect():
+            result.ok('pytdx/通达信 (备2)', '可用（不复权→自动转换）')
+            pdx.disconnect()
+        else:
+            result.warn('pytdx/通达信 (备2)', '连接失败')
+    except Exception as e:
+        result.warn('pytdx/通达信 (备2)', f'连接异常: {str(e)[:80]}')
 
 
 def check_directories(result: HealthCheckResult):

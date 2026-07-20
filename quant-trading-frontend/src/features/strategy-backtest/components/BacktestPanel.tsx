@@ -30,30 +30,38 @@ import {
   pctToDecimal,
 } from '../storage';
 
-interface Tonghuashun6Params {
-  rsiLow: number;
-  rsiUpper: number;
-  rsiHigh: number;
-  minHoldDays: number;
-  maxDrawdown: number;
-  firstProfitTarget: number;
-  secondProfitTarget: number;
-  fullProfitTarget: number;
-  maxConsecutiveBuys: number;
-  volThreshold: number;
+interface LayeredTPParams {
+  initialStopLossPct: number;     // 初始止损比例（-0.08 = -8%）
+  firstProfitPct: number;         // 第一止盈目标（0.08 = +8%）
+  firstSellPct: number;           // 第一止盈卖出比例（0.25 = 25%）
+  secondProfitPct: number;        // 第二止盈目标（0.15 = +15%）
+  secondSellPct: number;          // 第二止盈卖出比例（0.25 = 25%）
+  breakevenStopPct: number;       // TP1后保本止损比例（0.00 = 成本价，固定）
+  lockProfitPct: number;          // TP2后锁定利润比例（0.06 = +6%）
+  hardFloorPct: number;           // TP2后硬性底线安全阀（0.03 = +3%）
+  trailingDrawdownPct: number;    // TP2后峰值回撤阈值（0.05 = 5%）
+  maPeriod: number;               // 均线兜底周期（20）
+  maConfirmDays: number;          // 均线破位确认天数（2）
+  maExceptionDropPct: number;     // 均线例外单日跌幅（0.07 = 7%）
+  maxHoldDays: number;            // 建仓期时间止损天数（20）
+  stopSlippagePct: number;        // 止损成交价滑点（0.02 = 2%）
 }
 
-const DEFAULT_THS_PARAMS: Tonghuashun6Params = {
-  rsiLow: 25,
-  rsiUpper: 70,
-  rsiHigh: 80,
-  minHoldDays: 3,
-  maxDrawdown: 0.05,
-  firstProfitTarget: 0.04,
-  secondProfitTarget: 0.08,
-  fullProfitTarget: 0.10,
-  maxConsecutiveBuys: 3,
-  volThreshold: 1.05,
+const DEFAULT_LAYERED_TP_PARAMS: LayeredTPParams = {
+  initialStopLossPct: -0.08,
+  firstProfitPct: 0.08,
+  firstSellPct: 0.25,
+  secondProfitPct: 0.15,
+  secondSellPct: 0.25,
+  breakevenStopPct: 0.00,
+  lockProfitPct: 0.06,
+  hardFloorPct: 0.03,
+  trailingDrawdownPct: 0.05,
+  maPeriod: 20,
+  maConfirmDays: 2,
+  maExceptionDropPct: 0.07,
+  maxHoldDays: 20,
+  stopSlippagePct: 0.02,
 };
 
 interface BacktestPanelProps {
@@ -63,10 +71,10 @@ interface BacktestPanelProps {
   dateRange: [dayjs.Dayjs, dayjs.Dayjs];
   onDateRangeChange: (range: [dayjs.Dayjs, dayjs.Dayjs]) => void;
   disabled?: boolean;
-  strategyType?: 'filterTree' | 'tonghuashun6' | 'filterTreeLayeredTP';
-  onStrategyTypeChange?: (type: 'filterTree' | 'tonghuashun6' | 'filterTreeLayeredTP') => void;
-  tonghuashun6Params?: Tonghuashun6Params;
-  onTonghuashun6ParamsChange?: (params: Tonghuashun6Params) => void;
+  strategyType?: 'filterTree' | 'filterTreeLayeredTP';
+  onStrategyTypeChange?: (type: 'filterTree' | 'filterTreeLayeredTP') => void;
+  layeredTPParams?: LayeredTPParams;
+  onLayeredTPParamsChange?: (params: LayeredTPParams) => void;
 }
 
 const { RangePicker } = DatePicker;
@@ -74,7 +82,7 @@ const { RangePicker } = DatePicker;
 const BacktestPanel: React.FC<BacktestPanelProps> = ({
   config, onConfigChange, onStart, dateRange, onDateRangeChange, disabled,
   strategyType = 'filterTree', onStrategyTypeChange,
-  tonghuashun6Params = DEFAULT_THS_PARAMS, onTonghuashun6ParamsChange,
+  layeredTPParams = DEFAULT_LAYERED_TP_PARAMS, onLayeredTPParamsChange,
 }) => {
   const [activePreset, setActivePreset] = useState<string>('1y');
 
@@ -207,124 +215,199 @@ const BacktestPanel: React.FC<BacktestPanelProps> = ({
                     style={{ width: 200 }}
                     options={[
                       { value: 'filterTree', label: '选股条件调仓（AST）' },
-                      { value: 'tonghuashun6', label: '同花顺6重买入策略' },
                       { value: 'filterTreeLayeredTP', label: '选股条件分层止盈' },
                     ]}
                   />
                 </div>
 
-                {/* 同花顺6重买入策略 / 分层止盈参数 */}
-                {(strategyType === 'tonghuashun6' || strategyType === 'filterTreeLayeredTP') && (
+                {/* 分层止盈参数 */}
+                {strategyType === 'filterTreeLayeredTP' && (
                   <>
                     <div className="col-span-2 text-xs font-medium text-primary mt-1 mb-0.5">
-                      {strategyType === 'tonghuashun6' ? '同花顺6重买入 — 参数设置' : '分层止盈/止损 — 参数设置'}
+                      建仓期 — 风控参数
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-xs">RSI 低阈值</span>
-                      <InputNumber
-                        size="small" min={10} max={50} step={5}
-                        value={tonghuashun6Params.rsiLow}
-                        onChange={(v) => v !== null && onTonghuashun6ParamsChange?.({ ...tonghuashun6Params, rsiLow: v })}
-                        disabled={disabled} style={{ width: 120 }}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs">RSI 中阈值</span>
-                      <InputNumber
-                        size="small" min={50} max={90} step={5}
-                        value={tonghuashun6Params.rsiUpper}
-                        onChange={(v) => v !== null && onTonghuashun6ParamsChange?.({ ...tonghuashun6Params, rsiUpper: v })}
-                        disabled={disabled} style={{ width: 120 }}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs">RSI 高阈值（止损）</span>
-                      <InputNumber
-                        size="small" min={60} max={95} step={5}
-                        value={tonghuashun6Params.rsiHigh}
-                        onChange={(v) => v !== null && onTonghuashun6ParamsChange?.({ ...tonghuashun6Params, rsiHigh: v })}
-                        disabled={disabled} style={{ width: 120 }}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs">最小持仓天数</span>
-                      <InputNumber
-                        size="small" min={1} max={20}
-                        value={tonghuashun6Params.minHoldDays}
-                        onChange={(v) => v !== null && onTonghuashun6ParamsChange?.({ ...tonghuashun6Params, minHoldDays: v })}
-                        disabled={disabled} style={{ width: 120 }}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs">
-                        强制止损回撤
-                        <Tooltip title="持仓未满最小天数时，回撤超过此比例强制止损">
-                          <QuestionCircleOutlined className="ml-1 text-text-disabled" />
-                        </Tooltip>
-                      </span>
-                      <InputNumber
-                        size="small" min={1} max={20} step={1}
-                        value={tonghuashun6Params.maxDrawdown * 100}
-                        onChange={(v) => v !== null && onTonghuashun6ParamsChange?.({ ...tonghuashun6Params, maxDrawdown: v / 100 })}
-                        disabled={disabled} style={{ width: 120 }}
-                        formatter={(v) => `${v}%`}
-                        parser={(v) => parseFloat(v ?? '5')}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs">第一止盈（4%）</span>
-                      <InputNumber
-                        size="small" min={1} max={20} step={1}
-                        value={tonghuashun6Params.firstProfitTarget * 100}
-                        onChange={(v) => v !== null && onTonghuashun6ParamsChange?.({ ...tonghuashun6Params, firstProfitTarget: v / 100 })}
-                        disabled={disabled} style={{ width: 120 }}
-                        formatter={(v) => `${v}%`}
-                        parser={(v) => parseFloat(v ?? '4')}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs">第二止盈（8%）</span>
+                      <span className="text-xs">初始止损比例</span>
                       <InputNumber
                         size="small" min={1} max={30} step={1}
-                        value={tonghuashun6Params.secondProfitTarget * 100}
-                        onChange={(v) => v !== null && onTonghuashun6ParamsChange?.({ ...tonghuashun6Params, secondProfitTarget: v / 100 })}
+                        value={Math.abs(layeredTPParams.initialStopLossPct) * 100}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, initialStopLossPct: -v / 100 })}
                         disabled={disabled} style={{ width: 120 }}
-                        formatter={(v) => `${v}%`}
+                        formatter={(v) => `-${v}%`}
                         parser={(v) => parseFloat(v ?? '8')}
                       />
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-xs">全止盈（10%）</span>
+                      <span className="text-xs">
+                        时间止损（交易日）
+                        <Tooltip title="仅建仓期生效：买入后N个交易日未触发止盈则平仓">
+                          <QuestionCircleOutlined className="ml-1 text-text-disabled" />
+                        </Tooltip>
+                      </span>
                       <InputNumber
-                        size="small" min={1} max={50} step={1}
-                        value={tonghuashun6Params.fullProfitTarget * 100}
-                        onChange={(v) => v !== null && onTonghuashun6ParamsChange?.({ ...tonghuashun6Params, fullProfitTarget: v / 100 })}
+                        size="small" min={5} max={60} step={1}
+                        value={layeredTPParams.maxHoldDays}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, maxHoldDays: v })}
                         disabled={disabled} style={{ width: 120 }}
-                        formatter={(v) => `${v}%`}
-                        parser={(v) => parseFloat(v ?? '10')}
+                      />
+                    </div>
+
+                    <div className="col-span-2 text-xs font-medium text-primary mt-2 mb-0.5">
+                      第一锁定 — 收回本金
+                    </div>
+                    <div className="col-span-2 pl-2 -mt-1 mb-1">
+                      <span className="text-xs text-text-tertiary">卖出后止损自动上移至成本价（保本）</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs">触发涨幅</span>
+                      <InputNumber
+                        size="small" min={2} max={20} step={1}
+                        value={layeredTPParams.firstProfitPct * 100}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, firstProfitPct: v / 100 })}
+                        disabled={disabled} style={{ width: 120 }}
+                        formatter={(v) => `+${v}%`}
+                        parser={(v) => parseFloat(v ?? '8')}
                       />
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-xs">最大连续买入</span>
+                      <span className="text-xs">卖出比例</span>
                       <InputNumber
-                        size="small" min={1} max={10}
-                        value={tonghuashun6Params.maxConsecutiveBuys}
-                        onChange={(v) => v !== null && onTonghuashun6ParamsChange?.({ ...tonghuashun6Params, maxConsecutiveBuys: v })}
+                        size="small" min={10} max={50} step={5}
+                        value={layeredTPParams.firstSellPct * 100}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, firstSellPct: v / 100 })}
+                        disabled={disabled} style={{ width: 120 }}
+                        formatter={(v) => `${v}%`}
+                        parser={(v) => parseFloat(v ?? '25')}
+                      />
+                    </div>
+
+                    <div className="col-span-2 text-xs font-medium text-primary mt-2 mb-0.5">
+                      第二锁定 — 锁定满意利润
+                    </div>
+                    <div className="col-span-2 pl-2 -mt-1 mb-1">
+                      <span className="text-xs text-text-tertiary">卖出后止损线上移至+6%（保证这笔交易至少赚6%）</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs">触发涨幅</span>
+                      <InputNumber
+                        size="small" min={5} max={40} step={1}
+                        value={layeredTPParams.secondProfitPct * 100}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, secondProfitPct: v / 100 })}
+                        disabled={disabled} style={{ width: 120 }}
+                        formatter={(v) => `+${v}%`}
+                        parser={(v) => parseFloat(v ?? '15')}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs">卖出比例</span>
+                      <InputNumber
+                        size="small" min={10} max={50} step={5}
+                        value={layeredTPParams.secondSellPct * 100}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, secondSellPct: v / 100 })}
+                        disabled={disabled} style={{ width: 120 }}
+                        formatter={(v) => `${v}%`}
+                        parser={(v) => parseFloat(v ?? '25')}
+                      />
+                    </div>
+
+                    <div className="col-span-2 text-xs font-medium text-primary mt-2 mb-0.5">
+                      无限续航 — 底仓跟踪止盈
+                    </div>
+                    <div className="col-span-2 pl-2 -mt-1 mb-1">
+                      <span className="text-xs text-text-tertiary">跟踪线 = max(+6%锁定, 峰值回撤-5%)，谁先触发谁出场</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs">
+                        锁定利润
+                        <Tooltip title="第二止盈后止损线上移至此，保证至少赚6%">
+                          <QuestionCircleOutlined className="ml-1 text-text-disabled" />
+                        </Tooltip>
+                      </span>
+                      <InputNumber
+                        size="small" min={1} max={15} step={1}
+                        value={layeredTPParams.lockProfitPct * 100}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, lockProfitPct: v / 100 })}
+                        disabled={disabled} style={{ width: 120 }}
+                        formatter={(v) => `+${v}%`}
+                        parser={(v) => parseFloat(v ?? '6')}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs">峰值回撤</span>
+                      <InputNumber
+                        size="small" min={2} max={15} step={1}
+                        value={layeredTPParams.trailingDrawdownPct * 100}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, trailingDrawdownPct: v / 100 })}
+                        disabled={disabled} style={{ width: 120 }}
+                        formatter={(v) => `-${v}%`}
+                        parser={(v) => parseFloat(v ?? '5')}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs">
+                        均线周期
+                        <Tooltip title="跌破该均线则清仓底仓">
+                          <QuestionCircleOutlined className="ml-1 text-text-disabled" />
+                        </Tooltip>
+                      </span>
+                      <Select
+                        size="small"
+                        value={layeredTPParams.maPeriod}
+                        onChange={(v) => onLayeredTPParamsChange?.({ ...layeredTPParams, maPeriod: v })}
+                        disabled={disabled}
+                        style={{ width: 120 }}
+                        options={[
+                          { value: 5, label: 'MA5' },
+                          { value: 10, label: 'MA10' },
+                          { value: 20, label: 'MA20' },
+                          { value: 60, label: 'MA60' },
+                        ]}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs">
+                        均线确认天数
+                        <Tooltip title="连续N天跌破均线才触发">
+                          <QuestionCircleOutlined className="ml-1 text-text-disabled" />
+                        </Tooltip>
+                      </span>
+                      <InputNumber
+                        size="small" min={1} max={5} step={1}
+                        value={layeredTPParams.maConfirmDays}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, maConfirmDays: v })}
                         disabled={disabled} style={{ width: 120 }}
                       />
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-xs">
-                        成交量阈值
-                        <Tooltip title="当日成交量/15日均量 >= 此值时才触发买入">
+                        均线例外跌幅
+                        <Tooltip title="单日跌幅超过此值不等确认直接卖">
                           <QuestionCircleOutlined className="ml-1 text-text-disabled" />
                         </Tooltip>
                       </span>
                       <InputNumber
-                        size="small" min={0.5} max={3} step={0.1}
-                        value={tonghuashun6Params.volThreshold}
-                        onChange={(v) => v !== null && onTonghuashun6ParamsChange?.({ ...tonghuashun6Params, volThreshold: v })}
+                        size="small" min={3} max={15} step={1}
+                        value={layeredTPParams.maExceptionDropPct * 100}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, maExceptionDropPct: v / 100 })}
                         disabled={disabled} style={{ width: 120 }}
+                        formatter={(v) => `-${v}%`}
+                        parser={(v) => parseFloat(v ?? '7')}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs">
+                        止损滑点
+                        <Tooltip title="保守回测：止损成交价相对触发价的滑点">
+                          <QuestionCircleOutlined className="ml-1 text-text-disabled" />
+                        </Tooltip>
+                      </span>
+                      <InputNumber
+                        size="small" min={0} max={5} step={0.5}
+                        value={layeredTPParams.stopSlippagePct * 100}
+                        onChange={(v) => v !== null && onLayeredTPParamsChange?.({ ...layeredTPParams, stopSlippagePct: v / 100 })}
+                        disabled={disabled} style={{ width: 120 }}
+                        formatter={(v) => `${v}%`}
+                        parser={(v) => parseFloat(v ?? '2')}
                       />
                     </div>
                   </>
@@ -525,7 +608,14 @@ const BacktestPanel: React.FC<BacktestPanelProps> = ({
                 </div>
 
                 {/* Card 4: 风险控制 */}
-                <div className="col-span-2 text-xs font-medium text-text-secondary mt-2 mb-0.5">风险控制</div>
+                <div className="col-span-2 text-xs font-medium text-text-secondary mt-2 mb-0.5">
+                  风险控制
+                  {strategyType === 'filterTreeLayeredTP' && (
+                    <span className="text-orange-500 ml-2 font-normal">
+                      （分层模式下以下参数被覆盖）
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center justify-between">
                   <span className="text-xs">止损比例</span>
                   <InputNumber

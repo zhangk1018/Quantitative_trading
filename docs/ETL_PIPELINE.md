@@ -11,6 +11,13 @@
 8. 宽表同步 → 9. Parquet 导出
 ```
 
+**数据源优先级链**（Failover 模式，按 priority 自动降级）：
+```
+Baostock (主, 前复权) → Tushare (备1, 不复权→自动转换) → pytdx(通达信) (备2, 不复权→自动转换)
+```
+
+> **说明**：已移除 Akshare / Tencent / Sina / PyWenCai 数据源，保持数据源层仅保留 Baostock / Tushare / pytdx 三个。
+
 ---
 
 ## 统一调度入口
@@ -154,6 +161,45 @@ LIMIT 10;
 - **下载中断**：重新执行 `--incremental`，脚本会跳过已下载的股票
 - **某些股票数据为空**：可能是新股或停牌，执行 2.5 缺失数据补全
 - **Baostock 超时**：脚本内置超时控制，可重试
+- **Tushare 限速**：每天 5 次配额，超限后跳过
+
+#### 2.2.1 pytdx（通达信）日线数据下载（备用数据源）
+
+**脚本**：`backend/collector/etl/import_tdx_daily.py`
+
+**功能**：
+- 从 pytdx（通达信协议）下载日线 K 线数据
+- 免费、无需 Token、无配额限制
+- 作为 Tushare/Baostock 之后的第三级兜底数据源
+- 不支持北交所（自动跳过 8 开头代码）
+
+**执行**：
+```bash
+# 全量下载（约 30-40 分钟，5000+ 只股票）
+PYTHONPATH=backend ./venv/bin/python backend/collector/etl/import_tdx_daily.py
+
+# 增量下载（最近 30 天）
+PYTHONPATH=backend ./venv/bin/python backend/collector/etl/import_tdx_daily.py --incremental
+
+# 单只股票
+PYTHONPATH=backend ./venv/bin/python backend/collector/etl/import_tdx_daily.py --code 000001
+
+# 指定日期范围
+PYTHONPATH=backend ./venv/bin/python backend/collector/etl/import_tdx_daily.py --start 2026-01-01 --end 2026-07-17
+```
+
+**验证**：
+```sql
+-- 同 2.2 日线数据下载验证
+SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d';
+SELECT COUNT(DISTINCT code) FROM stock_quotes 
+WHERE trade_date = (SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d') AND cycle = '1d';
+```
+
+**常见问题**：
+- **连接失败**：通达信主机 IP 可能变更，更新 `backend/collector/config/tdx_hosts.yaml` 中的主机列表
+- **下载速度慢**：约 2-3 只/秒，全量需 30-40 分钟；可通过 `--incremental` 只下载最近数据
+- **成交量单位**：pytdx 返回"手"（百股），脚本自动 ×100 转为"股"
 
 ---
 
@@ -199,7 +245,7 @@ WHERE trade_date = (SELECT MAX(trade_date) FROM stock_adj_factor);
 
 **功能**：
 - 同步日频基本面数据（PE/PB/换手率/市值等）
-- 数据源优先级：PyWenCai > Baostock > Tushare
+- 数据源优先级：Baostock（主，PE/PB/换手率）→ Tushare Pro（备，全量字段）
 - 写入 stock_daily_basic 表
 
 **执行**：
@@ -221,16 +267,16 @@ SELECT MAX(trade_date) FROM stock_daily_basic;
 SELECT COUNT(*) as total,
        SUM(CASE WHEN pe IS NOT NULL THEN 1 ELSE 0 END) as pe_cnt,
        SUM(CASE WHEN pb IS NOT NULL THEN 1 ELSE 0 END) as pb_cnt,
-       SUM(CASE WHEN total_mv IS NOT NULL THEN 1 ELSE 0 END) as mv_cnt
-FROM stock_daily_basic 
+       SUM(CASE WHEN turnover_rate IS NOT NULL THEN 1 ELSE 0 END) as tr_cnt
+FROM stock_daily_basic
 WHERE trade_date = (SELECT MAX(trade_date) FROM stock_daily_basic);
--- 预期：pe/pb/mv 覆盖率 > 95%
+-- 预期：pe/pb/turnover_rate 覆盖率 > 95%
 ```
 
 **常见问题**：
-- **PyWenCai 请求失败**：网络问题，重试或等待
-- **Tushare 限速**：每天 5 次配额，超限后跳过
-- **字段为空**：某些字段（dv_ratio/ps_ttm）需要 Tushare 补充
+- **Baostock 请求失败**：自动降级到 Tushare Pro；若 Tushare 未配置 TOKEN，则跳过
+- **Tushare 限速**：daily_basic 接口 5次/天配额，超限后跳过
+- **dv_ratio/ps_ttm 等字段为空**：Baostock 不提供这些字段，需通过 `sync_tushare_daily_basic.py` 用 Tushare Pro 补充
 
 **补充脚本**：`backend/collector/etl/sync_tushare_daily_basic.py`
 ```bash
@@ -285,7 +331,7 @@ ORDER BY days;
 
 **功能**：
 - 从 stock_quotes 读取价格数据
-- 计算技术指标（MA/MACD/RSI/BOLL/KDJ）
+- 计算技术指标（MA/EMA/MACD/RSI/BOLL/KDJ/ATR/量比/换手率）
 - 写入 stock_indicators 表
 
 **执行**：
@@ -556,7 +602,7 @@ echo "✅ ETL 流程完成"
 | self 未定义错误 | `_update_tech_patterns` 是类方法 | 改为独立函数 |
 | parquet 文件未更新 | 未执行导出脚本 | 执行 `export_parquet.py` |
 | API 返回旧数据 | 后端服务未重启 | 重启 uvicorn 服务 |
-| Baostock 连接失败 | 网络问题 | 等待重试 |
+| Baostock 连接失败 | 网络问题 | 等待重试，自动降级到 Tushare/pytdx |
 | Tushare 限速 | 超过每日 5 次配额 | 等待次日或跳过 |
 
 ---
@@ -564,7 +610,7 @@ echo "✅ ETL 流程完成"
 ## 数据流向图
 
 ```
-数据源（Baostock/Tushare/PyWenCai）
+数据源（Baostock/Tushare/pytdx(通达信)）
     ↓
 stock_basic（股票列表）
 stock_quotes（日线 K 线）
@@ -590,11 +636,11 @@ latest_quotes.parquet ← export_parquet.py
 | stock_quotes | 日线 K 线 | code, trade_date, open/high/low/close, volume |
 | stock_adj_factor | 复权因子 | code, trade_date, adj_factor |
 | stock_daily_basic | 基本面数据 | code, trade_date, pe, pb, total_mv |
-| stock_indicators | 技术指标 | code, trade_date, dif, dea, macd, rsi6/12/24 |
+| stock_indicators | 技术指标 | code, trade_date, dif, dea, macd, rsi6/12/24, ema5/10/20/60, atr, vol_ratio, turnover_rate, kdj_k/d/j |
 | stock_daily_snapshot | 宽表（最终输出） | 包含所有字段 + 14 个 pattern 列 |
 
 ---
 
-**文档版本**：v1.0  
-**最后更新**：2026-06-16  
+**文档版本**：v1.1  
+**最后更新**：2026-07-18  
 **维护者**：量量

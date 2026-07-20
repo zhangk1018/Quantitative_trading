@@ -17,6 +17,8 @@ const sellReasonColors: Record<SellReason, string> = {
   portfolio_risk: 'purple',
   delisted: 'magenta',
   end: 'default',
+  trailing_stop: 'gold',
+  ma_cross: 'cyan',
 };
 
 const sellReasonLabels: Record<SellReason, string> = {
@@ -27,6 +29,8 @@ const sellReasonLabels: Record<SellReason, string> = {
   portfolio_risk: '组合风控',
   delisted: '退市强平',
   end: '期末清仓',
+  trailing_stop: '峰值回撤',
+  ma_cross: '均线破位',
 };
 
 const TradeLog: React.FC<TradeLogProps> = ({ trades }) => {

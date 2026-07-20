@@ -7,7 +7,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import type { FilterNode, StrategyBacktestDefaults, StrategyBacktestResult } from './types';
 import { getStrategyBacktestDefaults } from './storage';
-import { parseTreeParam } from './utils/filterTreeAdapter';
+import { parseTreeParam, stripUnsupportedFieldsForEngine } from './utils/filterTreeAdapter';
 import { loadBacktestData, tryRestoreFromCache, saveToCache, computeCacheHash } from './utils/dataLoader';
 import type { ValidationResult } from './utils/dataLoader';
 import ConditionsSummary from './components/ConditionsSummary';
@@ -100,18 +100,22 @@ const StrategyBacktestView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [benchmarkMissingRate, setBenchmarkMissingRate] = useState<number | undefined>(undefined);
-  const [strategyType, setStrategyType] = useState<'filterTree' | 'tonghuashun6' | 'filterTreeLayeredTP'>('filterTree');
-  const [tonghuashun6Params, setTonghuashun6Params] = useState({
-    rsiLow: 25,
-    rsiUpper: 70,
-    rsiHigh: 80,
-    minHoldDays: 3,
-    maxDrawdown: 0.05,
-    firstProfitTarget: 0.04,
-    secondProfitTarget: 0.08,
-    fullProfitTarget: 0.10,
-    maxConsecutiveBuys: 3,
-    volThreshold: 1.05,
+  const [strategyType, setStrategyType] = useState<'filterTree' | 'filterTreeLayeredTP'>('filterTree');
+  const [layeredTPParams, setLayeredTPParams] = useState({
+    initialStopLossPct: -0.08,
+    firstProfitPct: 0.08,
+    firstSellPct: 0.25,
+    secondProfitPct: 0.15,
+    secondSellPct: 0.25,
+    breakevenStopPct: 0.00,
+    lockProfitPct: 0.06,
+    hardFloorPct: 0.03,
+    trailingDrawdownPct: 0.05,
+    maPeriod: 20,
+    maConfirmDays: 2,
+    maExceptionDropPct: 0.07,
+    maxHoldDays: 20,
+    stopSlippagePct: 0.02,
   });
 
   // 解析 URL 参数
@@ -252,6 +256,14 @@ const StrategyBacktestView: React.FC = () => {
 
       if (!session.isActive()) return;
 
+      // 在传入引擎前过滤高风险基本面字段（这些字段无法历史回溯，仅用于初始股票池筛选）
+      const { tree: engineFilterTree, strippedFields: strippedFundamentalFields } = stripUnsupportedFieldsForEngine(filterTree);
+      if (!engineFilterTree) {
+        setError('所有选股条件均为无法历史回溯的基本面字段，回测引擎需要至少一个可基于OHLCV计算的条件（如价格、涨跌幅、量比、技术形态等）');
+        setState('failed');
+        return;
+      }
+
       // 启动 Worker
       setState('running');
       setProgress({ stage: 'indicators', percent: 0, message: '计算技术指标...' });
@@ -268,25 +280,15 @@ const StrategyBacktestView: React.FC = () => {
           snapshots: data.snapshots,
           tradeDates: data.tradeDates,
           benchmarkOhlcv: data.benchmarkOhlcv,
-          filterTree,
+          filterTree: engineFilterTree,
           config,
           startDate,
           endDate,
-          strippedFields,
-          strategyType: isLayeredTP ? 'filterTree' : strategyType,
+          strippedFields: [...strippedFields, ...strippedFundamentalFields],
+          strategyType: 'filterTree',
           exitMode: isLayeredTP ? 'layeredTakeProfit' : undefined,
-          layeredTPParams: isLayeredTP ? {
-            minHoldDays: tonghuashun6Params.minHoldDays,
-            maxDrawdown: tonghuashun6Params.maxDrawdown,
-            firstProfitTarget: tonghuashun6Params.firstProfitTarget,
-            secondProfitTarget: tonghuashun6Params.secondProfitTarget,
-            fullProfitTarget: tonghuashun6Params.fullProfitTarget,
-            rsiHigh: tonghuashun6Params.rsiHigh,
-          } : undefined,
-          tonghuashun6Params: strategyType === 'tonghuashun6' ? tonghuashun6Params : undefined,
+          layeredTPParams: isLayeredTP ? layeredTPParams : undefined,
           customIndicatorValues,
-          // 注意：onProgress 不能通过 postMessage 传递（结构化克隆无法克隆函数）
-          // Worker 内部的 onProgress 包装器会自动处理进度回调
         },
       });
 
@@ -376,16 +378,16 @@ const StrategyBacktestView: React.FC = () => {
             disabled={isRunning}
             strategyType={strategyType}
             onStrategyTypeChange={setStrategyType}
-            tonghuashun6Params={tonghuashun6Params}
-            onTonghuashun6ParamsChange={setTonghuashun6Params}
+            layeredTPParams={layeredTPParams}
+            onLayeredTPParamsChange={setLayeredTPParams}
           />
 
           {/* 基本面数据说明 */}
           {filterTree && (
             <Alert
-              type="warning"
+              type="info"
               showIcon
-              message="基本面指标使用最新交易日数据（PE/PB/市值/换手率），非历史时点值。若选股条件包含基本面指标，回测将被阻断。"
+              message="基本面/行情指标（PE/PB/市值/换手率等）仅用于初始股票池筛选（基于最新数据），回测每日调仓判断基于价格、成交量及技术形态等可历史计算的指标。"
               className="text-xs"
             />
           )}

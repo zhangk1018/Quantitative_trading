@@ -55,7 +55,9 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
     # --- 准备入库数据 ---
     indicator_mapping = {
         'MA5': 'ma5', 'MA10': 'ma10', 'MA20': 'ma20', 'MA60': 'ma60',
-        'MACD_HIST': 'macd', 'MACD': 'dif', 'MACD_SIGNAL': 'dea'
+        'MACD_HIST': 'macd', 'MACD': 'dif', 'MACD_SIGNAL': 'dea',
+        'EMA5': 'ema5', 'EMA10': 'ema10', 'EMA20': 'ema20', 'EMA60': 'ema60',
+        'ATR': 'atr', 'VOL_RATIO': 'vol_ratio',
     }
     
     save_df = pd.DataFrame()
@@ -105,6 +107,28 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
                 save_df[dst_col] = None
     except Exception:
         save_df[['boll_mid', 'boll_upper', 'boll_lower']] = None
+
+    # KDJ 计算 (从 indicators_df 中提取)
+    for src_col, dst_col in [('KDJ_K', 'kdj_k'), ('KDJ_D', 'kdj_d'), ('KDJ_J', 'kdj_j')]:
+        if src_col in indicators_df.columns:
+            kdj_series = indicators_df.set_index(pd.to_datetime(indicators_df['trade_date']).dt.date)[src_col]
+            save_df[dst_col] = save_date_index.map(kdj_series)
+        else:
+            save_df[dst_col] = None
+
+    # 换手率计算（需要流通股本）
+    try:
+        float_shares = storage.get_float_shares(db_code)
+        turnover_df = TechnicalIndicator.calculate_turnover_rate(
+            quotes_df.copy(), float_shares=float_shares, require_adjust=False
+        )
+        if 'TURNOVER_RATE' in turnover_df.columns:
+            turnover_series = turnover_df.set_index(pd.to_datetime(turnover_df['trade_date']).dt.date)['TURNOVER_RATE']
+            save_df['turnover_rate'] = save_date_index.map(turnover_series)
+        else:
+            save_df['turnover_rate'] = None
+    except Exception:
+        save_df['turnover_rate'] = None
 
     if save_df.empty:
         return 0

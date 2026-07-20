@@ -19,11 +19,11 @@ from utils.logger import setup_logger
 
 logger = setup_logger('tushare_datasource')
 
-# Tushare daily API 频率限制配置（免费版 200次/分钟，留余量设 180）
+# Tushare daily API 频率限制配置（免费版 daily 接口限 50次/分钟，留余量设 45）
 TUSHARE_RATE_LIMIT = {
-    'min_interval': 0.35,
-    'max_requests_per_minute': 180,
-    'burst_size': 5,
+    'min_interval': 1.4,
+    'max_requests_per_minute': 45,
+    'burst_size': 3,
 }
 
 
@@ -67,8 +67,8 @@ class TushareDataSource(BaseDataSource):
     - pro.adj_factor() / pro.trade_cal() 等：受等级限制不可用
     """
 
-    # 日线限流：200次/分钟 → 约 3.3次/秒，取保守值
-    _DAILY_RATE = 180 / 60.0  # 3 次/秒
+    # 日线限流：免费版 daily 接口限 50次/分钟 → 约 0.83次/秒，留余量取 45次/分钟
+    _DAILY_RATE = 45 / 60.0  # 0.75 次/秒
 
     def __init__(self, rate_limit_config: Dict = None):
         self._pro = None

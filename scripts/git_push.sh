@@ -60,15 +60,15 @@ echo "=========================================="
 echo ""
 
 # 2. 检查工作区是否存在变更
-CHANGED=$(git status --porcelain)
+CHANGED=$(git -c core.quotepath=false status --porcelain)
 if [ -z "$CHANGED" ]; then
     echo "✅ 工作区干净，没有待提交的更改"
     exit 0
 fi
 
 # 3. 拆分：已跟踪变更、未跟踪文件
-TRACKED_CHANGED=$(git status --porcelain | grep -v "^??" || true)
-ALL_UNTRACKED=$(git status --porcelain | grep "^??" || true)
+TRACKED_CHANGED=$(git -c core.quotepath=false status --porcelain | grep -v "^??" || true)
+ALL_UNTRACKED=$(git -c core.quotepath=false status --porcelain | grep "^??" || true)
 
 # 过滤：忽略目录下的文件 + 备份/临时后缀文件
 IGNORED_UNTRACKED=""

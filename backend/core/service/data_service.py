@@ -19,9 +19,7 @@ from typing import Optional, List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collector.datasource.base import DataSourceManager, LegacyDataSourceManager
 from collector.datasource.baostock import BaostockDataSource
-from collector.datasource.akshare import AkshareDataSource
-from collector.datasource.sina import SinaDataSource
-from collector.datasource.tencent import TencentDataSource
+from collector.datasource.tushare import TushareDataSource
 from utils.storage_factory import StorageFactory
 from clean.processor.data_processor import DataProcessor
 from utils.logger import setup_logger
@@ -207,9 +205,9 @@ class DataService:
         # 初始化缓存
         self.cache = DataCache()
         
-        # 初始化数据源管理器（主备切换）
+        # 初始化数据源管理器（主备切换）：Baostock 主，Tushare 备
         primary = BaostockDataSource()
-        backup = AkshareDataSource()
+        backup = TushareDataSource()
         self.dsm = LegacyDataSourceManager(primary=primary, backups=[backup])
         
         # 更新统计
@@ -1253,120 +1251,25 @@ class DataService:
 
     def update_snapshot(self) -> bool:
         """
-        更新实时快照数据（调用 Akshare 获取实时行情）
-        
+        更新快照数据
+
+        当前仅支持从历史数据生成快照（已移除 Akshare/腾讯/新浪等实时数据源，
+        保持数据源仅 Baostock/Tushare/pytdx）。
+
         Returns:
             是否成功
         """
         logger.info("=" * 60)
-        logger.info("开始更新实时快照")
+        logger.info("开始更新快照（基于历史数据）")
         logger.info("=" * 60)
-
-        success_count = 0
-        fail_count = 0
 
         try:
             # 确保目录存在
             os.makedirs(SNAPSHOT_PATH, exist_ok=True)
-
-            # 检查是否在交易时段
-            is_trading = self.is_trading_time()
-            
-            if not is_trading:
-                # 非交易时段，直接从历史数据生成快照
-                logger.info("⏰ 非交易时段，直接从历史数据生成快照")
-                return self._generate_snapshot_from_history()
-            
-            # 交易时段，尝试实时数据源
-            # 定义数据源优先级列表（按优先级从高到低）
-            data_sources = [
-                ('Akshare', AkshareDataSource),
-                ('腾讯财经', TencentDataSource),
-                ('东方财富', SinaDataSource)
-            ]
-
-            # 按优先级尝试各个数据源
-            for source_name, source_class in data_sources:
-                logger.info(f"📡 尝试使用 {source_name} 获取实时快照...")
-                
-                ds = source_class()
-                try:
-                    if ds.connect():
-                        snapshot_df = ds.fetch_market_snapshot()
-                        ds.disconnect()
-
-                        if snapshot_df is not None and not snapshot_df.empty:
-                            # 保存每个股票的快照
-                            for _, row in snapshot_df.iterrows():
-                                try:
-                                    # 构建快照数据
-                                    stock_code = row.get('code', row.get('代码', row.get('股票代码', '')))
-                                    if not stock_code:
-                                        continue
-
-                                    # 转换代码格式（确保是 sh.xxx 或 sz.xxx 格式）
-                                    if isinstance(stock_code, str):
-                                        if stock_code.startswith('6'):
-                                            code = f"sh.{stock_code}"
-                                        elif stock_code.startswith('0') or stock_code.startswith('3'):
-                                            code = f"sz.{stock_code}"
-                                        elif stock_code.startswith('sh.') or stock_code.startswith('sz.'):
-                                            code = stock_code
-                                        else:
-                                            code = stock_code
-                                    else:
-                                        code = str(stock_code)
-
-                                    snapshot_data = {
-                                        'code': code,
-                                        'name': row.get('name', row.get('名称', row.get('股票名称', ''))),
-                                        'price': row.get('price', row.get('最新价', row.get('收盘价', row.get('close', '')))),
-                                        'change': row.get('change', row.get('涨跌额', '')),
-                                        'pct_chg': row.get('pct_chg', row.get('涨跌幅', row.get('涨跌幅%', ''))),
-                                        'open': row.get('open', row.get('开盘价', row.get('今开', ''))),
-                                        'high': row.get('high', row.get('最高价', '')) ,
-                                        'low': row.get('low', row.get('最低价', '')),
-                                        'vol': row.get('vol', row.get('成交量', row.get('volume', ''))),
-                                        'amount': row.get('amount', row.get('成交额', '')),
-                                        'pre_close': row.get('pre_close', row.get('昨收', '')),
-                                        'turnover_rate': row.get('turnover_rate', row.get('换手率', '')),
-                                        'pe': row.get('pe', row.get('市盈率', '')),
-                                        'date': datetime.now().strftime('%Y-%m-%d'),
-                                        'time': datetime.now().strftime('%H:%M:%S'),
-                                        'update_time': datetime.now().isoformat(),
-                                        'source': source_name
-                                    }
-
-                                    # 保存到文件
-                                    file_path = os.path.join(SNAPSHOT_PATH, f'{code}.json')
-                                    with open(file_path, 'w', encoding='utf-8') as f:
-                                        json.dump(snapshot_data, f, ensure_ascii=False, indent=2)
-
-                                    success_count += 1
-
-                                except Exception as e:
-                                    fail_count += 1
-                                    logger.debug(f"保存快照失败: {str(e)}")
-
-                            logger.info(f"✅ 使用 {source_name} 快照更新完成，成功: {success_count}, 失败: {fail_count}")
-                            return success_count > 0
-                        else:
-                            logger.warning(f"⚠️ {source_name} 返回空数据，尝试下一个数据源")
-                    else:
-                        logger.warning(f"⚠️ 无法连接 {source_name}，尝试下一个数据源")
-                
-                except Exception as e:
-                    logger.error(f"❌ {source_name} 获取快照失败: {str(e)}，尝试下一个数据源")
-                    continue
-
-            # 如果所有实时数据源都失败，尝试从历史数据生成快照
-            logger.warning("⚠️ 所有实时数据源都失败，从历史数据生成快照")
             return self._generate_snapshot_from_history()
-
         except Exception as e:
             logger.error(f"快照更新失败: {str(e)}")
-            # 尝试从历史数据生成快照
-            return self._generate_snapshot_from_history()
+            return False
 
     def _generate_snapshot_from_history(self) -> bool:
         """

@@ -1,0 +1,14 @@
+# 市场-代码前缀-成交量乘数映射
+# 用于将 pytdx 返回的"手"（百股）转换为标准单位
+markets:
+  stock:
+    prefixes: ["0", "3", "6"]  # 主板/创业板/科创板
+    vol_multiplier: 100        # 1手 = 100股
+    code_digits: 6
+
+# 全品种证券列表过滤（排除债券/基金/指数/权证等非股票）
+security_list_filter:
+  stock_patterns:
+    - "^0\\d{5}$"   # 000xxx 主板(SZ), 002xxx 中小板(SZ)
+    - "^3\\d{5}$"   # 300xxx 创业板(SZ), 301xxx 创业板(SZ)
+    - "^6\\d{5}$"   # 600xxx/601xxx/603xxx/605xxx 主板(SH), 688xxx 科创板(SH)

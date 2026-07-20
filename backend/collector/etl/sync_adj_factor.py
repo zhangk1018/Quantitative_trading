@@ -2,25 +2,25 @@
 """
 sync_adj_factor.py - 复权因子同步脚本
 
-从 Baostock 获取复权因子数据并更新到 stock_adj_factor 表。
-Baostock query_adjust_factor 是按股票查询的，因此采用逐股票遍历方式。
+从 Baostock 获取前复权因子数据并更新到 stock_adj_factor 表。
+使用 Baostock query_adjust_factor 接口，返回 foreAdjustFactor（前复权因子）。
 
 使用说明：
   初次同步（全量历史）：python sync_adj_factor.py
   增量同步（最近30天）：python sync_adj_factor.py --incremental
 
-注意：Tushare 免费版不支持 adj_factor 接口，已禁用。
+数据源：Baostock (query_adjust_factor, 前复权因子)
 """
 
 import sys
 import os
 import json
 import argparse
+import time
 
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, backend_dir)
 
-import baostock as bs
 import pandas as pd
 from datetime import datetime, timedelta, date
 from typing import Dict, List, Tuple, Optional
@@ -35,22 +35,8 @@ logger = setup_logger('sync_adj_factor')
 
 # ==================== 辅助函数 ====================
 
-def get_active_stocks_from_baostock(source: BaostockDataSource) -> pd.DataFrame:
-    """从 Baostock 获取活跃股票列表（备用）"""
-    try:
-        stocks = source.get_stock_list()
-        if stocks.empty:
-            logger.error("❌ Baostock 返回空股票列表")
-            return pd.DataFrame()
-        logger.info(f"📋 从 Baostock 获取到 {len(stocks)} 只活跃股票")
-        return stocks
-    except Exception as e:
-        logger.error(f"❌ 从 Baostock 获取股票列表失败: {e}")
-        return pd.DataFrame()
-
-
 def get_active_stocks_from_db(storage: PostgreSQLStorage) -> pd.DataFrame:
-    """从数据库获取活跃股票列表（优先）"""
+    """从数据库获取活跃股票列表"""
     try:
         with storage.transaction() as conn:
             with conn.cursor() as cur:
@@ -74,20 +60,8 @@ def get_active_stocks_from_db(storage: PostgreSQLStorage) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def get_active_stocks(storage: PostgreSQLStorage, source: BaostockDataSource) -> pd.DataFrame:
-    """获取活跃股票列表（优先数据库，备用 Baostock）"""
-    df = get_active_stocks_from_db(storage)
-    if not df.empty:
-        return df
-    logger.warning("⚠️ 数据库股票列表为空，尝试从 Baostock 获取...")
-    return get_active_stocks_from_baostock(source)
-
-
 def get_last_adj_factors_batch(storage: PostgreSQLStorage, codes: List[str]) -> Dict[str, Tuple[Optional[date], Optional[float]]]:
-    """
-    批量获取所有股票的最新复权因子
-    使用 DISTINCT ON 一次查询替代逐股票查询
-    """
+    """批量获取所有股票的最新复权因子"""
     if not codes:
         return {}
     try:
@@ -108,7 +82,7 @@ def get_last_adj_factors_batch(storage: PostgreSQLStorage, codes: List[str]) -> 
 
 
 def get_last_known_adj_factor(storage: PostgreSQLStorage, code: str) -> Tuple[Optional[date], Optional[float]]:
-    """获取单只股票最近一次的复权因子（备用）"""
+    """获取单只股票最近一次的复权因子"""
     try:
         with storage.transaction() as conn:
             with conn.cursor() as cur:
@@ -127,10 +101,7 @@ def get_last_known_adj_factor(storage: PostgreSQLStorage, code: str) -> Tuple[Op
 
 def fill_missing_dates(storage: PostgreSQLStorage, code: str, start_date: date,
                         end_date: date, last_adj_factor: float) -> int:
-    """
-    前向填充缺失日期的复权因子
-    注意：复权因子只在分红/送股等事件时变化，无事件时保持恒定
-    """
+    """前向填充缺失日期的复权因子"""
     if last_adj_factor is None:
         return 0
 
@@ -147,7 +118,6 @@ def fill_missing_dates(storage: PostgreSQLStorage, code: str, start_date: date,
         logger.error(f"  [EXCEPTION] {code}: 查询已有日期失败: {e}")
         return 0
 
-    # 生成需要填充的日期（排除已有）
     fill_dates = []
     current = start_date
     while current <= end_date:
@@ -158,7 +128,6 @@ def fill_missing_dates(storage: PostgreSQLStorage, code: str, start_date: date,
     if not fill_dates:
         return 0
 
-    # 批量插入
     from psycopg2.extras import execute_values
     values = [(code, d, last_adj_factor) for d in fill_dates]
     try:
@@ -176,71 +145,86 @@ def fill_missing_dates(storage: PostgreSQLStorage, code: str, start_date: date,
         return 0
 
 
-def sync_stock_adj_factor(source: BaostockDataSource, storage: PostgreSQLStorage,
-                          code: str, exchange: str, start_date: date, end_date: date,
-                          fill_missing: bool = True, skip_api: bool = False) -> int:
+def sync_stock_adj_factor_baostock(source: BaostockDataSource, storage: PostgreSQLStorage,
+                                    code: str, start_date: date, end_date: date) -> int:
     """
-    同步单只股票的复权因子数据
-    Returns: 保存的记录数
-    """
-    bs_code = f"{exchange.lower()}.{code}"
+    使用 Baostock 同步单只股票的复权因子
 
-    if skip_api:
-        # 跳过 Baostock API，直接从 DB 前向填充
-        if fill_missing:
+    Baostock query_adjust_factor 返回变更日数据（含 foreAdjustFactor）
+    需要将因子值填充到变更日之后的所有日期（直到下一次变更）
+    """
+    try:
+        # 获取复权因子变更日数据
+        df = source.get_adj_factor_history(
+            code=code,
+            start_date=start_date.strftime('%Y-%m-%d'),
+            end_date=end_date.strftime('%Y-%m-%d'),
+        )
+
+        if df is None or df.empty:
+            # 无分红事件：尝试从已有记录前向填充
             _, last_adj = get_last_known_adj_factor(storage, code)
             if last_adj is not None:
-                return fill_missing_dates(storage, code, start_date, end_date, last_adj)
-        return 0
-
-    bs_start = start_date.strftime('%Y-%m-%d')
-    bs_end = end_date.strftime('%Y-%m-%d')
-
-    source._wait_for_rate_limit()
-
-    try:
-        rs = bs.query_adjust_factor(code=bs_code, start_date=bs_start, end_date=bs_end)
-
-        if rs.error_code != '0':
-            logger.debug(f"  ⚠️ {code}: 查询失败 {rs.error_msg}")
+                filled = fill_missing_dates(storage, code, start_date, end_date, last_adj)
+                if filled > 0:
+                    logger.debug(f"  [FILL] {code}: 前向填充 {filled} 个缺失日期")
+                return filled
+            logger.debug(f"  [SKIP] {code}: 无历史复权因子可填充")
             return 0
 
-        data_list = []
-        while (rs.error_code == '0') and rs.next():
-            row_data = rs.get_row_data()
-            # row_data = [code, dividOperateDate, adjfactor, turn, parValue]
-            if len(row_data) >= 3 and row_data[2] and row_data[2] != '':
-                data_list.append({
+        # 按日期升序排列
+        df = df.sort_values('trade_date').reset_index(drop=True)
+
+        # 将变更日因子展开为每日因子（前向填充）
+        all_records = []
+        prev_date = start_date
+        prev_factor = None
+
+        for _, row in df.iterrows():
+            change_date = datetime.strptime(row['trade_date'], '%Y-%m-%d').date()
+            current_factor = float(row['adj_factor'])
+
+            if prev_factor is not None:
+                # 填充 prev_date 到 change_date-1 的日期
+                d = prev_date
+                while d < change_date and d <= end_date:
+                    all_records.append({
+                        'code': code,
+                        'trade_date': d.strftime('%Y-%m-%d'),
+                        'adj_factor': prev_factor
+                    })
+                    d += timedelta(days=1)
+
+            prev_date = max(change_date, start_date)
+            prev_factor = current_factor
+
+        # 填充最后一个变更日到 end_date
+        if prev_factor is not None:
+            d = prev_date
+            while d <= end_date:
+                all_records.append({
                     'code': code,
-                    'trade_date': row_data[1].replace('-', '') if '-' in str(row_data[1]) else str(row_data[1]),
-                    'adj_factor': float(row_data[2])
+                    'trade_date': d.strftime('%Y-%m-%d'),
+                    'adj_factor': prev_factor
                 })
+                d += timedelta(days=1)
 
-        if not data_list:
-            # Baostock 返回空：可能是无分红事件
-            if fill_missing:
-                _, last_adj = get_last_known_adj_factor(storage, code)
-                if last_adj is not None:
-                    filled = fill_missing_dates(storage, code, start_date, end_date, last_adj)
-                    if filled > 0:
-                        logger.debug(f"  [FILL] {code}: 前向填充 {filled} 个缺失日期")
-                    return filled
-                logger.debug(f"  [SKIP] {code}: 无历史复权因子可填充")
+        if not all_records:
             return 0
 
-        df = pd.DataFrame(data_list)
-        count = storage.save_adj_factor(df)
+        result_df = pd.DataFrame(all_records)
+        count = storage.save_adj_factor(result_df)
         return count
 
     except Exception as e:
-        logger.error(f"  [EXCEPTION] {code}: 同步异常: {e}")
+        logger.error(f"  [EXCEPTION] {code}: Baostock 同步异常: {e}")
         return 0
 
 
 def sync_adj_factor(incremental: bool = False):
     """同步复权因子数据（主流程）"""
     logger.info("=" * 60)
-    logger.info("开始同步复权因子数据...")
+    logger.info("开始同步复权因子数据（数据源: Baostock）")
     logger.info(f"模式: {'增量（最近30天）' if incremental else '全量历史'}")
     logger.info("=" * 60)
 
@@ -266,8 +250,8 @@ def sync_adj_factor(incremental: bool = False):
         sys.exit(1)
 
     try:
-        # 1. 获取股票列表（优先数据库，备用 Baostock）
-        all_stocks = get_active_stocks(storage, source)
+        # 1. 获取股票列表
+        all_stocks = get_active_stocks_from_db(storage)
         if all_stocks.empty:
             logger.error("❌ 无法获取股票列表，终止同步")
             sys.exit(1)
@@ -282,7 +266,7 @@ def sync_adj_factor(incremental: bool = False):
 
         logger.info(f"📅 日期范围: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
 
-        # 3. 批量获取所有股票的最新复权因子（优化）
+        # 3. 批量获取所有股票的最新复权因子
         codes = all_stocks['code'].tolist()
         last_adj_factors = get_last_adj_factors_batch(storage, codes)
         logger.info(f"📊 已获取 {len(last_adj_factors)} 只股票的最新复权因子")
@@ -309,14 +293,14 @@ def sync_adj_factor(incremental: bool = False):
         MAX_SKIP_LOG = 5
 
         # 5. 逐股票同步
+        t_start = time.time()
         for idx, s in enumerate(stocks_to_process):
             code = s.code
-            exchange = getattr(s, 'exchange', 'SH' if code.startswith('6') else 'SZ')
 
             # 检查是否已是最新（增量模式）
             if incremental:
                 last_info = last_adj_factors.get(code, (None, None))
-                last_date = last_info[0]  # date 对象
+                last_date = last_info[0]
                 if last_date is not None and last_date >= end_date:
                     total_skipped += 1
                     if skipped_log_count < MAX_SKIP_LOG:
@@ -324,31 +308,23 @@ def sync_adj_factor(incremental: bool = False):
                         skipped_log_count += 1
                     continue
 
-            # 智能决定是否跳过 API
-            skip_api = incremental
-            # 如果距离上次更新超过30天，强制刷新
-            if incremental:
-                last_info = last_adj_factors.get(code, (None, None))
-                last_date = last_info[0]
-                if last_date is None or (end_date - last_date).days > 30:
-                    skip_api = False
-                    logger.debug(f"  [FORCE_API] {code}: 超过30天未更新，强制刷新")
-
-            count = sync_stock_adj_factor(
-                source, storage, code, exchange,
-                start_date, end_date,
-                fill_missing=incremental,
-                skip_api=skip_api
+            count = sync_stock_adj_factor_baostock(
+                source, storage, code, start_date, end_date
             )
             if count > 0:
                 total_saved += count
                 total_with_data += 1
 
-            if (idx + 1) % 100 == 0:
+            if (idx + 1) % 200 == 0:
+                elapsed = time.time() - t_start
+                rate = (idx + 1) / elapsed
+                eta = (total_stocks - idx - 1) / rate / 60
                 logger.info(f"  📊 进度: {idx+1}/{total_stocks} | "
                             f"已处理: {total_with_data} 只 | "
-                            f"已跳过(最新): {total_skipped} 只 | "
-                            f"总记录: {total_saved} 条")
+                            f"已跳过: {total_skipped} 只 | "
+                            f"总记录: {total_saved} 条 | "
+                            f"速率: {rate:.1f}只/s | "
+                            f"预计剩余: {eta:.0f}min")
 
         # 6. 处理新上市股票（增量模式下全量拉取）
         if new_stocks:
@@ -356,8 +332,6 @@ def sync_adj_factor(incremental: bool = False):
             new_saved = 0
             for idx, s in enumerate(new_stocks):
                 code = s.code
-                exchange = getattr(s, 'exchange', 'SH' if code.startswith('6') else 'SZ')
-                # 新股票从上市日期开始
                 stock_start = start_date
                 if hasattr(s, 'list_date') and s.list_date:
                     try:
@@ -368,11 +342,8 @@ def sync_adj_factor(incremental: bool = False):
                         stock_start = max(start_date, list_dt)
                     except Exception:
                         pass
-                count = sync_stock_adj_factor(
-                    source, storage, code, exchange,
-                    stock_start, end_date,
-                    fill_missing=False,
-                    skip_api=False
+                count = sync_stock_adj_factor_baostock(
+                    source, storage, code, stock_start, end_date
                 )
                 if count > 0:
                     new_saved += count
@@ -402,7 +373,7 @@ def sync_adj_factor(incremental: bool = False):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='同步复权因子数据')
+    parser = argparse.ArgumentParser(description='同步复权因子数据（Baostock）')
     parser.add_argument('--incremental', action='store_true', help='增量模式（最近30天）')
     args = parser.parse_args()
     sync_adj_factor(incremental=args.incremental)

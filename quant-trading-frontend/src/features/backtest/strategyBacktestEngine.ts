@@ -22,7 +22,6 @@ import type {
   TechPattern,
 } from './strategyBacktestTypes';
 import { IndicatorCache } from './strategyBacktestTypes';
-import { runTonghuashun6Strategy } from './strategies/tonghuashun6Strategy';
 
 // ==================== 常量定义 ====================
 
@@ -72,7 +71,7 @@ export interface StrategyBacktestInput {
   /** 选股条件 AST（仅 filterTree 策略使用） */
   filterTree?: FilterNode;
   /** 策略类型 */
-  strategyType?: 'filterTree' | 'tonghuashun6' | 'filterTreeLayeredTP';
+  strategyType?: 'filterTree';
   /** 退出模式（仅 filterTree 策略使用） */
   exitMode?: 'standard' | 'layeredTakeProfit';
   /** 分层止盈参数（仅 exitMode='layeredTakeProfit' 时使用） */
@@ -84,8 +83,6 @@ export interface StrategyBacktestInput {
     fullProfitTarget: number;
     rsiHigh: number;
   };
-  /** 同花顺6重买入策略参数（仅 tonghuashun6 策略使用） */
-  tonghuashun6Params?: import('./strategies/tonghuashun6Strategy').Tonghuashun6Params;
   /** 回测配置 */
   config: StrategyBacktestDefaults;
   /** 回测起止日期 YYYY-MM-DD */
@@ -344,99 +341,9 @@ function getFieldValue(
 }
 
 /**
- * 检查技术形态（Phase 1 支持 4 种基础形态）
+ * 检查技术形态（支持 4 种基础形态）
  * @param bars OHLCV 数组，用于获取 close 等价格数据
  */
-function checkThs6BuySignal(
-  bars: number[][],
-  idx: number,
-): boolean {
-  if (idx < 1 || idx >= bars.length) return false;
-
-  const closes = bars.map(b => b[OHLCV_CLOSE]);
-  const highs = bars.map(b => b[OHLCV_HIGH]);
-  const volumes = bars.map(b => b[OHLCV_VOLUME]);
-
-  // 计算 EMA5、EMA48
-  const ema5Arr = ema(closes, 5);
-  const ema48Arr = ema(closes, 48);
-  if (ema5Arr[idx] === null || ema48Arr[idx] === null) return false;
-
-  // 计算 MACD (12, 26, 9)
-  const ema12 = ema(closes, 12);
-  const ema26 = ema(closes, 26);
-  const macdDif: (number | null)[] = new Array(bars.length).fill(null);
-  for (let i = 0; i < bars.length; i++) {
-    if (ema12[i] !== null && ema26[i] !== null) {
-      macdDif[i] = ema12[i]! - ema26[i]!;
-    }
-  }
-  const macdDea = ema(macdDif, 9);
-  const macdHist: (number | null)[] = new Array(bars.length).fill(null);
-  for (let i = 0; i < bars.length; i++) {
-    if (macdDif[i] !== null && macdDea[i] !== null) {
-      macdHist[i] = (macdDif[i]! - macdDea[i]!) * 2;
-    }
-  }
-  if (macdDif[idx] === null || macdDea[idx] === null || macdHist[idx] === null) return false;
-
-  // 计算 RSI14
-  const rsi14 = calcRSI(closes, 14);
-  if (rsi14[idx] === null) return false;
-
-  // 计算 SMA(volume, 15)
-  const volAvg15 = sma(volumes, 15);
-  if (volAvg15[idx] === null || volAvg15[idx]! <= 0) return false;
-
-  // 计算 HHV20（20 日最高价）
-  let hhv20 = highs[idx];
-  for (let j = Math.max(0, idx - 19); j <= idx; j++) {
-    if (highs[j] > hhv20) hhv20 = highs[j];
-  }
-
-  const close = bars[idx][OHLCV_CLOSE];
-  const volume = bars[idx][OHLCV_VOLUME];
-
-  // 6 重条件判断
-  const trendUp = ema5Arr[idx]! > ema48Arr[idx]!;
-  const macdGold = macdDif[idx]! > macdDea[idx]! && macdHist[idx]! > 0;
-  const rsiValid = rsi14[idx]! > 25 && rsi14[idx]! < 70;
-  const volUp = volume > 1.05 * volAvg15[idx]!;
-  const priceBreak = close >= hhv20 * 0.98;
-
-  const buyCond = trendUp && macdGold && rsiValid && volUp && priceBreak;
-  if (!buyCond) return false;
-
-  // CROSS 检查：前一日不满足
-  if (idx - 1 < 0) return true;
-  const prevClose = bars[idx - 1][OHLCV_CLOSE];
-  const prevVol = bars[idx - 1][OHLCV_VOLUME];
-  const prevEma5 = ema5Arr[idx - 1];
-  const prevEma48 = ema48Arr[idx - 1];
-  const prevMacdDif = macdDif[idx - 1];
-  const prevMacdDea = macdDea[idx - 1];
-  const prevMacdHist = macdHist[idx - 1];
-  const prevRsi14 = rsi14[idx - 1];
-  const prevVolAvg15 = volAvg15[idx - 1];
-
-  // 计算前一日 HHV20
-  let prevHhv20 = highs[idx - 1];
-  for (let j = Math.max(0, idx - 20); j <= idx - 1; j++) {
-    if (highs[j] > prevHhv20) prevHhv20 = highs[j];
-  }
-
-  const prevTrendUp = prevEma5 !== null && prevEma48 !== null && prevEma5! > prevEma48!;
-  const prevMacdGold = prevMacdDif !== null && prevMacdDea !== null && prevMacdHist !== null
-    && prevMacdDif! > prevMacdDea! && prevMacdHist! > 0;
-  const prevRsiValid = prevRsi14 !== null && prevRsi14! > 25 && prevRsi14! < 70;
-  const prevVolUp = prevVolAvg15 !== null && prevVolAvg15! > 0
-    && prevVol > 1.05 * prevVolAvg15!;
-  const prevPriceBreak = prevClose >= prevHhv20 * 0.98;
-  const prevBuyCond = prevTrendUp && prevMacdGold && prevRsiValid && prevVolUp && prevPriceBreak;
-
-  return !prevBuyCond; // CROSS: 从 false 到 true
-}
-
 function checkTechPattern(
   pattern: TechPattern,
   cache: IndicatorCache,
@@ -482,8 +389,6 @@ function checkTechPattern(
       if (Number.isNaN(close) || Number.isNaN(prevClose)) return false;
       return prevClose <= prevUpper && close > upper;
     }
-    case 'ths_6_buy_signal':
-      return checkThs6BuySignal(bars, idx);
     default:
       return false;
   }
@@ -646,21 +551,6 @@ export function calcSellCommission(
  * 主循环：预计算指标 → 逐日模拟交易
  */
 export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBacktestResult {
-  // 策略类型分发
-  if (input.strategyType === 'tonghuashun6') {
-    return runTonghuashun6Strategy({
-      allOhlcv: input.allOhlcv,
-      snapshots: input.snapshots,
-      config: input.config,
-      startDate: input.startDate,
-      endDate: input.endDate,
-      benchmarkOhlcv: input.benchmarkOhlcv,
-      tradeDates: input.tradeDates,
-      onProgress: input.onProgress,
-      params: input.tonghuashun6Params,
-    });
-  }
-
   const startTime = performance.now();
   const { allOhlcv, snapshots, filterTree, config, startDate, endDate, benchmarkOhlcv, tradeDates, exitMode, layeredTPParams, customIndicatorValues } = input;
   const warnings: string[] = [];

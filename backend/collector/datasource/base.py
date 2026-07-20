@@ -121,15 +121,19 @@ class BaseDataSource(abc.ABC):
     def health_check(self) -> bool:
         """
         健康检查（可选实现）
-        
+
         Returns:
             是否健康
         """
+        # 未连接的数据源直接判定为不健康，避免在 failover 模式下对未初始化的
+        # 备份源调用 get_stock_list 产生无意义告警。
+        if not getattr(self, 'connected', False):
+            return False
         try:
             # 默认实现：尝试获取股票列表来验证连接
             df = self.get_stock_list()
             return df is not None and not df.empty
-        except:
+        except Exception:
             return False
     
     @property
@@ -196,12 +200,14 @@ class DataSourceManager:
         """
         # 处理旧的初始化方式（兼容原有代码）
         if sources is None or len(sources) == 0:
-            # 使用默认配置
+            # 使用默认配置：Baostock 主，Tushare 备，pytdx 兜底
             from collector.datasource.baostock import BaostockDataSource
-            from collector.datasource.akshare import AkshareDataSource
+            from collector.datasource.tushare import TushareDataSource
+            from collector.datasource.pytdx import PytdxDataSource
             sources = [
-                {'source': BaostockDataSource(), 'weight': 1, 'priority': 0},
-                {'source': AkshareDataSource(), 'weight': 1, 'priority': 1}
+                {'source': BaostockDataSource(), 'weight': 1, 'priority': 0},   # 主: 前复权
+                {'source': TushareDataSource(), 'weight': 1, 'priority': 1},    # 备1: 不复权→转换
+                {'source': PytdxDataSource(), 'weight': 1, 'priority': 2}       # 备2: 不复权→转换
             ]
         
         self.sources = sorted(sources, key=lambda x: x.get('priority', 0))
@@ -301,11 +307,16 @@ class DataSourceManager:
     def disconnect(self):
         """断开所有数据源连接"""
         for src_info in self.sources:
+            source = src_info['source']
+            # 避免对已经断开的数据源重复调用 disconnect（如 Baostock 会触发
+            # Bad file descriptor / 接收数据异常 等清理期报错）。
+            if not getattr(source, 'connected', False):
+                continue
             try:
-                src_info['source'].disconnect()
+                source.disconnect()
             except Exception as e:
-                logger.warning(f"断开数据源 {src_info['source'].name} 失败: {str(e)}")
-        
+                logger.warning(f"断开数据源 {source.name} 失败: {str(e)}")
+
         self.current_source = None
         self.current_source_index = 0
         logger.info("所有数据源已断开")
@@ -571,19 +582,16 @@ def create_dsm(
     Returns:
         DataSourceManager实例
     """
-    from collector.datasource.tushare import TushareDataSource
     from collector.datasource.baostock import BaostockDataSource
-    from collector.datasource.akshare import AkshareDataSource
-    from collector.datasource.sina import SinaDataSource
-    from collector.datasource.tencent import TencentDataSource
-    
-    # 配置多数据源：Tushare 主，Baostock/Akshare/Tencent/Sina 备用
+    from collector.datasource.tushare import TushareDataSource
+    from collector.datasource.pytdx import PytdxDataSource
+
+    # 配置多数据源：Baostock 主（前复权），Tushare 备1（不复权→转换），pytdx 备2（不复权→转换）
+    # weight 仅 WEIGHTED 策略使用，Failover 模式下仅 priority 决定回退顺序
     sources = [
-        {'source': TushareDataSource(), 'weight': 3, 'priority': 0},   # 主数据源（优先级最高）
-        {'source': BaostockDataSource(), 'weight': 2, 'priority': 1},   # 备用1
-        {'source': AkshareDataSource(), 'weight': 1, 'priority': 2},    # 备用2
-        {'source': TencentDataSource(), 'weight': 1, 'priority': 3},    # 备用3
-        {'source': SinaDataSource(), 'weight': 1, 'priority': 4}        # 备用4
+        {'source': BaostockDataSource(), 'weight': 1, 'priority': 0},   # 主: 前复权
+        {'source': TushareDataSource(), 'weight': 1, 'priority': 1},    # 备1: 不复权→需转换
+        {'source': PytdxDataSource(), 'weight': 1, 'priority': 2}       # 备2: 不复权→需转换
     ]
     
     strategy_enum = {

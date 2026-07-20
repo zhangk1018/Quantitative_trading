@@ -5,7 +5,7 @@
 import type { FilterNode, RangeField, TechPattern, KlinePattern } from '../types';
 import type { ScreenerState } from '@/features/stock-picker/context/ScreenerContext';
 import type { CustomIndicator, IndicatorOperator } from '@/features/stock-picker/types/customIndicator';
-import { MARKET_INDICATORS } from '@/features/stock-picker/config/indicatorConfig';
+import { MARKET_INDICATORS, FINANCIAL_INDICATORS } from '@/features/stock-picker/config/indicatorConfig';
 
 const BOARD_NAME_TO_CODE: Record<string, string> = {
   '上海主板': 'main',
@@ -32,6 +32,11 @@ const TECH_PATTERN_MAP: Record<string, TechPattern> = {
   'rsi_low_golden_cross': 'rsi_golden_cross',
   'boll_break_upper': 'boll_break_upper',
 };
+
+const FINANCIAL_LABEL_MAP: Record<string, string> = {};
+for (const ind of FINANCIAL_INDICATORS) {
+  FINANCIAL_LABEL_MAP[ind.id] = ind.label;
+}
 
 const KLINE_PATTERN_MAP: Record<string, KlinePattern> = {
   pattern_morning_star: 'morning_star',
@@ -138,7 +143,8 @@ export function screenerStateToFilterNode(state: ScreenerState): ConversionResul
   const finRanges = state.financialIndicators.ranges;
   for (const [key, range] of Object.entries(finRanges)) {
     if ((range.min !== undefined && range.min.trim() !== '') || (range.max !== undefined && range.max.trim() !== '')) {
-      hardErrors.push(`财务指标「${key}」依赖最新财报数据，回测引擎无法获取历史时点值，已阻止回测。请移除财务指标条件后重试。`);
+      const label = FINANCIAL_LABEL_MAP[key] || key;
+      warnings.push(`财务指标「${label}」依赖最新财报数据，回测引擎无法获取历史时点值，已忽略该条件`);
     }
   }
 

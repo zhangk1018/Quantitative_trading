@@ -3,7 +3,7 @@ import { Typography, Spin, Checkbox, Button } from 'antd';
 import { LoadingOutlined, CaretUpOutlined, CaretDownOutlined } from '@ant-design/icons';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useSettings } from '@/shared/contexts/SettingsContext';
-import { formatMarketCap, formatNumber } from '../utils/screener';
+import { formatMarketCap, formatAmount, formatNumber } from '../utils/screener';
 import type { StockItem } from '../types';
 
 const { Text } = Typography;
@@ -66,7 +66,7 @@ const TableRow = memo(({ stock, index, selected, onToggle, onDoubleClick }: Tabl
         {formatMarketCap(stock.market_cap)}
       </td>
       <td className="px-3 py-2 text-right text-text-primary font-mono">
-        {formatMarketCap(stock.amount)}
+        {formatAmount(stock.amount)}
       </td>
       <td className="px-3 py-2 text-center">
         {stock.listed_board && (
