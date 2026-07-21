@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-量化交易 - 每日盘后多阶段任务调度脚本（v9）
+量化交易 - 每日盘后多阶段任务调度脚本（v10）
 
 任务顺序（仅日级数据）：
   阶段1 (15:30): 健康检查 + 股票列表同步
   阶段2 (17:45): 日线行情导入
-  阶段3 (18:15): 复权因子同步 + 缺失数据补全
-  阶段4 (18:30): 基本面 → 技术指标 → 形态识别 → 信号 → 宽表 → Parquet
+  阶段3 (18:15): 复权因子同步 → 缺失数据补全 → 基本面 → 技术指标 → 形态识别 → 信号 → 宽表 → Parquet
 
-v9 核心改进：
+v10 核心改进：
 - 仅保留日级数据流程，分钟/周线/月线数据下载任务已下线
-- 按 BaoStock 官方数据入库时间 +15 分钟缓冲拆分为 4 个独立阶段
+- 阶段3与阶段4合并为单一阶段3（18:15），避免文件锁冲突
 - 阶段间通过 task_run_log 实现断点续跑
 """
 import os
@@ -57,8 +56,7 @@ ZOMBIE_THRESHOLD_SEC = 7200   # 2 小时
 # ===================== Stage 常量 =====================
 STAGE_PRE_IMPORT = 1      # 阶段1：健康检查 + 股票列表同步 (15:30)
 STAGE_DAILY_IMPORT = 2    # 阶段2：日线行情导入 (17:45)
-STAGE_ADJ_FACTOR = 3      # 阶段3：复权因子同步 + 缺失数据补全 (18:15)
-STAGE_DAILY_COMPUTE = 4   # 阶段4：基本面/指标/形态/信号/宽表/Parquet (18:30)
+STAGE_DAILY_COMPUTE = 3   # 阶段3：复权因子→补全→基本面→指标→形态→信号→宽表→Parquet (18:15)
 PIPELINE_STAGE = 0        # etl_pipeline 整体状态记录专用值，与子任务 stage 语义隔离
 
 # ===================== 阶段定义 =====================
@@ -74,9 +72,6 @@ STAGE2_TASKS = [
 STAGE3_TASKS = [
     {"name": "adj_factor_sync", "script": os.path.join("backend", "collector", "etl", "sync_adj_factor.py"), "args": ["--incremental"]},
     {"name": "fill_missing_data", "script": os.path.join("backend", "collector", "etl", "fill_missing_data.py"), "args": []},
-]
-
-STAGE4_TASKS = [
     {"name": "daily_basic_sync", "script": os.path.join("backend", "collector", "etl", "sync_daily_basic.py"), "args": ["--latest"]},
     {"name": "indicators_compute", "script": os.path.join("backend", "clean", "etl", "compute_indicators_daily.py"), "args": []},
     {"name": "pattern_precompute", "script": os.path.join("backend", "clean", "etl", "pattern_precompute.py"), "args": ["--latest"]},
@@ -233,8 +228,12 @@ class TaskLogger:
 
 # ===================== 状态查询与僵尸清理（增加 stage 过滤） =====================
 def get_last_batch_status(engine, data_date: str, tasks: list, stage: int = None) -> tuple:
-    """返回 (success_count, total, has_bad)"""
+    """返回 (success_count, total, has_bad)
+    
+    total 始终为任务列表长度，防止部分任务有记录时误判为全部完成。
+    """
     task_names = [t["name"] for t in tasks]
+    total_tasks = len(tasks)
     sql = text("""
         WITH latest_tasks AS (
             SELECT DISTINCT ON (task_name) task_name, status
@@ -245,17 +244,16 @@ def get_last_batch_status(engine, data_date: str, tasks: list, stage: int = None
             ORDER BY task_name, id DESC
         )
         SELECT 
-            COUNT(*) AS total,
             COUNT(*) FILTER (WHERE status = 'success') AS success_count,
             COUNT(*) FILTER (WHERE status IN ('failed', 'running')) AS bad_count
         FROM latest_tasks
     """)
     with engine.connect() as conn:
         row = conn.execute(sql, {"data_date": data_date, "task_names": task_names, "stage": stage}).fetchone()
-        if row is None or row[0] == 0:
-            return 0, len(tasks), False
-        total, success_cnt, bad_cnt = row
-        return success_cnt, total, bad_cnt > 0
+        if row is None:
+            return 0, total_tasks, False
+        success_cnt, bad_cnt = row
+        return (success_cnt or 0), total_tasks, (bad_cnt or 0) > 0
 
 def get_task_db_status(engine, data_date: str, task_name: str, stage: int = None) -> str:
     sql = text("""
@@ -399,27 +397,26 @@ def run_task_chain(task_logger: TaskLogger, engine, tasks: list, stage: int) -> 
 
 # ===================== 主函数 =====================
 def main():
-    parser = argparse.ArgumentParser(description='每日盘后多阶段任务调度器 v9')
+    parser = argparse.ArgumentParser(description='每日盘后多阶段任务调度器 v10')
     parser.add_argument('--stage', type=int,
-                        choices=[STAGE_PRE_IMPORT, STAGE_DAILY_IMPORT, STAGE_ADJ_FACTOR, STAGE_DAILY_COMPUTE],
-                        help='执行阶段: 1=健康检查+股票列表, 2=日线导入, 3=复权因子+缺失补全, 4=基本面/指标/信号/宽表/Parquet')
+                        choices=[STAGE_PRE_IMPORT, STAGE_DAILY_IMPORT, STAGE_DAILY_COMPUTE],
+                        help='执行阶段: 1=健康检查+股票列表, 2=日线导入, 3=复权因子→补全→基本面→指标→信号→宽表→Parquet')
     parser.add_argument('--dry-run', action='store_true', help='试运行模式：只打印计划执行的任务')
     args = parser.parse_args()
 
     stage_map = {
         STAGE_PRE_IMPORT: (STAGE1_TASKS, STAGE_PRE_IMPORT, "阶段1 (15:30) | 健康检查 + 股票列表同步"),
         STAGE_DAILY_IMPORT: (STAGE2_TASKS, STAGE_DAILY_IMPORT, "阶段2 (17:45) | 日线行情导入"),
-        STAGE_ADJ_FACTOR: (STAGE3_TASKS, STAGE_ADJ_FACTOR, "阶段3 (18:15) | 复权因子同步 + 缺失数据补全"),
-        STAGE_DAILY_COMPUTE: (STAGE4_TASKS, STAGE_DAILY_COMPUTE, "阶段4 (18:30) | 基本面/指标/形态/信号/宽表/Parquet"),
+        STAGE_DAILY_COMPUTE: (STAGE3_TASKS, STAGE_DAILY_COMPUTE, "阶段3 (18:15) | 复权因子→补全→基本面→指标→形态→信号→宽表→Parquet"),
     }
 
     if args.stage in stage_map:
         tasks, current_stage, stage_label = stage_map[args.stage]
     else:
-        # 全量模式：顺序执行阶段1→4（仅日级数据）
-        tasks = STAGE1_TASKS + STAGE2_TASKS + STAGE3_TASKS + STAGE4_TASKS
+        # 全量模式：顺序执行阶段1→3（仅日级数据）
+        tasks = STAGE1_TASKS + STAGE2_TASKS + STAGE3_TASKS
         current_stage = None
-        stage_label = "全量 (阶段1→4 顺序执行，仅日级数据)"
+        stage_label = "全量 (阶段1→3 顺序执行，仅日级数据)"
 
     file_lock = FileLock(LOCK_FILE)
     if not file_lock.acquire():
@@ -432,7 +429,7 @@ def main():
         
         start_time = datetime.now()
         print("=" * 60)
-        print(f"【每日盘后多阶段任务 v8】| {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"【每日盘后多阶段任务 v10】| {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"执行阶段: {stage_label}")
         print(f"Python: {PYTHON}")
         print(f"任务数: {len(tasks)} | batch_id: {task_logger.batch_id}")
@@ -477,14 +474,12 @@ def main():
             if current_stage is not None:
                 all_success, failed_task = run_task_chain(task_logger, engine, tasks, current_stage)
             else:
-                # 全量模式：顺序执行阶段1→4，每个阶段独立写入 stage 值
+                # 全量模式：顺序执行阶段1→3，每个阶段独立写入 stage 值
                 all_success, failed_task = run_task_chain(task_logger, engine, STAGE1_TASKS, STAGE_PRE_IMPORT)
                 if all_success:
                     all_success, failed_task = run_task_chain(task_logger, engine, STAGE2_TASKS, STAGE_DAILY_IMPORT)
                 if all_success:
-                    all_success, failed_task = run_task_chain(task_logger, engine, STAGE3_TASKS, STAGE_ADJ_FACTOR)
-                if all_success:
-                    all_success, failed_task = run_task_chain(task_logger, engine, STAGE4_TASKS, STAGE_DAILY_COMPUTE)
+                    all_success, failed_task = run_task_chain(task_logger, engine, STAGE3_TASKS, STAGE_DAILY_COMPUTE)
             
             if all_success:
                 elapsed = (datetime.now() - start_time).total_seconds()
