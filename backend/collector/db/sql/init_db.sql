@@ -359,7 +359,7 @@ CREATE TABLE IF NOT EXISTS data_audit_log (id SERIAL PRIMARY KEY, operator VARCH
 CREATE TABLE IF NOT EXISTS task_run_log (
     id              BIGSERIAL PRIMARY KEY,
     task_name       VARCHAR(100) NOT NULL,
-    stage           INT NOT NULL CHECK (stage BETWEEN 1 AND 11),
+    stage           INT NOT NULL CHECK (stage BETWEEN 0 AND 11),
     start_time      TIMESTAMP NOT NULL,
     end_time        TIMESTAMP,
     status          VARCHAR(20) NOT NULL CHECK (status IN ('running', 'success', 'failed', 'skipped')),

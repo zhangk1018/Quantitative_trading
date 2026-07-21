@@ -4,12 +4,13 @@ sync_daily_basic.py - 日频基本面数据同步脚本
 
 从数据源拉取日频基本面数据（PE/PB/换手率/市值/dv/ps等），写入 stock_daily_basic 表。
 
-数据源优先级（仅保留 Baostock / Tushare）：
-  1. Baostock — 主用，逐只股票拉取 PE/PB/换手率（稳定、免费）
-  2. Tushare Pro — 备用，全量基本面（含 dv_ratio/ps_ttm/float_share 等），限速 5次/天
+数据源优先级（与项目规范一致）：
+  1. Tushare Pro — 主用，全量基本面（含 pe_ttm/pb/dv_ratio/ps_ttm/float_share/市值等），限速 5次/天
+  2. Baostock — 兜底，逐只股票拉取 PE/PB/换手率（稳定、免费）
+  3. PyWenCai — 预留（待实现），全市场一次拉取
 
 注意：Baostock 仅提供 pe、pb、turnover_rate；
-      dv_ratio/ps/ps_ttm/float_share 等字段仅在 Tushare Pro 可用时补充。
+      dv_ratio/ps/ps_ttm/float_share/市值 等字段优先由 Tushare Pro 提供。
 
 用法：
     python scripts/sync_daily_basic.py --latest       # 同步最新交易日
@@ -42,12 +43,21 @@ class DailyBasicSync:
     """日频基本面同步器"""
 
     def __init__(self):
-        self.storage = PostgreSQLStorage(config.get('storage'))
-        # 数据源优先级：Baostock（免费稳定，PE/PB/换手率）→ Tushare Pro（全量基本面，限速）
+        db_config = config.get('storage.postgresql')
+        if not db_config:
+            db_config = {
+                'host': os.getenv('PG_HOST', 'localhost'),
+                'port': int(os.getenv('PG_PORT', 5432)),
+                'database': os.getenv('PG_DATABASE', 'quant_trading'),
+                'username': os.getenv('PG_USER', 'quant_user'),
+                'password': os.getenv('PG_PASSWORD', ''),
+            }
+        self.storage = PostgreSQLStorage(db_config)
+        # 数据源优先级：Tushare Pro（全量基本面，限速）→ Baostock（免费稳定，PE/PB/换手率兜底）
         self.dsm = DataSourceManager(
             sources=[
-                {'source': BaostockDataSource(), 'weight': 1, 'priority': 0},
-                {'source': TushareDataSource(), 'weight': 1, 'priority': 1},
+                {'source': TushareDataSource(), 'weight': 1, 'priority': 0},
+                {'source': BaostockDataSource(), 'weight': 1, 'priority': 1},
             ],
             strategy=SwitchStrategy.FAILOVER,
             auto_recovery=True

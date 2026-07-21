@@ -323,7 +323,7 @@ const StrategyBacktestView: React.FC = () => {
       setError((e as Error).message);
       setState('failed');
     }
-  }, [filterTree, config, validation, dateRange]);
+  }, [filterTree, config, validation, dateRange, strategyType, layeredTPParams]);
 
   // 取消回测
   const handleCancel = useCallback(() => {

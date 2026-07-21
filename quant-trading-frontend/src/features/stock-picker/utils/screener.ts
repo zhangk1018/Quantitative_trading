@@ -42,7 +42,7 @@ export const CONFIG = {
   PAGE_SIZE: 20,
   UNIT_CONVERSION: { market_cap: 10000, amount: 10000 } as Record<string, number>,
   CSV_DANGEROUS_PREFIXES: ['=', '+', '-', '@', '\t', '\r', '＝', '＋', '－', '＠'] as const,
-  REQUEST_TIMEOUT: 10000,
+  REQUEST_TIMEOUT: 20000,
   DEBOUNCE_DELAY: 300,
   /** 字段默认排序方向：true=升序，false=降序 */
   DEFAULT_SORT_DIR: {

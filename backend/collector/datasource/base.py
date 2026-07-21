@@ -385,21 +385,45 @@ class DataSourceManager:
         """执行方法并处理故障切换"""
         if not self.current_source:
             raise RuntimeError("未连接到数据源")
-        
+
+        # 针对 get_kline 请求，提前检查周期兼容性；若当前数据源不支持，
+        # 主动切换到第一个支持该周期且健康的数据源，避免源内部抛出不可重试异常。
+        if method_name == 'get_kline':
+            cycle = kwargs.get('cycle')
+            if cycle and cycle not in self.current_source.supported_cycles:
+                logger.info(
+                    f"当前数据源 {self.current_source.name} 不支持周期 {cycle}，"
+                    f"尝试切换到支持的数据源"
+                )
+                switched = False
+                for idx, src_info in enumerate(self.sources):
+                    if idx == self.current_source_index:
+                        continue
+                    source = src_info['source']
+                    if cycle not in source.supported_cycles:
+                        continue
+                    if self.health_status.get(source.name) == DataSourceStatus.UNHEALTHY:
+                        continue
+                    if self._switch_to_source(source, idx, f"当前源不支持周期 {cycle}"):
+                        switched = True
+                        break
+                if not switched:
+                    raise RuntimeError(f"没有可用的数据源支持周期 {cycle}")
+
         # 先执行健康检查
         self._perform_health_check()
-        
+
         try:
             method = getattr(self.current_source, method_name)
             result = method(**kwargs)
-            
+
             # 验证结果
             if isinstance(result, pd.DataFrame) and result.empty:
                 # 空结果也尝试切换
                 return self._try_fallback(method_name, Exception("返回空数据"), **kwargs)
-            
+
             return result
-        
+
         except Exception as e:
             logger.warning(f"当前数据源 {self.current_source.name} 执行 {method_name} 失败: {str(e)}")
             return self._try_fallback(method_name, e, **kwargs)
@@ -415,6 +439,15 @@ class DataSourceManager:
         
         raise original_error
     
+    def _source_supports_request(self, source, method_name: str, kwargs: dict) -> bool:
+        """检查数据源是否支持当前请求（按周期过滤）"""
+        if method_name == 'get_kline':
+            cycle = kwargs.get('cycle')
+            if cycle and cycle not in source.supported_cycles:
+                logger.debug(f"跳过数据源 {source.name}，不支持周期 {cycle}")
+                return False
+        return True
+
     def _failover_fallback(self, method_name: str, original_error: Exception, **kwargs):
         """故障切换模式的降级处理"""
         # 按优先级尝试备用数据源
@@ -425,6 +458,10 @@ class DataSourceManager:
             source = src_info['source']
             # 优先选择健康的数据源
             if self.health_status.get(source.name) == DataSourceStatus.UNHEALTHY:
+                continue
+            
+            # 跳过不支持当前请求周期的数据源
+            if not self._source_supports_request(source, method_name, kwargs):
                 continue
             
             try:
@@ -443,6 +480,10 @@ class DataSourceManager:
         for i in range(1, num_sources):
             idx = (self.current_source_index + i) % num_sources
             source = self.sources[idx]['source']
+            
+            # 跳过不支持当前请求周期的数据源
+            if not self._source_supports_request(source, method_name, kwargs):
+                continue
             
             try:
                 if self._switch_to_source(source, idx, "轮询切换"):
@@ -463,6 +504,11 @@ class DataSourceManager:
         
         for idx, src_info in available:
             source = src_info['source']
+            
+            # 跳过不支持当前请求周期的数据源
+            if not self._source_supports_request(source, method_name, kwargs):
+                continue
+            
             try:
                 if self._switch_to_source(source, idx, "加权切换"):
                     method = getattr(source, method_name)

@@ -10,6 +10,7 @@ Baostock 数据源实现
 """
 import baostock as bs
 import pandas as pd
+import numpy as np
 import time
 import threading
 from datetime import datetime, timedelta
@@ -499,9 +500,11 @@ class BaostockDataSource(BaseDataSource):
                     raise RuntimeError("无法连接到Baostock")
                 self._wait_for_rate_limit()
                 
-                fields = "date,code,open,high,low,close,preclose,volume,amount"
+                # 日线/周线/月线支持 preclose；分钟线字段不含 preclose
                 if cycle in ['min5', 'min15', 'min30', 'min60']:
-                    fields = "date,time," + fields.replace("date,", "")
+                    fields = "date,time,code,open,high,low,close,volume,amount"
+                else:
+                    fields = "date,code,open,high,low,close,preclose,volume,amount"
                     
                 def do_request():
                     return bs.query_history_k_data_plus(
@@ -532,13 +535,15 @@ class BaostockDataSource(BaseDataSource):
                 else:
                     trade_dates = list(result['date'])
                     
+                # 分钟线无 preclose 字段，统一填充 NaN
+                pre_close = pd.to_numeric(result.get('preclose'), errors='coerce') if 'preclose' in result.columns else pd.Series([np.nan] * len(result))
                 result = pd.DataFrame({
                     'code': code, 'trade_date': trade_dates,
                     'open': pd.to_numeric(result['open'], errors='coerce'),
                     'high': pd.to_numeric(result['high'], errors='coerce'),
                     'low': pd.to_numeric(result['low'], errors='coerce'),
                     'close': pd.to_numeric(result['close'], errors='coerce'),
-                    'pre_close': pd.to_numeric(result['preclose'], errors='coerce'),
+                    'pre_close': pre_close,
                     'volume': pd.to_numeric(result['volume'], errors='coerce'),
                     'amount': pd.to_numeric(result['amount'], errors='coerce'),
                     'cycle': cycle

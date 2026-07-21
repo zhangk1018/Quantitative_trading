@@ -117,6 +117,19 @@ class PostgreSQLStorage(BaseStorage):
         self._conn_acquire_time = threading.local()
         self.engine = _Engine(self)
 
+    @property
+    def conn(self):
+        """兼容层属性：返回当前线程的连接。
+
+        为兼容使用 ``storage.conn.cursor()`` 的旧代码（如 BaseDataImporter），
+        若当前线程已持有连接则直接返回，否则从连接池获取一个新连接。
+        注意：通过该属性获取的连接不会自动归还，调用方需负责在 finally 中
+        调用 ``_return_conn()`` 或等待连接池超时回收。
+        """
+        if hasattr(self._thread_local, 'conn') and self._thread_local.conn:
+            return self._thread_local.conn
+        return self._get_conn()
+
     def __del__(self):
         # 仅警告，不自动关闭
         if hasattr(self._thread_local, 'conn') and self._thread_local.conn:

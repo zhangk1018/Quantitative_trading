@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quant.daily-job-runner.stage2</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/zhangk/workspace/Quantitative_trading/venv/bin/python</string>
+        <string>/Users/zhangk/workspace/Quantitative_trading/backend/cron/daily_job_runner.py</string>
+        <string>--stage</string>
+        <string>2</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/zhangk/workspace/Quantitative_trading</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Users/zhangk/workspace/Quantitative_trading/venv/bin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/zhangk/workspace/Quantitative_trading</string>
+        <key>APP_ENV</key>
+        <string>dev</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/zhangk/workspace/Quantitative_trading/logs/cron/daily_stage2.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/zhangk/workspace/Quantitative_trading/logs/cron/daily_stage2.stderr.log</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key><integer>1</integer>
+            <key>Hour</key><integer>17</integer>
+            <key>Minute</key><integer>45</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>2</integer>
+            <key>Hour</key><integer>17</integer>
+            <key>Minute</key><integer>45</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>3</integer>
+            <key>Hour</key><integer>17</integer>
+            <key>Minute</key><integer>45</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>4</integer>
+            <key>Hour</key><integer>17</integer>
+            <key>Minute</key><integer>45</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>5</integer>
+            <key>Hour</key><integer>17</integer>
+            <key>Minute</key><integer>45</integer>
+        </dict>
+    </array>
+
+    <key>ThrottleInterval</key>
+    <integer>0</integer>
+    <key>NumberOfRetries</key>
+    <integer>0</integer>
+</dict>
+</plist>

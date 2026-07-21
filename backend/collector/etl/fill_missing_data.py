@@ -16,6 +16,7 @@ python scripts/fill_missing_data.py --market kcb --dry-run           # 试运行
 """
 import sys
 import os
+import json
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, backend_dir)
 
@@ -27,9 +28,11 @@ from typing import List, Optional
 from psycopg2.extras import execute_values
 
 from collector.datasource.baostock import BaostockDataSource
+from collector.datasource.tushare import TushareDataSource
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
 from utils.logger import setup_logger
+from utils.stock_code_utils import normalize_code, filter_out_bse
 
 logger = setup_logger('data_filler')
 
@@ -235,6 +238,173 @@ def import_stock_via_baostock(storage: PostgreSQLStorage, ds: BaostockDataSource
         return 0
 
 
+def import_missing_via_tushare_batch(storage: PostgreSQLStorage, codes: List[str],
+                                     trade_date: str) -> dict:
+    """
+    使用 Tushare 批量接口补全指定日期缺失的股票数据（不复权 → 前复权）
+
+    Args:
+        storage: PostgreSQL 存储实例
+        codes: 需要补全的 6 位股票代码列表
+        trade_date: 目标交易日 YYYY-MM-DD
+
+    Returns:
+        dict: {'success': int, 'fail': int, 'rows_affected': int}
+    """
+    result = {'success': 0, 'fail': 0, 'rows_affected': 0}
+    if not codes:
+        return result
+
+    ds = TushareDataSource()
+    if not ds.connect():
+        logger.error("Tushare Pro 连接失败，无法补全缺失数据")
+        return result
+
+    try:
+        logger.info(f"🚀 使用 Tushare 批量接口补全 {trade_date} 的 {len(codes)} 只缺失股票")
+        df = ds.batch_get_daily(trade_date)
+        if df is None or df.empty:
+            logger.warning(f"⚠️ Tushare 未返回 {trade_date} 数据")
+            return result
+
+        # 字段标准化
+        rename_map = {'ts_code': 'code', 'vol': 'volume'}
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+        df['code'] = df['code'].apply(lambda x: normalize_code(x) or x)
+        df['trade_date'] = df['trade_date'].str.replace(r'(\d{4})(\d{2})(\d{2})', r'\1-\2-\3', regex=True)
+
+        # 过滤只保留目标缺失股票
+        target_codes = set(codes)
+        df = df[df['code'].isin(target_codes)].copy()
+        if df.empty:
+            logger.warning("⚠️ Tushare 返回数据中不包含目标缺失股票")
+            return result
+
+        # 过滤北交所并清洗
+        df, _ = filter_out_bse(df)
+
+        # 数值转换
+        numeric_cols = ['open', 'high', 'low', 'close', 'pre_close', 'amount']
+        df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce') * 100
+
+        # 过滤无效数据
+        price_cols = ['open', 'high', 'low', 'close']
+        mask = (df[price_cols] > 0).all(axis=1) & df['volume'].notna() & (df['volume'] > 0)
+        df = df[mask].copy()
+        if df.empty:
+            logger.warning("⚠️ 数据清洗后为空")
+            return result
+
+        # 前复权转换
+        df = _apply_qfq_for_tushare_batch(storage, df, trade_date)
+        if df is None or df.empty:
+            logger.warning("⚠️ 复权转换后数据为空")
+            return result
+
+        df['cycle'] = '1d'
+        df['adjust_type'] = 'qfq'
+        df['trade_datetime'] = pd.to_datetime(df['trade_date']) + pd.Timedelta(hours=15)
+        df['volume'] = df['volume'].round().astype('Int64')
+
+        inserted = _safe_import_quotes(storage, df, 'TUSHARE_BATCH')
+        result['rows_affected'] = inserted
+        result['success'] = inserted > 0
+        logger.info(f"✅ Tushare 批量补全完成：插入 {inserted} 条记录")
+        return result
+    finally:
+        ds.disconnect()
+
+
+def _import_single_via_tushare(storage: PostgreSQLStorage, code: str,
+                               start_date: str, end_date: str) -> int:
+    """
+    使用 Tushare 单只接口补全数据（不复权 → 前复权）
+    """
+    ds = TushareDataSource()
+    if not ds.connect():
+        logger.error("Tushare Pro 连接失败")
+        return 0
+    try:
+        df = ds.get_kline(code=code, cycle='daily', start_date=start_date, end_date=end_date)
+        if df is None or df.empty:
+            return 0
+
+        # 字段标准化
+        rename_map = {'ts_code': 'code', 'vol': 'volume'}
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+        if 'code' not in df.columns:
+            df['code'] = code
+        df['code'] = df['code'].apply(lambda x: normalize_code(x) or x)
+        if 'trade_date' in df.columns:
+            df['trade_date'] = df['trade_date'].str.replace(r'(\d{4})(\d{2})(\d{2})', r'\1-\2-\3', regex=True)
+
+        # 数值转换
+        numeric_cols = ['open', 'high', 'low', 'close', 'amount']
+        if 'pre_close' in df.columns:
+            numeric_cols.append('pre_close')
+        df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce') * 100
+
+        # 过滤无效数据
+        price_cols = ['open', 'high', 'low', 'close']
+        mask = (df[price_cols] > 0).all(axis=1) & df['volume'].notna() & (df['volume'] > 0)
+        df = df[mask].copy()
+        if df.empty:
+            return 0
+
+        # 前复权转换：逐日处理
+        df = _apply_qfq_for_tushare_batch(storage, df, df['trade_date'].iloc[-1])
+        if df is None or df.empty:
+            return 0
+
+        df['cycle'] = '1d'
+        df['adjust_type'] = 'qfq'
+        df['trade_datetime'] = pd.to_datetime(df['trade_date']) + pd.Timedelta(hours=15)
+        df['volume'] = df['volume'].round().astype('Int64')
+
+        return _safe_import_quotes(storage, df, code)
+    finally:
+        ds.disconnect()
+
+
+def _apply_qfq_for_tushare_batch(storage: PostgreSQLStorage, df: pd.DataFrame,
+                                 trade_date: str) -> pd.DataFrame:
+    """
+    对 Tushare 批量数据执行前复权转换（复用 stock_adj_factor 表）
+    """
+    codes = df['code'].unique().tolist()
+    with storage.transaction() as conn:
+        with conn.cursor() as cur:
+            placeholders = ','.join(['%s'] * len(codes))
+            cur.execute(f"""
+                SELECT code, adj_factor FROM stock_adj_factor
+                WHERE code IN ({placeholders}) AND trade_date = %s
+            """, codes + [trade_date])
+            date_adj = {row[0]: float(row[1]) for row in cur.fetchall()}
+
+            cur.execute(f"""
+                SELECT DISTINCT ON (code) code, adj_factor
+                FROM stock_adj_factor
+                WHERE code IN ({placeholders})
+                ORDER BY code, trade_date DESC
+            """, codes)
+            latest_adj = {row[0]: float(row[1]) for row in cur.fetchall()}
+
+    df['adj_factor_date'] = df['code'].map(date_adj).fillna(1.0)
+    df['adj_factor_latest'] = df['code'].map(latest_adj).fillna(1.0)
+    ratio = df['adj_factor_date'] / df['adj_factor_latest'].replace(0, 1.0)
+
+    price_cols = ['open', 'high', 'low', 'close']
+    if 'pre_close' in df.columns:
+        price_cols.append('pre_close')
+    for col in price_cols:
+        if col in df.columns:
+            df[col] = (df[col].astype(float) * ratio).round(2)
+
+    return df.drop(columns=['adj_factor_date', 'adj_factor_latest'], errors='ignore')
+
+
 def _safe_import_quotes(storage: PostgreSQLStorage, df: pd.DataFrame, code: str) -> int:
     """
     安全导入行情数据，使用 execute_values 批量插入，避免重复键冲突
@@ -294,32 +464,42 @@ def main():
                         help='从第几只开始（断点续传，跳过前 N 只）')
     parser.add_argument('--limit', type=int, default=0, 
                         help='限制补全数量')
-    parser.add_argument('--dry-run', action='store_true', 
+    parser.add_argument('--dry-run', action='store_true',
                         help='试运行模式：仅打印需补全的股票，不实际导入')
+    parser.add_argument('--use-tushare', action='store_true',
+                        help='使用 Tushare 批量接口补全（Baostock 不可用时降级）')
     args = parser.parse_args()
 
-    # 连接数据库
-    db_config = config.get('database', {})
-    storage = PostgreSQLStorage({
-        'host': db_config.get('host', 'localhost'),
-        'port': db_config.get('port', 5432),
-        'database': db_config.get('database', 'quant_trading'),
-        'username': db_config.get('username', 'quant_user'),
-        'password': db_config.get('password', ''),
-    })
+    # 连接数据库：优先从配置读取，缺失时从环境变量构建
+    db_config = config.get('storage.postgresql')
+    if not db_config:
+        db_config = {
+            'host': os.getenv('PG_HOST', 'localhost'),
+            'port': int(os.getenv('PG_PORT', 5432)),
+            'database': os.getenv('PG_DATABASE', 'quant_trading'),
+            'username': os.getenv('PG_USER', 'quant_user'),
+            'password': os.getenv('PG_PASSWORD', ''),
+        }
+    storage = PostgreSQLStorage(db_config)
     storage.connect()
 
     try:
         if args.code:
             # 单只股票补全
             logger.info(f"补全单只股票: {args.code}")
-            ds = BaostockDataSource()
-            ds.connect()
-            try:
-                count = import_stock_via_baostock(storage, ds, args.code)
-                logger.info(f"  {args.code}: 导入 {count} 条记录")
-            finally:
-                ds.disconnect()
+            if args.use_tushare:
+                count = _import_single_via_tushare(storage, args.code,
+                                                   args.start_date or '2020-01-01',
+                                                   args.end_date or datetime.now().strftime('%Y-%m-%d'))
+            else:
+                ds = BaostockDataSource()
+                ds.connect()
+                try:
+                    count = import_stock_via_baostock(storage, ds, args.code)
+                finally:
+                    ds.disconnect()
+            logger.info(f"  {args.code}: 导入 {count} 条记录")
+            print(f'TASK_RESULT:{json.dumps({"rows_affected": count, "extra_metrics": {"code": args.code}})}')
         else:
             # 批量补全
             codes = get_missing_stocks(
@@ -333,6 +513,7 @@ def main():
             total = len(codes)
             if total == 0:
                 logger.info("没有需要补全的股票 ✅")
+                print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": {"total": 0, "success": 0, "fail": 0}})}')
                 return
 
             # 断点续传与限制
@@ -352,23 +533,37 @@ def main():
                 logger.info(f"共计 {len(codes)} 只股票。取消 --dry-run 参数以执行实际导入。")
                 return
 
+            if args.use_tushare:
+                # Tushare 批量接口补全（适合单日缺失场景）
+                trade_date = args.end_date or args.start_date
+                if not trade_date:
+                    logger.error("❌ 使用 --use-tushare 时必须指定 --start-date 或 --end-date")
+                    print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": {"error": "missing trade_date"}})}')
+                    return
+                result = import_missing_via_tushare_batch(storage, codes, trade_date)
+                total_records = result['rows_affected']
+                success = result['success']
+                fail = len(codes) - success
+                print(f'TASK_RESULT:{json.dumps({"rows_affected": total_records, "extra_metrics": {"total": len(codes), "success": success, "fail": fail}})}')
+                return
+
             # 全局复用 Baostock 连接
             ds = BaostockDataSource()
             ds.connect()
-            
+
             success = 0
             fail = 0
             total_records = 0
-            
+
             try:
                 for i, code in enumerate(codes):
                     logger.info(f"  [{start_idx+i+1}/{total}] 补全 {code}...")
-                    
+
                     imp_start = args.start_date or '2000-01-01'
                     imp_end = args.end_date or datetime.now().strftime('%Y-%m-%d')
-                    
-                    count = import_stock_via_baostock(storage, ds, code, 
-                                                      start_date=imp_start, 
+
+                    count = import_stock_via_baostock(storage, ds, code,
+                                                      start_date=imp_start,
                                                       end_date=imp_end)
                     if count > 0:
                         success += 1
@@ -379,7 +574,7 @@ def main():
 
                     if (i + 1) % 50 == 0:
                         logger.info(f"  进度: {i+1}/{len(codes)}, 成功 {success}, 失败 {fail}, 记录 {total_records}")
-                        
+
                     # 简单限流，防止 Baostock 封禁
                     if i % 10 == 9:
                         time.sleep(0.5)
@@ -393,6 +588,7 @@ def main():
             logger.info(f"  失败: {fail} 只")
             logger.info(f"  记录: {total_records} 条")
             logger.info("=" * 60)
+            print(f'TASK_RESULT:{json.dumps({"rows_affected": total_records, "extra_metrics": {"total": len(codes), "success": success, "fail": fail}})}')
             
     finally:
         storage.disconnect()

@@ -43,7 +43,7 @@ class DailyDataImporter(BaseDataImporter):
     # ========== 类常量集中管理 ==========
     CYCLE = '1d'
     ADJUST_TYPE = 'qfq'
-    MIN_COMPLETENESS_THRESHOLD = 0.80        # 完整度阈值
+    MIN_COMPLETENESS_THRESHOLD = 0.90        # 完整度阈值（<90% 触发清理重跑并告警）
     FULL_HISTORY_START = "1990-01-01"        # A股最早数据
     DEFAULT_START_DATE = "2015-01-01"        # 默认全量导入起始日期（兼容免费数据源长度限制）
     FALLBACK_LOOKBACK_DAYS = 30              # fallback 回溯天数
@@ -172,6 +172,7 @@ class DailyDataImporter(BaseDataImporter):
         import time
 
         last_exception = None
+        err_msg = ""
         for attempt in range(1, max_retries + 1):
             try:
                 df = source.get_kline(
@@ -811,16 +812,22 @@ class DailyDataImporter(BaseDataImporter):
                                   f"全量导入完成: 成功 {success_count}, 失败 {fail_count}, "
                                   f"跳过 {skip_count}, 总记录 {total_records}")
 
-    def incremental_import(self, parallel: bool = True):
+    def incremental_import(self, parallel: bool = True) -> dict:
         """增量导入（带完整度熔断机制）
 
         优先使用 Tushare 批量接口（速度快），自动转换为前复权后存储。
         批量失败时回退到 DataSourceManager 单线程逐个导入（Baostock→Tushare→pytdx）。
+
+        Returns:
+            dict: 包含 rows_affected / extra_metrics 的运行统计
         """
         codes = self.get_stock_list()
         codes = [c for c in codes if not (c.startswith('8') or c.startswith('920'))]
 
         today = datetime.now().strftime('%Y-%m-%d')
+        stats = {"mode": "parallel" if parallel else "single", "rows_affected": 0,
+                 "batch_days": 0, "fallback_success": 0, "fallback_fail": 0,
+                 "fallback_records": 0, "cleaned": 0}
 
         if parallel:
             logger.info("🚀 使用 Tushare 批量接口增量导入（不复权→自动转换前复权）")
@@ -838,13 +845,15 @@ class DailyDataImporter(BaseDataImporter):
 
                 if check_result['is_complete']:
                     logger.info("✅ 数据已是最新且完整，无需增量导入")
-                    return
+                    print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": stats})}')
+                    return stats
                 else:
                     logger.warning(f"⚠️ 数据完整度仅 {check_result['completeness']:.1%}，"
                                  f"低于阈值 {self.MIN_COMPLETENESS_THRESHOLD:.0%}")
                     logger.warning(f"⚠️ 疑似上次拉取中断，自动清理 {check_date} 的残缺数据...")
 
                     deleted_count = self._cleanup_incomplete_data(check_date)
+                    stats["cleaned"] = deleted_count
                     logger.warning(f"🗑️ 已清理 {deleted_count} 条残缺数据，强制重新拉取...")
 
                     latest_date = self._get_latest_trade_date()
@@ -863,6 +872,8 @@ class DailyDataImporter(BaseDataImporter):
                     success, fail = self.import_by_trade_date(next_date)
                     if success > 0:
                         batch_success = True
+                        stats["rows_affected"] += success
+                        stats["batch_days"] += 1
                         logger.info(f"✅ {next_date} 导入 {success} 条")
                     else:
                         logger.info(f"⏭️  {next_date} 无数据（非交易日或已收盘）")
@@ -873,16 +884,29 @@ class DailyDataImporter(BaseDataImporter):
                 success, fail = self.import_by_trade_date(today)
                 if success > 0:
                     batch_success = True
+                    stats["rows_affected"] += success
+                    stats["batch_days"] += 1
 
             if not batch_success:
                 logger.warning("⚠️  Tushare 批量接口未获取到数据，"
                              f"回退到单线程逐个导入 (Baostock→Tushare→pytdx, 最近 {self.FALLBACK_LOOKBACK_DAYS} 天)")
                 fallback_start = (datetime.now() -
                                  timedelta(days=self.FALLBACK_LOOKBACK_DAYS)).strftime('%Y-%m-%d')
-                self._single_thread_incremental(codes, today, min_start_date=fallback_start)
+                sc, fc, tr = self._single_thread_incremental(codes, today, min_start_date=fallback_start)
+                stats["fallback_success"] = sc
+                stats["fallback_fail"] = fc
+                stats["fallback_records"] = tr
+                stats["rows_affected"] += tr
         else:
             logger.info("📦 使用单线程增量导入模式")
-            self._single_thread_incremental(codes, today)
+            sc, fc, tr = self._single_thread_incremental(codes, today)
+            stats["fallback_success"] = sc
+            stats["fallback_fail"] = fc
+            stats["fallback_records"] = tr
+            stats["rows_affected"] += tr
+
+        print(f'TASK_RESULT:{json.dumps({"rows_affected": stats["rows_affected"], "extra_metrics": stats})}')
+        return stats
 
     def _get_latest_trade_date(self) -> Optional[str]:
         """查询 stock_quotes 表中最新交易日"""
@@ -904,8 +928,8 @@ class DailyDataImporter(BaseDataImporter):
         return dt.strftime('%Y-%m-%d')
 
     def _single_thread_incremental(self, codes: List[str], today: str,
-                                    min_start_date: Optional[str] = None):
-        """单线程增量导入（备用）"""
+                                    min_start_date: Optional[str] = None) -> Tuple[int, int, int]:
+        """单线程增量导入（备用），返回 (success_count, fail_count, total_records)"""
         total_stocks = len(codes)
         success_count = 0
         fail_count = 0
@@ -963,6 +987,7 @@ class DailyDataImporter(BaseDataImporter):
                                   f"增量导入完成: 成功 {success_count}, 失败 {fail_count}, "
                                   f"总记录 {total_records}")
         logger.info(f"增量导入完成: 成功 {success_count}, 失败 {fail_count}, 总记录 {total_records}")
+        return success_count, fail_count, total_records
 
 
 def main():

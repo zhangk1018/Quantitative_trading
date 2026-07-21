@@ -212,6 +212,16 @@ export function validateFormula(formula: string, _syntax: IndicatorSyntax): Form
   const importErrors = checkImports(formula);
   errors.push(...importErrors);
 
+  // === 新增：calculate 函数存在性与签名校验 ===
+  const signatureCheck = checkCalculateSignature(formula);
+  errors.push(...signatureCheck.errors);
+  warnings.push(...signatureCheck.warnings);
+
+  // === 新增：常见错误模式检测 ===
+  const patternCheck = checkCommonMistakes(formula);
+  errors.push(...patternCheck.errors);
+  warnings.push(...patternCheck.warnings);
+
   return { valid: errors.length === 0, errors, warnings };
 }
 
@@ -339,4 +349,140 @@ export interface IndicatorExportFile {
   exportedAt: string;
   userId: string;
   indicators: CustomIndicator[];
+}
+
+// =====================================================================
+// 12. calculate 函数签名校验（V1.1 新增）
+// =====================================================================
+
+/**
+ * 校验 calculate 函数的存在性和参数签名
+ *
+ * 系统约定：
+ * - 必须定义 def calculate(open_prices, high_prices, low_prices, close_prices, volumes):
+ * - 5 个参数分别对应 开盘价、最高价、最低价、收盘价、成交量（均为一维数组）
+ * - 返回值：单值（int/float）或 一维数组（长度与输入一致）
+ */
+function checkCalculateSignature(formula: string): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // 匹配 def calculate(...) 的函数定义
+  const calcRegex = /def\s+calculate\s*\(([^)]*)\)/;
+  const match = formula.match(calcRegex);
+
+  if (!match) {
+    errors.push('未找到 calculate 函数定义，必须定义 def calculate(open_prices, high_prices, low_prices, close_prices, volumes):');
+    return { errors, warnings };
+  }
+
+  const paramsStr = match[1].trim();
+  if (!paramsStr) {
+    errors.push('calculate 函数缺少参数，必须包含 5 个参数：open_prices, high_prices, low_prices, close_prices, volumes');
+    return { errors, warnings };
+  }
+
+  // 拆分参数（去除默认值）
+  const params = paramsStr
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+    .map((p) => p.split('=')[0].trim().split(':')[0].trim());
+
+  if (params.length !== 5) {
+    errors.push(
+      `calculate 函数参数数量不正确：期望 5 个（open_prices, high_prices, low_prices, close_prices, volumes），实际 ${params.length} 个（${params.join(', ')}）`,
+    );
+  }
+
+  // 警告：参数名不规范（不强制，但给出提示）
+  const expectedNames = ['open_prices', 'high_prices', 'low_prices', 'close_prices', 'volumes'];
+  const lowerParams = params.map((p) => p.toLowerCase());
+  const hasOpen = lowerParams.some((p) => p.includes('open'));
+  const hasHigh = lowerParams.some((p) => p.includes('high'));
+  const hasLow = lowerParams.some((p) => p.includes('low'));
+  const hasClose = lowerParams.some((p) => p.includes('close'));
+  const hasVol = lowerParams.some((p) => p.includes('vol'));
+
+  if (!(hasOpen && hasHigh && hasLow && hasClose && hasVol)) {
+    warnings.push(
+      '建议 calculate 函数参数命名包含 open/high/low/close/volume 关键词，顺序为：开盘价, 最高价, 最低价, 收盘价, 成交量',
+    );
+  }
+
+  return { errors, warnings };
+}
+
+// =====================================================================
+// 13. 常见错误模式检测（V1.1 新增）
+// =====================================================================
+
+/**
+ * 检测用户自编指标中的常见错误模式
+ *
+ * 主要检测：
+ * 1. 二维数组使用模式（用户误以为输入是多只股票二维数组）
+ * 2. 引用 stock_idx 等不存在的变量
+ * 3. 其他常见陷阱
+ */
+function checkCommonMistakes(formula: string): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // 模式 1：检测二维数组使用方式（用户误以为输入是二维的）
+  // 例如：close[i], close[stock_idx], range(len(close)), for i in range(len(close))
+  const twoDimPatterns = [
+    {
+      pattern: /\bclose\s*\[\s*(i|stock_idx|idx|index)\s*\]/,
+      desc: 'close[i] / close[stock_idx] 二维数组索引',
+    },
+    {
+      pattern: /\bopen\s*\[\s*(i|stock_idx|idx|index)\s*\]/,
+      desc: 'open[i] / open[stock_idx] 二维数组索引',
+    },
+    {
+      pattern: /\bhigh\s*\[\s*(i|stock_idx|idx|index)\s*\]/,
+      desc: 'high[i] / high[stock_idx] 二维数组索引',
+    },
+    {
+      pattern: /\blow\s*\[\s*(i|stock_idx|idx|index)\s*\]/,
+      desc: 'low[i] / low[stock_idx] 二维数组索引',
+    },
+    {
+      pattern: /\bvolume(s)?\s*\[\s*(i|stock_idx|idx|index)\s*\]/,
+      desc: 'volume[i] / volumes[stock_idx] 二维数组索引',
+    },
+    {
+      pattern: /for\s+i\s+in\s+range\s*\(\s*len\s*\(\s*(close|open|high|low|volume(s)?)\s*\)\s*\)/,
+      desc: 'for i in range(len(close)) 多只股票循环模式',
+    },
+  ];
+
+  for (const pat of twoDimPatterns) {
+    if (pat.pattern.test(formula)) {
+      warnings.push(
+        `检测到疑似二维数组用法：${pat.desc}。注意：calculate 函数的输入是单只股票的一维数组，直接使用 close（整个数组）即可，不需要 close[i] 或外层循环。`,
+      );
+      break; // 同类警告只报一个
+    }
+  }
+
+  // 模式 2：引用 stock_idx（旧版文档中用过，现已经废弃）
+  if (/\bstock_idx\b/.test(formula)) {
+    warnings.push(
+      '检测到 stock_idx 变量。当前版本 calculate 函数只处理单只股票，不存在 stock_idx 变量，请直接使用输入数组。',
+    );
+  }
+
+  // 模式 3：返回 result 列表（用户以为要返回多只股票的结果数组）
+  if (/result\s*\.\s*append\s*\(/.test(formula) && /return\s+result\s*$/.test(formula)) {
+    warnings.push(
+      '检测到 result.append() + return result 模式。如果返回的是单只股票的每日序列（数组），这是正确的；如果是多只股票的汇总结果，则是错误的。请确认返回值含义。',
+    );
+  }
+
+  // 模式 4：使用 print 但没有 import sys stdout flush（Pyodide 中 print 可能不实时显示）
+  // 这只是提示，不报错
+
+  return { errors, warnings };
 }

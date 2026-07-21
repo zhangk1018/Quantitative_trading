@@ -105,24 +105,24 @@ interface FieldCandidate {
 
 /**
  * Python 自编指标可插入的代码片段
- * 数据字段：close/high/low/open/volume 均为 list[list[float]]（股票×天数）
+ * 数据字段：close/high/low/open/volume 均为 list[float]（单只股票的日序列，一维数组）
  */
 const PYTHON_HELPERS: FieldCandidate[] = [
   // 行情数据
-  { key: 'close', label: 'close[si] 收盘价', insertText: 'close[stock_idx]', group: 'data' },
-  { key: 'high', label: 'high[si] 最高价', insertText: 'high[stock_idx]', group: 'data' },
-  { key: 'low', label: 'low[si] 最低价', insertText: 'low[stock_idx]', group: 'data' },
-  { key: 'open', label: 'open[si] 开盘价', insertText: 'open[stock_idx]', group: 'data' },
-  { key: 'volume', label: 'volume[si] 成交量', insertText: 'volume[stock_idx]', group: 'data' },
+  { key: 'close', label: 'close 收盘价数组', insertText: 'close_prices', group: 'data' },
+  { key: 'high', label: 'high 最高价数组', insertText: 'high_prices', group: 'data' },
+  { key: 'low', label: 'low 最低价数组', insertText: 'low_prices', group: 'data' },
+  { key: 'open', label: 'open 开盘价数组', insertText: 'open_prices', group: 'data' },
+  { key: 'volume', label: 'volume 成交量数组', insertText: 'volumes', group: 'data' },
   // numpy 函数
-  { key: 'np_array', label: 'np.array()', insertText: 'np.array(close[stock_idx])', group: 'numpy' },
+  { key: 'np_array', label: 'np.array()', insertText: 'np.array(close_prices, dtype=float)', group: 'numpy' },
   { key: 'np_mean', label: 'np.mean()', insertText: 'np.mean(', group: 'numpy' },
   { key: 'np_max', label: 'np.max()', insertText: 'np.max(', group: 'numpy' },
   { key: 'np_min', label: 'np.min()', insertText: 'np.min(', group: 'numpy' },
   { key: 'np_std', label: 'np.std()', insertText: 'np.std(', group: 'numpy' },
   { key: 'np_convolve', label: 'np.convolve()', insertText: 'np.convolve(', group: 'numpy' },
   // 常用模式
-  { key: 'for_loop', label: 'for 循环', insertText: 'for i in range(n):', group: 'pattern' },
+  { key: 'for_loop', label: 'for 循环(天)', insertText: 'for i in range(len(c)):', group: 'pattern' },
   { key: 'range_len', label: 'range(len())', insertText: 'range(len(c))', group: 'pattern' },
   { key: 'tolist', label: '.tolist()', insertText: '.tolist()', group: 'pattern' },
   { key: 'none_pad', label: '[None] * n', insertText: '[None] * n', group: 'pattern' },
@@ -154,6 +154,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
   const [formState, setFormState] = useState<FormState>(() => buildFromEditing(editing));
   const [nameError, setNameError] = useState<string | null>(null);
   const [formulaError, setFormulaError] = useState<string | null>(null);
+  const [formulaWarnings, setFormulaWarnings] = useState<string[]>([]);
 
   // Monaco editor 实例引用
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
@@ -163,6 +164,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
     setFormState(buildFromEditing(editing));
     setNameError(null);
     setFormulaError(null);
+    setFormulaWarnings([]);
   }, [editing]);
 
   const currentOperatorMode = getOperatorMode(formState.operator);
@@ -198,21 +200,26 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
    * - 非空校验
    * - 长度限制（≤ 8000 字符）
    * - 危险关键字检测（import/exec/eval 等）
+   * - calculate 函数签名校验
+   * - 常见错误模式检测
    */
   const handleFormulaBlur = () => {
     const v = formState.formula;
     if (!v || !v.trim()) {
       setFormulaError(null); // 空值不报错（让"必填"在提交时检查）
+      setFormulaWarnings([]);
       return;
     }
     const result = validateFormula(v, formState.syntax);
     if (!result.valid) {
       setFormulaError(result.errors[0] || '公式无效');
+      setFormulaWarnings([]);
     } else if (result.warnings.length > 0) {
       setFormulaError(null);
-      message.warning(result.warnings[0]);
+      setFormulaWarnings(result.warnings);
     } else {
       setFormulaError(null);
+      setFormulaWarnings([]);
     }
   };
 
@@ -322,8 +329,10 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
     const formulaResult = validateFormula(formState.formula, formState.syntax);
     if (!formulaResult.valid) {
       setFormulaError(formulaResult.errors[0] || '公式无效');
+      setFormulaWarnings([]);
       return;
     }
+    setFormulaWarnings(formulaResult.warnings);
     for (let i = 0; i < formState.params.length; i++) {
       const pn = validateParamName(formState.params[i].name);
       if (pn) {
@@ -434,7 +443,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
             <span className="flex items-center justify-between w-full">
               <span>
                 指标公式{' '}
-                <Tooltip title="Python 脚本，定义 calculate(close, high, low, open, volume) 函数，返回 list[float]">
+                <Tooltip title="Python 脚本，定义 calculate(open_prices, high_prices, low_prices, close_prices, volumes) 函数，输入为单只股票的一维数组，返回单值或等长数组">
                   <QuestionCircleOutlined className="text-text-secondary" />
                 </Tooltip>
               </span>
@@ -444,8 +453,16 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
             </span>
           }
           required
-          validateStatus={formulaError ? 'error' : ''}
-          help={formulaError || 'OnBlur 时校验（输入过程中不打扰）'}
+          validateStatus={formulaError ? 'error' : formulaWarnings.length > 0 ? 'warning' : ''}
+          help={
+            formulaError
+              ? formulaError
+              : formulaWarnings.length > 0
+                ? formulaWarnings.map((w, i) => (
+                    <div key={i} className="text-warning">⚠ {w}</div>
+                  ))
+                : 'OnBlur 时校验（输入过程中不打扰）'
+          }
         >
           {/* Monaco Editor（懒加载，Drawer 打开时才下载） */}
           <div
@@ -459,6 +476,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
               onChange={(v) => {
                 updateField('formula', v ?? '');
                 if (formulaError) setFormulaError(null);
+                if (formulaWarnings.length > 0) setFormulaWarnings([]);
               }}
               onMount={handleEditorMount}
               options={{

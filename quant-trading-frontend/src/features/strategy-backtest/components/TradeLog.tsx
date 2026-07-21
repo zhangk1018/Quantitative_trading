@@ -1,13 +1,27 @@
 // src/features/strategy-backtest/components/TradeLog.tsx
-// 交易日志表 — 含 7 色卖出原因 Tag
+// 交易日志表 — 含卖出原因过滤 + CSV 导出
 
-import React from 'react';
-import { Table, Tag } from 'antd';
+import React, { useState, useMemo, useCallback } from 'react';
+import { Table, Tag, Button, Checkbox, Space, Input } from 'antd';
+import { DownloadOutlined, SearchOutlined } from '@ant-design/icons';
 import type { Trade, SellReason } from '../types';
+import { exportToCsv } from '../../stock-picker/utils/screener';
 
 interface TradeLogProps {
   trades: Trade[];
 }
+
+const ALL_SELL_REASONS: SellReason[] = [
+  'rebalance',
+  'stop_loss',
+  'take_profit',
+  'timeout',
+  'portfolio_risk',
+  'delisted',
+  'end',
+  'trailing_stop',
+  'ma_cross',
+];
 
 const sellReasonColors: Record<SellReason, string> = {
   rebalance: 'blue',
@@ -34,6 +48,84 @@ const sellReasonLabels: Record<SellReason, string> = {
 };
 
 const TradeLog: React.FC<TradeLogProps> = ({ trades }) => {
+  const [selectedReasons, setSelectedReasons] = useState<SellReason[]>([]);
+  const [searchText, setSearchText] = useState('');
+
+  // 根据选中的卖出原因过滤交易记录
+  const filteredTrades = useMemo(() => {
+    let result = trades;
+    if (selectedReasons.length > 0) {
+      result = result.filter((t) => selectedReasons.includes(t.sellReason));
+    }
+    if (searchText.trim()) {
+      const keyword = searchText.trim().toLowerCase();
+      result = result.filter(
+        (t) =>
+          t.code.toLowerCase().includes(keyword) ||
+          t.name.toLowerCase().includes(keyword),
+      );
+    }
+    return result;
+  }, [trades, selectedReasons, searchText]);
+
+  // 切换卖出原因筛选
+  const toggleReason = useCallback((reason: SellReason) => {
+    setSelectedReasons((prev) =>
+      prev.includes(reason)
+        ? prev.filter((r) => r !== reason)
+        : [...prev, reason],
+    );
+  }, []);
+
+  // 全选/取消全选
+  const toggleAll = useCallback(() => {
+    setSelectedReasons((prev) =>
+      prev.length === ALL_SELL_REASONS.length ? [] : [...ALL_SELL_REASONS],
+    );
+  }, []);
+
+  // 导出 CSV
+  const handleExport = useCallback(() => {
+    if (filteredTrades.length === 0) {
+      return;
+    }
+    exportToCsv(filteredTrades, {
+      headers: ['股票', '代码', '建仓日', '平仓日', '持有天数', '盈亏金额', '盈亏比例', '卖出原因'],
+      fields: ['name', 'code', 'entryDate', 'exitDate', 'holdDays', 'pnl', 'pnlPct', 'sellReason'],
+      filename: `trade-log-${new Date().toISOString().slice(0, 10)}.csv`,
+    });
+  }, [filteredTrades]);
+
+  // 自定义过滤下拉
+  const filterDropdown = useCallback(
+    () => (
+      <div className="p-2" style={{ minWidth: 160 }}>
+        <div className="border-b border-border-color pb-1 mb-1">
+          <Checkbox
+            checked={selectedReasons.length === ALL_SELL_REASONS.length}
+            indeterminate={selectedReasons.length > 0 && selectedReasons.length < ALL_SELL_REASONS.length}
+            onChange={toggleAll}
+          >
+            全选
+          </Checkbox>
+        </div>
+        {ALL_SELL_REASONS.map((reason) => (
+          <div key={reason} className="py-0.5">
+            <Checkbox
+              checked={selectedReasons.includes(reason)}
+              onChange={() => toggleReason(reason)}
+            >
+              <Tag color={sellReasonColors[reason]} style={{ margin: 0 }}>
+                {sellReasonLabels[reason]}
+              </Tag>
+            </Checkbox>
+          </div>
+        ))}
+      </div>
+    ),
+    [selectedReasons, toggleReason, toggleAll],
+  );
+
   if (trades.length === 0) {
     return (
       <div className="text-text-disabled text-sm text-center py-4">
@@ -86,21 +178,47 @@ const TradeLog: React.FC<TradeLogProps> = ({ trades }) => {
       render: (reason: SellReason) => (
         <Tag color={sellReasonColors[reason]}>{sellReasonLabels[reason]}</Tag>
       ),
-      filters: Object.entries(sellReasonLabels).map(([value, text]) => ({ text, value })),
-      onFilter: (value: unknown, record: Trade) => record.sellReason === value,
+      filterDropdown,
+      filteredValue: selectedReasons,
     },
   ];
 
   return (
-    <Table
-      dataSource={trades}
-      columns={columns}
-      rowKey="code"
-      size="small"
-      pagination={{ pageSize: 50, showSizeChanger: false }}
-      scroll={{ y: 400 }}
-      data-testid="trade-log-table"
-    />
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Input
+            size="small"
+            placeholder="搜索股票/代码"
+            prefix={<SearchOutlined />}
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            style={{ width: 180 }}
+            allowClear
+          />
+          <span className="text-text-tertiary text-xs">
+            共 {filteredTrades.length} 笔
+          </span>
+        </div>
+        <Button
+          size="small"
+          icon={<DownloadOutlined />}
+          onClick={handleExport}
+          disabled={filteredTrades.length === 0}
+        >
+          导出 CSV
+        </Button>
+      </div>
+      <Table
+        dataSource={filteredTrades}
+        columns={columns}
+        rowKey="code"
+        size="small"
+        pagination={{ pageSize: 50, showSizeChanger: false }}
+        scroll={{ y: 400 }}
+        data-testid="trade-log-table"
+      />
+    </div>
   );
 };
 

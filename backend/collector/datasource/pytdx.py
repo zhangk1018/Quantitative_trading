@@ -154,8 +154,8 @@ class PytdxDataSource(BaseDataSource):
         """
         解析代码并推断市场。返回 (code_only, market)。
 
-        安全策略：对于无后缀的纯数字代码，拒绝推断市场，
-        强制调用方显式声明 .SH 或 .SZ，避免 000001 等代码的指数/股票歧义。
+        支持显式后缀（.SZ/.SH）或无后缀的 6 位股票代码自动推断。
+        北交所/新三板（8/9/43/83/87 开头）不在推断范围内，需调用方显式处理。
         """
         if "." in code:
             code_only, suffix = code.split(".")
@@ -167,11 +167,29 @@ class PytdxDataSource(BaseDataSource):
             market = 0 if suffix_upper == "SZ" else 1
             return code_only, market
 
-        # 无后缀：拒绝推断，强制调用方显式声明
-        raise ValueError(
-            f"代码 '{code}' 缺少市场后缀。"
-            f"请使用 '000001.SZ'（平安银行）或 '000001.SH'（上证指数）格式显式声明。"
-        )
+        # 无后缀：仅对明确的 A 股代码进行市场推断
+        if not code.isdigit():
+            raise ValueError(
+                f"代码 '{code}' 无法识别。请使用 '000001.SZ' 或 '000001.SH' 格式，"
+                f"或提供 6 位数字 A 股代码。"
+            )
+
+        prefix3 = code[:3] if len(code) >= 3 else ""
+        prefix2 = code[:2] if len(code) >= 2 else ""
+
+        # 深圳市场（market=0）
+        if prefix3 in ("000", "001", "002", "003", "300", "301") or prefix2 == "39":
+            market = 0
+        # 上海市场（market=1）
+        elif prefix3 in ("600", "601", "603", "605", "688", "689") or prefix2 in ("51", "50", "99"):
+            market = 1
+        else:
+            raise ValueError(
+                f"代码 '{code}' 缺少市场后缀，且无法自动推断市场。"
+                f"请使用 '000001.SZ' 或 '000001.SH' 格式显式声明。"
+            )
+
+        return code, market
 
     def _get_vol_multiplier(self, code: str) -> int:
         """根据品种类型获取成交量乘数（从配置文件读取）"""
