@@ -1,20 +1,24 @@
 // BacktestConfigPanel.tsx — 左侧策略配置面板（Form 重构）
 
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Card, Select, DatePicker, Input, InputNumber, AutoComplete, Spin, Space, Divider, Button,
+  Card, Select, DatePicker, Input, InputNumber, Cascader, Spin, Space, Divider, Button,
   Collapse, Radio, Tag, Tooltip, Typography, Form,
 } from 'antd';
-import { PlusOutlined, DeleteOutlined, SettingOutlined } from '@ant-design/icons';
+import { SettingOutlined, CloseOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import type { BacktestConfig, BacktestCondition, ConditionFieldKey, IndicatorParams } from './backtestTypes';
+import type { BacktestConfig, BacktestFormValues, IndicatorParams } from './backtestTypes';
 import {
-  BUY_CONDITION_KEYS, CONDITION_LABEL_MAP, DEFAULT_BACKTEST_CONFIG,
+  DEFAULT_BACKTEST_CONFIG,
   DEFAULT_INDICATOR_PARAMS,
 } from './backtestTypes';
 import { useStockSearch } from './useStockSearch';
-import { getBacktestList } from './backtestListStorage';
+import { getBacktestList, removeFromBacktestList } from './backtestListStorage';
 import { getBacktestDefaults } from './backtestSettingsStorage';
+import { useWatchlist } from '../watchlist/store';
+import { listCustomIndicators } from '../stock-picker/utils/customIndicatorStorage';
+import type { CustomIndicator } from '../stock-picker/types/customIndicator';
+import { fetchStocks } from '../stock-detail/api';
 import type { StockSearchItem } from '../stock-detail/api';
 
 const { Text } = Typography;
@@ -25,31 +29,38 @@ interface ConfigPanelProps {
   onStart: (config: BacktestConfig) => void;
   loading: boolean;
   onCancel: () => void;
-  form: ReturnType<typeof Form.useForm<BacktestConfig>>[0];
+  form: ReturnType<typeof Form.useForm<BacktestFormValues>>[0];
 }
 
-interface AutoCompleteOption {
+interface CascaderOption {
   value: string;
   label: React.ReactNode;
-  stock: StockSearchItem;
-  isBacktestList: boolean;
+  children?: CascaderOption[];
+  stock?: StockSearchItem;
+  isLeaf?: boolean;
 }
 
+const DEFAULT_STOCK: StockSearchItem = { stock_code: '000001', stock_name: '平安银行' };
+
 const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onCancel, form }) => {
-  const { keyword, setKeyword, options: searchOptions, loading: searchLoading } = useStockSearch(300);
-  const [selectedStock, setSelectedStock] = useState<StockSearchItem | null>(null);
+  const { keyword: searchKeyword, setKeyword: setSearchKeyword, options: searchOptions, loading: searchLoading } = useStockSearch(300);
+  const [cascaderValue, setCascaderValue] = useState<string[]>([]);
+  const [backtestVersion, setBacktestVersion] = useState(0);
+  const [watchlistNames, setWatchlistNames] = useState<Record<string, string>>({});
+  const [customIndicators, setCustomIndicators] = useState<CustomIndicator[]>([]);
+
+  const { state: watchlistState, allGroups: watchlistGroups } = useWatchlist();
 
   // 读取系统设置中的全局默认值
   const globalDefaults = getBacktestDefaults();
 
-  const initialValues: Partial<BacktestConfig> & { dateRange?: [dayjs.Dayjs, dayjs.Dayjs] } = {
-    stockCode: '000001',
-    stockName: '平安银行',
+  const initialValues: Partial<BacktestFormValues> = {
+    stockCode: DEFAULT_STOCK.stock_code,
+    stockName: DEFAULT_STOCK.stock_name,
     dateRange: [dayjs('2025-01-01'), dayjs('2026-07-01')],
     capital: DEFAULT_BACKTEST_CONFIG.capital ?? 100000,
-    buyConditions: [{ fieldKey: 'macd_golden_cross', label: 'MACD金叉' }],
+    indicatorId: undefined,
     executionPrice: globalDefaults.executionPrice,
-    signalConfirmBars: globalDefaults.signalConfirmBars,
     maxDeferDays: globalDefaults.maxDeferDays,
     feeRate: globalDefaults.feeRate,
     slippage: globalDefaults.slippage,
@@ -57,84 +68,190 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onC
     indicatorParams: globalDefaults.indicatorParams,
   };
 
-  // 合并回测列表 + 搜索结果，优先显示回测列表
-  const mergedOptions = useMemo<AutoCompleteOption[]>(() => {
-    const backtestList = getBacktestList();
-    const backtestOptions: AutoCompleteOption[] = backtestList.map(item => ({
-      value: item.stock_code,
-      label: (
-        <div className="flex items-center justify-between gap-4">
-          <span className="font-mono">{item.stock_code}</span>
-          <span className="text-text-secondary flex-1">{item.stock_name}</span>
-          <span className="text-xs text-color-accent bg-color-accent/10 px-1.5 py-0.5 rounded">回测列表</span>
-        </div>
-      ),
-      stock: {
-        stock_code: item.stock_code,
-        stock_name: item.stock_name,
-      },
-      isBacktestList: true,
-    }));
-
-    const searchOptionsWithGroup: AutoCompleteOption[] = searchOptions.map(stock => ({
-      value: stock.stock_code,
-      label: (
-        <div className="flex items-center justify-between gap-4">
-          <span className="font-mono">{stock.stock_code}</span>
-          <span className="text-text-secondary flex-1">{stock.stock_name}</span>
-          {stock.close !== undefined && (
-            <span className="text-sm text-text-secondary">¥{stock.close.toFixed(2)}</span>
-          )}
-        </div>
-      ),
-      stock,
-      isBacktestList: false,
-    }));
-
-    // 去重：同一个股票如果既在回测列表又在搜索结果中，保留回测列表项
-    const existingCodes = new Set(backtestOptions.map(o => o.value));
-    const filteredSearch = searchOptionsWithGroup.filter(o => !existingCodes.has(o.value));
-
-    return [...backtestOptions, ...filteredSearch];
-  }, [searchOptions]);
-
-  const handleSelect = (value: string, option: AutoCompleteOption) => {
-    const { stock } = option;
-    setSelectedStock(stock);
-    form.setFieldsValue({
-      stockCode: stock.stock_code,
-      stockName: stock.stock_name,
-    });
-    setKeyword(`${stock.stock_code} ${stock.stock_name}`);
-  };
-
-  const handleSearch = (value: string) => {
-    setKeyword(value);
-    if (!value.trim()) {
-      setSelectedStock(null);
-      form.setFieldsValue({
-        stockCode: '',
-        stockName: '',
-      });
-    } else {
-      // 手动输入时，将输入值作为 stockCode 提交
-      form.setFieldsValue({ stockCode: value });
+  // 加载自选股名称（自选股只保存 code，需要反查 name）
+  useEffect(() => {
+    const codes = watchlistGroups.flatMap((g) => watchlistState.stocks[g] || []);
+    if (codes.length === 0) {
+      setWatchlistNames({});
+      return;
     }
+    let cancelled = false;
+    fetchStocks({ stock_codes: codes.join(','), limit: codes.length })
+      .then((res) => {
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        for (const item of res.items) {
+          map[item.stock_code] = item.stock_name;
+        }
+        setWatchlistNames(map);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [watchlistGroups, watchlistState.stocks]);
+
+  // 加载自编指标列表
+  useEffect(() => {
+    setCustomIndicators(listCustomIndicators());
+  }, []);
+
+  // 初始化 cascaderValue：优先在回测列表或自选股中定位默认股票
+  useEffect(() => {
+    const backtestList = getBacktestList();
+    if (backtestList.some((s) => s.stock_code === DEFAULT_STOCK.stock_code)) {
+      setCascaderValue(['__backtest__', DEFAULT_STOCK.stock_code]);
+      return;
+    }
+    for (const groupName of watchlistGroups) {
+      const codes = watchlistState.stocks[groupName] || [];
+      if (codes.includes(DEFAULT_STOCK.stock_code)) {
+        setCascaderValue([`__watchlist_group__${groupName}`, DEFAULT_STOCK.stock_code]);
+        return;
+      }
+    }
+    // 都不存在时，使用默认分组
+    setCascaderValue(['__default__', DEFAULT_STOCK.stock_code]);
+  }, [watchlistGroups, watchlistState.stocks, backtestVersion]);
+
+  // 合并回测列表 + 自选股分组 + 搜索结果，生成 Cascader 树
+  const cascaderOptions = useMemo<CascaderOption[]>(() => {
+    const backtestList = getBacktestList();
+    const options: CascaderOption[] = [];
+
+    // 默认推荐
+    options.push({
+      value: '__default__',
+      label: '默认',
+      children: [{
+        value: DEFAULT_STOCK.stock_code,
+        label: `${DEFAULT_STOCK.stock_code} ${DEFAULT_STOCK.stock_name}`,
+        stock: DEFAULT_STOCK,
+        isLeaf: true,
+      }],
+    });
+
+    // 回测列表
+    if (backtestList.length > 0) {
+      options.push({
+        value: '__backtest__',
+        label: (
+          <span>
+            回测列表 <span className="text-xs text-text-secondary">({backtestList.length})</span>
+          </span>
+        ),
+        children: backtestList.map((item) => ({
+          value: item.stock_code,
+          label: (
+            <div className="flex items-center justify-between gap-4">
+              <span>{item.stock_code} {item.stock_name}</span>
+              <Tooltip title="从回测列表移除">
+                <Button
+                  type="text"
+                  size="small"
+                  danger
+                  icon={<CloseOutlined />}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeFromBacktestList(item.stock_code);
+                    setBacktestVersion((v) => v + 1);
+                    const currentCode = form.getFieldValue('stockCode');
+                    if (currentCode === item.stock_code) {
+                      form.setFieldsValue({ stockCode: '', stockName: '' });
+                      setCascaderValue([]);
+                    }
+                  }}
+                />
+              </Tooltip>
+            </div>
+          ),
+          stock: {
+            stock_code: item.stock_code,
+            stock_name: item.stock_name,
+          },
+          isLeaf: true,
+        })),
+      });
+    }
+
+    // 自选股分组：直接作为一级选项，点击分组后二级菜单展示个股
+    for (const groupName of watchlistGroups) {
+      const codes = watchlistState.stocks[groupName] || [];
+      if (codes.length === 0) continue;
+      options.push({
+        value: `__watchlist_group__${groupName}`,
+        label: `${groupName} (${codes.length})`,
+        children: codes.map((code) => ({
+          value: code,
+          label: `${code} ${watchlistNames[code] || code}`,
+          stock: {
+            stock_code: code,
+            stock_name: watchlistNames[code] || code,
+          },
+          isLeaf: true,
+        })),
+      });
+    }
+
+    // 搜索结果
+    if (searchOptions.length > 0) {
+      options.push({
+        value: '__search__',
+        label: `搜索结果 "${searchKeyword}"`,
+        children: searchOptions.map((stock) => ({
+          value: stock.stock_code,
+          label: `${stock.stock_code} ${stock.stock_name}`,
+          stock,
+          isLeaf: true,
+        })),
+      });
+    }
+
+    return options;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchOptions, backtestVersion, watchlistGroups, watchlistState.stocks, watchlistNames]);
+
+  const handleCascaderChange = (value: (string | number)[], selectedOptions: CascaderOption[]) => {
+    const leaf = selectedOptions[selectedOptions.length - 1];
+    if (!leaf?.stock) return;
+    setCascaderValue(value.map(String));
+    form.setFieldsValue({
+      stockCode: leaf.stock.stock_code,
+      stockName: leaf.stock.stock_name,
+    });
   };
 
-  const handleFinish = (values: any) => {
-    // 转换日期
-    const [startDate, endDate] = values.dateRange.map((d: dayjs.Dayjs) => d.format('YYYY-MM-DD'));
+  const handleCascaderSearch = (value: string) => {
+    setSearchKeyword(value);
+  };
+
+  const indicatorOptions = useMemo(
+    () =>
+      customIndicators.map((ind) => ({
+        value: ind.id,
+        label: ind.name,
+      })),
+    [customIndicators],
+  );
+
+  const handleIndicatorChange = (indicatorId: string) => {
+    form.setFieldsValue({ indicatorId });
+  };
+
+  const handleFinish = (values: BacktestFormValues) => {
+    const [startDate, endDate] = (values.dateRange ?? []).map((d: dayjs.Dayjs) => d.format('YYYY-MM-DD'));
+    const indicator = customIndicators.find((i) => i.id === values.indicatorId);
     const config: BacktestConfig = {
-      ...values,
+      stockCode: values.stockCode ?? '',
+      stockName: values.stockName ?? '',
       startDate,
       endDate,
-      buyConditions: values.buyConditions as BacktestCondition[],
-      // 合并默认指标参数，确保 ma5/ma10/ma60/bollPeriod 等非表单字段不丢失
+      capital: values.capital ?? DEFAULT_BACKTEST_CONFIG.capital ?? 100000,
+      buyCondition: indicator
+        ? { indicatorId: indicator.id, indicatorName: indicator.name, formula: indicator.formula }
+        : { indicatorId: '', indicatorName: '', formula: '' },
       indicatorParams: { ...globalDefaults.indicatorParams, ...values.indicatorParams } as IndicatorParams,
-      // Collapse.Panel 已废弃，内部字段可能未注册，强制补齐默认值
       executionPrice: values.executionPrice ?? globalDefaults.executionPrice,
-      signalConfirmBars: values.signalConfirmBars ?? globalDefaults.signalConfirmBars,
       maxDeferDays: values.maxDeferDays ?? globalDefaults.maxDeferDays,
       feeRate: values.feeRate ?? globalDefaults.feeRate,
       slippage: values.slippage ?? globalDefaults.slippage,
@@ -143,45 +260,34 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onC
     onStart(config);
   };
 
-  // 动态条件字段
-  const conditions = Form.useWatch('buyConditions', form) || [];
-
-  const addCondition = () => {
-    const usedKeys = new Set(conditions.map((c: BacktestCondition) => c.fieldKey));
-    const available = BUY_CONDITION_KEYS.filter((k) => !usedKeys.has(k));
-    if (available.length === 0) return;
-    const newCond = { fieldKey: available[0], label: CONDITION_LABEL_MAP[available[0]] };
-    form.setFieldsValue({ buyConditions: [...conditions, newCond] });
-  };
-
-  const removeCondition = (index: number) => {
-    const updated = conditions.filter((_: any, i: number) => i !== index);
-    form.setFieldsValue({ buyConditions: updated });
-  };
-
-  const updateCondition = (index: number, key: ConditionFieldKey) => {
-    const updated = [...conditions];
-    updated[index] = { fieldKey: key, label: CONDITION_LABEL_MAP[key] };
-    form.setFieldsValue({ buyConditions: updated });
-  };
-
   return (
     <Form form={form} layout="vertical" initialValues={initialValues} onFinish={handleFinish}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {/* 股票选择 — 支持代码/名称搜索，回测列表优先显示 */}
+        {/* 股票选择 —— 级联菜单：回测列表（可删除）、自选股分组、搜索 */}
         <Card size="small" title="股票选择">
           <Form.Item name="stockCode" label="股票代码/名称" rules={[{ required: true, message: '请选择或搜索股票' }]}>
-            <AutoComplete
-              placeholder="输入股票代码或名称，优先显示回测列表"
-              value={keyword || undefined}
-              onSearch={handleSearch}
-              onSelect={handleSelect as any}
-              options={mergedOptions}
-              notFoundContent={searchLoading ? <Spin size="small" /> : '无匹配结果'}
-              allowClear
+            <Cascader
+              value={cascaderValue}
+              options={cascaderOptions}
+              onChange={handleCascaderChange as any}
+              onSearch={handleCascaderSearch}
+              showSearch
+              changeOnSelect={false}
+              placeholder="选择回测列表/自选股分组，或输入代码搜索"
+              expandTrigger="click"
               style={{ width: '100%' }}
-              popupMatchSelectWidth={true}
-              data-testid="stock-search-autocomplete"
+              displayRender={(labels) => labels[labels.length - 1] || ''}
+              dropdownRender={(menu) => (
+                <div>
+                  {searchLoading && (
+                    <div className="px-3 py-2 text-xs text-text-secondary">
+                      <Spin size="small" /> 搜索中...
+                    </div>
+                  )}
+                  {menu}
+                </div>
+              )}
+              data-testid="stock-search-cascader"
             />
           </Form.Item>
           {/* 隐藏字段保存名称，供表单提交使用 */}
@@ -192,7 +298,35 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onC
 
         {/* 回测周期 */}
         <Card size="small" title="回测周期">
-          <Form.Item name="dateRange" label="日期范围" rules={[{ required: true }]}>
+          <Form.Item
+            name="dateRange"
+            label="日期范围"
+            rules={[
+              { required: true, message: '请选择回测日期范围' },
+              {
+                validator: (_, value: [dayjs.Dayjs, dayjs.Dayjs] | undefined) => {
+                  if (!value || !Array.isArray(value) || value.length !== 2) {
+                    return Promise.reject(new Error('日期范围格式错误'));
+                  }
+                  const [start, end] = value;
+                  if (!start || !end) {
+                    return Promise.reject(new Error('请选择开始和结束日期'));
+                  }
+                  if (end.isBefore(start)) {
+                    return Promise.reject(new Error('结束日期不能早于开始日期'));
+                  }
+                  if (start.isAfter(dayjs(), 'day') || end.isAfter(dayjs(), 'day')) {
+                    return Promise.reject(new Error('日期范围不能包含未来日期'));
+                  }
+                  const maxRangeDays = 365 * 10;
+                  if (end.diff(start, 'day') > maxRangeDays) {
+                    return Promise.reject(new Error('单次回测周期不能超过 10 年'));
+                  }
+                  return Promise.resolve();
+                },
+              },
+            ]}
+          >
             <RangePicker style={{ width: '100%' }} popupClassName="single-month-range" />
           </Form.Item>
           <Form.Item name="capital" label="初始资金" rules={[{ required: true }]}>
@@ -205,57 +339,38 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onC
           </Form.Item>
         </Card>
 
-        {/* 买入条件 */}
+        {/* 买入条件：仅支持自编指标 */}
         <Card
           size="small"
           title={
             <Space>
               <span>买入条件</span>
-              <Tag>{conditions.length}/5</Tag>
+              <Tag color="blue">自编指标</Tag>
             </Space>
           }
-          extra={
-            <Button size="small" icon={<PlusOutlined />} onClick={addCondition} disabled={conditions.length >= 5}>
-              添加
-            </Button>
-          }
         >
-          <Form.List name="buyConditions">
-            {(fields, { add, remove }) => (
-              <Space direction="vertical" style={{ width: '100%' }}>
-                {fields.map((field, index) => (
-                  <Space key={field.key} style={{ width: '100%' }}>
-                    <Form.Item
-                      {...field}
-                      name={[field.name, 'fieldKey']}
-                      style={{ flex: 1, marginBottom: 0 }}
-                    >
-                      <Select
-                        onChange={(v) => updateCondition(index, v)}
-                        options={BUY_CONDITION_KEYS.map((k) => ({
-                          value: k,
-                          label: CONDITION_LABEL_MAP[k],
-                          disabled: conditions.some((c2: BacktestCondition, j: number) => c2.fieldKey === k && j !== index),
-                        }))}
-                      />
-                    </Form.Item>
-                    <Button
-                      size="small"
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={() => removeCondition(index)}
-                      disabled={conditions.length <= 1}
-                    />
-                  </Space>
-                ))}
-                {conditions.length > 1 && (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    条件之间为 AND 关系，所有条件同时满足时触发买入
-                  </Text>
-                )}
-              </Space>
-            )}
-          </Form.List>
+          <Form.Item
+            name="indicatorId"
+            label="选择自编指标"
+            rules={[{ required: true, message: '请选择一个自编指标作为买入条件' }]}
+          >
+            <Select
+              placeholder="请选择自编指标"
+              options={indicatorOptions}
+              onChange={handleIndicatorChange}
+              disabled={indicatorOptions.length === 0}
+              style={{ width: '100%' }}
+              allowClear
+            />
+          </Form.Item>
+          {indicatorOptions.length === 0 && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              暂无自编指标，请先在选股视图中创建。
+            </Text>
+          )}
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+            脚本约定：返回每日信号数组，1 表示满足买入，0 表示不满足。
+          </Text>
         </Card>
 
         {/* 高级设置 */}
@@ -270,9 +385,6 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onC
 
             <Divider style={{ margin: '8px 0' }} />
 
-            <Form.Item name="signalConfirmBars" label="信号确认连续K线数">
-              <InputNumber min={1} max={5} />
-            </Form.Item>
             <Form.Item name="maxDeferDays" label="最大顺延天数">
               <InputNumber min={1} max={10} />
             </Form.Item>

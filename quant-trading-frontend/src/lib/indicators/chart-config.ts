@@ -49,6 +49,11 @@ export const VOLUME_COLORS = {
   down: 'rgba(242,54,69,0.6)',
 } as const;
 
+/** 自编指标颜色 */
+export const CUSTOM_INDICATOR_COLORS = {
+  line: '#ff6b6b',
+} as const;
+
 /** 参考线参数（RSI 的 30/70，KDJ 的 20/80） */
 export const REF_LINES = {
   rsi: { low: 30, high: 70 },

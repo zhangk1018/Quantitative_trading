@@ -14,6 +14,7 @@ import { fetchKLineData } from '../stock-detail/api';
 import type { KlineBar } from '../../lib/indicators/indicators';
 import type {
   BacktestConfig,
+  BacktestFormValues,
   BacktestOutput,
   BacktestInput,
   ProgressInfo,
@@ -24,14 +25,15 @@ import type {
 const { Text } = Typography;
 
 const BacktestView: React.FC = () => {
-  const [form] = Form.useForm<BacktestConfig>();
+  const [form] = Form.useForm<BacktestFormValues>();
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<ProgressInfo | null>(null);
   const [output, setOutput] = useState<BacktestOutput | null>(null);
   const [bars, setBars] = useState<KlineBar[]>([]);
   const [focusTrade, setFocusTrade] = useState<Trade | null>(null);
   const workerRef = useRef<Worker | null>(null);
-  const abortRef = useRef(false);
+  /** 当前回测运行 ID，用于过滤已取消/过期的 Worker 消息 */
+  const runIdRef = useRef(0);
 
   // 清理 Worker
   useEffect(() => {
@@ -41,8 +43,8 @@ const BacktestView: React.FC = () => {
   }, []);
 
   const handleReset = useCallback(() => {
-    // 取消正在进行的回测
-    abortRef.current = true;
+    // 取消正在进行的回测：递增 runId 使旧 Worker 消息被忽略
+    runIdRef.current += 1;
     workerRef.current?.terminate();
     workerRef.current = null;
     setLoading(false);
@@ -55,10 +57,13 @@ const BacktestView: React.FC = () => {
   }, [form]);
 
   const handleStart = useCallback(async (config: BacktestConfig) => {
+    // 每次开始新回测时递增 runId，旧 runId 的 Worker 消息将被忽略
+    runIdRef.current += 1;
+    const currentRunId = runIdRef.current;
+
     setLoading(true);
     setOutput(null);
     setProgress({ stage: 'fetching', percent: 0, message: '正在获取K线数据...' });
-    abortRef.current = false;
 
     try {
       // 1. 拉取K线数据（前复权，包含预热期）
@@ -73,7 +78,7 @@ const BacktestView: React.FC = () => {
         end_date: config.endDate,
       });
 
-      if (abortRef.current) return;
+      if (runIdRef.current !== currentRunId) return;
 
       const items = klineResult.items;
       if (!items || items.length === 0) {
@@ -96,15 +101,14 @@ const BacktestView: React.FC = () => {
       // 2. 启动 Web Worker 计算
       const input: BacktestInput = {
         bars: klineBars,
-        buyConditions: config.buyConditions,
+        buyCondition: config.buyCondition,
         config: {
-          stockCode: config.stockCode,          // 新增：传递股票代码
+          stockCode: config.stockCode,
           capital: config.capital,
           feeRate: config.feeRate,
           slippage: config.slippage,
           riskFreeRate: config.riskFreeRate,
           executionPrice: config.executionPrice,
-          signalConfirmBars: config.signalConfirmBars,
           maxDeferDays: config.maxDeferDays,
           indicatorParams: config.indicatorParams,
         },
@@ -117,7 +121,8 @@ const BacktestView: React.FC = () => {
       workerRef.current = worker;
 
       worker.onmessage = (e) => {
-        if (abortRef.current) {
+        if (runIdRef.current !== currentRunId) {
+          // 当前回测已被取消或新回测已启动，忽略旧 Worker 消息
           worker.terminate();
           return;
         }
@@ -149,6 +154,10 @@ const BacktestView: React.FC = () => {
       };
 
       worker.onerror = (err) => {
+        if (runIdRef.current !== currentRunId) {
+          worker.terminate();
+          return;
+        }
         message.error('Worker 异常崩溃');
         setLoading(false);
         worker.terminate();
@@ -156,6 +165,7 @@ const BacktestView: React.FC = () => {
 
       worker.postMessage({ type: 'run', input });
     } catch (err) {
+      if (runIdRef.current !== currentRunId) return;
       const msg = err instanceof Error ? err.message : String(err);
       message.error(`数据拉取失败: ${msg}`);
       setLoading(false);
@@ -163,7 +173,7 @@ const BacktestView: React.FC = () => {
   }, []);
 
   const handleCancel = useCallback(() => {
-    abortRef.current = true;
+    runIdRef.current += 1;
     workerRef.current?.terminate();
     workerRef.current = null;
     setLoading(false);

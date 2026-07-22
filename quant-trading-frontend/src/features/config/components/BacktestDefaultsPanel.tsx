@@ -131,11 +131,6 @@ const BacktestDefaultsPanel: React.FC = () => {
         <Divider className="!my-1 !border-border-color/60" />
 
         {/* 数值参数 */}
-        <Row label="信号确认K线数" tooltip="信号需连续出现指定K线数后才确认触发">
-          <InputNumber size="small" min={1} max={5} value={defaults.signalConfirmBars}
-            onChange={v => updateField('signalConfirmBars', v ?? 2)} controls={false}
-            style={{ width: INPUT_W }} />
-        </Row>
         <Row label="最大顺延天数" tooltip="信号触发后允许顺延的最大交易日数">
           <InputNumber size="small" min={1} max={10} value={defaults.maxDeferDays}
             onChange={v => updateField('maxDeferDays', v ?? 3)} controls={false}

@@ -226,11 +226,6 @@ const CombinedBacktestPanel: React.FC = () => {
               <Radio.Button value="next_close">T+1 收盘价</Radio.Button>
             </Radio.Group>
           </Row>
-          <Row label="信号确认K线" tooltip="信号需连续出现指定K线数后才确认触发">
-            <InputNumber size="small" min={1} max={5} value={v1Defaults.signalConfirmBars}
-              onChange={v => updateV1('signalConfirmBars', v ?? 2)} controls={false}
-              addonAfter="根" style={{ width: NUM_W }} />
-          </Row>
           <Row label="最大顺延天数" tooltip="信号触发后允许顺延的最大交易日数">
             <InputNumber size="small" min={1} max={10} value={v2Defaults.maxDeferDays}
               onChange={(v) => updateV2('maxDeferDays', v ?? 3)} controls={false}

@@ -6,10 +6,14 @@ import { Modal, Typography, Spin, Alert, Segmented, Tooltip } from 'antd';
 import { fetchKLineData, toFriendlyMessage, type PatternMarker, type KLineDataResult } from '@/features/stock-detail/api';
 import { buildChartData, type ChartDataResult } from '@/lib/indicators/chart-adapter';
 import { sanitizeNumber, sanitizePct } from '@/lib/indicators/indicators';
-import { CHART_THEME } from '@/lib/indicators/chart-config';
+import { CHART_THEME, CUSTOM_INDICATOR_COLORS } from '@/lib/indicators/chart-config';
 import KLineChart, { type MainType, type OscType } from './KLineChart';
 import { detectConditions, type ConditionEvent, type ConditionConfig } from '@/lib/indicators/condition-detector';
 import type { FilterCondition } from '../types/filterTree';
+import { extractCustomIndicatorId } from '../types/filterTree';
+import { getCustomIndicatorById } from '../utils/customIndicatorStorage';
+import { getCustomIndicatorRunner } from '@/features/strategy-backtest/utils/customIndicatorRunner';
+import { meetsThreshold } from '../services/CustomIndicatorService';
 
 const { Text } = Typography;
 
@@ -87,6 +91,67 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
         }
 
         const data = buildChartData(klineResult.items);
+
+        // --- 自编指标计算（选股条件中的第一个自定义指标，静默降级） ---
+        // 计算指标值 → 逐日评估阈值条件 → 生成 ConditionEvent markers
+        const customCondition = conditions?.find(
+          c => c.source === 'custom' && c.sourceId && !c.invalid
+        );
+        let customIndicatorEvents: ConditionEvent[] = [];
+        if (customCondition?.sourceId && klineResult.items.length > 0) {
+          try {
+            const script = getCustomIndicatorById(customCondition.sourceId);
+            if (script) {
+              const runner = getCustomIndicatorRunner();
+              if (!runner.isReady()) {
+                await runner.init();
+              }
+              const bars = klineResult.items.map(item => [
+                new Date(item.time).getTime(),
+                item.open,
+                item.high,
+                item.low,
+                item.close,
+                item.volume,
+              ]);
+              const allOhlcv = new Map<string, number[][]>();
+              allOhlcv.set(stock.stock_code, bars);
+              const results = await runner.execute([{
+                id: script.id,
+                name: script.name,
+                code: script.formula,
+                stockCodes: [stock.stock_code],
+                allOhlcv,
+              }]);
+              const result = results.get(script.id);
+              const values = result?.values?.get(stock.stock_code);
+              if (values && values.length > 0) {
+                const operator = script.operator;
+                const threshold = script.defaultThreshold;
+                const label = `${script.name} ${operator} ${Array.isArray(threshold) ? threshold.join('~') : threshold}`;
+                const markerColor = CUSTOM_INDICATOR_COLORS.line;
+                // 选股器只检查最新值：标记最后一个交易日（触发选中的那一天）
+                // 使用排序后的 K 线数据，确保取到的是最新交易日
+                const sortedItems = [...klineResult.items].sort((a, b) => a.time.localeCompare(b.time));
+                const lastIdx = Math.min(values.length - 1, sortedItems.length - 1);
+                const lastVal = values[lastIdx];
+                if (lastIdx >= 0 && lastVal !== null && !Number.isNaN(lastVal) && meetsThreshold(lastVal, operator, threshold)) {
+                  customIndicatorEvents.push({
+                    time: sortedItems[lastIdx].time,
+                    label,
+                    fieldKey: customCondition.fieldKey,
+                    color: markerColor,
+                    shape: 'arrowUp',
+                    direction: 'buy',
+                  });
+                }
+              }
+            }
+          } catch (err) {
+            console.warn('自编指标 K 线标注计算失败（静默降级）:', err);
+          }
+        }
+
         setChartData(data);
 
         // --- 标记合并逻辑 ---
@@ -145,6 +210,10 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
         }
 
         setMarkers(allEvents);
+        // 合并自编指标事件到 markers
+        if (customIndicatorEvents.length > 0) {
+          setMarkers(prev => [...prev, ...customIndicatorEvents]);
+        }
         setUndetectable(allUndetectable);
 
         setStatus('ready');
@@ -181,7 +250,7 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
         content: { borderRadius: 0, padding: 0, margin: 0, height: '100vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' },
         header: { display: 'none' },
       }}
-      destroyOnHidden
+      destroyOnClose
       maskClosable={false}
       className="stock-analysis-modal"
     >
@@ -300,7 +369,15 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
               />
             </div>
           )}
-          <KLineChart chartData={chartData} mainType={mainType} oscType={oscType} markers={markers} />
+          {chartData && (
+            <KLineChart
+              key={stock?.stock_code}
+              chartData={chartData}
+              mainType={mainType}
+              oscType={oscType}
+              markers={markers}
+            />
+          )}
         </div>
       </div>
     </Modal>

@@ -1,25 +1,21 @@
 // backtestTypes.ts — 回测分析模块全部类型定义
 
+import type { Dayjs } from 'dayjs';
 import type { KlineBar } from '../../lib/indicators/indicators';
 
 // ==================== 条件定义 ====================
 
-export type ConditionFieldKey =
-  | 'macd_golden_cross'
-  | 'macd_death_cross'
-  | 'rsi_oversold'
-  | 'rsi_overbought'
-  | 'volume_breakout'
-  | 'volume_shrink'
-  | 'consecutive_up'
-  | 'consecutive_down'
-  | 'ma_golden_cross'
-  | 'ma_death_cross';
-
+/**
+ * 回测买入条件：仅支持自编指标。
+ * 脚本约定：返回每日信号数组，1 表示满足买入，0 表示不满足。
+ */
 export interface BacktestCondition {
-  fieldKey: ConditionFieldKey;
-  label: string;
-  params?: Record<string, number>;
+  /** 自编指标 ID */
+  indicatorId: string;
+  /** 自编指标名称（用于 UI 展示和日志） */
+  indicatorName: string;
+  /** 自编指标脚本公式（Worker 内无法访问 localStorage，必须随配置传入） */
+  formula: string;
 }
 
 // ==================== 指标参数配置 ====================
@@ -64,10 +60,10 @@ export interface BacktestConfig {
   startDate: string;
   endDate: string;
   capital: number;
-  buyConditions: BacktestCondition[];
+  /** 买入条件：仅允许一个自编指标 */
+  buyCondition: BacktestCondition;
   indicatorParams: IndicatorParams;
   executionPrice: 'next_open' | 'next_close';
-  signalConfirmBars: number;
   maxDeferDays: number;
   feeRate: number;
   slippage: number;
@@ -77,29 +73,47 @@ export interface BacktestConfig {
 export const DEFAULT_BACKTEST_CONFIG: Partial<BacktestConfig> = {
   capital: 100000,
   executionPrice: 'next_open',
-  signalConfirmBars: 2,
   maxDeferDays: 3,
   feeRate: 0,
   slippage: 0,
   riskFreeRate: 0.03,
 };
 
+/**
+ * 回测引擎配置：从 BacktestConfig 派生，仅包含引擎执行所需字段。
+ * 避免与 UI/存储字段（如 stockName、startDate、endDate）重复定义。
+ */
+export type BacktestEngineConfig = Pick<
+  BacktestConfig,
+  | 'stockCode'
+  | 'capital'
+  | 'feeRate'
+  | 'slippage'
+  | 'riskFreeRate'
+  | 'executionPrice'
+  | 'maxDeferDays'
+  | 'indicatorParams'
+>;
+
+/**
+ * 回测配置面板表单值：在持久化配置基础上补充临时 UI 字段。
+ * - indicatorId: 买入条件选择器当前选中的自编指标 ID（提交时转换为 buyCondition）
+ * - dateRange: 日期范围选择器当前值（提交时拆分为 startDate/endDate）
+ *
+ * 注意：不包含 buyCondition，避免表单值与持久化字段冗余。
+ */
+export interface BacktestFormValues extends Omit<BacktestConfig, 'buyCondition'> {
+  indicatorId?: string;
+  dateRange?: [Dayjs, Dayjs];
+}
+
 // ==================== 回测引擎输入/输出 ====================
 
 export interface BacktestInput {
   bars: KlineBar[];
-  buyConditions: BacktestCondition[];
-  config: {
-    stockCode: string;                // 新增：用于涨跌停判断
-    capital: number;
-    feeRate: number;
-    slippage: number;
-    riskFreeRate: number;
-    executionPrice: 'next_open' | 'next_close';
-    signalConfirmBars: number;
-    maxDeferDays: number;
-    indicatorParams: IndicatorParams;
-  };
+  /** 买入条件：仅允许一个自编指标 */
+  buyCondition: BacktestCondition;
+  config: BacktestEngineConfig;
 }
 
 export type TradeDirection = 'buy' | 'sell' | 'close';
@@ -176,41 +190,7 @@ export interface StoredBacktestResult {
   output: BacktestOutput;
 }
 
-// ==================== 条件映射表 ====================
-
-export const REVERSE_CONDITION_MAP: Record<ConditionFieldKey, ConditionFieldKey> = {
-  macd_golden_cross: 'macd_death_cross',
-  macd_death_cross: 'macd_golden_cross',
-  rsi_oversold: 'rsi_overbought',
-  rsi_overbought: 'rsi_oversold',
-  volume_breakout: 'volume_shrink',
-  volume_shrink: 'volume_breakout',
-  consecutive_up: 'consecutive_down',
-  consecutive_down: 'consecutive_up',
-  ma_golden_cross: 'ma_death_cross',
-  ma_death_cross: 'ma_golden_cross',
-};
-
-export const CONDITION_LABEL_MAP: Record<ConditionFieldKey, string> = {
-  macd_golden_cross: 'MACD金叉',
-  macd_death_cross: 'MACD死叉',
-  rsi_oversold: 'RSI超卖',
-  rsi_overbought: 'RSI超买',
-  volume_breakout: '放量突破',
-  volume_shrink: '缩量跌破',
-  consecutive_up: '连续上涨',
-  consecutive_down: '连续下跌',
-  ma_golden_cross: 'MA金叉',
-  ma_death_cross: 'MA死叉',
-};
-
-export const BUY_CONDITION_KEYS: ConditionFieldKey[] = [
-  'macd_golden_cross',
-  'rsi_oversold',
-  'volume_breakout',
-  'consecutive_up',
-  'ma_golden_cross',
-];
+// ==================== 涨跌停工具 ====================
 
 /** 根据股票代码前缀获取涨跌停比例 */
 export function getLimitPctByCode(stockCode: string): number {

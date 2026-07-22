@@ -93,6 +93,61 @@ export class CustomIndicatorRunner {
   }
 
   /**
+   * 单脚本/单只股票执行，返回每日信号序列。
+   *
+   * @param scriptCode Python 脚本内容
+   * @param data 单只股票 OHLCV（一维数组）
+   * @param timeoutMs 超时时间（默认 60 秒）
+   * @returns 每日信号数组，长度与输入数据一致
+   */
+  async executeSingle(
+    scriptCode: string,
+    data: {
+      open: number[];
+      high: number[];
+      low: number[];
+      close: number[];
+      volume: number[];
+    },
+    timeoutMs: number = 60_000,
+  ): Promise<(number | null)[]> {
+    if (!this.ready || !this.worker) {
+      throw new Error('Pyodide Worker 未就绪，请先调用 init()');
+    }
+
+    const batchId = `single_${this.batchIdCounter++}`;
+    const stockData = {
+      open: [data.open.map((v) => (Number.isFinite(v) ? v : null))],
+      high: [data.high.map((v) => (Number.isFinite(v) ? v : null))],
+      low: [data.low.map((v) => (Number.isFinite(v) ? v : null))],
+      close: [data.close.map((v) => (Number.isFinite(v) ? v : null))],
+      volume: [data.volume.map((v) => (Number.isFinite(v) ? v : null))],
+    };
+
+    const result = await this.executeSingleBatch(scriptCode, stockData, batchId, timeoutMs);
+    if (result.error) {
+      throw new Error(result.error);
+    }
+    if (!result.values || result.values.length === 0) {
+      throw new Error('脚本未返回有效结果');
+    }
+
+    const rawVal = result.values[0];
+    const daysCount = data.close.length;
+    if (Array.isArray(rawVal)) {
+      if (rawVal.length !== daysCount) {
+        throw new Error(
+          `脚本返回数组长度 ${rawVal.length} 与 K 线数量 ${daysCount} 不一致`,
+        );
+      }
+      return rawVal as (number | null)[];
+    }
+
+    // 兼容旧脚本：返回标量时，视为最后一天的结果，前面补 0
+    return new Array(daysCount - 1).fill(0).concat(rawVal === null ? [0] : [rawVal as number]);
+  }
+
+  /**
    * 批量执行脚本
    *
    * @param scripts 要执行的脚本列表 [{ id, name, code, stockCodes, allOhlcv }]

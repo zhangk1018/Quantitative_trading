@@ -5,7 +5,6 @@ const STORAGE_KEY = 'backtest_defaults';
 
 export interface BacktestDefaults {
   executionPrice: 'next_open' | 'next_close';
-  signalConfirmBars: number;
   maxDeferDays: number;
   /** 手续费率（小数，如 0.00015 = 万分之1.5） */
   feeRate: number;
@@ -16,7 +15,6 @@ export interface BacktestDefaults {
 
 export const DEFAULT_BACKTEST_DEFAULTS: BacktestDefaults = {
   executionPrice: (DEFAULT_BACKTEST_CONFIG.executionPrice as 'next_open') ?? 'next_open',
-  signalConfirmBars: DEFAULT_BACKTEST_CONFIG.signalConfirmBars ?? 2,
   maxDeferDays: DEFAULT_BACKTEST_CONFIG.maxDeferDays ?? 3,
   feeRate: DEFAULT_BACKTEST_CONFIG.feeRate ?? 0,
   slippage: DEFAULT_BACKTEST_CONFIG.slippage ?? 0,
@@ -31,7 +29,6 @@ export function getBacktestDefaults(): BacktestDefaults {
     const parsed = JSON.parse(raw);
     return {
       executionPrice: parsed.executionPrice ?? DEFAULT_BACKTEST_DEFAULTS.executionPrice,
-      signalConfirmBars: parsed.signalConfirmBars ?? DEFAULT_BACKTEST_DEFAULTS.signalConfirmBars,
       maxDeferDays: parsed.maxDeferDays ?? DEFAULT_BACKTEST_DEFAULTS.maxDeferDays,
       feeRate: parsed.feeRate ?? DEFAULT_BACKTEST_DEFAULTS.feeRate,
       slippage: parsed.slippage ?? DEFAULT_BACKTEST_DEFAULTS.slippage,

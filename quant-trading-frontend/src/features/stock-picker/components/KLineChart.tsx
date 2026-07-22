@@ -522,9 +522,11 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
     chart.timeScale().fitContent();
 
     return () => {
-      chart.unsubscribeCrosshairMove(crosshairHandler);
+      try { chart.unsubscribeCrosshairMove(crosshairHandler); } catch (_) {}
       seriesRef.current = null;
       rawBarsRef.current = [];
+      indicatorDataRef.current = { dif: [], dea: [], macdHist: [], rsi6: [], rsi12: [], rsi24: [], kdjK: [], kdjD: [], kdjJ: [] };
+      setCrosshair(null);
       if (chartRef.current) {
         try { chartRef.current.remove(); } catch (_) {}
         chartRef.current = null;
