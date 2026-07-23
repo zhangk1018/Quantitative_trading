@@ -1,6 +1,6 @@
 // BacktestView.tsx — 回测分析主容器
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { Card, Progress, Tabs, Collapse, Button, message, Divider, Typography, Form } from 'antd';
 import { ClearOutlined, PlayCircleOutlined, ReloadOutlined, LoadingOutlined } from '@ant-design/icons';
 import BacktestConfigPanel from './BacktestConfigPanel';
@@ -9,8 +9,10 @@ import BacktestMetrics from './BacktestMetrics';
 import BacktestChart from './BacktestChart';
 import BacktestEquityCurve from './BacktestEquityCurve';
 import BacktestTradeLog from './BacktestTradeLog';
-import { saveResult, getAllResults, clearAllResults } from './backtestStorage';
+import BacktestDiagnostics from './BacktestDiagnostics';
+import { saveResult, clearAllResults } from './backtestStorage';
 import { fetchKLineData } from '../stock-detail/api';
+import { useBacktestWorker } from './hooks/useBacktestWorker';
 import type { KlineBar } from '../../lib/indicators/indicators';
 import type {
   BacktestConfig,
@@ -21,70 +23,106 @@ import type {
   Trade,
   StoredBacktestResult,
 } from './backtestTypes';
+import { PREHEAT_DAYS, KLINE_FETCH_LIMIT, STORAGE_SCHEMA_VERSION } from './constants';
+import { BacktestErrorBoundary } from './ErrorBoundary';
 
 const { Text } = Typography;
 
 const BacktestView: React.FC = () => {
   const [form] = Form.useForm<BacktestFormValues>();
-  const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<ProgressInfo | null>(null);
   const [output, setOutput] = useState<BacktestOutput | null>(null);
   const [bars, setBars] = useState<KlineBar[]>([]);
   const [focusTrade, setFocusTrade] = useState<Trade | null>(null);
-  const workerRef = useRef<Worker | null>(null);
-  /** 当前回测运行 ID，用于过滤已取消/过期的 Worker 消息 */
-  const runIdRef = useRef(0);
+  /** 当前回测的配置引用（Worker 回调中需要访问 config） */
+  const configRef = useRef<BacktestConfig | null>(null);
+  /** AbortController 引用，用于取消进行中的网络请求 */
+  const abortRef = useRef<AbortController | null>(null);
 
-  // 清理 Worker
-  useEffect(() => {
-    return () => {
-      workerRef.current?.terminate();
-    };
+  // Worker 回调
+  const handleWorkerProgress = useCallback((info: ProgressInfo) => {
+    setProgress(info);
   }, []);
 
+  const handleWorkerResult = useCallback((result: BacktestOutput) => {
+    setOutput(result);
+    setProgress({ stage: 'done', percent: 100, message: '回测完成' });
+
+    // 保存到 IndexedDB（含版本号）
+    const config = configRef.current;
+    if (config) {
+      const stored: StoredBacktestResult = {
+        id: `${config.stockCode}_${Date.now()}`,
+        createdAt: new Date().toISOString(),
+        version: STORAGE_SCHEMA_VERSION,
+        config,
+        output: result,
+      };
+      saveResult(stored).catch(() => {});
+    }
+  }, []);
+
+  const handleWorkerError = useCallback((errorMsg: string) => {
+    message.error(`回测失败: ${errorMsg}`);
+  }, []);
+
+  const { start: startWorker, cancel: cancelWorker, isRunning } = useBacktestWorker({
+    onProgress: handleWorkerProgress,
+    onResult: handleWorkerResult,
+    onError: handleWorkerError,
+  });
+
   const handleReset = useCallback(() => {
-    // 取消正在进行的回测：递增 runId 使旧 Worker 消息被忽略
-    runIdRef.current += 1;
-    workerRef.current?.terminate();
-    workerRef.current = null;
-    setLoading(false);
+    cancelWorker();
+    abortRef.current?.abort();
     setProgress(null);
     setOutput(null);
     setBars([]);
     setFocusTrade(null);
-    // 重置表单
+    configRef.current = null;
     form.resetFields();
-  }, [form]);
+  }, [cancelWorker, form]);
 
   const handleStart = useCallback(async (config: BacktestConfig) => {
-    // 每次开始新回测时递增 runId，旧 runId 的 Worker 消息将被忽略
-    runIdRef.current += 1;
-    const currentRunId = runIdRef.current;
+    // 取消上一次可能未完成的请求和 Worker
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-    setLoading(true);
+    configRef.current = config;
     setOutput(null);
     setProgress({ stage: 'fetching', percent: 0, message: '正在获取K线数据...' });
 
     try {
       // 1. 拉取K线数据（前复权，包含预热期）
-      const preheatDays = 60;
       const fetchStart = new Date(config.startDate);
-      fetchStart.setDate(fetchStart.getDate() - preheatDays);
+      fetchStart.setDate(fetchStart.getDate() - PREHEAT_DAYS);
       const fetchStartStr = fetchStart.toISOString().slice(0, 10);
 
       const klineResult = await fetchKLineData(config.stockCode, {
         adj: 'forward',
         start_date: fetchStartStr,
         end_date: config.endDate,
-      });
-
-      if (runIdRef.current !== currentRunId) return;
+        limit: KLINE_FETCH_LIMIT,
+      }, controller.signal);
 
       const items = klineResult.items;
       if (!items || items.length === 0) {
         message.error('未获取到K线数据');
-        setLoading(false);
         return;
+      }
+
+      // 检查数据范围是否覆盖用户请求的起始日期
+      const firstBarDate = items[0].time;
+      const daysDiff = Math.floor(
+        (new Date(firstBarDate).getTime() - new Date(config.startDate).getTime()) / (1000 * 60 * 60 * 24)
+      );
+
+      if (daysDiff > 30) {
+        message.warning(
+          `数据范围提示：您选择的起始日期为 ${config.startDate}，但系统最早的数据为 ${firstBarDate}。回测将从 ${firstBarDate} 开始。`,
+          8,
+        );
       }
 
       const klineBars: KlineBar[] = klineResult.items.map((item: any) => ({
@@ -104,6 +142,8 @@ const BacktestView: React.FC = () => {
         buyCondition: config.buyCondition,
         config: {
           stockCode: config.stockCode,
+          startDate: config.startDate,
+          endDate: config.endDate,
           capital: config.capital,
           feeRate: config.feeRate,
           slippage: config.slippage,
@@ -114,71 +154,19 @@ const BacktestView: React.FC = () => {
         },
       };
 
-      const worker = new Worker(
-        new URL('./backtest.worker.ts', import.meta.url),
-        { type: 'module' },
-      );
-      workerRef.current = worker;
-
-      worker.onmessage = (e) => {
-        if (runIdRef.current !== currentRunId) {
-          // 当前回测已被取消或新回测已启动，忽略旧 Worker 消息
-          worker.terminate();
-          return;
-        }
-
-        const { type, data } = e.data;
-        if (type === 'progress') {
-          setProgress(data as ProgressInfo);
-        } else if (type === 'result') {
-          const result = data as BacktestOutput;
-          setOutput(result);
-          setProgress({ stage: 'done', percent: 100, message: '回测完成' });
-          setLoading(false);
-
-          // 保存到 IndexedDB
-          const stored: StoredBacktestResult = {
-            id: `${config.stockCode}_${Date.now()}`,
-            createdAt: new Date().toISOString(),
-            config,
-            output: result,
-          };
-          saveResult(stored).catch(() => {});
-
-          worker.terminate();
-        } else if (type === 'error') {
-          message.error(`回测失败: ${data}`);
-          setLoading(false);
-          worker.terminate();
-        }
-      };
-
-      worker.onerror = (err) => {
-        if (runIdRef.current !== currentRunId) {
-          worker.terminate();
-          return;
-        }
-        message.error('Worker 异常崩溃');
-        setLoading(false);
-        worker.terminate();
-      };
-
-      worker.postMessage({ type: 'run', input });
+      startWorker(input);
     } catch (err) {
-      if (runIdRef.current !== currentRunId) return;
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       const msg = err instanceof Error ? err.message : String(err);
       message.error(`数据拉取失败: ${msg}`);
-      setLoading(false);
     }
-  }, []);
+  }, [startWorker]);
 
   const handleCancel = useCallback(() => {
-    runIdRef.current += 1;
-    workerRef.current?.terminate();
-    workerRef.current = null;
-    setLoading(false);
+    cancelWorker();
+    abortRef.current?.abort();
     setProgress(null);
-  }, []);
+  }, [cancelWorker]);
 
   const handleClearCache = useCallback(async () => {
     await clearAllResults();
@@ -192,14 +180,12 @@ const BacktestView: React.FC = () => {
   return (
     <div className="h-full flex flex-col bg-bg-base">
       <div className="flex-1 flex overflow-hidden min-h-0">
-        {/* 左侧配置面板 — 参照选股视图侧边栏设计 */}
-        <div
-          className="w-[280px] flex-shrink-0 bg-bg-panel border-r border-border-color flex flex-col h-full"
-        >
+        {/* 左侧配置面板 */}
+        <div className="w-[280px] flex-shrink-0 bg-bg-panel border-r border-border-color flex flex-col h-full">
           <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
             <BacktestConfigPanel
               onStart={handleStart}
-              loading={loading}
+              loading={isRunning}
               onCancel={handleCancel}
               form={form}
             />
@@ -211,20 +197,16 @@ const BacktestView: React.FC = () => {
                 type="primary"
                 data-testid="start-backtest"
                 className={`flex-1 border-color-accent ${
-                  loading ? 'bg-color-accent/60 cursor-not-allowed' : 'bg-color-accent hover:bg-color-accent/80'
+                  isRunning ? 'bg-color-accent/60 cursor-not-allowed' : 'bg-color-accent hover:bg-color-accent/80'
                 }`}
-                icon={loading ? <LoadingOutlined spin /> : <PlayCircleOutlined />}
+                icon={isRunning ? <LoadingOutlined spin /> : <PlayCircleOutlined />}
                 onClick={() => form.submit()}
-                disabled={loading}
+                disabled={isRunning}
               >
-                {loading ? '计算中...' : '开始回测'}
+                {isRunning ? '计算中...' : '开始回测'}
               </Button>
-              {loading ? (
-                <Button
-                  onClick={handleCancel}
-                  danger
-                  className="flex-1"
-                >
+              {isRunning ? (
+                <Button onClick={handleCancel} danger className="flex-1">
                   取消
                 </Button>
               ) : (
@@ -245,13 +227,9 @@ const BacktestView: React.FC = () => {
         <div className="flex-1 flex flex-col h-full min-h-0 overflow-y-auto">
           <div style={{ padding: 16 }}>
             {/* 进度条 */}
-            {loading && progress && (
+            {isRunning && progress && (
               <Card size="small" className="!bg-bg-panel !border-border-color !mb-3">
-                <Progress
-                  percent={progress.percent}
-                  status="active"
-                  strokeColor="#2962FF"
-                />
+                <Progress percent={progress.percent} status="active" strokeColor="#2962FF" />
                 <Text style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                   {progress.message}
                 </Text>
@@ -259,7 +237,7 @@ const BacktestView: React.FC = () => {
             )}
 
             {output && (
-              <>
+              <BacktestErrorBoundary onReset={handleReset} errorTitle="回测结果渲染失败">
                 {/* 警告面板 */}
                 <BacktestWarningBar
                   warnings={output.warnings}
@@ -325,6 +303,19 @@ const BacktestView: React.FC = () => {
                   ]}
                 />
 
+                {/* 诊断报告 */}
+                <Collapse
+                  ghost
+                  size="small"
+                  items={[
+                    {
+                      key: 'diagnostics',
+                      label: `诊断报告 (${output.diagnostics?.length || 0} 条)`,
+                      children: <BacktestDiagnostics diagnostics={output.diagnostics} />,
+                    },
+                  ]}
+                />
+
                 <Divider />
 
                 {/* 清空缓存 */}
@@ -337,14 +328,11 @@ const BacktestView: React.FC = () => {
                 >
                   清空本地缓存
                 </Button>
-              </>
+              </BacktestErrorBoundary>
             )}
 
-            {!output && !loading && (
-              <div
-                className="flex items-center justify-center h-[300px] rounded
-                           bg-bg-panel border border-border-color text-text-secondary"
-              >
+            {!output && !isRunning && (
+              <div className="flex items-center justify-center h-[300px] rounded bg-bg-panel border border-border-color text-text-secondary">
                 <span>请在左侧配置策略后点击"开始回测"</span>
               </div>
             )}

@@ -485,6 +485,37 @@ class BaostockDataSource(BaseDataSource):
                 
         return pd.DataFrame(results) if results else pd.DataFrame()
 
+    def get_daily_basic_for_code(self, code: str, trade_date: str) -> pd.DataFrame:
+        """查询单只股票在指定日期的 pe_ttm（用于 pe_ttm 缺口补全）"""
+        bs_code = self._normalize_code(code)
+        if not bs_code:
+            return pd.DataFrame()
+
+        try:
+            self._wait_for_rate_limit()
+            def do_query():
+                return bs.query_history_k_data_plus(
+                    bs_code, "date,code,peTTM",
+                    start_date=trade_date, end_date=trade_date,
+                    frequency="d", adjustflag="3"
+                )
+            rs = _run_baostock_with_timeout(do_query, timeout=15)
+            self._last_request_time = time.time()
+
+            if rs is None or rs.error_code != '0':
+                return pd.DataFrame()
+
+            rows = self._fetch_all_rows(rs)
+            if rows and len(rows[0]) >= 3 and rows[0][2]:
+                return pd.DataFrame([{
+                    'code': code,
+                    'trade_date': trade_date,
+                    'pe_ttm': float(rows[0][2]),
+                }])
+            return pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+
     def get_kline(self, code: str, cycle: str = 'daily', start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
         if cycle not in self._CYCLE_MAP:
             raise ValueError(f"不支持的周期: {cycle}")

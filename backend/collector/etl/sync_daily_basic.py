@@ -24,6 +24,7 @@ import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import argparse
+import pandas as pd
 from typing import Optional, List
 
 from collector.datasource.base import DataSourceManager, SwitchStrategy
@@ -112,6 +113,12 @@ class DailyBasicSync:
 
             count = self.storage.save_daily_basic(df)
             logger.info(f"  {trade_date}: 保存 {count} 条")
+
+            # Tushare 成功后，补全 pe_ttm 缺失的股票（Baostock 兜底）
+            filled = self._fill_pe_ttm_gaps(trade_date)
+            if filled > 0:
+                logger.info(f"  {trade_date}: Baostock 补全 pe_ttm {filled} 只")
+
             return count
 
         except NotImplementedError as e:
@@ -120,6 +127,76 @@ class DailyBasicSync:
         except Exception as e:
             logger.warning(f"⚠️ 同步 {trade_date} 日频基本面失败: {e}")
             return 0
+
+    def _fill_pe_ttm_gaps(self, trade_date: str) -> int:
+        """用 Baostock 逐只补全 Tushare 返回中 pe_ttm 为 NULL 的股票"""
+        import time
+
+        with self.storage.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT code FROM stock_daily_basic "
+                    "WHERE trade_date = %s AND pe_ttm IS NULL",
+                    (trade_date,)
+                )
+                missing_codes = [row[0] for row in cur.fetchall()]
+
+        if not missing_codes:
+            return 0
+
+        logger.info(f"  🔍 发现 {len(missing_codes)} 只股票 pe_ttm 缺失，尝试 Baostock 补全")
+
+        # 使用 DataSourceManager 中已连接的 Baostock 数据源
+        baostock_source = None
+        for src_info in self.dsm.sources:
+            if src_info['source'].name == 'Baostock':
+                baostock_source = src_info['source']
+                break
+
+        if baostock_source is None:
+            logger.warning("  未找到 Baostock 数据源，跳过 pe_ttm 补全")
+            return 0
+
+        filled = 0
+        failed = 0
+        updates = []
+
+        for i, code in enumerate(missing_codes):
+            try:
+                time.sleep(0.05)  # Baostock 频率控制
+                df = baostock_source.get_daily_basic_for_code(code, trade_date)
+                if df is not None and not df.empty and 'pe_ttm' in df.columns:
+                    pe_ttm_val = df['pe_ttm'].iloc[0]
+                    if pd.notna(pe_ttm_val):
+                        updates.append((float(pe_ttm_val), code, trade_date))
+                        filled += 1
+                    else:
+                        failed += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+                continue
+
+            if (i + 1) % 200 == 0:
+                logger.info(f"  pe_ttm 补全进度: {i+1}/{len(missing_codes)} (已补:{filled} 失败:{failed})")
+
+        # 批量更新数据库
+        if updates:
+            with self.storage.transaction() as conn:
+                with conn.cursor() as cur:
+                    from psycopg2.extras import execute_values
+                    execute_values(cur,
+                        "UPDATE stock_daily_basic SET pe_ttm = data.v::numeric "
+                        "FROM (VALUES %s) AS data(v, code, trade_date) "
+                        "WHERE stock_daily_basic.code = data.code "
+                        "AND stock_daily_basic.trade_date = data.trade_date::date",
+                        updates, page_size=1000
+                    )
+                conn.commit()
+
+        logger.info(f"  ✅ pe_ttm 补全完成: {filled} 只成功, {failed} 只失败")
+        return filled
 
     def sync_latest(self) -> int:
         """仅同步最新交易日，返回同步条数"""

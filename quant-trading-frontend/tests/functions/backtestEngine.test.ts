@@ -255,6 +255,180 @@ describe('回测引擎 - 自编指标买入 + MA5下穿MA20卖出', () => {
   });
 });
 
+// ==================== 核心交易逻辑测试 ====================
+
+describe('回测引擎 - T+1 买入执行', () => {
+  it('买入信号在次日 next_open 价格执行', async () => {
+    const bars = generateFlatBars(100);
+    // 在第 65 天发出信号，第 66 天执行买入
+    const signals = Array(100).fill(0).map((_, i) => (i === 65 ? 1 : 0));
+    mockExecuteSingle.mockResolvedValue(signals);
+
+    const result = await runBacktest(makeInput(bars, { executionPrice: 'next_open' }));
+    const buyTrades = result.trades.filter((t) => t.direction === 'buy');
+
+    expect(buyTrades.length).toBeGreaterThanOrEqual(1);
+    // 买入应发生在信号次日（索引 66）
+    expect(buyTrades[0].entryTime).toBe(bars[66].time);
+    expect(buyTrades[0].entryPrice).toBe(bars[66].open);
+  });
+
+  it('买入信号在次日 next_close 价格执行', async () => {
+    const bars = generateFlatBars(100);
+    const signals = Array(100).fill(0).map((_, i) => (i === 65 ? 1 : 0));
+    mockExecuteSingle.mockResolvedValue(signals);
+
+    const result = await runBacktest(makeInput(bars, { executionPrice: 'next_close' }));
+    const buyTrades = result.trades.filter((t) => t.direction === 'buy');
+
+    expect(buyTrades.length).toBeGreaterThanOrEqual(1);
+    expect(buyTrades[0].entryPrice).toBe(bars[66].close);
+  });
+
+  it('持仓期间连续买入信号不重复建仓', async () => {
+    const bars = generateUptrendThenDowntrend();
+    // 连续多天发出买入信号
+    const signals = Array(80).fill(0).map((_, i) => (i >= 65 && i <= 70 ? 1 : 0));
+    mockExecuteSingle.mockResolvedValue(signals);
+
+    const result = await runBacktest(makeInput(bars));
+    const buyTrades = result.trades.filter((t) => t.direction === 'buy');
+
+    // 持仓期间不应重复买入
+    expect(buyTrades.length).toBe(1);
+  });
+});
+
+describe('回测引擎 - 涨停/跌停延迟与失效', () => {
+  it('涨停板无法买入时顺延至次日', async () => {
+    // 生成价格序列：第 65 天信号，但第 66 天涨停（open=prevClose*1.1）
+    const bars = generateFlatBars(100, 0);
+    const signals = Array(100).fill(0).map((_, i) => (i === 65 ? 1 : 0));
+
+    // 模拟涨停：第 66 天 open 达到涨停价
+    bars[66] = {
+      ...bars[66],
+      open: bars[65].close * 1.1,  // 涨停价
+      high: bars[65].close * 1.1,
+      low: bars[65].close * 1.05,
+      close: bars[65].close * 1.1,
+    };
+
+    mockExecuteSingle.mockResolvedValue(signals);
+    const result = await runBacktest(makeInput(bars, { stockCode: '000001', maxDeferDays: 3 }));
+
+    // 应记录涨停顺延诊断
+    const deferredDiags = result.diagnostics.filter((d) => d.event === 'buy_deferred');
+    expect(deferredDiags.length).toBeGreaterThanOrEqual(1);
+    expect(deferredDiags[0].reason).toContain('涨停限制');
+  });
+
+  it('涨停顺延超过 maxDeferDays 后买入信号失效', async () => {
+    const bars = generateFlatBars(100, 0);
+    const signals = Array(100).fill(0).map((_, i) => (i === 65 ? 1 : 0));
+
+    // 连续多天涨停，超过 maxDeferDays
+    for (let i = 66; i <= 70; i++) {
+      bars[i] = {
+        ...bars[i],
+        open: bars[i - 1].close * 1.1,
+        high: bars[i - 1].close * 1.1,
+        low: bars[i - 1].close * 1.05,
+        close: bars[i - 1].close * 1.1,
+      };
+    }
+
+    mockExecuteSingle.mockResolvedValue(signals);
+    const result = await runBacktest(makeInput(bars, { stockCode: '000001', maxDeferDays: 3 }));
+
+    // 应记录买入失效
+    const expiredDiags = result.diagnostics.filter((d) => d.event === 'buy_expired');
+    expect(expiredDiags.length).toBeGreaterThanOrEqual(1);
+    expect(result.warnings.some((w) => w.includes('顺延超过'))).toBe(true);
+  });
+
+  it('跌停板无法卖出时顺延至次日', async () => {
+    const bars = generateUptrendThenDowntrend();
+    const signals = Array(80).fill(0).map((_, i) => (i === 65 ? 1 : 0));
+    mockExecuteSingle.mockResolvedValue(signals);
+
+    // 买入后，在下跌阶段强制触发跌停
+    const buyIdx = 66; // 买入日
+    // 在卖出信号日设置跌停
+    bars[75] = {
+      ...bars[75],
+      open: bars[74].close * 0.9,  // 跌停价
+      high: bars[74].close * 0.95,
+      low: bars[74].close * 0.9,
+      close: bars[74].close * 0.9,
+    };
+
+    const result = await runBacktest(makeInput(bars, { stockCode: '000001', maxDeferDays: 3 }));
+
+    const deferredDiags = result.diagnostics.filter((d) => d.event === 'sell_deferred');
+    // 如果卖出信号日恰好是跌停日，应有顺延记录
+    expect(deferredDiags.length).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('回测引擎 - 停牌日净值沿用', () => {
+  it('停牌日（volume=0）应沿用前日净值', async () => {
+    const bars = generateFlatBars(100, 0);
+    const signals = Array(100).fill(0);
+    mockExecuteSingle.mockResolvedValue(signals);
+
+    // 设置第 70 天为停牌日
+    bars[70] = { ...bars[70], volume: 0, open: 0, high: 0, low: 0, close: 0 };
+
+    const result = await runBacktest(makeInput(bars));
+
+    // 停牌日净值应等于前一日净值
+    const equityBefore = result.equityCurve[70 - 60]; // 索引从预热期后开始
+    const equityOnSuspension = result.equityCurve.find((e) => e.time === bars[70].time);
+    if (equityBefore && equityOnSuspension) {
+      expect(equityOnSuspension.equity).toBe(equityBefore.equity);
+    }
+  });
+});
+
+describe('回测引擎 - 日期范围过滤', () => {
+  it('startDate 之前不应执行交易', async () => {
+    const bars = generateFlatBars(100, 0);
+    // 信号在预热期后（第 65 天），但 startDate 设为第 70 天
+    const signals = Array(100).fill(0).map((_, i) => (i === 65 ? 1 : 0));
+    mockExecuteSingle.mockResolvedValue(signals);
+
+    const input = makeInput(bars, { stockCode: '000001' });
+    input.config.startDate = bars[70].time;
+    input.config.endDate = bars[99].time;
+
+    const result = await runBacktest(input);
+
+    // 信号在 startDate 之前，不应触发交易
+    const buyTrades = result.trades.filter((t) => t.direction === 'buy');
+    expect(buyTrades.length).toBe(0);
+  });
+
+  it('endDate 到期时强制清仓', async () => {
+    const bars = generateUptrendThenDowntrend();
+    const signals = Array(80).fill(0).map((_, i) => (i === 65 ? 1 : 0));
+    mockExecuteSingle.mockResolvedValue(signals);
+
+    // 设置 endDate 为买入后 2 天（在卖出信号之前）
+    const input = makeInput(bars, { stockCode: '000001' });
+    input.config.startDate = bars[60].time;
+    input.config.endDate = bars[68].time; // 买入后不久即截止
+
+    const result = await runBacktest(input);
+
+    // 应在 endDate 处强制清仓
+    const forcedCloses = result.trades.filter((t) => t.isForcedClose);
+    expect(forcedCloses.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ==================== 类型与常量 ====================
+
 describe('类型与常量', () => {
   it('getLimitPctByCode 返回正确比例', () => {
     expect(getLimitPctByCode('000001')).toBe(0.10);

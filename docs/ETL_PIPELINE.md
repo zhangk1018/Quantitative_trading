@@ -277,12 +277,20 @@ WHERE trade_date = (SELECT MAX(trade_date) FROM stock_daily_basic);
 - **Baostock 请求失败**：自动降级到 Tushare Pro；若 Tushare 未配置 TOKEN，则跳过
 - **Tushare 限速**：daily_basic 接口 5次/天配额，超限后跳过
 - **dv_ratio/ps_ttm 等字段为空**：Baostock 不提供这些字段，需通过 `sync_tushare_daily_basic.py` 用 Tushare Pro 补充
+- **pe_ttm 覆盖率低（~72%）**：Tushare/Baostock 不提供亏损股的 pe_ttm（负值），导致约 1500 只亏损股 pe_ttm 缺失。需通过东方财富 API 补全亏损股 pe_ttm（负值），见下方 pe_ttm 补全脚本
 
 **补充脚本**：`backend/collector/etl/sync_tushare_daily_basic.py`
 ```bash
 # 补充 dv_ratio/dv_ttm/float_share/ps/ps_ttm
 ./venv/bin/python backend/collector/etl/sync_tushare_daily_basic.py
 ```
+
+**pe_ttm 补全脚本**（亏损股 pe_ttm 兜底）：
+```bash
+# 用东方财富 API 补全 Tushare/Baostock 未提供的亏损股 pe_ttm（负值）
+./venv/bin/python backend/collector/etl/fill_pe_ttm_eastmoney.py
+```
+> **说明**：Tushare 和 Baostock 均不提供亏损股的 pe_ttm（负值），导致约 1500 只股票 pe_ttm 缺失，覆盖率仅 ~72%。此脚本调用东方财富 API 逐个查询亏损股 pe_ttm 并写入 `stock_daily_basic` 表，将覆盖率提升至 100%。执行后需重跑宽表同步和 Parquet 导出。
 
 ---
 
@@ -385,11 +393,11 @@ AND cycle = '1d';
 # 增量同步最新日期（推荐，每日使用）
 ./venv/bin/python backend/collector/etl/daily_snapshot_sync.py --latest
 
-# 全量同步（首次使用）
-./venv/bin/python backend/collector/etl/daily_snapshot_sync.py --full
-
 # 同步指定日期
 ./venv/bin/python backend/collector/etl/daily_snapshot_sync.py --date 2026-06-15
+
+# 按日期范围同步（用于历史数据回补）
+./venv/bin/python backend/collector/etl/daily_snapshot_sync.py --start-date 2025-01-01 --end-date 2026-07-22
 ```
 
 **验证**：

@@ -80,12 +80,14 @@ export const DEFAULT_BACKTEST_CONFIG: Partial<BacktestConfig> = {
 };
 
 /**
- * 回测引擎配置：从 BacktestConfig 派生，仅包含引擎执行所需字段。
- * 避免与 UI/存储字段（如 stockName、startDate、endDate）重复定义。
+ * 回测引擎配置：从 BacktestConfig 派生，包含引擎执行所需字段。
+ * startDate/endDate 用于过滤交易日期范围。
  */
 export type BacktestEngineConfig = Pick<
   BacktestConfig,
   | 'stockCode'
+  | 'startDate'
+  | 'endDate'
   | 'capital'
   | 'feeRate'
   | 'slippage'
@@ -156,11 +158,28 @@ export interface BacktestSummary {
   warmupDays: number;
 }
 
+/** 诊断日志条目：记录回测过程中关键决策点 */
+export interface DiagnosticEntry {
+  /** 时间（K 线日期） */
+  time: string;
+  /** 事件类型 */
+  event: 'buy_signal' | 'sell_signal' | 'buy_deferred' | 'buy_expired'
+    | 'sell_deferred' | 'sell_expired' | 'insufficient_funds'
+    | 'buy_executed' | 'sell_executed' | 'forced_close'
+    | 'unexecuted_buy' | 'script_error';
+  /** 描述信息 */
+  reason: string;
+  /** 附加数据 */
+  data?: Record<string, unknown>;
+}
+
 export interface BacktestOutput {
   trades: Trade[];
   equityCurve: EquityPoint[];
   summary: BacktestSummary;
   warnings: string[];
+  /** 结构化诊断日志（无交易时用于暴露具体原因） */
+  diagnostics: DiagnosticEntry[];
 }
 
 // ==================== 回测生命周期状态 ====================
@@ -186,6 +205,8 @@ export interface ProgressInfo {
 export interface StoredBacktestResult {
   id: string;
   createdAt: string;
+  /** 存储 schema 版本，用于版本升级时的迁移逻辑 */
+  version: number;
   config: BacktestConfig;
   output: BacktestOutput;
 }

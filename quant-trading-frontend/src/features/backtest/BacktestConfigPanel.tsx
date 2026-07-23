@@ -57,7 +57,7 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onC
   const initialValues: Partial<BacktestFormValues> = {
     stockCode: DEFAULT_STOCK.stock_code,
     stockName: DEFAULT_STOCK.stock_name,
-    dateRange: [dayjs('2025-01-01'), dayjs('2026-07-01')],
+    dateRange: [dayjs('2025-01-01'), dayjs()],
     capital: DEFAULT_BACKTEST_CONFIG.capital ?? 100000,
     indicatorId: undefined,
     executionPrice: globalDefaults.executionPrice,
@@ -91,9 +91,36 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onC
     };
   }, [watchlistGroups, watchlistState.stocks]);
 
-  // 加载自编指标列表
+  // 加载自编指标列表（每次组件显示时重新加载，确保与系统配置页同步）
   useEffect(() => {
-    setCustomIndicators(listCustomIndicators());
+    const loadIndicators = () => {
+      setCustomIndicators(listCustomIndicators());
+    };
+    
+    loadIndicators();
+    
+    // 监听页面可见性变化，当用户从其他页面返回时重新加载
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        loadIndicators();
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    // 监听 storage 事件，当其他页面修改 localStorage 时重新加载
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'qt_custom_indicators_v1_mock_user_default') {
+        loadIndicators();
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('storage', handleStorageChange);
+    };
   }, []);
 
   // 初始化 cascaderValue：优先在回测列表或自选股中定位默认股票

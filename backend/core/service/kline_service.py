@@ -282,7 +282,7 @@ class KlineService:
             datetime.strptime(date_str, "%Y-%m-%d")
             return date_str
         except ValueError:
-            return kline_items
+            return None
 
     def _query_pattern_markers(self, stock_code: str, kline_df: pd.DataFrame) -> List[Dict]:
         """查询 stock_indicators 表，返回时间范围内的 K线形态标记

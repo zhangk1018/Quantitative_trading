@@ -16,11 +16,32 @@ import {
   type BacktestCondition,
   type IndicatorParams,
   type ProgressInfo,
+  type DiagnosticEntry,
 } from './backtestTypes';
 import { getCustomIndicatorRunner } from '../strategy-backtest/utils/customIndicatorRunner';
-
-const TRADING_DAYS_PER_YEAR = 252;
-const LOT_SIZE = 100;
+import {
+  TRADING_DAYS_PER_YEAR,
+  LOT_SIZE,
+  MIN_WARMUP_DAYS,
+  PROGRESS_REPORT_INTERVAL,
+  LIMIT_UP_TOLERANCE,
+  LIMIT_DOWN_TOLERANCE,
+  MIN_CAPITAL,
+  MAX_CAPITAL,
+  MIN_FEE_RATE,
+  MAX_FEE_RATE,
+  MIN_SLIPPAGE,
+  MAX_SLIPPAGE,
+  MIN_MAX_DEFER_DAYS,
+  MAX_MAX_DEFER_DAYS,
+} from './constants';
+import {
+  ParamError,
+  DataError,
+  SignalError,
+  BacktestErrorCode,
+  isFatalError,
+} from './errors';
 
 // ==================== 数据清洗 ====================
 
@@ -201,9 +222,9 @@ function isPriceLimited(
   const limitPrice = prevClose * (1 + limitPct);
   const downLimitPrice = prevClose * (1 - limitPct);
   if (direction === 'buy') {
-    return bar.open >= limitPrice * 0.995;
+    return bar.open >= limitPrice * LIMIT_UP_TOLERANCE;
   }
-  return bar.open <= downLimitPrice * 1.005;
+  return bar.open <= downLimitPrice * LIMIT_DOWN_TOLERANCE;
 }
 
 // ==================== 买入信号预计算（Pyodide Worker）====================
@@ -213,7 +234,11 @@ async function computeBuySignals(
   bars: KlineBar[],
 ): Promise<boolean[]> {
   if (!condition.formula || typeof condition.formula !== 'string') {
-    throw new Error(`自编指标公式为空：${condition.indicatorName}`);
+    throw new SignalError(
+      BacktestErrorCode.SIGNAL_SCRIPT_ERROR,
+      `自编指标公式为空：${condition.indicatorName}`,
+      { indicatorName: condition.indicatorName },
+    );
   }
 
   const runner = getCustomIndicatorRunner();
@@ -221,22 +246,82 @@ async function computeBuySignals(
     await runner.init();
   }
 
-  const rawSignals = await runner.executeSingle(
-    condition.formula,
-    {
-      open: bars.map((b) => b.open),
-      high: bars.map((b) => b.high),
-      low: bars.map((b) => b.low),
-      close: bars.map((b) => b.close),
-      volume: bars.map((b) => b.volume),
-    },
-    60_000,
-  );
+  let rawSignals: (number | null)[];
+  try {
+    rawSignals = await runner.executeSingle(
+      condition.formula,
+      {
+        open: bars.map((b) => b.open),
+        high: bars.map((b) => b.high),
+        low: bars.map((b) => b.low),
+        close: bars.map((b) => b.close),
+        volume: bars.map((b) => b.volume),
+      },
+      60_000,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new SignalError(
+      BacktestErrorCode.SIGNAL_SCRIPT_ERROR,
+      `自编指标执行失败：${msg}`,
+      { indicatorName: condition.indicatorName, originalError: msg },
+    );
+  }
 
   return rawSignals.map((v) => v !== null && v !== 0 && Number.isFinite(v));
 }
 
+/** 从数组末尾查找第一个满足条件的元素索引（兼容 ES2023 之前的 findLastIndex） */
+function findLastIndex<T>(arr: T[], predicate: (val: T) => boolean): number {
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (predicate(arr[i])) return i;
+  }
+  return -1;
+}
+
+/** 安全调用 onProgress 回调，异常时仅记录日志不中断回测 */
+function safeProgress(
+  onProgress: ((info: ProgressInfo) => void) | undefined,
+  info: ProgressInfo,
+): void {
+  if (!onProgress) return;
+  try {
+    onProgress(info);
+  } catch {
+    // 回调异常不影响引擎执行
+  }
+}
+
 // ==================== 主引擎 ====================
+
+/** 校验回测配置参数合法性，失败时抛出 ParamError */
+function validateConfig(config: {
+  capital: number;
+  feeRate: number;
+  slippage: number;
+  riskFreeRate: number;
+  maxDeferDays: number;
+  stockCode: string;
+}): void {
+  if (!Number.isFinite(config.capital) || config.capital < MIN_CAPITAL) {
+    throw new ParamError(BacktestErrorCode.PARAM_OUT_OF_RANGE, `资金必须 >= ${MIN_CAPITAL}，当前=${config.capital}`, { field: 'capital', value: config.capital });
+  }
+  if (config.capital > MAX_CAPITAL) {
+    throw new ParamError(BacktestErrorCode.PARAM_OUT_OF_RANGE, `资金不能超过 ${MAX_CAPITAL}，当前=${config.capital}`, { field: 'capital', value: config.capital });
+  }
+  if (!Number.isFinite(config.feeRate) || config.feeRate < MIN_FEE_RATE || config.feeRate > MAX_FEE_RATE) {
+    throw new ParamError(BacktestErrorCode.PARAM_OUT_OF_RANGE, `费率必须在 ${MIN_FEE_RATE}~${MAX_FEE_RATE} 之间，当前=${config.feeRate}`, { field: 'feeRate', value: config.feeRate });
+  }
+  if (!Number.isFinite(config.slippage) || config.slippage < MIN_SLIPPAGE || config.slippage > MAX_SLIPPAGE) {
+    throw new ParamError(BacktestErrorCode.PARAM_OUT_OF_RANGE, `滑点必须在 ${MIN_SLIPPAGE}~${MAX_SLIPPAGE} 之间，当前=${config.slippage}`, { field: 'slippage', value: config.slippage });
+  }
+  if (!Number.isFinite(config.maxDeferDays) || config.maxDeferDays < MIN_MAX_DEFER_DAYS || config.maxDeferDays > MAX_MAX_DEFER_DAYS) {
+    throw new ParamError(BacktestErrorCode.PARAM_OUT_OF_RANGE, `最大顺延天数必须在 ${MIN_MAX_DEFER_DAYS}~${MAX_MAX_DEFER_DAYS} 之间，当前=${config.maxDeferDays}`, { field: 'maxDeferDays', value: config.maxDeferDays });
+  }
+  if (!config.stockCode || typeof config.stockCode !== 'string') {
+    throw new ParamError(BacktestErrorCode.PARAM_INVALID, '股票代码不能为空', { field: 'stockCode' });
+  }
+}
 
 export async function runBacktest(
   input: BacktestInput,
@@ -245,6 +330,8 @@ export async function runBacktest(
   const { bars: rawBars, buyCondition, config } = input;
   const {
     stockCode,
+    startDate,
+    endDate,
     capital,
     feeRate,
     slippage,
@@ -254,53 +341,85 @@ export async function runBacktest(
     indicatorParams,
   } = config;
 
+  // P0-1: 参数合法性校验（致命错误：Worker 层捕获后向 UI 报告错误码）
+  try {
+    validateConfig({ capital, feeRate, slippage, riskFreeRate, maxDeferDays, stockCode });
+  } catch (err) {
+    if (err instanceof ParamError) {
+      // 重抛时附带错误码，便于 Worker 层精确展示
+      throw new ParamError(err.code, err.message, err.context);
+    }
+    throw err;
+  }
+
   // 缓存涨跌停比例，避免每个交易日重复解析股票代码前缀
   const limitPct = getLimitPctByCode(stockCode);
 
   // 数据清洗
   const { cleaned: bars, warnings: cleanWarnings } = sanitizeBars(rawBars);
   const warnings: string[] = [...cleanWarnings];
+  const diagnostics: DiagnosticEntry[] = [];
 
   if (bars.length === 0) {
-    return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings };
+    return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings, diagnostics };
   }
   if (!buyCondition?.indicatorId) {
-    return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings: [...warnings, '未配置买入条件'] };
+    return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings: [...warnings, '未配置买入条件'], diagnostics };
   }
 
-  onProgress?.({ stage: 'fetching', percent: 5, message: '数据清洗完成，开始计算指标...' });
+  safeProgress(onProgress, { stage: 'fetching', percent: 5, message: '数据清洗完成，开始计算指标...' });
 
   // 1. 计算指标（卖出条件 MA5 下穿 MA20 依赖 ma5/ma20）
   const cache = computeIndicators(bars, indicatorParams);
-  onProgress?.({ stage: 'indicators', percent: 20, message: '技术指标计算完成' });
+  safeProgress(onProgress, { stage: 'indicators', percent: 20, message: '技术指标计算完成' });
 
   // 2. 预计算买入信号（Pyodide Worker）
   let buySignals: boolean[];
   try {
-    onProgress?.({ stage: 'signals', percent: 30, message: '正在执行自编指标脚本...' });
+    safeProgress(onProgress, { stage: 'signals', percent: 30, message: '正在执行自编指标脚本...' });
     buySignals = await computeBuySignals(buyCondition, bars);
-    onProgress?.({ stage: 'signals', percent: 50, message: '买入信号预计算完成' });
+    safeProgress(onProgress, { stage: 'signals', percent: 50, message: '买入信号预计算完成' });
   } catch (err) {
+    if (err instanceof SignalError) {
+      warnings.push(err.message);
+      diagnostics.push({
+        time: new Date().toISOString().slice(0, 10),
+        event: 'script_error',
+        reason: err.message,
+        data: { code: err.code, indicatorName: err.context.indicatorName as string },
+      });
+      return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings, diagnostics };
+    }
     const msg = err instanceof Error ? err.message : String(err);
     warnings.push(`自编指标执行失败：${msg}`);
-    return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings };
+    diagnostics.push({
+      time: new Date().toISOString().slice(0, 10),
+      event: 'script_error',
+      reason: `自编指标执行失败：${msg}`,
+      data: { indicatorName: (buyCondition as BacktestCondition).indicatorName },
+    });
+    return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings, diagnostics };
   }
 
   // 校验信号长度
   if (buySignals.length !== bars.length) {
     warnings.push(`买入信号长度 ${buySignals.length} 与 K 线数量 ${bars.length} 不一致`);
-    return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings };
+    return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings, diagnostics };
   }
 
-  // 3. 确定预热期
+  // 3. 确定预热期和日期范围
   const warmupDays = Math.max(
     indicatorParams.ma60,
     indicatorParams.bollPeriod,
     indicatorParams.macdSlow + indicatorParams.macdSignal,
     indicatorParams.rsiPeriod,
-    5,
+    MIN_WARMUP_DAYS,
   );
   const firstValidIdx = warmupDays;
+
+  // 计算 startDate 和 endDate 对应的 bar 索引
+  const startIdx = startDate ? bars.findIndex((b) => b.time >= startDate) : firstValidIdx;
+  const endIdx = endDate ? findLastIndex(bars, (b) => b.time <= endDate) : bars.length - 1;
 
   // 4. 模拟交易
   let cash = capital;
@@ -312,7 +431,7 @@ export async function runBacktest(
   let currentEntryIdx = -1;
   let currentEntryPrice = 0;
 
-  // 诊断计数器：用于无交易时向用户暴露原因
+  // 诊断计数器 + 结构化日志
   let buySignalCount = 0;
   let buyLimitDeferredCount = 0;
   let buyLimitExpiredCount = 0;
@@ -328,7 +447,7 @@ export async function runBacktest(
   // 回撤 O(1) 优化：维护历史峰值
   let peakEquity = capital;
 
-  onProgress?.({ stage: 'signals', percent: 55, message: '开始信号检测与模拟交易...' });
+  safeProgress(onProgress, { stage: 'signals', percent: 55, message: '开始信号检测与模拟交易...' });
 
   const totalBars = bars.length;
   let processed = 0;
@@ -337,6 +456,11 @@ export async function runBacktest(
     const bar = bars[i];
     const isLastBar = i === totalBars - 1;
     const prevClose = i > 0 ? bars[i - 1].close : bar.open;
+
+    // 判断当前 bar 是否在用户选择的日期范围内
+    const inDateRange = i >= startIdx && i <= endIdx;
+    // 回测期结束日：到达 endDate 对应的 bar 时视为期末
+    const isBacktestEnd = i === endIdx;
 
     // 停牌日：沿用前日净值
     if (bar.volume === 0) {
@@ -352,125 +476,183 @@ export async function runBacktest(
       continue;
     }
 
-    // --- 处理待成交买入信号 ---
-    // 信号确认机制已废除：信号日触发后，次日执行时不再要求信号持续为真
-    if (state === 'idle' && pendingBuySignal !== null) {
-      if (isPriceLimited(bar, prevClose, 'buy', limitPct)) {
-        pendingBuySignal.deferCount++;
-        buyLimitDeferredCount++;
-        if (pendingBuySignal.deferCount > maxDeferDays) {
-          buyLimitExpiredCount++;
-          warnings.push(`${bar.time} 买入信号顺延超过 ${maxDeferDays} 天，自动失效`);
+    // --- 仅在日期范围内执行交易逻辑 ---
+    if (inDateRange) {
+      // --- 处理待成交买入信号 ---
+      if (state === 'idle' && pendingBuySignal !== null) {
+        if (isPriceLimited(bar, prevClose, 'buy', limitPct)) {
+          pendingBuySignal.deferCount++;
+          buyLimitDeferredCount++;
+          diagnostics.push({
+            time: bar.time,
+            event: 'buy_deferred',
+            reason: `涨停限制，已顺延 ${pendingBuySignal.deferCount} 天`,
+            data: { deferCount: pendingBuySignal.deferCount, maxDeferDays },
+          });
+          if (pendingBuySignal.deferCount > maxDeferDays) {
+            buyLimitExpiredCount++;
+            diagnostics.push({
+              time: bar.time,
+              event: 'buy_expired',
+              reason: `买入信号顺延超过 ${maxDeferDays} 天，自动失效`,
+            });
+            warnings.push(`${bar.time} 买入信号顺延超过 ${maxDeferDays} 天，自动失效`);
+            pendingBuySignal = null;
+          }
+        } else {
+          const execPrice = executionPrice === 'next_open' ? bar.open : bar.close;
+          const availableCash = cash * (1 - feeRate);
+          const buyShares = Math.floor(availableCash / (execPrice * LOT_SIZE)) * LOT_SIZE;
+          if (buyShares >= LOT_SIZE) {
+            const cost = buyShares * execPrice * (1 + feeRate);
+            cash -= cost;
+            shares = buyShares;
+            currentEntryIdx = i;
+            currentEntryPrice = execPrice;
+            state = 'holding';
+            diagnostics.push({
+              time: bar.time,
+              event: 'buy_executed',
+              reason: `执行买入 ${buyShares} 股 @ ${execPrice}`,
+              data: { shares: buyShares, price: execPrice, cost },
+            });
+            trades.push({
+              id: tradeId++,
+              direction: 'buy',
+              entryTime: bar.time,
+              exitTime: '',
+              entryPrice: execPrice,
+              exitPrice: 0,
+              shares: buyShares,
+              profit: 0,
+              profitPct: 0,
+              holdDays: 0,
+              isForcedClose: false,
+              entryReason: buildEntryReason(buyCondition),
+              exitReason: '',
+            });
+          } else {
+            insufficientFundCount++;
+            diagnostics.push({
+              time: bar.time,
+              event: 'insufficient_funds',
+              reason: `资金不足 1 手（需 ${execPrice * LOT_SIZE} 元，可用 ${cash} 元）`,
+              data: { required: execPrice * LOT_SIZE, available: cash },
+            });
+            warnings.push(`${bar.time} 资金不足 1 手，无法买入（需 ${execPrice * LOT_SIZE} 元，可用 ${cash} 元）`);
+          }
           pendingBuySignal = null;
         }
-      } else {
-        const execPrice = executionPrice === 'next_open' ? bar.open : bar.close;
-        const availableCash = cash * (1 - feeRate);
-        const buyShares = Math.floor(availableCash / (execPrice * LOT_SIZE)) * LOT_SIZE;
-        if (buyShares >= LOT_SIZE) {
-          const cost = buyShares * execPrice * (1 + feeRate);
-          cash -= cost;
-          shares = buyShares;
-          currentEntryIdx = i;
-          currentEntryPrice = execPrice;
-          state = 'holding';
+      }
+
+      // --- 处理待成交卖出信号 ---
+      if (state === 'holding' && pendingSellSignal !== null) {
+        if (isPriceLimited(bar, prevClose, 'sell', limitPct)) {
+          pendingSellSignal.deferCount++;
+          sellLimitDeferredCount++;
+          diagnostics.push({
+            time: bar.time,
+            event: 'sell_deferred',
+            reason: `跌停限制，已顺延 ${pendingSellSignal.deferCount} 天`,
+            data: { deferCount: pendingSellSignal.deferCount, maxDeferDays },
+          });
+          if (pendingSellSignal.deferCount > maxDeferDays) {
+            sellLimitExpiredCount++;
+            diagnostics.push({
+              time: bar.time,
+              event: 'sell_expired',
+              reason: `卖出信号顺延超过 ${maxDeferDays} 天，自动失效`,
+            });
+            warnings.push(`${bar.time} 卖出信号顺延超过 ${maxDeferDays} 天，自动失效`);
+            pendingSellSignal = null;
+          }
+        } else {
+          const execPrice = executionPrice === 'next_open' ? bar.open : bar.close;
+          const sellProceeds = execPrice * shares * (1 - feeRate);
+          const buyCost = currentEntryPrice * shares * (1 + feeRate);
+          const actualProfit = sellProceeds - buyCost;
+          cash += sellProceeds;
+
+          diagnostics.push({
+            time: bar.time,
+            event: 'sell_executed',
+            reason: `MA5下穿MA20，卖出 ${shares} 股 @ ${execPrice}`,
+            data: { shares, price: execPrice, profit: actualProfit },
+          });
           trades.push({
             id: tradeId++,
-            direction: 'buy',
-            entryTime: bar.time,
-            exitTime: '',
-            entryPrice: execPrice,
-            exitPrice: 0,
-            shares: buyShares,
-            profit: 0,
-            profitPct: 0,
-            holdDays: 0,
+            direction: 'sell',
+            entryTime: bars[currentEntryIdx].time,
+            exitTime: bar.time,
+            entryPrice: currentEntryPrice,
+            exitPrice: execPrice,
+            shares,
+            profit: actualProfit,
+            profitPct: (actualProfit / capital) * 100,
+            holdDays: i - currentEntryIdx - 1,
             isForcedClose: false,
             entryReason: buildEntryReason(buyCondition),
-            exitReason: '',
+            exitReason: 'MA5下穿MA20',
           });
-        } else {
-          insufficientFundCount++;
-          warnings.push(`${bar.time} 资金不足 1 手，无法买入（需 ${execPrice * LOT_SIZE} 元，可用 ${cash} 元）`);
-        }
-        pendingBuySignal = null;
-      }
-    }
-
-    // --- 处理待成交卖出信号 ---
-    // 同步废除卖出信号确认：死叉触发后，次日执行时不再要求 MA5 持续低于 MA20
-    if (state === 'holding' && pendingSellSignal !== null) {
-      if (isPriceLimited(bar, prevClose, 'sell', limitPct)) {
-        pendingSellSignal.deferCount++;
-        sellLimitDeferredCount++;
-        if (pendingSellSignal.deferCount > maxDeferDays) {
-          sellLimitExpiredCount++;
-          warnings.push(`${bar.time} 卖出信号顺延超过 ${maxDeferDays} 天，自动失效`);
+          shares = 0;
+          state = 'idle';
           pendingSellSignal = null;
         }
-      } else {
-        const execPrice = executionPrice === 'next_open' ? bar.open : bar.close;
-        const sellProceeds = execPrice * shares * (1 - feeRate);
-        const buyCost = currentEntryPrice * shares * (1 + feeRate);
-        const actualProfit = sellProceeds - buyCost;
-        cash += sellProceeds;
+      }
 
+      // --- 期末清仓（到达 endDate 时，若仍持有仓位则强制清仓）---
+      if (isBacktestEnd && state === 'holding') {
+        const exitPrice = bar.close;
+        const grossProfit = (exitPrice - currentEntryPrice) * shares;
+        const fee = (exitPrice * shares) * feeRate;
+        const profit = grossProfit - fee;
+        cash += exitPrice * shares - fee;
+        diagnostics.push({
+          time: bar.time,
+          event: 'forced_close',
+          reason: '期末强制清仓',
+          data: { shares, price: exitPrice, profit },
+        });
         trades.push({
           id: tradeId++,
-          direction: 'sell',
+          direction: 'close',
           entryTime: bars[currentEntryIdx].time,
           exitTime: bar.time,
           entryPrice: currentEntryPrice,
-          exitPrice: execPrice,
+          exitPrice,
           shares,
-          profit: actualProfit,
-          profitPct: (actualProfit / capital) * 100,
+          profit,
+          profitPct: (profit / capital) * 100,
           holdDays: i - currentEntryIdx - 1,
-          isForcedClose: false,
+          isForcedClose: true,
           entryReason: buildEntryReason(buyCondition),
-          exitReason: 'MA5下穿MA20',
+          exitReason: '期末强制清仓',
         });
         shares = 0;
-        state = 'idle';
-        pendingSellSignal = null;
+        state = 'closed';
       }
-    }
 
-    // --- 期末清仓（信号执行完毕后，若仍持有仓位则强制清仓）---
-    if (isLastBar && state === 'holding') {
-      const exitPrice = bar.close;
-      const grossProfit = (exitPrice - currentEntryPrice) * shares;
-      const fee = (exitPrice * shares) * feeRate;
-      const profit = grossProfit - fee;
-      cash += exitPrice * shares - fee;
-      trades.push({
-        id: tradeId++,
-        direction: 'close',
-        entryTime: bars[currentEntryIdx].time,
-        exitTime: bar.time,
-        entryPrice: currentEntryPrice,
-        exitPrice,
-        shares,
-        profit,
-        profitPct: (profit / capital) * 100,
-        holdDays: i - currentEntryIdx - 1,
-        isForcedClose: true,
-        entryReason: buildEntryReason(buyCondition),
-        exitReason: '期末强制清仓',
-      });
-      shares = 0;
-      state = 'closed';
-    }
+      // --- 信号检测 ---
+      if (state === 'idle' && pendingBuySignal === null && buySignals[i]) {
+        buySignalCount++;
+        diagnostics.push({
+          time: bar.time,
+          event: 'buy_signal',
+          reason: `自编指标 "${buyCondition.indicatorName}" 发出买入信号`,
+          data: { indicatorName: buyCondition.indicatorName },
+        });
+        pendingBuySignal = { idx: i, deferCount: 0 };
+      }
 
-    // --- 信号检测 ---
-    if (state === 'idle' && pendingBuySignal === null && buySignals[i]) {
-      buySignalCount++;
-      pendingBuySignal = { idx: i, deferCount: 0 };
-    }
-
-    if (state === 'holding' && pendingSellSignal === null && checkMaDeathCross(cache, i)) {
-      sellSignalCount++;
-      pendingSellSignal = { idx: i, deferCount: 0 };
+      if (state === 'holding' && pendingSellSignal === null && checkMaDeathCross(cache, i)) {
+        sellSignalCount++;
+        diagnostics.push({
+          time: bar.time,
+          event: 'sell_signal',
+          reason: 'MA5下穿MA20 发出卖出信号',
+        });
+        pendingSellSignal = { idx: i, deferCount: 0 };
+      }
     }
 
     // --- 计算当日净值 ---
@@ -485,9 +667,9 @@ export async function runBacktest(
     });
 
     processed++;
-    if (processed % 50 === 0 && onProgress) {
+    if (processed % PROGRESS_REPORT_INTERVAL === 0) {
       const pct = Math.round(55 + (processed / (totalBars - firstValidIdx)) * 35);
-      onProgress({
+      safeProgress(onProgress, {
         stage: 'simulating',
         percent: Math.min(pct, 90),
         message: `处理到 ${bar.time} (${processed}/${totalBars - firstValidIdx})`,
@@ -501,6 +683,12 @@ export async function runBacktest(
     const exitPrice = lastBar.close;
     const actualProfit = (exitPrice - currentEntryPrice) * shares;
     cash += exitPrice * shares;
+    diagnostics.push({
+      time: lastBar.time,
+      event: 'forced_close',
+      reason: '兜底清仓（回测结束时仍持有仓位）',
+      data: { shares, price: exitPrice, profit: actualProfit },
+    });
     trades.push({
       id: tradeId++,
       direction: 'close',
@@ -518,15 +706,19 @@ export async function runBacktest(
     });
     shares = 0;
   } else if (pendingBuySignal !== null) {
-    // T+1 模型：信号出现在回测最后交易日，无下一交易日可执行
     unexecutedBuyCount++;
+    diagnostics.push({
+      time: bars[bars.length - 1].time,
+      event: 'unexecuted_buy',
+      reason: '买入信号出现在回测期最后交易日，T+1 模型无法执行',
+    });
     warnings.push(
       `${bars[bars.length - 1].time} 出现买入信号，但已是回测期最后交易日，` +
       `T+1 成交模型无法执行该信号。`,
     );
   }
 
-  onProgress?.({ stage: 'simulating', percent: 95, message: '模拟交易完成，计算汇总指标...' });
+  safeProgress(onProgress, { stage: 'simulating', percent: 95, message: '模拟交易完成，计算汇总指标...' });
 
   // 5. 诊断汇总：无完整交易时向用户暴露具体原因
   const closedTrades = trades.filter((t) => t.direction === 'sell' || t.isForcedClose);
@@ -543,9 +735,9 @@ export async function runBacktest(
   // 6. 计算汇总指标
   const summary = computeSummary(trades, equityCurve, capital, riskFreeRate, warmupDays, bars.length - firstValidIdx);
 
-  onProgress?.({ stage: 'done', percent: 100, message: '回测完成' });
+  safeProgress(onProgress, { stage: 'done', percent: 100, message: '回测完成' });
 
-  return { trades, equityCurve, summary, warnings };
+  return { trades, equityCurve, summary, warnings, diagnostics };
 }
 
 // ==================== 辅助函数 ====================

@@ -134,17 +134,30 @@ export class CustomIndicatorRunner {
 
     const rawVal = result.values[0];
     const daysCount = data.close.length;
-    if (Array.isArray(rawVal)) {
-      if (rawVal.length !== daysCount) {
-        throw new Error(
-          `脚本返回数组长度 ${rawVal.length} 与 K 线数量 ${daysCount} 不一致`,
-        );
-      }
-      return rawVal as (number | null)[];
+    
+    // 处理 TypedArray（Pyodide 可能返回 Int32Array/Float64Array 等）
+    let jsArray: any[];
+    if (rawVal && typeof rawVal === 'object' && 'length' in rawVal && typeof rawVal[Symbol.iterator] === 'function') {
+      // TypedArray 或类似数组的对象，转换为普通 Array
+      jsArray = Array.from(rawVal);
+    } else if (Array.isArray(rawVal)) {
+      jsArray = rawVal;
+    } else {
+      // 兼容旧脚本：返回标量时，视为最后一天的结果，前面补 0
+      return new Array(daysCount - 1).fill(0).concat(rawVal === null ? [0] : [rawVal as number]);
     }
-
-    // 兼容旧脚本：返回标量时，视为最后一天的结果，前面补 0
-    return new Array(daysCount - 1).fill(0).concat(rawVal === null ? [0] : [rawVal as number]);
+    
+    // 兼容处理：如果脚本返回长度为1的数组，视为仅最后一天的信号，前面补0
+    if (jsArray.length === 1 && daysCount > 1) {
+      return new Array(daysCount - 1).fill(0).concat(jsArray);
+    }
+    
+    if (jsArray.length !== daysCount) {
+      throw new Error(
+        `脚本返回数组长度 ${jsArray.length} 与 K 线数量 ${daysCount} 不一致`,
+      );
+    }
+    return jsArray as (number | null)[];
   }
 
   /**
@@ -188,9 +201,18 @@ export class CustomIndicatorRunner {
       const errors: string[] = [];
       let batchId = `batch_${this.batchIdCounter++}`;
 
+      // 全局最大天数（所有股票），确保跨批次填充长度一致
+      let globalMaxDays = 0;
+      for (const code of stockCodes) {
+        const bars = allOhlcv.get(code);
+        if (bars && bars.length > globalMaxDays) {
+          globalMaxDays = bars.length;
+        }
+      }
+
       for (let bi = 0; bi < stockBatches.length; bi++) {
         const batchCodes = stockBatches[bi];
-        const batchData = this.prepareBatchData(batchCodes, allOhlcv);
+        const batchData = this.prepareBatchData(batchCodes, allOhlcv, globalMaxDays);
         const daysCount = batchData.close[0]?.length ?? 0;
 
         const scriptResult = await this.executeSingleBatch(
@@ -207,8 +229,22 @@ export class CustomIndicatorRunner {
             const rawVal = scriptResult.values[ci];
             if (rawVal === undefined || rawVal === null) {
               allValues.set(stockCode, new Array(daysCount).fill(null));
+            } else if (rawVal && typeof rawVal === 'object' && 'length' in rawVal && typeof rawVal[Symbol.iterator] === 'function') {
+              // TypedArray 或类似数组的对象，转换为普通 Array
+              const converted = Array.from(rawVal) as (number | null)[];
+              // 兼容处理：如果脚本返回长度为1的数组，视为仅最后一天的信号，前面补0
+              if (converted.length === 1 && daysCount > 1) {
+                allValues.set(stockCode, new Array(daysCount - 1).fill(0).concat(converted));
+              } else {
+                allValues.set(stockCode, converted);
+              }
             } else if (Array.isArray(rawVal)) {
-              allValues.set(stockCode, rawVal as (number | null)[]);
+              // 兼容处理：如果脚本返回长度为1的数组，视为仅最后一天的信号，前面补0
+              if (rawVal.length === 1 && daysCount > 1) {
+                allValues.set(stockCode, new Array(daysCount - 1).fill(0).concat(rawVal));
+              } else {
+                allValues.set(stockCode, rawVal as (number | null)[]);
+              }
             } else {
               allValues.set(stockCode, new Array(daysCount).fill(rawVal as number));
             }
@@ -249,10 +285,12 @@ export class CustomIndicatorRunner {
   /**
    * 准备发送给 Worker 的批次数据
    * 将 OHLCV 转换为行优先的二维数组，新股前面补 null
+   * @param maxDaysOverride 可选的全局最大天数，确保跨批次填充长度一致
    */
   private prepareBatchData(
     stockCodes: string[],
     allOhlcv: Map<string, number[][]>,
+    maxDaysOverride?: number,
   ): {
     close: (number | null)[][];
     high: (number | null)[][];
@@ -260,12 +298,14 @@ export class CustomIndicatorRunner {
     open: (number | null)[][];
     volume: (number | null)[][];
   } {
-    // 找到该批次中最长的天数
-    let maxDays = 0;
-    for (const code of stockCodes) {
-      const bars = allOhlcv.get(code);
-      if (bars && bars.length > maxDays) {
-        maxDays = bars.length;
+    // 找到该批次中最长的天数（优先使用全局 maxDays）
+    let maxDays = maxDaysOverride ?? 0;
+    if (maxDays === 0) {
+      for (const code of stockCodes) {
+        const bars = allOhlcv.get(code);
+        if (bars && bars.length > maxDays) {
+          maxDays = bars.length;
+        }
       }
     }
 
