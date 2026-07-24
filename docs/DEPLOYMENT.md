@@ -1,9 +1,9 @@
-# 部署文档（Phase 5.1.a）
+# 部署文档
 
 > 量化交易系统生产环境部署指南
 >
 > 创建日期：2026-06-10
-> 最后更新：2026-07-09
+> 最后更新：2026-07-24
 >
 > 适用范围：Docker + Docker Compose 部署（Linux/macOS/Windows WSL2）
 
@@ -495,4 +495,74 @@ docker compose --env-file .env.production -p quant-trading up -d
 
 ---
 
-**最后更新**: 2026-06-10（方舟，Phase 5.1.a）
+## 🗄️ 数据库初始化
+
+### 首次部署
+
+```bash
+# 1. 初始化数据库（超级用户执行，仅首次）
+psql -h localhost -U postgres -d quant_trading -f backend/collector/db/sql/init_db.sql
+
+# 2. 创建分区维护存储过程
+psql -h localhost -U quant_user -d quant_trading -f backend/collector/db/sql/partition_maintenance.sql
+
+# 3. 验证分区
+psql -U quant_user -d quant_trading -c "SELECT * FROM get_partition_status('stock_quotes');"
+psql -U quant_user -d quant_trading -c "SELECT * FROM get_partition_status('stock_indicators');"
+```
+
+### 年度分区维护
+
+```bash
+# 每年年底执行，添加下一年度分区
+psql -U quant_user -d quant_trading <<EOF
+CALL add_year_partition('stock_quotes', 2031);
+CALL add_year_partition('stock_indicators', 2031);
+SELECT * FROM get_partition_status('stock_quotes');
+EOF
+```
+
+---
+
+## 🐳 Docker 镜像构建
+
+### 架构说明
+
+前后端分离部署（两台独立容器）：
+
+| 容器 | 镜像 | 端口 | 说明 |
+|:-----|:-----|:----:|:-----|
+| 后端服务器 | quant-backend:1.0.0 | 8000 | postgres + FastAPI |
+| 前端服务器 | quant-frontend:1.0.0 | 80 | Nginx 反代（→ localhost:8000）|
+
+### 构建命令
+
+```bash
+# 后端镜像（~790MB，首次构建约 10 分钟）
+docker build -t quant-backend:1.0.0 -f Dockerfile.backend .
+
+# 前端镜像（~50MB，首次构建约 2 分钟）
+docker build -t quant-frontend:1.0.0 -f Dockerfile.frontend .
+```
+
+### 启动
+
+```bash
+# 启动后端（postgres + backend）
+docker compose --env-file .env.production up -d
+
+# 启动前端（nginx）
+docker compose -f docker-compose.frontend.yml --env-file .env.production up -d
+```
+
+### 常见问题
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| `container quant-backend is unhealthy` | 应用启动失败 | `docker logs quant-backend` 查看错误 |
+| 前端 502 | 后端未启动或端口不对 | 确认 backend 在 localhost:8000 运行中 |
+| Linux 下前端 502 | host.docker.internal 不生效 | 在 docker-compose.frontend.yml 中取消 `extra_hosts` 注释 |
+
+---
+
+**最后更新**: 2026-07-24

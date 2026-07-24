@@ -390,4 +390,7 @@ Phase 5.2 性能优化已完成三项：
 
 **通知**: [量量→方舟 2026-07-20 21:05] 协作单 [9.1-ADJ-FACTOR-BUG-20260719] 处理进展：stock_adj_factor 全量同步已完成（5220只/5061万条），stock_quotes 全量重导已启动（PID 43670，日志 logs/etl/import_full_baostock_20260720_v10.log）。同时修复了 v2 全量导入中 Terminal#995-1003 出现的 Baostock/Tushare 双不可用问题：Tushare 限流降至45次/分钟+频率超限60s等待、Baostock/Tushare 禁用阈值放宽至10次、已退市股票过滤及请求范围截断。当前 v10 进度约 1919/5220，待全量重导完成后进入 VERIFY。
 
-**通知**: [量量→K 2026-07-20 21:18] 协作单 [9.1-ADJ-FACTOR-BUG-20260719] 紧急更新：学习 Baostock 官方文档后发现 `baostock.py` 复权标志错误 —— `_ADJUST_FLAG = '3'` 实际拉取的是**不复权**数据，但系统当作前复权入库。v10 进程已立即停止，代码已修复为 `'2'`（前复权）。v10 已写入的 stock_quotes 为未复权价格，必须清空后重新全量导入。请 K 确认是否清空 stock_quotes 并启动 v11。
+**通知**: [K→量量 2026-07-24 09:00] 协作单 [3.2-SNAPSHOT-NULL-20260724] 状态变更: NEW（P0：stock_daily_snapshot 中 turnover_rate/pe/pb/market_cap 全部 NULL——daily_snapshot_sync.py L210 精确日期匹配导致 stock_daily_basic 落后一天时 JOIN 全失败，5198 条记录基本面字段全 NULL，影响选股功能）
+[量量→K 2026-07-24 11:10] 协作单 [3.2-SNAPSHOT-NULL-20260724] 状态变更: NEW→VERIFY（已修复：① 补跑 sync_daily_basic.py --date 2026-07-23（Tushare 5526条）→ ② 重跑 daily_snapshot_sync.py --date 2026-07-23（5198条，pattern 4561行）→ ③ 重导出 parquet（5198条/92列）。验证：tr=5198(100%), pe=3796(73%), pb=5157(99%), mc=5198(100%)，全部非空。⚠️ pe 73% 覆盖率为亏损股无 pe 的正常现象，不影响选股功能。请 K 验证关闭。）
+
+[量量→K 2026-07-20 21:18] 协作单 [9.1-ADJ-FACTOR-BUG-20260719] 紧急更新：学习 Baostock 官方文档后发现 `baostock.py` 复权标志错误 —— `_ADJUST_FLAG = '3'` 实际拉取的是**不复权**数据，但系统当作前复权入库。v10 进程已立即停止，代码已修复为 `'2'`（前复权）。v10 已写入的 stock_quotes 为未复权价格，必须清空后重新全量导入。请 K 确认是否清空 stock_quotes 并启动 v11。

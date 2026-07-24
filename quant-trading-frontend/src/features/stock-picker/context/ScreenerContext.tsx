@@ -535,11 +535,17 @@ function rootReducer(state: ScreenerState, action: ScreenerAction): ScreenerStat
   }
 
   // 加载策略：与默认值合并，确保缺失字段有默认值，保留当前 panels（UI 折叠偏好）
+  // 保留当前 state.custom.indicators（从 localStorage 加载），避免用旧策略保存的
+  // 指标列表覆盖新增加的自编指标（K 2026-07-24 故障修复）
   if (action.type === 'LOAD_STRATEGY') {
     const defaults = createInitialState();
     return {
       ...defaults,
       ...action.payload,
+      custom: {
+        ...action.payload.custom,
+        indicators: state.custom.indicators,
+      },
       panels: state.panels,
     };
   }

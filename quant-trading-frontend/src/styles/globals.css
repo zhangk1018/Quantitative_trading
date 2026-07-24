@@ -20,9 +20,15 @@ body {
   @apply bg-bg-card rounded-full hover:bg-border-hover transition-colors;
 }
 
-/* 回测配置页：RangePicker 只显示单月 */
+/* 回测配置页：RangePicker 只显示单月，隐藏第二面板 */
 .single-month-range .ant-picker-panel:last-child {
   display: none;
+}
+/* 强制显示第一个面板的右箭头（Ant Design 在单面板时默认隐藏） */
+.single-month-range .ant-picker-panel:first-child .ant-picker-header-next-btn,
+.single-month-range .ant-picker-panel:first-child .ant-picker-header-super-next-btn {
+  visibility: visible !important;
+  pointer-events: auto !important;
 }
 
 /* 系统设置页 Tabs：填满父容器高度，让内容区滚动 */

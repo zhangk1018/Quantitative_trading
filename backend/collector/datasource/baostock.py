@@ -492,6 +492,8 @@ class BaostockDataSource(BaseDataSource):
             return pd.DataFrame()
 
         try:
+            if not self._ensure_connected():
+                return pd.DataFrame()
             self._wait_for_rate_limit()
             def do_query():
                 return bs.query_history_k_data_plus(

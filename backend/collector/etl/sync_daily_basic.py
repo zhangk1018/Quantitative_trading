@@ -6,7 +6,7 @@ sync_daily_basic.py - 日频基本面数据同步脚本
 
 数据源优先级（与项目规范一致）：
   1. Tushare Pro — 主用，全量基本面（含 pe_ttm/pb/dv_ratio/ps_ttm/float_share/市值等），限速 5次/天
-  2. Baostock — 兜底，逐只股票拉取 PE/PB/换手率（稳定、免费）
+  2. Baostock — 备用，逐只股票拉取 PE/PB/换手率（免费，接口不稳定）
   3. PyWenCai — 预留（待实现），全市场一次拉取
 
 注意：Baostock 仅提供 pe、pb、turnover_rate；
@@ -54,7 +54,7 @@ class DailyBasicSync:
                 'password': os.getenv('PG_PASSWORD', ''),
             }
         self.storage = PostgreSQLStorage(db_config)
-        # 数据源优先级：Tushare Pro（全量基本面，限速）→ Baostock（免费稳定，PE/PB/换手率兜底）
+        # 数据源优先级：Tushare Pro（主用，全量基本面）→ Baostock（备用，pe_ttm 补全）
         self.dsm = DataSourceManager(
             sources=[
                 {'source': TushareDataSource(), 'weight': 1, 'priority': 0},
@@ -155,6 +155,11 @@ class DailyBasicSync:
 
         if baostock_source is None:
             logger.warning("  未找到 Baostock 数据源，跳过 pe_ttm 补全")
+            return 0
+
+        # 检查 Baostock 是否已连接，若不可用则跳过（避免 "you don't login" 反复刷屏）
+        if not hasattr(baostock_source, '_ensure_connected') or not baostock_source._ensure_connected():
+            logger.warning("  ⚠️ Baostock 未连接或不可用，跳过 pe_ttm 补全（Tushare 主数据已保存，不影响核心字段）")
             return 0
 
         filled = 0

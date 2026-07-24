@@ -173,7 +173,7 @@ export function StrategyListDrawer({
                         }
                       }}
                       autoFocus
-                      style={{ width: '100%', padding: '4px 8px', border: '1px solid #1677ff', borderRadius: 4 }}
+                      style={{ width: '100%', padding: '4px 8px', border: '1px solid #1677ff', borderRadius: 4, background: '#1E222D', color: '#EAECEF' }}
                       data-testid={`strategy-rename-input-${item.id}`}
                     />
                   ) : (
