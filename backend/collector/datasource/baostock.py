@@ -26,7 +26,8 @@ logger = setup_logger('baostock_datasource')
 BAOSTOCK_REQUEST_TIMEOUT = 30
 
 # 全局线程池：限制最大工作线程数，防止超时后孤儿线程堆积导致资源泄漏
-_baostock_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="baostock_worker")
+# 设为 5 以降低因 Baostock 卡死导致池满的概率（2 个线程容易被僵尸线程占满）
+_baostock_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="baostock_worker")
 
 def _run_baostock_with_timeout(func, args=(), kwargs={}, timeout=BAOSTOCK_REQUEST_TIMEOUT):
     """带超时的 Baostock 函数执行（使用线程池替代原生 Thread，避免孤儿线程泄漏）"""

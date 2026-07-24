@@ -25,6 +25,7 @@ import time
 import pandas as pd
 from datetime import datetime
 from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from psycopg2.extras import execute_values
 
 from collector.datasource.baostock import BaostockDataSource
@@ -555,6 +556,9 @@ def main():
             fail = 0
             total_records = 0
 
+            # 单只股票超时设置：每只股票最多 120 秒，防止 Baostock 卡死阻塞整个补全流程
+            STOCK_TIMEOUT = 120
+
             try:
                 for i, code in enumerate(codes):
                     logger.info(f"  [{start_idx+i+1}/{total}] 补全 {code}...")
@@ -562,15 +566,25 @@ def main():
                     imp_start = args.start_date or '2000-01-01'
                     imp_end = args.end_date or datetime.now().strftime('%Y-%m-%d')
 
-                    count = import_stock_via_baostock(storage, ds, code,
-                                                      start_date=imp_start,
-                                                      end_date=imp_end)
-                    if count > 0:
-                        success += 1
-                        total_records += count
-                        logger.info(f"    ✅ 导入 {count} 条")
-                    else:
-                        fail += 1
+                    # 使用独立线程执行每只股票的导入，带超时保护
+                    def _do_import():
+                        return import_stock_via_baostock(storage, ds, code,
+                                                         start_date=imp_start,
+                                                         end_date=imp_end)
+
+                    with ThreadPoolExecutor(max_workers=1) as stock_executor:
+                        stock_future = stock_executor.submit(_do_import)
+                        try:
+                            count = stock_future.result(timeout=STOCK_TIMEOUT)
+                            if count > 0:
+                                success += 1
+                                total_records += count
+                                logger.info(f"    ✅ 导入 {count} 条")
+                            else:
+                                fail += 1
+                        except FuturesTimeoutError:
+                            fail += 1
+                            logger.warning(f"    ⏰ 超时（>{STOCK_TIMEOUT}s），跳过 {code}")
 
                     if (i + 1) % 50 == 0:
                         logger.info(f"  进度: {i+1}/{len(codes)}, 成功 {success}, 失败 {fail}, 记录 {total_records}")

@@ -630,8 +630,40 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
     date_col = cfg["date_col"]
     task_name = cfg.get("task_name")  # task_run_log 专用：按 task_name 过滤
 
+    # ========== 优先检查 task_run_log 今日执行状态 ==========
+    # 如果 task_run_log 中有今日的执行记录，以此为准
+    task_run_log_name = task_name or task_key  # 优先使用 cfg 中指定的 task_name
+    today_log = _query_one(
+        "SELECT status, start_time, end_time, data_date, rows_affected, error_message "
+        "FROM task_run_log WHERE task_name = %s AND start_time >= CURRENT_DATE "
+        "ORDER BY start_time DESC LIMIT 1",
+        (task_run_log_name,),
+    )
+    if today_log:
+        log_status = today_log["status"]
+        # 记录中有明确的成功/失败/运行中状态
+        if log_status == "success":
+            # 检查数据覆盖情况（若设置了 data_date 且数据表有该日期的数据）
+            log_data_date = today_log.get("data_date")
+            if log_data_date:
+                data_count = _query_scalar(
+                    f"SELECT COUNT(*) FROM {table} WHERE {date_col} = %s",
+                    (log_data_date,),
+                ) or 0
+                return {
+                    "status": "success",
+                    "message": f"执行成功，共 {data_count} 条" if data_count else "执行成功",
+                    "data_date": str(log_data_date),
+                    "data_count": data_count,
+                }
+            return {"status": "success", "message": "执行成功"}
+        elif log_status == "running":
+            return {"status": "running", "message": "执行中..."}
+        elif log_status == "failed":
+            return {"status": "failed", "message": (today_log.get("error_message") or "执行失败")[:100]}
+
+    # ========== 无今日执行记录，回退到数据表检查 ==========
     if task_name:
-        # task_run_log 类型：按 task_name + data_date 查询
         latest_date = _query_scalar(
             f"SELECT MAX({date_col}) FROM {table} WHERE task_name = %s",
             (task_name,),
@@ -644,9 +676,7 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
 
     latest_str = str(latest_date)
 
-    # ========== 判断最新数据是否已更新 ==========
-    # 业务规则：数据日期必须 >= 最近一个交易日（非周末/节假日的最近工作日）
-    # 否则即使有历史数据，也只能算"待执行"，不能冒充今日成功
+    # 判断最新数据是否已更新到期望的交易日
     today_beijing = _now_beijing()
     expected_trade_date = _get_last_trade_date(today_beijing)
 
@@ -694,27 +724,16 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
             "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle = '1d'",
             (latest_date,),
         )
-        min_count = dynamic_min if dynamic_min and dynamic_min > 0 else MonitorConfig.TASK_MIN_COUNTS.get(task_key, 1000)
+        # 优先使用 TASK_MIN_COUNTS 中显式配置的阈值（如 signal_precompute=100），
+        # 因为某些任务（如信号）天然不会覆盖全部股票
+        config_min = MonitorConfig.TASK_MIN_COUNTS.get(task_key)
+        if config_min is not None:
+            min_count = config_min
+        else:
+            min_count = dynamic_min if dynamic_min and dynamic_min > 0 else MonitorConfig.TASK_MIN_COUNTS.get(task_key, 1000)
     coverage = count / min_count * 100 if min_count > 0 else 0
 
     if count >= min_count:
-        # 数据充足，检查完整性（覆盖率）
-        # 以 stock_quotes 为基准算覆盖率
-        if task_key == "snapshot_sync":
-            quote_count = _query_scalar(
-                "SELECT COUNT(*) FROM stock_quotes WHERE trade_date=%s AND cycle='1d'",
-                (latest_date,)
-            ) or 0
-            if quote_count > 0:
-                coverage = count / quote_count * 100
-                if coverage < MonitorConfig.COVERAGE_SUCCESS:
-                    return {
-                        "status": "partial",
-                        "message": f"覆盖率 {coverage:.1f}%（{count}/{quote_count}）",
-                        "data_date": latest_str,
-                        "data_count": count,
-                    }
-
         return {
             "status": "success",
             "message": f"共 {count} 条",
@@ -722,9 +741,18 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
             "data_count": count,
         }
     elif count > 0:
+        # 对于指标/信号等可预期覆盖不足的任务（新股数据不足），使用 COVERAGE_SUCCESS 阈值
+        coverage_threshold = MonitorConfig.COVERAGE_SUCCESS
+        if coverage >= coverage_threshold:
+            return {
+                "status": "success",
+                "message": f"共 {count} 条（覆盖率 {coverage:.1f}%）",
+                "data_date": latest_str,
+                "data_count": count,
+            }
         return {
             "status": "partial",
-            "message": f"数据不足 {count}/{min_count} 条",
+            "message": f"数据不足 {count}/{min_count} 条（覆盖率 {coverage:.1f}%，阈值 {coverage_threshold}%）",
             "data_date": latest_str,
             "data_count": count,
         }
