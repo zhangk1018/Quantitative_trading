@@ -180,8 +180,7 @@ const Watchlist: React.FC = () => {
     message.success(`分组 "${name}" 已创建`);
   }, [newGroupInput, state.customGroups, createGroup, message]);
 
-  const totalStocks = allCodes.length;
-  const hasData = totalStocks > 0;
+  const hasData = allCodes.length > 0;
 
   return (
     <div className="h-full flex flex-col bg-bg-base">
@@ -189,11 +188,14 @@ const Watchlist: React.FC = () => {
       <div className="h-12 px-4 flex items-center justify-between border-b border-border-color bg-bg-panel">
         <div className="flex items-center gap-4">
           <Text className="text-text-primary font-semibold">自选股</Text>
-          <span className="text-text-secondary text-sm">
-            共 {totalStocks} 只
-          </span>
           {quotesRefreshing && (
             <Spin size="small" data-testid="watchlist-refreshing-spinner" />
+          )}
+          {allGroups.length > 0 && (
+            <WatchlistFilter
+              activeGroup={activeGroup}
+              onGroupChange={setActiveGroup}
+            />
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -221,16 +223,6 @@ const Watchlist: React.FC = () => {
           </Button>
         </div>
       </div>
-
-      {/* 分组筛选 */}
-      {allGroups.length > 0 && (
-        <div className="px-4 py-2 border-b border-border-color bg-bg-panel">
-          <WatchlistFilter
-            activeGroup={activeGroup}
-            onGroupChange={setActiveGroup}
-          />
-        </div>
-      )}
 
       {/* 错误提示 */}
       {quotesError && hasData && (

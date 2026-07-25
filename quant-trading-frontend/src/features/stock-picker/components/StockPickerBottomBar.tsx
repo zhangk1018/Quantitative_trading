@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, App } from 'antd';
-import { PlusCircleOutlined, DownloadOutlined, ReloadOutlined, BlockOutlined } from '@ant-design/icons';
+import { PlusCircleOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import { addToBacktestList } from '../../backtest/backtestListStorage';
 import type { StockItem } from '../types';
 
@@ -18,7 +18,7 @@ interface StockPickerBottomBarProps {
 /**
  * 选股器底部操作栏
  *
- * 包含：加入回测列表、添加自选、导出结果、加入黑名单、刷新、已选计数
+ * 包含：加入回测列表、添加自选、导出结果、刷新、已选计数
  */
 export const StockPickerBottomBar: React.FC<StockPickerBottomBarProps> = React.memo(({
   selectedCount, loading, itemsLength,
@@ -74,12 +74,6 @@ export const StockPickerBottomBar: React.FC<StockPickerBottomBarProps> = React.m
           data-testid="export-result-btn"
         >
           导出结果{itemsLength > 0 ? `(${itemsLength})` : ''}
-        </Button>
-        <Button
-          icon={<BlockOutlined />}
-          className="bg-bg-card border-border-color text-text-secondary hover:text-text-primary text-sm"
-        >
-          加入黑名单
         </Button>
       </div>
       <div className="flex items-center gap-4">

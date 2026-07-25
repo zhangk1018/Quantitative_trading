@@ -330,14 +330,7 @@ const ConditionBuilder: React.FC = () => {
           </div>
 
           {/* 条件列表 */}
-          {conditionCount === 0 ? (
-            <div
-              className="text-text-secondary text-sm text-center py-3"
-              data-testid="condition-empty"
-            >
-              — 暂无条件，点击上方 preset 添加 —
-            </div>
-          ) : (
+          {conditionCount > 0 && (
             <div className="space-y-1" data-testid="condition-list">
               {conditions.map((cond) => (
                 <div
