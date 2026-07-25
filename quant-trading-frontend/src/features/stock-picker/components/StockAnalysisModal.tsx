@@ -14,6 +14,8 @@ import { extractCustomIndicatorId } from '../types/filterTree';
 import { getCustomIndicatorById } from '../utils/customIndicatorStorage';
 import { getCustomIndicatorRunner } from '@/features/strategy-backtest/utils/customIndicatorRunner';
 import { meetsThreshold } from '../services/CustomIndicatorService';
+import { useSettings } from '@/shared/contexts/SettingsContext';
+import { getUpDownColors } from '@/shared/contexts/SettingsContext';
 
 const { Text } = Typography;
 
@@ -49,6 +51,7 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
   const [retryCount, setRetryCount] = useState(0);
   const [markers, setMarkers] = useState<ConditionEvent[]>([]);
   const [undetectable, setUndetectable] = useState<{ fieldKey: string; label: string; reason: string }[]>([]);
+  const { colors } = useSettings();
 
   // 从 conditions 中提取 fieldKey 和 lookbackDays
   const conditionConfigs = useMemo<ConditionConfig[]>(() => {
@@ -234,7 +237,7 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
     setRetryCount(c => c + 1);
   }, []);
 
-  const changeColor = (stock?.change_pct ?? 0) >= 0 ? CHART_THEME.green : CHART_THEME.red;
+  const changeColor = (stock?.change_pct ?? 0) >= 0 ? colors.up : colors.down;
 
   return (
     <Modal
@@ -384,7 +387,21 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
   );
 };
 
-/** 后端 PatternMarker 中 5 种形态的视觉映射 */
+/** 后端 PatternMarker 中 5 种形态的视觉映射（根据涨跌颜色方案动态返回） */
+function getPatternMarkerVisualMap(): Record<string, {
+  label: string; color: string; shape: ConditionEvent['shape']; direction: ConditionEvent['direction'];
+}> {
+  const { up, down } = getUpDownColors();
+  return {
+    hammer:              { label: '锤子线',   color: '#2962FF', shape: 'arrowUp',  direction: 'buy' },
+    morning_star:        { label: '早晨之星', color: up, shape: 'arrowUp',  direction: 'buy' },
+    evening_star:        { label: '黄昏之星', color: down, shape: 'arrowDown', direction: 'sell' },
+    bullish_engulfing:   { label: '看涨吞没', color: up, shape: 'arrowUp',  direction: 'buy' },
+    bearish_engulfing:   { label: '看跌吞没', color: down, shape: 'arrowDown', direction: 'sell' },
+  };
+}
+
+// 保留旧常量供兼容（已废弃，请使用 getPatternMarkerVisualMap()）
 export const PATTERN_MARKER_VISUAL_MAP: Record<string, {
   label: string; color: string; shape: ConditionEvent['shape']; direction: ConditionEvent['direction'];
 }> = {
@@ -409,13 +426,14 @@ export function convertPatternMarkersToEvents(
   );
   const timeSet = new Set(candles.map(c => String(c.time)));
   const events: ConditionEvent[] = [];
+  const visualMap = getPatternMarkerVisualMap();
 
   for (const marker of markers) {
     if (!timeSet.has(marker.trade_date)) continue;
     for (const pattern of marker.patterns) {
       const fieldKey = `pattern_${pattern}`;
       if (!activePatternKeys.has(fieldKey)) continue;
-      const config = PATTERN_MARKER_VISUAL_MAP[pattern];
+      const config = visualMap[pattern];
       if (!config) continue;
       events.push({
         time: marker.trade_date,

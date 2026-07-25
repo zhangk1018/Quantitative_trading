@@ -28,7 +28,8 @@ import {
   MACD_COLORS,
   RSI_COLORS,
   KDJ_COLORS,
-  CANDLE_COLORS,
+  getCandleColors,
+  getVolumeColors,
   PANE_RATIOS,
   REF_LINES,
 } from '@/lib/indicators/chart-config';
@@ -188,14 +189,15 @@ const CrosshairOverlay: React.FC<{ info: CrosshairInfo | null; oscType: OscType;
   const change = preClose != null ? close - preClose : 0;
   const changePct = preClose != null && preClose > 0 ? (change / preClose) * 100 : 0;
   const isUp = change >= 0;
-  const changeColor = isUp ? CANDLE_COLORS.up : CANDLE_COLORS.down;
+  const candleColors = getCandleColors();
+  const changeColor = isUp ? candleColors.up : candleColors.down;
 
   const isRsi = oscType === 'rsi';
 
   const rows: { label: string; value: string; color?: string }[] = [
     { label: '开盘', value: sanitizeNumber(open) },
-    { label: '最高', value: sanitizeNumber(high), color: CANDLE_COLORS.up },
-    { label: '最低', value: sanitizeNumber(low), color: CANDLE_COLORS.down },
+    { label: '最高', value: sanitizeNumber(high), color: candleColors.up },
+    { label: '最低', value: sanitizeNumber(low), color: candleColors.down },
     { label: '收盘', value: sanitizeNumber(close), color: changeColor },
     { label: '涨跌额', value: `${isUp ? '+' : ''}${change.toFixed(2)}`, color: changeColor },
     { label: '涨跌幅', value: sanitizePct(changePct), color: changeColor },
@@ -245,7 +247,7 @@ const CrosshairOverlay: React.FC<{ info: CrosshairInfo | null; oscType: OscType;
             DEA {info.dea != null ? info.dea.toFixed(2) : '--'}
           </span>
           <span style={{
-            color: info.macdHist != null ? (info.macdHist >= 0 ? CANDLE_COLORS.up : CANDLE_COLORS.down) : '#848E9C',
+            color: info.macdHist != null ? (info.macdHist >= 0 ? candleColors.up : candleColors.down) : '#848E9C',
             fontWeight: 600,
           }}>
             Hist {info.macdHist != null ? info.macdHist.toFixed(2) : '--'}
@@ -354,12 +356,15 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
 
     chartRef.current = chart;
 
+    const candleColors = getCandleColors();
+    const volumeColors = getVolumeColors();
+
     // 创建所有 series
     const candle = chart.addCandlestickSeries({
       priceScaleId: 'left',
-      upColor: CANDLE_COLORS.up, downColor: CANDLE_COLORS.down,
-      borderUpColor: CANDLE_COLORS.up, borderDownColor: CANDLE_COLORS.down,
-      wickUpColor: CANDLE_COLORS.up, wickDownColor: CANDLE_COLORS.down,
+      upColor: candleColors.up, downColor: candleColors.down,
+      borderUpColor: candleColors.up, borderDownColor: candleColors.down,
+      wickUpColor: candleColors.up, wickDownColor: candleColors.down,
     } as DeepPartial<CandlestickSeriesOptions>);
 
     const ma5 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma5, priceScaleId: 'left', title: 'MA5' }));

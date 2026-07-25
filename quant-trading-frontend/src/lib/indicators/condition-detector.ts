@@ -5,6 +5,7 @@
 import { cleanBars, calcRSI, sma, ema, type KlineBar } from './indicators';
 import { detectAllPatterns } from './patternDetector';
 import type { OHLCVArray, PatternType } from './types';
+import { getUpDownColors } from '@/shared/contexts/SettingsContext';
 
 // ==================== 类型定义 ====================
 
@@ -36,6 +37,31 @@ interface ComputedCache {
 
 // ==================== 视觉配置 ====================
 
+export function getConditionVisualConfig(): Record<string, {
+  color: string;
+  shape: ConditionEvent['shape'];
+  label: string;
+  direction: ConditionEvent['direction'];
+  detectable: boolean;
+  reason?: string;
+}> {
+  const { up, down } = getUpDownColors();
+  return {
+    rsi_oversold:       { color: up, shape: 'arrowUp',  label: 'RSI超卖', direction: 'buy', detectable: true },
+    volume_breakout:    { color: '#FF9800', shape: 'circle',   label: '放量突破', direction: 'neutral', detectable: true },
+    macd_golden_cross:  { color: '#2196F3', shape: 'arrowUp',  label: 'MACD金叉', direction: 'buy', detectable: true },
+    bottom_volume_macd: { color: '#4CAF50', shape: 'square',   label: '底部放量', direction: 'buy', detectable: true },
+    consecutive_up:     { color: '#9C27B0', shape: 'square',   label: '连续上涨', direction: 'buy', detectable: true },
+    low_valuation:      { color: '#888888', shape: 'circle',   label: '低估值',   direction: 'neutral', detectable: false, reason: '需基本面数据' },
+    pattern_morning_star:      { color: up, shape: 'arrowUp',  label: '早晨之星', direction: 'buy', detectable: true },
+    pattern_evening_star:      { color: down, shape: 'arrowDown', label: '黄昏之星', direction: 'sell', detectable: true },
+    pattern_bullish_engulfing: { color: up, shape: 'arrowUp',  label: '看涨吞没', direction: 'buy', detectable: true },
+    pattern_bearish_engulfing: { color: down, shape: 'arrowDown', label: '看跌吞没', direction: 'sell', detectable: true },
+    pattern_hammer:            { color: '#2962FF', shape: 'arrowUp',  label: '锤子线',   direction: 'buy', detectable: true },
+  };
+}
+
+// 保留旧常量供兼容（已废弃，请使用 getConditionVisualConfig()）
 export const CONDITION_VISUAL_CONFIG: Record<string, {
   color: string;
   shape: ConditionEvent['shape'];
@@ -98,7 +124,7 @@ function computeCache(bars: KlineBar[]): ComputedCache {
 
 function detectRsiOversold(cache: ComputedCache, bars: KlineBar[]): ConditionEvent[] {
   const events: ConditionEvent[] = [];
-  const config = CONDITION_VISUAL_CONFIG.rsi_oversold;
+  const config = getConditionVisualConfig().rsi_oversold;
   for (let i = 0; i < cache.rsi6.length; i++) {
     if (cache.rsi6[i] !== null && cache.rsi6[i]! < 30) {
       events.push({
@@ -117,7 +143,7 @@ function detectRsiOversold(cache: ComputedCache, bars: KlineBar[]): ConditionEve
 
 function detectVolumeBreakout(cache: ComputedCache, bars: KlineBar[]): ConditionEvent[] {
   const events: ConditionEvent[] = [];
-  const config = CONDITION_VISUAL_CONFIG.volume_breakout;
+  const config = getConditionVisualConfig().volume_breakout;
   for (let i = 0; i < cache.volumes.length; i++) {
     if (cache.volMa5[i] === null) continue;
     const volRatio5 = cache.volumes[i] / cache.volMa5[i]!;
@@ -138,7 +164,7 @@ function detectVolumeBreakout(cache: ComputedCache, bars: KlineBar[]): Condition
 
 function detectMacdGoldenCross(cache: ComputedCache, bars: KlineBar[]): ConditionEvent[] {
   const events: ConditionEvent[] = [];
-  const config = CONDITION_VISUAL_CONFIG.macd_golden_cross;
+  const config = getConditionVisualConfig().macd_golden_cross;
   for (let i = 1; i < cache.dif.length; i++) {
     if (
       cache.dif[i] !== null && cache.dea[i] !== null &&
@@ -160,7 +186,7 @@ function detectMacdGoldenCross(cache: ComputedCache, bars: KlineBar[]): Conditio
 
 function detectBottomVolumeMacd(cache: ComputedCache, bars: KlineBar[]): ConditionEvent[] {
   const events: ConditionEvent[] = [];
-  const config = CONDITION_VISUAL_CONFIG.bottom_volume_macd;
+  const config = getConditionVisualConfig().bottom_volume_macd;
   for (let i = 0; i < cache.rsi6.length; i++) {
     if (cache.rsi6[i] !== null && cache.rsi6[i]! < 30 &&
         cache.volMa5[i] !== null && cache.volumes[i] > cache.volMa5[i]! * 2) {
@@ -180,7 +206,7 @@ function detectBottomVolumeMacd(cache: ComputedCache, bars: KlineBar[]): Conditi
 
 function detectConsecutiveUp(cache: ComputedCache, bars: KlineBar[]): ConditionEvent[] {
   const events: ConditionEvent[] = [];
-  const config = CONDITION_VISUAL_CONFIG.consecutive_up;
+  const config = getConditionVisualConfig().consecutive_up;
   let streak = 0;
   for (let i = 0; i < cache.closes.length; i++) {
     if (i === 0) continue;
@@ -232,9 +258,10 @@ export function detectConditions(
   const cache = computeCache(bars);
 
   // 收集需要 pattern 检测的 fieldKey
+  const visualConfig = getConditionVisualConfig();
   const patternFieldKeys = conditions
     .map(c => c.fieldKey)
-    .filter(k => k.startsWith('pattern_') && CONDITION_VISUAL_CONFIG[k]?.detectable);
+    .filter(k => k.startsWith('pattern_') && visualConfig[k]?.detectable);
 
   // 批量执行 pattern 检测（全量检测，不做 lookback 截断）
   let patternHitDays: Record<string, number[]> | null = null;
@@ -248,7 +275,7 @@ export function detectConditions(
 
   // 遍历每个条件执行检测
   for (const { fieldKey, lookbackDays } of conditions) {
-    const config = CONDITION_VISUAL_CONFIG[fieldKey];
+    const config = visualConfig[fieldKey];
     if (!config) continue;
 
     if (!config.detectable) {

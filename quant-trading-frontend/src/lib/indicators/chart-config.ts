@@ -1,6 +1,15 @@
 // lib/indicators/chart-config.ts
 // 图表视觉与指标配置 — 集中管理，便于主题切换和参数调整
 
+import { getUpDownColors } from '@/shared/contexts/SettingsContext';
+
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 export const CHART_THEME = {
   bg: '#131722',
   grid: 'rgba(42,46,57,0.5)',
@@ -43,7 +52,13 @@ export const KDJ_COLORS = {
   j: '#9c27b0',
 } as const;
 
-/** 成交量颜色：开盘即涨（close >= open）为绿色，反之为红色 */
+/** 成交量颜色（根据涨跌颜色方案动态返回） */
+export function getVolumeColors() {
+  const { up, down } = getUpDownColors();
+  return { up: hexToRgba(up, 0.6), down: hexToRgba(down, 0.6) };
+}
+
+// 保留旧常量供兼容（已废弃，请使用 getVolumeColors()）
 export const VOLUME_COLORS = {
   up: 'rgba(0,212,170,0.6)',
   down: 'rgba(242,54,69,0.6)',
@@ -77,7 +92,12 @@ export const INDICATOR_PERIODS = {
   kdj: { n: 9, m1: 3, m2: 3 },
 } as const;
 
-/** 蜡烛图颜色 */
+/** 蜡烛图颜色（根据涨跌颜色方案动态返回） */
+export function getCandleColors() {
+  return getUpDownColors();
+}
+
+// 保留旧常量供兼容（已废弃，请使用 getCandleColors()）
 export const CANDLE_COLORS = {
   up: CHART_THEME.green,
   down: CHART_THEME.red,

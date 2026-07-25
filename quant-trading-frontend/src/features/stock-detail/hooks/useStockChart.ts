@@ -10,6 +10,7 @@ import {
 } from 'lightweight-charts';
 import type { KLineItem, SignalItem } from '../api';
 import { validateKLineData, validateSignals } from './chartUtils';
+import { getUpDownColors } from '@/shared/contexts/SettingsContext';
 
 interface StockChartIndicators {
   ma5: boolean;
@@ -51,10 +52,11 @@ function buildMovingAverage(data: ChartBar[], period: number): LineData<Time>[] 
 }
 
 function buildVolumeData(data: ChartBar[]): HistogramData<Time>[] {
+  const { up, down } = getUpDownColors();
   return data.map((item) => ({
     time: toChartTime(item.time),
     value: item.volume ?? 0,
-    color: item.close >= item.open ? '#26A69A' : '#EF5350',
+    color: item.close >= item.open ? up : down,
   }));
 }
 
@@ -101,13 +103,14 @@ export function useStockChart({
       autoSize: true,
     });
 
+    const { up, down } = getUpDownColors();
     const candleSeries = chart.addCandlestickSeries({
-      upColor: '#26A69A',
-      downColor: '#EF5350',
-      borderUpColor: '#26A69A',
-      borderDownColor: '#EF5350',
-      wickUpColor: '#26A69A',
-      wickDownColor: '#EF5350',
+      upColor: up,
+      downColor: down,
+      borderUpColor: up,
+      borderDownColor: down,
+      wickUpColor: up,
+      wickDownColor: down,
     });
 
     candleSeries.setData(

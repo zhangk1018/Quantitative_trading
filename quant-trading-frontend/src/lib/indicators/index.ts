@@ -27,6 +27,9 @@ export {
 export {
   DETECTION_CONFIG,
   PATTERN_MARKER_CONFIG,
+  getPatternMarkerConfig,
+  getCandleUpColor,
+  getCandleDownColor,
   MA_CONFIG,
   ChartError,
   ChartErrorType,

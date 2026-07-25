@@ -1,18 +1,26 @@
 // lib/indicators/chartConstants.ts
 
 import type { PatternType } from './types';
+import { getUpDownColors } from '@/shared/contexts/SettingsContext';
 
 export const CHART_CONFIG = {
   BACKGROUND_COLOR: '#1E222D',
   TEXT_COLOR: '#848E9C',
   GRID_COLOR: '#2A2E39',
-  CANDLE_UP_COLOR: '#26A69A',
-  CANDLE_DOWN_COLOR: '#EF5350',
   DEFAULT_HEIGHT: 450,
   MIN_WIDTH: 300,
   MIN_HEIGHT: 200,
   RESIZE_DEBOUNCE_MS: 100,
 } as const;
+
+/** 获取蜡烛图涨跌颜色（根据当前颜色方案动态返回） */
+export function getCandleUpColor(): string {
+  return getUpDownColors().up;
+}
+
+export function getCandleDownColor(): string {
+  return getUpDownColors().down;
+}
 
 export interface DetectionConfig {
   morningStarPenetration: number;
@@ -77,6 +85,21 @@ export function validateConfig(
   return result;
 }
 
+export function getPatternMarkerConfig(): Record<
+  PatternType,
+  { color: string; text: string; shape: 'arrowUp' | 'arrowDown' }
+> {
+  const { up, down } = getUpDownColors();
+  return {
+    hammer: { color: '#2962FF', text: '锤子线', shape: 'arrowUp' },
+    bullish_engulfing: { color: up, text: '看涨吞没', shape: 'arrowUp' },
+    bearish_engulfing: { color: down, text: '看跌吞没', shape: 'arrowDown' },
+    morning_star: { color: up, text: '早晨之星', shape: 'arrowUp' },
+    evening_star: { color: down, text: '黄昏之星', shape: 'arrowDown' },
+  };
+}
+
+// 保留旧常量供兼容（已废弃，请使用 getPatternMarkerConfig()）
 export const PATTERN_MARKER_CONFIG: Record<
   PatternType,
   { color: string; text: string; shape: 'arrowUp' | 'arrowDown' }

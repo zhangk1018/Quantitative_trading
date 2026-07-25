@@ -37,6 +37,15 @@ function loadColorScheme(): ColorScheme {
   return 'cn';
 }
 
+/**
+ * 获取当前涨跌颜色（无需 React Context，可在纯 TS 模块中使用）
+ * 读取 localStorage 中的颜色方案设置，返回 { up, down } 颜色值
+ */
+export function getUpDownColors(): UpDownColors {
+  const scheme = loadColorScheme();
+  return COLOR_SCHEMES[scheme].colors;
+}
+
 interface SettingsContextType {
   colorScheme: ColorScheme;
   setColorScheme: (scheme: ColorScheme) => void;
