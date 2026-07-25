@@ -2,15 +2,14 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Card, Select, DatePicker, Input, InputNumber, Cascader, Spin, Space, Divider, Button,
-  Collapse, Radio, Tag, Tooltip, Typography, Form,
+  Card, Select, DatePicker, Input, InputNumber, Cascader, Spin, Space, Button,
+  Tag, Tooltip, Typography, Form,
 } from 'antd';
-import { SettingOutlined, CloseOutlined } from '@ant-design/icons';
+import { CloseOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { BacktestConfig, BacktestFormValues, IndicatorParams } from './backtestTypes';
 import {
   DEFAULT_BACKTEST_CONFIG,
-  DEFAULT_INDICATOR_PARAMS,
 } from './backtestTypes';
 import { useStockSearch } from './useStockSearch';
 import { getBacktestList, removeFromBacktestList } from './backtestListStorage';
@@ -23,7 +22,6 @@ import type { StockSearchItem } from '../stock-detail/api';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
-const { Panel } = Collapse;
 
 interface ConfigPanelProps {
   onStart: (config: BacktestConfig) => void;
@@ -60,12 +58,6 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onC
     dateRange: [dayjs('2025-01-01'), dayjs()],
     capital: DEFAULT_BACKTEST_CONFIG.capital ?? 100000,
     indicatorId: undefined,
-    executionPrice: globalDefaults.executionPrice,
-    maxDeferDays: globalDefaults.maxDeferDays,
-    feeRate: globalDefaults.feeRate,
-    slippage: globalDefaults.slippage,
-    riskFreeRate: globalDefaults.riskFreeRate,
-    indicatorParams: globalDefaults.indicatorParams,
   };
 
   // 加载自选股名称（自选股只保存 code，需要反查 name）
@@ -277,12 +269,13 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onC
       buyCondition: indicator
         ? { indicatorId: indicator.id, indicatorName: indicator.name, formula: indicator.formula }
         : { indicatorId: '', indicatorName: '', formula: '' },
-      indicatorParams: { ...globalDefaults.indicatorParams, ...values.indicatorParams } as IndicatorParams,
-      executionPrice: values.executionPrice ?? globalDefaults.executionPrice,
-      maxDeferDays: values.maxDeferDays ?? globalDefaults.maxDeferDays,
-      feeRate: values.feeRate ?? globalDefaults.feeRate,
-      slippage: values.slippage ?? globalDefaults.slippage,
-      riskFreeRate: values.riskFreeRate ?? globalDefaults.riskFreeRate,
+      // 回测参数统一从系统配置页签"回测设置"读取
+      indicatorParams: { ...globalDefaults.indicatorParams } as IndicatorParams,
+      executionPrice: globalDefaults.executionPrice,
+      maxDeferDays: globalDefaults.maxDeferDays,
+      feeRate: globalDefaults.feeRate,
+      slippage: globalDefaults.slippage,
+      riskFreeRate: globalDefaults.riskFreeRate,
     };
     onStart(config);
   };
@@ -399,109 +392,6 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onC
             脚本约定：返回每日信号数组，1 表示满足买入，0 表示不满足。
           </Text>
         </Card>
-
-        {/* 高级设置 */}
-        <Collapse ghost size="small">
-          <Panel header={<Space><SettingOutlined />高级设置</Space>} key="advanced">
-            <Form.Item name="executionPrice" label="成交价模式">
-              <Radio.Group>
-                <Radio.Button value="next_open">T+1 开盘价</Radio.Button>
-                <Radio.Button value="next_close">T+1 收盘价</Radio.Button>
-              </Radio.Group>
-            </Form.Item>
-
-            <Divider style={{ margin: '8px 0' }} />
-
-            <Form.Item name="maxDeferDays" label="最大顺延天数">
-              <InputNumber min={1} max={10} />
-            </Form.Item>
-
-            <Divider style={{ margin: '8px 0' }} />
-
-            <Form.Item name="feeRate" label="手续费率（万分之）">
-              <InputNumber
-                min={0} max={30} step={0.1}
-                style={{ width: '100%' }}
-                formatter={(v) => `${(Number(v) * 10000).toFixed(1)}`}
-                parser={(v) => ((Number(v) || 0) / 10000) as 0 | 30}
-              />
-            </Form.Item>
-            <Form.Item name="slippage" label="滑点（万分之）">
-              <InputNumber
-                min={0} max={30} step={0.1}
-                style={{ width: '100%' }}
-                formatter={(v) => `${(Number(v) * 10000).toFixed(1)}`}
-                parser={(v) => ((Number(v) || 0) / 10000) as 0 | 30}
-              />
-            </Form.Item>
-            <Form.Item
-              name="riskFreeRate"
-              label="无风险利率"
-              tooltip="当前基准：3%（一年期国债参考值）"
-            >
-              <InputNumber min={0} max={0.1} step={0.01} />
-            </Form.Item>
-
-            <Divider style={{ margin: '8px 0' }} />
-
-            <Text type="secondary">指标参数</Text>
-            <Space wrap>
-              <Text style={{ fontSize: 12 }}>MACD:</Text>
-              <Form.Item name={['indicatorParams', 'macdFast']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 60 }} min={2} max={50} />
-              </Form.Item>
-              <Form.Item name={['indicatorParams', 'macdSlow']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 60 }} min={2} max={100} />
-              </Form.Item>
-              <Form.Item name={['indicatorParams', 'macdSignal']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 60 }} min={2} max={50} />
-              </Form.Item>
-            </Space>
-            <Space wrap>
-              <Text style={{ fontSize: 12 }}>RSI:</Text>
-              <Form.Item name={['indicatorParams', 'rsiPeriod']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 60 }} min={2} max={50} />
-              </Form.Item>
-            </Space>
-            <Space wrap>
-              <Text style={{ fontSize: 12 }}>MA:</Text>
-              <Form.Item name={['indicatorParams', 'ma5']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 55 }} min={2} max={120} />
-              </Form.Item>
-              <Form.Item name={['indicatorParams', 'ma10']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 55 }} min={2} max={120} />
-              </Form.Item>
-              <Form.Item name={['indicatorParams', 'ma20']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 55 }} min={2} max={120} />
-              </Form.Item>
-              <Form.Item name={['indicatorParams', 'ma60']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 55 }} min={2} max={120} />
-              </Form.Item>
-            </Space>
-            <Space wrap>
-              <Text style={{ fontSize: 12 }}>BOLL:</Text>
-              <Form.Item name={['indicatorParams', 'bollPeriod']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 60 }} min={5} max={120} />
-              </Form.Item>
-              <Text style={{ fontSize: 12 }}>标准差:</Text>
-              <Form.Item name={['indicatorParams', 'bollStd']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 60 }} min={0.5} max={5} step={0.5} />
-              </Form.Item>
-            </Space>
-            <Space wrap>
-              <Text style={{ fontSize: 12 }}>KDJ:</Text>
-              <Form.Item name={['indicatorParams', 'kdjK']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 55 }} min={2} max={30} />
-              </Form.Item>
-              <Form.Item name={['indicatorParams', 'kdjD']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 55 }} min={2} max={30} />
-              </Form.Item>
-              <Form.Item name={['indicatorParams', 'kdjJ']} style={{ display: 'inline-block', marginBottom: 0 }}>
-                <InputNumber size="small" style={{ width: 55 }} min={2} max={30} />
-              </Form.Item>
-            </Space>
-          </Panel>
-        </Collapse>
       </div>
     </Form>
   );

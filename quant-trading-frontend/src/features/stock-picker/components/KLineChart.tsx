@@ -521,7 +521,21 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
 
     chart.timeScale().fitContent();
 
+    // 修复：确保图表创建后读取正确的容器尺寸
+    // 条件渲染（{chartData && <KLineChart/>}）时，容器可能尚未完成布局，
+    // autoSize 的 ResizeObserver 在初始尺寸即最终尺寸时不会触发回调，
+    // 导致图表被压缩。通过 rAF 在浏览器完成布局后再 resize 一次。
+    const rafId = requestAnimationFrame(() => {
+      if (chartRef.current && containerRef.current) {
+        const { clientWidth, clientHeight } = containerRef.current;
+        if (clientWidth > 0 && clientHeight > 0) {
+          chartRef.current.resize(clientWidth, clientHeight);
+        }
+      }
+    });
+
     return () => {
+      cancelAnimationFrame(rafId);
       try { chart.unsubscribeCrosshairMove(crosshairHandler); } catch (_) {}
       seriesRef.current = null;
       rawBarsRef.current = [];

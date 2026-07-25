@@ -152,7 +152,16 @@ export function useStockChart({
 
     chart.timeScale().fitContent();
 
+    // 修复：确保图表创建后读取正确的容器尺寸
+    const rafId = requestAnimationFrame(() => {
+      const { clientWidth, clientHeight } = container;
+      if (clientWidth > 0 && clientHeight > 0) {
+        chart.resize(clientWidth, clientHeight);
+      }
+    });
+
     return () => {
+      cancelAnimationFrame(rafId);
       chart.remove();
     };
   }, [containerRef, data, signals, indicators.ma5, indicators.ma10, indicators.ma20]);
