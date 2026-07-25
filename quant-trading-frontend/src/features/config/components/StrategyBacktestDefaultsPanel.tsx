@@ -38,14 +38,14 @@ import {
   displayToStampDuty,
   decimalToPct,
   pctToDecimal,
-} from '@/features/backtest/strategyBacktestSettingsStorage';
+} from '@/features/strategy-backtest/storage';
 import type {
   StrategyBacktestDefaults,
   RebalanceInterval,
   PositionAlloc,
   IdleCashReturn,
   DeferFailAction,
-} from '@/features/backtest/strategyBacktestTypes';
+} from '@/features/strategy-backtest/types';
 
 const INPUT_W = 80;
 

@@ -22,11 +22,10 @@ import type {
   TechPattern,
 } from './types';
 import { IndicatorCache } from './types';
+import { TRADING_DAYS_PER_YEAR, LOT_SIZE } from '../backtest/constants';
 
 // ==================== 常量定义 ====================
 
-const TRADING_DAYS_PER_YEAR = 252;
-const LOT_SIZE = 100; // A股最小交易单位
 /** P1-2: 兜底交易日历构建时的市值阈值（亿元），仅用于无后端交易日历时的降级方案 */
 const FALLBACK_MARKET_CAP_THRESHOLD = 100;
 

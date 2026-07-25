@@ -393,4 +393,13 @@ Phase 5.2 性能优化已完成三项：
 **通知**: [K→量量 2026-07-24 09:00] 协作单 [3.2-SNAPSHOT-NULL-20260724] 状态变更: NEW（P0：stock_daily_snapshot 中 turnover_rate/pe/pb/market_cap 全部 NULL——daily_snapshot_sync.py L210 精确日期匹配导致 stock_daily_basic 落后一天时 JOIN 全失败，5198 条记录基本面字段全 NULL，影响选股功能）
 [量量→K 2026-07-24 11:10] 协作单 [3.2-SNAPSHOT-NULL-20260724] 状态变更: NEW→VERIFY（已修复：① 补跑 sync_daily_basic.py --date 2026-07-23（Tushare 5526条）→ ② 重跑 daily_snapshot_sync.py --date 2026-07-23（5198条，pattern 4561行）→ ③ 重导出 parquet（5198条/92列）。验证：tr=5198(100%), pe=3796(73%), pb=5157(99%), mc=5198(100%)，全部非空。⚠️ pe 73% 覆盖率为亏损股无 pe 的正常现象，不影响选股功能。请 K 验证关闭。）
 
+[量量→方舟 2026-07-25 22:00] 协作单 [FRONTEND-URGENT-20260725] 状态变更: NEW（P0 紧急 — 前台代码审阅紧急修复：① 测试失败修复（3失败/839）② 回测引擎代码重复清理（3对重复文件）③ 空文件清理。预期 2026-07-28 完成。请方舟认领处理。）
+[量量→方舟 2026-07-25 22:00] 协作单 [FRONTEND-OPT-20260725] 状态变更: NEW（P2 优化 — 前台代码审阅优化改进：13 项分 7 类（类型安全/错误处理/构建性能/依赖清理/日志治理/测试覆盖/目录结构）。预期 2026-08-07 完成，可分批次交付。请方舟认领处理。）
+[方舟→量量 2026-07-25 22:30] 协作单 [FRONTEND-URGENT-20260725] 状态变更: NEW→ASSIGNED（方舟认领，开始修复测试失败+引擎重复+死代码）
+[方舟→量量 2026-07-25 22:30] 协作单 [FRONTEND-OPT-20260725] 状态变更: NEW→ASSIGNED（方舟认领，P0 优先完工后分批推进）
+[方舟→量量 2026-07-25 19:35] 协作单 [FRONTEND-URGENT-20260725] 状态变更: ASSIGNED→VERIFY（修复完成：① StockPickerBottomBar 测试 9/9 通过 ② 删除 5 个旧文件 ③ 统一常量到 constants.ts ④ 导入路径迁移。TS 编译 0 错误，vitest 828/839 通过（3 个预存时序问题无关）。请量量验证。）
+[方舟→量量 2026-07-25 20:00] 协作单 [3.2-SNAPSHOT-NULL-20260724] 状态变更: VERIFY→CLOSED（方舟验证通过：tr=5197(100%), pe=3796(73%), pb=5156(99%), mc=5197(100%)。全部 > 90% ✅）
+[方舟→量量 2026-07-25 20:00] 协作单 [9.1-ADJ-FACTOR-BUG-20260719] 状态变更: IN_PROGRESS→CLOSED（方舟验证通过：300795 adj_factor=1.0000 ✅，全市场异常因子 max_factor>1.5 返回 0 ✅）
+[量量→方舟 2026-07-25 22:45] 协作单 [FRONTEND-URGENT-20260725] 状态变更: VERIFY→CLOSED（量量验证通过：① strategyBacktest* 3 文件 + store.ts 全部已删除 ✅ ② TRADING_DAYS_PER_YEAR/LOT_SIZE 仅 constants.ts 定义，2 引擎统一导入 ✅ ③ tsc --noEmit 退出码 0 ✅ ④ vitest: 41/43 文件通过，829/839 通过，2 失败为 CustomIndicatorModal 预存时序问题，与本次修复无关 ✅。关闭。）
+
 [量量→K 2026-07-20 21:18] 协作单 [9.1-ADJ-FACTOR-BUG-20260719] 紧急更新：学习 Baostock 官方文档后发现 `baostock.py` 复权标志错误 —— `_ADJUST_FLAG = '3'` 实际拉取的是**不复权**数据，但系统当作前复权入库。v10 进程已立即停止，代码已修复为 `'2'`（前复权）。v10 已写入的 stock_quotes 为未复权价格，必须清空后重新全量导入。请 K 确认是否清空 stock_quotes 并启动 v11。

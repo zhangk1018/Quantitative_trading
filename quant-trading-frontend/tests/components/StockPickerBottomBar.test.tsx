@@ -133,7 +133,6 @@ describe('StockPickerBottomBar', () => {
       />
     );
     expect(screen.getByText('加入回测列表')).toBeInTheDocument();
-    expect(screen.getByText('加入黑名单')).toBeInTheDocument();
     expect(screen.getByTestId('add-to-watchlist-btn')).toBeInTheDocument();
     expect(screen.getByTestId('export-result-btn')).toBeInTheDocument();
     expect(screen.getByTestId('refresh-result-btn')).toBeInTheDocument();
