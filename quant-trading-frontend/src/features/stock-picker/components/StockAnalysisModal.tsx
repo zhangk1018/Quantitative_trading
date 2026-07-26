@@ -3,14 +3,13 @@
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Modal, Typography, Spin, Alert, Segmented, Tooltip } from 'antd';
-import { fetchKLineData, toFriendlyMessage, type PatternMarker, type KLineDataResult } from '@/features/stock-detail/api';
+import { fetchKLineData, toFriendlyMessage, type PatternMarker } from '@/features/stock-detail/api';
 import { buildChartData, type ChartDataResult } from '@/lib/indicators/chart-adapter';
 import { sanitizeNumber, sanitizePct } from '@/lib/indicators/indicators';
 import { CHART_THEME, CUSTOM_INDICATOR_COLORS } from '@/lib/indicators/chart-config';
 import KLineChart, { type MainType, type OscType } from './KLineChart';
 import { detectConditions, type ConditionEvent, type ConditionConfig } from '@/lib/indicators/condition-detector';
 import type { FilterCondition } from '../types/filterTree';
-import { extractCustomIndicatorId } from '../types/filterTree';
 import { getCustomIndicatorById } from '../utils/customIndicatorStorage';
 import { getCustomIndicatorRunner } from '@/features/strategy-backtest/utils/customIndicatorRunner';
 import { meetsThreshold } from '../services/CustomIndicatorService';
@@ -220,8 +219,8 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
         setUndetectable(allUndetectable);
 
         setStatus('ready');
-      } catch (err: any) {
-        if (err?.name === 'CanceledError' || abortController.signal.aborted) return;
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'CanceledError' || abortController.signal.aborted) return;
         console.error('K线图表加载失败:', err);
         setStatus('error');
         setErrorMsg(toFriendlyMessage(err));

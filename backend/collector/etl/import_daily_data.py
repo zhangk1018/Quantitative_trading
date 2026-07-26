@@ -16,6 +16,7 @@
 import sys
 import os
 import json
+import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import argparse
 import subprocess
@@ -169,7 +170,6 @@ class DailyDataImporter(BaseDataImporter):
         Returns:
             DataFrame or None
         """
-        import time
 
         last_exception = None
         err_msg = ""

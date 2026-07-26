@@ -57,18 +57,6 @@ function toLineData(times: string[], values: (number | null)[]): LineData<Time>[
   return result;
 }
 
-function toHistogramData(
-  times: string[], values: (number | null)[], colors: string[]
-): HistogramData<Time>[] {
-  const result: HistogramData<Time>[] = [];
-  for (let i = 0; i < values.length; i++) {
-    if (values[i] !== null) {
-      result.push({ time: times[i] as Time, value: values[i]!, color: colors[i] });
-    }
-  }
-  return result;
-}
-
 export function buildChartData(rawBarsInput: ExtendedKlineBar[]): ChartDataResult {
   // LWC requires asc order (old → new); API may return desc
   const sorted = [...rawBarsInput].sort((a, b) => {
@@ -144,7 +132,7 @@ export function buildChartData(rawBarsInput: ExtendedKlineBar[]): ChartDataResul
 }
 
 export function makeHorizontalLine(
-  times: string[], value: number, color: string
+  times: string[], value: number, _color: string
 ): LineData<Time>[] {
   // 只需首尾两点，图表库会自动连线，大幅减少内存分配
   if (times.length === 0) return [];

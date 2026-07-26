@@ -21,6 +21,7 @@ sync_daily_basic.py - 日频基本面数据同步脚本
 import sys
 import os
 import json
+import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import argparse
@@ -130,7 +131,6 @@ class DailyBasicSync:
 
     def _fill_pe_ttm_gaps(self, trade_date: str) -> int:
         """用 Baostock 逐只补全 Tushare 返回中 pe_ttm 为 NULL 的股票"""
-        import time
 
         with self.storage.transaction() as conn:
             with conn.cursor() as cur:

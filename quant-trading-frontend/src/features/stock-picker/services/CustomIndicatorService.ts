@@ -49,7 +49,6 @@ interface ConditionLike {
 // ==================== 配置常量 ====================
 
 const OHLCV_BATCH_SIZE = 200;
-const MAX_LOOKBACK_DEFAULT = 300;
 /** 单批 OHLCV 请求最大重试次数 */
 const OHLCV_MAX_RETRIES = 2;
 /** 首次重试延迟（毫秒），后续指数退避 */

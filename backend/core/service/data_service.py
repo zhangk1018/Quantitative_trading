@@ -492,41 +492,25 @@ class DataService:
             return df
         
         try:
-            # 计算复权因子
+            # 计算复权因子（向量化计算，避免 iterrows 性能问题）
             df = df.copy().sort_values('trade_date')
             
+            # 计算每日涨跌幅
+            valid_pre_close = (df['pre_close'] > 0) & df['pre_close'].notna() & df['close'].notna()
+            daily_return = pd.Series(0.0, index=df.index)
+            daily_return[valid_pre_close] = (df.loc[valid_pre_close, 'close'] - df.loc[valid_pre_close, 'pre_close']) / df.loc[valid_pre_close, 'pre_close']
+            # 无前收盘价时使用当日涨跌幅近似
+            no_pre_close = ~valid_pre_close & (df['close'] > 0) & df['close'].notna() & df['open'].notna() & (df['open'] > 0)
+            daily_return[no_pre_close] = (df.loc[no_pre_close, 'close'] - df.loc[no_pre_close, 'open']) / df.loc[no_pre_close, 'open']
+            
             if adjust_type == 'qfq':
-                # 前复权：从后向前计算
-                df = df.iloc[::-1]
-                factor = 1.0
-                factors = []
-                
-                for _, row in df.iterrows():
-                    factors.append(factor)
-                    # 前复权：使用前收盘价计算涨跌幅
-                    if row['close'] > 0 and not pd.isna(row['close']) and row['pre_close'] > 0 and not pd.isna(row['pre_close']):
-                        factor *= (1 + (row['close'] - row['pre_close']) / row['pre_close'])
-                    elif row['close'] > 0 and not pd.isna(row['close']):
-                        # 如果无前收盘价数据，使用当日涨跌幅作为近似
-                        factor *= (1 + (row['close'] - row['open']) / row['open'])
-                
-                df['adjust_factor'] = factors[::-1]
-                df['adjust_factor'] = df['adjust_factor'] / df['adjust_factor'].iloc[0]
-                
+                # 前复权：从后向前累积
+                factors = (1 + daily_return.iloc[::-1]).cumprod().iloc[::-1]
             else:
-                # 后复权：从前向后计算
-                factor = 1.0
-                factors = []
-                
-                for _, row in df.iterrows():
-                    factors.append(factor)
-                    if row['close'] > 0 and not pd.isna(row['close']) and row['pre_close'] > 0 and not pd.isna(row['pre_close']):
-                        factor *= (1 + (row['close'] - row['pre_close']) / row['pre_close'])
-                    elif row['close'] > 0 and not pd.isna(row['close']):
-                        # 如果无前收盘价数据，使用当日涨跌幅作为近似
-                        factor *= (1 + (row['close'] - row['open']) / row['open'])
-                
-                df['adjust_factor'] = factors
+                # 后复权：从前向后累积
+                factors = (1 + daily_return).cumprod()
+            
+            df['adjust_factor'] = factors.values
             
             # 应用复权因子
             df['open'] = df['open'] * df['adjust_factor']
@@ -1339,6 +1323,10 @@ class DataService:
                     }
 
                     # 保存到文件
+                    # 路径遍历防护：股票代码只能包含字母数字和点
+                    if '..' in code or '/' in code or '\\' in code:
+                        logger.warning(f"跳过危险代码: {code}")
+                        continue
                     file_path = os.path.join(SNAPSHOT_PATH, f'{code}.json')
                     with open(file_path, 'w', encoding='utf-8') as f:
                         json.dump(snapshot_data, f, ensure_ascii=False, indent=2)

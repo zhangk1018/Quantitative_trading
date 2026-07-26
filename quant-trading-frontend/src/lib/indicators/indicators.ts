@@ -52,11 +52,6 @@ export function sanitizePct(v: number | null | undefined): string {
 
 // ---- 数据清洗 ----
 
-function toNumber(v: unknown): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : NaN;
-}
-
 export function cleanBars(bars: KlineBar[]): KlineBar[] {
   return bars.filter(b =>
     Number.isFinite(b.open) &&

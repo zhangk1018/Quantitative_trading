@@ -304,7 +304,7 @@ def get_stocks(
         page = offset // limit + 1 if limit > 0 else 1
         page_size = limit
 
-        request = ScreenerRequest(
+        screener_req = ScreenerRequest(
             filters=filter_dict,
             sort_by=sort_by,
             sort_order="asc" if sort_asc else "desc",
@@ -314,7 +314,7 @@ def get_stocks(
         )
 
         # 调用服务获取结果（传入 pattern_lookback）
-        result = screener.screen_stocks(request, pattern_lookback=pattern_lookback)
+        result = screener.screen_stocks(screener_req, pattern_lookback=pattern_lookback)
 
         # 转换为前端期望的格式 {items, total, offset, limit}
         data = {

@@ -10,7 +10,6 @@ import {
 import type {
   StrategyBacktestDefaults,
   FilterNode,
-  OhlcvBar,
   StockSnapshot,
   Position,
   Trade,
@@ -36,7 +35,6 @@ const OHLCV_HIGH = 2;
 const OHLCV_LOW = 3;
 const OHLCV_CLOSE = 4;
 const OHLCV_VOLUME = 5;
-const OHLCV_PRE_CLOSE = 6;
 
 // ==================== 进度回调类型 ====================
 
@@ -277,7 +275,7 @@ export function buildTradeDates(
 /**
  * 计算单只股票的技术指标缓存
  */
-export function computeIndicatorCache(bars: number[][], warmupDays: number): IndicatorCache {
+export function computeIndicatorCache(bars: number[][], _warmupDays: number): IndicatorCache {
   const n = bars.length;
   const cache = new IndicatorCache(n);
 
@@ -718,10 +716,8 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
   // 逐日模拟
   for (let i = startIdx; i <= actualEndIdx; i++) {
     const currentDate = allTradeDates[i];
-    const prevDate = i > 0 ? allTradeDates[i - 1] : currentDate;
 
     // P1-3: 执行待执行指令队列（T+1 执行）
-    const ordersToExecute = pendingOrders.filter(o => o.executionDate === currentDate);
     const ordersToKeep: PendingOrder[] = [];
 
     for (const order of pendingOrders) {

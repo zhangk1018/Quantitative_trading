@@ -4,7 +4,6 @@ import { useScreenerSelector } from '../context/ScreenerContext';
 import { fetchStocks } from '../../stock-detail/api';
 import { buildScreeningParams, CONFIG, ScreenerFilterPayload } from '../utils/screener';
 import { applyCustomIndicatorFilter, extractCustomConditions, getCustomIndicatorService } from '../utils/applyCustomIndicatorFilter';
-import { CustomIndicatorService } from '../services/CustomIndicatorService';
 import type { StockItem, FetchStocksResponse } from '../types';
 import type { FilterCondition, FilterGroup } from '../types/filterTree';
 
@@ -22,7 +21,9 @@ function getWatchlistCodes(): string[] {
       const parsed = JSON.parse(raw);
       return parsed.stocks?.['全部'] || [];
     }
-  } catch { /* ignore */ }
+  } catch {
+    console.warn('[Screener] localStorage 读取自选股数据失败');
+  }
   return [];
 }
 
@@ -114,8 +115,6 @@ function sortItems(items: StockItem[], sortBy: string, sortAsc: boolean): StockI
   return sorted;
 }
 
-const CUSTOM_CONDITION_TYPE = 'custom';
-
 interface LookbackCondition {
   lookbackDays?: number | string;
   formula?: string;
@@ -130,7 +129,7 @@ interface LookbackCondition {
  *   3. 默认 30 天
  */
 function computeMaxLookback(
-  allConditions: (FilterCondition | FilterGroup)[],
+  _allConditions: (FilterCondition | FilterGroup)[],
   customConditions: LookbackCondition[],
 ): number {
   const values: number[] = [];
@@ -168,6 +167,17 @@ const MAX_BATCH_LOOPS = 50;
 const BATCH_MAX_RETRIES = 2;
 /** 首次重试延迟（毫秒），后续指数退避 */
 const BATCH_RETRY_BASE_DELAY = 500;
+
+/** 重置缓存状态的工厂函数 */
+function createEmptyCache() {
+  return {
+    rangeHash: null as string | null,
+    customHash: null as string | null,
+    candidates: null as StockItem[] | null,
+    candidateTotal: 0,
+    _lastPassedCodes: null as Set<string> | null,
+  };
+}
 
 export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['message']) {
   const selectedBoards = useScreenerSelector((s) => s.market.selectedBoards);
@@ -209,19 +219,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
   const [progress, setProgress] = useState(0);
   const [progressText, setProgressText] = useState('');
 
-  const cacheRef = useRef<{
-    rangeHash: string | null;
-    customHash: string | null;
-    candidates: StockItem[] | null;
-    candidateTotal: number;
-    _lastPassedCodes: Set<string> | null;
-  }>({
-    rangeHash: null,
-    customHash: null,
-    candidates: null,
-    candidateTotal: 0,
-    _lastPassedCodes: null,
-  });
+  const cacheRef = useRef(createEmptyCache());
 
   const abortRef = useRef<AbortController | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -577,13 +575,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
       const useFullScreening = hasCustomIndicator(state.filterGroup);
 
       if (!useFullScreening) {
-        cacheRef.current = {
-          rangeHash: null,
-          customHash: null,
-          candidates: null,
-          candidateTotal: 0,
-          _lastPassedCodes: null,
-        };
+        cacheRef.current = createEmptyCache();
         getCustomIndicatorService().clearCache();
         setPhase('idle');
         setProgress(0);
@@ -650,13 +642,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
     setPhase('idle');
     setProgress(0);
     setProgressText('');
-    cacheRef.current = {
-      rangeHash: null,
-      customHash: null,
-      candidates: null,
-      candidateTotal: 0,
-      _lastPassedCodes: null,
-    };
+    cacheRef.current = createEmptyCache();
     getCustomIndicatorService().clearCache();
   }, []);
 

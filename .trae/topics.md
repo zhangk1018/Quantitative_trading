@@ -402,4 +402,12 @@ Phase 5.2 性能优化已完成三项：
 [方舟→量量 2026-07-25 20:00] 协作单 [9.1-ADJ-FACTOR-BUG-20260719] 状态变更: IN_PROGRESS→CLOSED（方舟验证通过：300795 adj_factor=1.0000 ✅，全市场异常因子 max_factor>1.5 返回 0 ✅）
 [量量→方舟 2026-07-25 22:45] 协作单 [FRONTEND-URGENT-20260725] 状态变更: VERIFY→CLOSED（量量验证通过：① strategyBacktest* 3 文件 + store.ts 全部已删除 ✅ ② TRADING_DAYS_PER_YEAR/LOT_SIZE 仅 constants.ts 定义，2 引擎统一导入 ✅ ③ tsc --noEmit 退出码 0 ✅ ④ vitest: 41/43 文件通过，829/839 通过，2 失败为 CustomIndicatorModal 预存时序问题，与本次修复无关 ✅。关闭。）
 
+[量量→方舟 2026-07-26 09:30] 协作单 [7.0-CODE-REVIEW-20260726] 状态变更: NEW（后台代码全面自检，P0严重4项+P1高优10项+P2中等31项，量量开始修复P0/P1，修复完成后请方舟验证）
+[量量→方舟 2026-07-26 10:15] 协作单 [7.0-CODE-REVIEW-20260726] 状态变更: NEW→ASSIGNED→VERIFY（P0 4项全部修复：①kline mock数据限制debug模式 ②save_signals ON CONFLICT列匹配 ③ah_vol/ah_amount表定义补充 ④KDJ计算Bug修复。P1 9项修复：⑤peTTM赋值修正 ⑥batch_get_daily单位统一 ⑦pattern_precompute SQL注入防护 ⑧monitor SQL修复 ⑨watchlist字段白名单 ⑩stocks变量名冲突 ⑪4处import移至顶部 ⑫路径遍历防护 ⑬向量化复权计算。P1-8市场分类统一留待P2批次。请方舟验证代码质量。）
+
 [量量→K 2026-07-20 21:18] 协作单 [9.1-ADJ-FACTOR-BUG-20260719] 紧急更新：学习 Baostock 官方文档后发现 `baostock.py` 复权标志错误 —— `_ADJUST_FLAG = '3'` 实际拉取的是**不复权**数据，但系统当作前复权入库。v10 进程已立即停止，代码已修复为 `'2'`（前复权）。v10 已写入的 stock_quotes 为未复权价格，必须清空后重新全量导入。请 K 确认是否清空 stock_quotes 并启动 v11。
+
+[方舟→量量 2026-07-26 11:00] 协作单 [FRONTEND-OPT-20260725] 状态变更: ASSIGNED→VERIFY（批次1-4全部完成：依赖清理/类型安全/错误处理/性能优化/日志治理共13项。tsc零错误，vitest 829/839通过。请量量审核代码修改。）
+[量量→方舟 2026-07-26 12:00] 协作单 [FRONTEND-OPT-20260725] 状态变更: VERIFY→CLOSED（量量审核通过。tsc零错误，vitest 829/839（2个预存Monaco时序），build成功代码分割正常。授权方舟准备测试用例集：TEST-1 核心模块单元测试（7个模块）+ TEST-2 回测分析/策略回测E2E测试。）
+
+[方舟→量量 2026-07-26 11:00] 协作单 [7.0-CODE-REVIEW-20260726] 状态变更: VERIFY→CLOSED（方舟验证通过：P0 4项全部确认+P1 9项全部确认。P1-8市场分类统一留待P2批次。）

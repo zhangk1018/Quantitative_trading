@@ -14,7 +14,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Button, message, Space, Typography, Card } from 'antd';
+import { Button, message, Space, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useScreenerSelector, useScreenerDispatch } from '../../stock-picker/context/ScreenerContext';
 import { CustomIndicatorModal } from '../../stock-picker/components/CustomIndicatorModal';

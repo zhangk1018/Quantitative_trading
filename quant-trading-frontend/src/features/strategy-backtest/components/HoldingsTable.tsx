@@ -2,7 +2,7 @@
 // 持仓明细表 — 虚拟滚动，懒加载
 
 import React, { useMemo } from 'react';
-import { Table, Tag } from 'antd';
+import { Table } from 'antd';
 import type { Position } from '../types';
 
 interface HoldingsTableProps {

@@ -37,10 +37,8 @@ import {
 } from './constants';
 import {
   ParamError,
-  DataError,
   SignalError,
   BacktestErrorCode,
-  isFatalError,
 } from './errors';
 
 // ==================== 数据清洗 ====================
@@ -288,7 +286,7 @@ function safeProgress(
   try {
     onProgress(info);
   } catch {
-    // 回调异常不影响引擎执行
+    console.warn('[Backtest] onProgress 回调异常');
   }
 }
 
@@ -454,7 +452,6 @@ export async function runBacktest(
 
   for (let i = firstValidIdx; i < totalBars; i++) {
     const bar = bars[i];
-    const isLastBar = i === totalBars - 1;
     const prevClose = i > 0 ? bars[i - 1].close : bar.open;
 
     // 判断当前 bar 是否在用户选择的日期范围内

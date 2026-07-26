@@ -417,6 +417,8 @@ class PostgreSQLStorage(BaseStorage):
                         pre_close NUMERIC(10, 2),
                         volume BIGINT,
                         amount NUMERIC(18, 2),
+                        ah_vol BIGINT,
+                        ah_amount NUMERIC(18, 2),
                         adjust_type VARCHAR(10) DEFAULT 'qfq',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         trade_datetime TIMESTAMP WITH TIME ZONE,
@@ -1058,7 +1060,7 @@ class PostgreSQLStorage(BaseStorage):
                         code, cycle, trade_date, signal_type, signal_direction,
                         signal_value, signal_strength, description
                     ) VALUES %s
-                    ON CONFLICT (code, trade_date, signal_type) DO UPDATE SET
+                    ON CONFLICT (code, cycle, trade_date, signal_type, signal_direction) DO UPDATE SET
                         signal_value = EXCLUDED.signal_value,
                         signal_strength = EXCLUDED.signal_strength,
                         description = EXCLUDED.description
@@ -1105,7 +1107,7 @@ class PostgreSQLStorage(BaseStorage):
                             code, cycle, trade_date, signal_type, signal_direction,
                             signal_value, signal_strength, description
                         ) VALUES %s
-                        ON CONFLICT (code, trade_date, signal_type) DO UPDATE SET
+                        ON CONFLICT (code, cycle, trade_date, signal_type, signal_direction) DO UPDATE SET
                             signal_value = EXCLUDED.signal_value,
                             signal_strength = EXCLUDED.signal_strength,
                             description = EXCLUDED.description

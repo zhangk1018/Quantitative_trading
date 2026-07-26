@@ -73,7 +73,7 @@ export async function saveResult(result: StoredBacktestResult): Promise<void> {
       tx.onerror = () => reject(tx.error);
     });
   } catch (err) {
-    console.warn('保存回测结果失败:', err);
+    console.warn('[Backtest] 保存回测结果失败:', err);
   }
 }
 
@@ -96,6 +96,7 @@ export async function getAllResults(): Promise<StoredBacktestResult[]> {
       request.onerror = () => reject(request.error);
     });
   } catch {
+    console.warn('[Backtest] 获取回测结果列表失败');
     return [];
   }
 }
@@ -113,7 +114,7 @@ export async function deleteResult(id: string): Promise<void> {
       tx.onerror = () => reject(tx.error);
     });
   } catch {
-    // ignore
+    console.warn('[Backtest] 删除回测结果失败:', id);
   }
 }
 
@@ -130,7 +131,7 @@ export async function clearAllResults(): Promise<void> {
       tx.onerror = () => reject(tx.error);
     });
   } catch {
-    // ignore
+    console.warn('[Backtest] 清空回测结果失败');
   }
 }
 
@@ -147,6 +148,7 @@ export async function getResultCount(): Promise<number> {
       request.onerror = () => reject(request.error);
     });
   } catch {
+    console.warn('[Backtest] 获取回测结果数量失败');
     return 0;
   }
 }

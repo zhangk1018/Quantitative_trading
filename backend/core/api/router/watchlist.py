@@ -246,6 +246,12 @@ def update_watchlist(
                 params["sort_order"] = body.sort_order
 
             set_clause = ", ".join(updates)
+            # 安全校验：确保 set_clause 仅包含白名单字段
+            allowed_fields = {"group_name", "sort_order"}
+            for field in updates:
+                col_name = field.split(" = ")[0]
+                if col_name not in allowed_fields:
+                    raise HTTPException(status_code=400, detail=f"不允许更新的字段: {col_name}")
             db.execute(
                 text(f"UPDATE user_watchlist SET {set_clause} WHERE user_id = :user_id AND code = :code"),
                 params,

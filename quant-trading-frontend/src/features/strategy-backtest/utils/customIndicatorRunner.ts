@@ -39,8 +39,6 @@ const DEFAULT_TIMEOUT = 30_000;
 export class CustomIndicatorRunner {
   private worker: Worker | null = null;
   private ready = false;
-  private pendingResolve: ((value: any) => void) | null = null;
-  private pendingReject: ((reason: any) => void) | null = null;
   private batchIdCounter = 0;
 
   /** Worker 是否已就绪 */
@@ -309,7 +307,6 @@ export class CustomIndicatorRunner {
       }
     }
 
-    const OHLCV_TIMESTAMP = 0;
     const OHLCV_OPEN = 1;
     const OHLCV_HIGH = 2;
     const OHLCV_LOW = 3;
@@ -422,13 +419,13 @@ export class CustomIndicatorRunner {
     if (this.worker) {
       try {
         this.worker.postMessage({ type: 'terminate' });
-      } catch { /* ignore */ }
+      } catch {
+        console.warn('[CustomIndicatorRunner] Worker terminate 消息发送失败');
+      }
       this.worker.terminate();
       this.worker = null;
     }
     this.ready = false;
-    this.pendingResolve = null;
-    this.pendingReject = null;
   }
 
   private chunkArray<T>(arr: T[], size: number): T[][] {

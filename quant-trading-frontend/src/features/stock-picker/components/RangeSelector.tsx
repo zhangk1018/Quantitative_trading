@@ -9,8 +9,7 @@ const RangeSelector: React.FC = () => {
   const stockRange = useScreenerSelector(s => s.market.stockRange);
   const selectedMarket = useScreenerSelector(s => s.market.selectedMarket);
   const selectedBoards = useScreenerSelector(s => s.market.selectedBoards);
-  const collapsedPanels = useScreenerSelector(s => s.panels.collapsed);
-  const dispatch = useScreenerDispatch();
+const dispatch = useScreenerDispatch();
   const currentMarketConfig = MARKET_CONFIG[selectedMarket];
   const availableBoardValues = currentMarketConfig?.boards.map((b) => b.value) || [];
 

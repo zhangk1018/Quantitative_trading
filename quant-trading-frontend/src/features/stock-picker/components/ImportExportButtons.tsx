@@ -271,7 +271,7 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
         open={preview.visible}
         title="导入预览"
         onCancel={handleCancelImport}
-        destroyOnHidden
+        destroyOnClose
         maskClosable={false}
         width={720}
         footer={[

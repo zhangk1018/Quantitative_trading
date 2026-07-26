@@ -35,9 +35,9 @@ export function useStockSearch(debounceDelay = 300): UseStockSearchResult {
       if (!controller.signal.aborted) {
         setOptions(result.items || []);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (!controller.signal.aborted) {
-        setError(err.message || '搜索失败');
+        setError(err instanceof Error ? err.message : '搜索失败');
         setOptions([]);
       }
     } finally {

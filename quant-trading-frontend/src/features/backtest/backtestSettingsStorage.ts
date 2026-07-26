@@ -36,12 +36,17 @@ export function getBacktestDefaults(): BacktestDefaults {
       indicatorParams: { ...DEFAULT_INDICATOR_PARAMS, ...parsed.indicatorParams },
     };
   } catch {
+    console.warn('[Backtest] 回测默认设置读取失败，使用默认值');
     return { ...DEFAULT_BACKTEST_DEFAULTS, indicatorParams: { ...DEFAULT_INDICATOR_PARAMS } };
   }
 }
 
 export function saveBacktestDefaults(defaults: BacktestDefaults): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
+  } catch (e) {
+    console.warn('Failed to save backtest defaults to localStorage', e);
+  }
 }
 
 /** 手续费率转为万分之显示（如 0.00015 → 1.5） */

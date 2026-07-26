@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 
 /**
  * 涨跌颜色方案
@@ -32,7 +32,7 @@ function loadColorScheme(): ColorScheme {
     const v = localStorage.getItem(STORAGE_KEY);
     if (v === 'cn' || v === 'intl') return v;
   } catch {
-    // localStorage 不可用时回退到默认
+    console.warn('[Settings] localStorage 读取颜色方案失败，回退到默认');
   }
   return 'cn';
 }
@@ -62,7 +62,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     try {
       localStorage.setItem(STORAGE_KEY, scheme);
     } catch {
-      // 静默失败
+      console.warn('[Settings] localStorage 写入颜色方案失败');
     }
   };
 

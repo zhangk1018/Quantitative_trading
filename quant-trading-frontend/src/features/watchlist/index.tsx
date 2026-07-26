@@ -56,7 +56,7 @@ function toModalStock(row: WatchlistStockRow) {
 
 const Watchlist: React.FC = () => {
   const { message } = App.useApp();
-  const { state, addOne, addMany, removeOne, createGroup, allGroups, refresh: refreshWatchlist } = useWatchlist();
+  const { state, addMany, removeOne, createGroup, allGroups } = useWatchlist();
 
   // 暴露 addMany 到 window，供 E2E 性能测试使用
   useEffect(() => {

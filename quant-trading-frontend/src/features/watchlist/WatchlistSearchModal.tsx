@@ -68,7 +68,8 @@ const WatchlistSearchModal: React.FC<WatchlistSearchModalProps> = ({ open, onClo
       message.success(`${trimmed} 已添加到 ${groupName}（同时加入"全部"和"${detectMarketGroup(trimmed)}"）`);
       setCode('');
       setNewGroupName('');
-    } catch {
+    } catch (err) {
+      console.warn('[Watchlist] 添加自选股失败', err);
       message.error('添加失败，请稍后重试');
     } finally {
       setAdding(false);
@@ -93,7 +94,7 @@ const WatchlistSearchModal: React.FC<WatchlistSearchModalProps> = ({ open, onClo
       confirmLoading={adding}
       okText="添加"
       cancelText="取消"
-      destroyOnHidden
+      destroyOnClose
       maskClosable={!adding}
       okButtonProps={{ 'data-testid': 'watchlist-search-modal-ok' }}
       cancelButtonProps={{ 'data-testid': 'watchlist-search-modal-cancel' }}

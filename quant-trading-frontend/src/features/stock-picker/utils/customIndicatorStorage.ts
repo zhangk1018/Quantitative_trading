@@ -45,6 +45,7 @@ function isLocalStorageAvailable(): boolean {
     window.localStorage.removeItem(test);
     return true;
   } catch {
+    console.warn('[CustomIndicator] localStorage 不可用，降级到内存存储');
     return false;
   }
 }
@@ -60,7 +61,7 @@ function readAll(userId: string): CustomIndicator[] {
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed) ? parsed : [];
     } catch {
-      console.error('[customIndicatorStorage] JSON 解析失败，清空数据', key);
+      console.warn('[CustomIndicator] JSON 解析失败，清空数据', key);
       return [];
     }
   }
@@ -70,7 +71,11 @@ function readAll(userId: string): CustomIndicator[] {
 function writeAll(userId: string, indicators: CustomIndicator[]): void {
   const key = getStorageKey(userId);
   if (localStorageAvailable) {
-    window.localStorage.setItem(key, JSON.stringify(indicators));
+    try {
+      window.localStorage.setItem(key, JSON.stringify(indicators));
+    } catch (e) {
+      console.warn('Failed to save custom indicators to localStorage', e);
+    }
   } else {
     memoryStore.set(key, indicators);
   }
@@ -226,7 +231,7 @@ export function markPlanConditionsInvalid(
       window.localStorage.setItem(plansKey, JSON.stringify(next));
     }
   } catch {
-    // 解析失败保留原值
+    console.warn('[CustomIndicator] 方案失效标记失败，保留原值');
   }
 }
 
@@ -284,6 +289,7 @@ export function isIndicatorReferenced(
     const plans = JSON.parse(plansRaw) as Array<{ conditions?: Array<{ sourceId: string }> }>;
     return plans.some((p) => p.conditions?.some((c) => c.sourceId === id));
   } catch {
+    console.warn('[CustomIndicator] 方案引用检查失败');
     return false;
   }
 }

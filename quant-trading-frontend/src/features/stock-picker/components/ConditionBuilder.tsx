@@ -16,7 +16,6 @@ import {
   LOOKBACK_DAYS_OPTIONS,
   DEFAULT_LOOKBACK_DAYS,
   buildCustomFieldKey,
-  FilterCondition,
 } from '../types/filterTree';
 import { CustomIndicator } from '../types/customIndicator';
 
@@ -63,17 +62,6 @@ const ConditionBuilder: React.FC = () => {
     conditions.forEach((c) => {
       if (c.source === 'custom' && c.sourceId) {
         keys.add(c.sourceId);
-      }
-    });
-    return keys;
-  }, [conditions]);
-
-  // 用于预设按钮高亮（仅用于单条件预设，组合预设单独处理）
-  const selectedPresetFieldKeys = useMemo(() => {
-    const keys = new Set<string>();
-    conditions.forEach((c) => {
-      if (c.source !== 'custom' && !c.fieldKey.startsWith('custom_')) {
-        keys.add(c.fieldKey);
       }
     });
     return keys;
@@ -197,7 +185,7 @@ const ConditionBuilder: React.FC = () => {
     <Collapse
       activeKey={activeKey}
       ghost
-      destroyOnHidden
+      destroyInactivePanel
       className="border-b border-border-color"
       data-testid="condition-builder-collapse"
       onChange={() => dispatch({ type: 'TOGGLE_PANEL', payload: 'condition' })}

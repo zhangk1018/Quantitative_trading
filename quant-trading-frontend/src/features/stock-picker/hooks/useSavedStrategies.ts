@@ -24,10 +24,12 @@ export class LocalStorageStrategyStorage implements IStrategyStorage {
       // Base64 解码（兼容 Unicode 字符）
       return JSON.parse(decodeURIComponent(atob(raw)));
     } catch {
+      console.warn('[Screener] 策略数据 Base64 解码失败，尝试兼容旧格式');
       // 兼容旧格式（未编码的 JSON）
       try {
         return JSON.parse(raw);
       } catch {
+        console.warn('[Screener] 策略数据 JSON 解析失败');
         return null;
       }
     }
@@ -36,7 +38,11 @@ export class LocalStorageStrategyStorage implements IStrategyStorage {
   save(data: unknown): void {
     const json = JSON.stringify(data);
     const encoded = btoa(encodeURIComponent(json));
-    localStorage.setItem(this.key, encoded);
+    try {
+      localStorage.setItem(this.key, encoded);
+    } catch (e) {
+      console.warn('Failed to save strategies to localStorage', e);
+    }
   }
 }
 

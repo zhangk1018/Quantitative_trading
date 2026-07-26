@@ -1,7 +1,6 @@
-import React, {
+import {
   createContext,
   useContext,
-  useReducer,
   ReactNode,
   useCallback,
   useRef,
@@ -10,12 +9,8 @@ import React, {
 } from 'react';
 import { MARKET_CONFIG, STOCK_RANGE_OPTIONS } from '../config/marketConfig';
 import {
-  MARKET_INDICATORS,
-  FINANCIAL_INDICATORS,
-  TECHNICAL_INDICATORS,
   PATTERN_INDICATORS,
   FACTOR_CONFIG,
-  PANEL_KEYS,
   DEFAULT_LOOKBACK_DAYS,
   type PanelKey,
   type TechnicalOptionValue,

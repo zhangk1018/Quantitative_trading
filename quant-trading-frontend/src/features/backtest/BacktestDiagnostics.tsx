@@ -10,7 +10,6 @@ import {
   WarningOutlined,
   DollarOutlined,
   StopOutlined,
-  CheckCircleOutlined,
   BugOutlined,
 } from '@ant-design/icons';
 import type { DiagnosticEntry } from './backtestTypes';

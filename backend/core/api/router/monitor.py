@@ -452,10 +452,10 @@ def get_data_summary():
 def get_coverage_trend(days: int = Query(30, ge=1, le=365)):
     """返回最近 N 天每日的股票覆盖数"""
     rows = _query_dict(
-        f"""
+        """
         SELECT trade_date, COUNT(DISTINCT code) AS stock_count
         FROM stock_quotes
-        WHERE cycle = '1d' AND trade_date >= CURRENT_DATE - INTERVAL '%s days'
+        WHERE cycle = '1d' AND trade_date >= CURRENT_DATE - %s::INTEGER
         GROUP BY trade_date
         ORDER BY trade_date ASC
         """,
@@ -970,7 +970,7 @@ def get_task_chain_status():
 def get_pipeline_history(days: int = Query(30, ge=1, le=365)):
     """返回最近 N 天各任务的执行统计"""
     rows = _query_dict(
-        f"""
+        """
         SELECT
             DATE(created_at) AS run_date,
             task_name,
@@ -978,7 +978,7 @@ def get_pipeline_history(days: int = Query(30, ge=1, le=365)):
             COUNT(*) AS run_count,
             AVG(EXTRACT(EPOCH FROM (COALESCE(end_time, created_at) - start_time))) AS avg_duration
         FROM task_progress
-        WHERE created_at >= CURRENT_DATE - INTERVAL '%s days'
+        WHERE created_at >= CURRENT_DATE - %s::INTEGER
           AND task_name IN ('daily_basic_sync', 'daily_import', 'indicators_compute',
                             'adj_factor_sync', 'signals_precompute', 'missing_value_fix')
         GROUP BY run_date, task_name, status

@@ -17,10 +17,10 @@ import type { StockItem, FetchStocksResponse } from '../types';
  */
 export function useStockPickerActions(
   items: StockItem[],
-  total: number,
+  _total: number,
   sortBy: string,
   sortAsc: boolean,
-  loading: boolean,
+  _loading: boolean,
   fetchFirstPage: (newSortBy?: string, newSortAsc?: boolean) => Promise<FetchStocksResponse | null>,
   clearResults: () => void,
   tableContainerRef: React.RefObject<HTMLDivElement | null>,

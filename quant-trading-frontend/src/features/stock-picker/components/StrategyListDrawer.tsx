@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Drawer, List, Button, Popconfirm, Typography, Empty, message } from 'antd';
 import { DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { SavedStrategy } from '../hooks/useSavedStrategies';
@@ -62,6 +62,7 @@ function formatDate(iso: string): string {
       minute: '2-digit',
     });
   } catch {
+    console.warn('[Screener] 日期格式化失败:', iso);
     return iso;
   }
 }

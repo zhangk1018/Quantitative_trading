@@ -3,14 +3,6 @@
 import {
   precomputeBars,
   type PrecomputedBar,
-  getBodySize,
-  getRange,
-  getBodyTop,
-  getBodyBottom,
-  getOpen,
-  getClose,
-  getHigh,
-  getLow,
 } from './barUtils';
 import { DETECTION_CONFIG, validateConfig, ChartError, ChartErrorType } from './chartConstants';
 import { type PatternType, type PatternDetectionResult, type OHLCVArray, OHLCV_TIME } from './types';

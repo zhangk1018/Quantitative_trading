@@ -43,12 +43,17 @@ function loadIndex(): string[] {
     const raw = localStorage.getItem(STORAGE_KEY_INDEX);
     return raw ? JSON.parse(raw) : [];
   } catch {
+    console.warn('[ScriptStore] 脚本索引加载失败');
     return [];
   }
 }
 
 function saveIndex(index: string[]): void {
-  localStorage.setItem(STORAGE_KEY_INDEX, JSON.stringify(index));
+  try {
+    localStorage.setItem(STORAGE_KEY_INDEX, JSON.stringify(index));
+  } catch (e) {
+    console.warn('Failed to save script index to localStorage', e);
+  }
 }
 
 // ---- CRUD ----
@@ -66,7 +71,7 @@ export function listScripts(): CustomScriptMeta[] {
         result.push(meta);
       }
     } catch {
-      // 损坏数据跳过
+      console.warn('[ScriptStore] 脚本数据损坏，跳过:', id);
     }
   }
   return result;
@@ -78,6 +83,7 @@ export function getScript(id: string): CustomScript | null {
     const raw = localStorage.getItem(scriptStorageKey(id));
     return raw ? (JSON.parse(raw) as CustomScript) : null;
   } catch {
+    console.warn('[ScriptStore] 脚本加载失败:', id);
     return null;
   }
 }
@@ -97,7 +103,11 @@ export function createScript(name: string, code: string): CustomScript {
   const index = loadIndex();
   index.push(script.id);
   saveIndex(index);
-  localStorage.setItem(scriptStorageKey(script.id), JSON.stringify(script));
+  try {
+    localStorage.setItem(scriptStorageKey(script.id), JSON.stringify(script));
+  } catch (e) {
+    console.warn('Failed to save script to localStorage', e);
+  }
   return script;
 }
 
@@ -116,7 +126,11 @@ export function updateScript(id: string, name: string, code: string): CustomScri
     updatedAt: now,
   };
 
-  localStorage.setItem(scriptStorageKey(id), JSON.stringify(updated));
+  try {
+    localStorage.setItem(scriptStorageKey(id), JSON.stringify(updated));
+  } catch (e) {
+    console.warn('Failed to save script to localStorage', e);
+  }
   return updated;
 }
 

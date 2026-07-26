@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Modal, Radio, Space, Button } from 'antd';
-import { CloseOutlined } from '@ant-design/icons';
 import type { TechnicalIndicatorItem } from '../config/indicatorConfig';
 
 interface TechnicalIndicatorModalProps {
@@ -49,7 +48,7 @@ export const TechnicalIndicatorModal: React.FC<TechnicalIndicatorModalProps> = (
       footer={null}
       width={400}
       centered
-      destroyOnHidden
+      destroyOnClose
       maskClosable={false}
       data-testid={`technical-modal-${indicator.id}`}
     >

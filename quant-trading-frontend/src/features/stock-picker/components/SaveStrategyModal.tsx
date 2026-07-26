@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Modal, Input, Form, message } from 'antd';
 import type { SavedStrategy } from '../hooks/useSavedStrategies';
 
@@ -39,7 +39,7 @@ export function SaveStrategyModal({ visible, existingStrategies, onClose, onSave
       setSaving(false);
       onClose();
     } catch {
-      // 用户取消或校验失败
+      console.warn('[Screener] 策略保存表单校验失败');
     }
   };
 

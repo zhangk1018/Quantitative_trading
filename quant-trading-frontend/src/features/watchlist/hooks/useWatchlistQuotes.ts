@@ -68,9 +68,9 @@ export function useWatchlistQuotes(codes: string[]): UseWatchlistQuotesResult {
           hasLoaded.current = true;
           setError(null);
         })
-        .catch((e: any) => {
+        .catch((e: unknown) => {
           if (controller.signal.aborted) return;
-          const msg = e?.message || '获取行情失败';
+          const msg = e instanceof Error ? e.message : '获取行情失败';
           setError(msg);
           // 首次加载失败：清空数据，避免展示过时缓存
           if (!hasLoaded.current) {

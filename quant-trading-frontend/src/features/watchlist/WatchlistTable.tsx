@@ -1,5 +1,5 @@
 import React, { memo, useState, useMemo } from 'react';
-import { Button, Typography, Popconfirm } from 'antd';
+import { Button, Popconfirm } from 'antd';
 import { DeleteOutlined, CaretUpOutlined, CaretDownOutlined } from '@ant-design/icons';
 import { useSettings } from '@/shared/contexts/SettingsContext';
 import {
@@ -10,8 +10,6 @@ import {
   calcChangeAmount,
 } from './utils/stock-formatter';
 import type { WatchlistStockRow } from './index';
-
-const { Text } = Typography;
 
 type SortField = 'stock_code' | 'stock_name' | 'close' | 'change_pct' | 'pe' | 'pb' | 'market_cap';
 type SortDir = 'asc' | 'desc';
@@ -125,7 +123,6 @@ TableRow.displayName = 'TableRow';
 
 const WatchlistTable: React.FC<WatchlistTableProps> = ({
   rows,
-  activeGroup,
   onDelete,
   onDoubleClick,
 }) => {

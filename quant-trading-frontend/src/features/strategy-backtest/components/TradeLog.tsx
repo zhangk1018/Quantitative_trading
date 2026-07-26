@@ -2,7 +2,7 @@
 // 交易日志表 — 含卖出原因过滤 + CSV 导出
 
 import React, { useState, useMemo, useCallback } from 'react';
-import { Table, Tag, Button, Checkbox, Space, Input } from 'antd';
+import { Table, Tag, Button, Checkbox, Input } from 'antd';
 import { DownloadOutlined, SearchOutlined } from '@ant-design/icons';
 import type { Trade, SellReason } from '../types';
 import { exportToCsv } from '../../stock-picker/utils/screener';

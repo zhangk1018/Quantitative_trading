@@ -23,6 +23,7 @@ backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__
 sys.path.insert(0, backend_dir)
 
 import pandas as pd
+from psycopg2.extras import execute_values
 from datetime import datetime, timedelta, date
 from typing import Dict, List, Tuple, Optional
 
@@ -165,7 +166,6 @@ def fill_missing_dates(storage: PostgreSQLStorage, code: str, start_date: date,
     if not fill_dates:
         return 0
 
-    from psycopg2.extras import execute_values
     values = [(code, d, last_adj_factor) for d in fill_dates]
 
     BATCH_SIZE = 1000

@@ -12,6 +12,7 @@ export function getBacktestList(): BacktestStockItem[] {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
+    console.warn('[Backtest] 回测股票列表加载失败');
     return [];
   }
 }
@@ -22,14 +23,22 @@ export function addToBacktestList(stocks: BacktestStockItem[]): number {
   const newItems = stocks.filter((s) => !existingCodes.has(s.stock_code));
   if (newItems.length === 0) return 0;
   const updated = [...current, ...newItems];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  } catch (e) {
+    console.warn('Failed to save backtest list to localStorage', e);
+  }
   return newItems.length;
 }
 
 export function removeFromBacktestList(stock_code: string): void {
   const current = getBacktestList();
   const updated = current.filter((s) => s.stock_code !== stock_code);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  } catch (e) {
+    console.warn('Failed to save backtest list to localStorage', e);
+  }
 }
 
 export function clearBacktestList(): void {

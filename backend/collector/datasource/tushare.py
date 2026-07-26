@@ -209,6 +209,8 @@ class TushareDataSource(BaseDataSource):
         """
         批量获取全市场所有股票在指定日期的日线数据（内置限流保护）
 
+        注意：返回数据已统一单位 — vol=股、amount=元（与 get_kline 一致）
+
         Args:
             trade_date: 交易日期，格式 YYYY-MM-DD
         """
@@ -222,6 +224,14 @@ class TushareDataSource(BaseDataSource):
                 trade_date=ts_date,
                 fields='ts_code,trade_date,open,high,low,close,pre_close,vol,amount,ah_vol,ah_amount'
             )
+            if df is not None and not df.empty:
+                # 统一单位：vol(手→股), amount(千元→元)
+                df['vol'] = df['vol'] * 100
+                df['amount'] = df['amount'] * 1000
+                if 'ah_vol' in df.columns:
+                    df['ah_vol'] = df['ah_vol'] * 100
+                if 'ah_amount' in df.columns:
+                    df['ah_amount'] = df['ah_amount'] * 1000
             return df
         except Exception as e:
             raise RuntimeError(f"批量获取日线数据失败: {e}")

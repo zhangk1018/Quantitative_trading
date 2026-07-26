@@ -2,7 +2,7 @@
 // 策略回测主页面 — 有限状态机驱动（Idle→Loading→Running→Success/Failed）
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Alert, Button, Space } from 'antd';
+import { Alert, Button } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import type { FilterNode, StrategyBacktestDefaults, StrategyBacktestResult } from './types';

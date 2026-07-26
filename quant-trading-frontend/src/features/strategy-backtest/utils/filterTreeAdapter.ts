@@ -3,7 +3,7 @@
 // 采用 Visitor 模式，支持插件化节点类型扩展
 // 职责分层契约：tree 参数仅承载选股逻辑，不包含策略执行参数
 
-import type { FilterNode, RangeField, TechPattern, KlinePattern } from '../types';
+import type { FilterNode } from '../types';
 
 // ==================== 常量 ====================
 

@@ -473,7 +473,7 @@ class BaostockDataSource(BaseDataSource):
                     if r[5] != '1': continue
                     results.append({
                         'code': plain_code, 'trade_date': bs_date,
-                        'pe': float(r[2]) if r[2] else None, 'pe_ttm': float(r[2]) if r[2] else None,
+                        'pe': None, 'pe_ttm': float(r[2]) if r[2] else None,
                         'pb': float(r[3]) if r[3] else None, 'turnover_rate': float(r[4]) if r[4] else None,
                         'volume_ratio': None, 'total_mv': None, 'circ_mv': None,
                     })

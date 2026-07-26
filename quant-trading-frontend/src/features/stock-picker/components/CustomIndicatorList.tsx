@@ -65,7 +65,7 @@ function previewFormula(formula: string, max = 40): string {
 
 export const CustomIndicatorList: React.FC<CustomIndicatorListProps> = ({
   indicators,
-  userId = MOCK_USER_ID,
+  userId: _userId = MOCK_USER_ID,
   referencedIds,
   onEdit,
   onDelete,

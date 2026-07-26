@@ -163,6 +163,7 @@ export function getStrategyBacktestDefaults(): StrategyBacktestDefaults {
       maxDrawdownStopPct: parsed.maxDrawdownStopPct ?? DEFAULT_STRATEGY_BACKTEST_DEFAULTS.maxDrawdownStopPct,
     };
   } catch {
+    console.warn('[StrategyBacktest] 默认设置读取失败，使用默认值');
     return { ...DEFAULT_STRATEGY_BACKTEST_DEFAULTS };
   }
 }
@@ -171,7 +172,11 @@ export function getStrategyBacktestDefaults(): StrategyBacktestDefaults {
  * 保存策略回测默认设置
  */
 export function saveStrategyBacktestDefaults(defaults: StrategyBacktestDefaults): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
+  } catch (e) {
+    console.warn('Failed to save strategy backtest defaults to localStorage', e);
+  }
 }
 
 // ==================== 单位转换辅助函数 ====================

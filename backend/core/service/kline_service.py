@@ -34,7 +34,11 @@ class KlineService:
         self._cache = {}  # {stock_code_period: (expire_time, data)}
 
     def _generate_mock_kline(self, base_price: float, limit: int) -> pd.DataFrame:
-        """生成模拟 K线数据（用于演示）"""
+        """生成模拟 K线数据（仅 debug 模式可用）"""
+        if not os.environ.get("DEBUG", "").lower() in ("true", "1"):
+            return pd.DataFrame(columns=[
+                "trade_date", "open", "high", "low", "close", "volume", "amount"
+            ])
         dates = []
         base_date = datetime.strptime(self.trade_date.replace('-', ''), "%Y%m%d")
         
@@ -132,15 +136,15 @@ class KlineService:
                         kline_df = kline_df.sort_values('trade_date', ascending=True)
 
             except Exception as e:
-                logger.warning(f"数据库查询异常，降级处理: {e}")
+                logger.error(f"数据库查询异常: {e}")
                 kline_df = pd.DataFrame()
 
-        # 2. 数据库无数据时降级使用 mock（仅用于演示/测试）
+        # 2. 数据库无数据时降级使用 mock（仅 debug 模式）
         # 退市股/无效代码：stock_info 为 None 时返回空
         if kline_df.empty:
             stock_info = self._get_stock_info(stock_code)
             if stock_info is None:
-                # 退市/无效代码：返回空数组（验收要求）
+                # 退市/无效代码：返回空数组
                 kline_df = pd.DataFrame(columns=[
                     "trade_date", "open", "high", "low", "close", "volume", "amount"
                 ])

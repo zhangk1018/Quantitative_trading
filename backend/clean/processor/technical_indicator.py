@@ -145,8 +145,7 @@ class TechnicalIndicator:
         
         # 处理除零情况：当 high_max == low_min 时（价格无波动），RSV 设为 50
         price_range = high_max - low_min
-        price_range = price_range.replace(0, 1)  # 避免除零，设为1表示轻微波动
-        rsv = (result['close'] - low_min) / price_range * 100
+        rsv = (result['close'] - low_min) / price_range.replace(0, 1) * 100
         rsv = rsv.where(price_range != 0, 50)  # 价格无波动时设为中性值50
         
         # 计算 K 值（RSV 的 m1 日平滑）

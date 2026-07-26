@@ -22,6 +22,7 @@ backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__
 sys.path.insert(0, backend_dir)
 
 import psycopg2
+from psycopg2 import sql
 import pandas as pd
 import numpy as np
 import talib
@@ -77,22 +78,22 @@ def process_stock(cur, code: str, year_table: str = 'stock_quotes_2026',
 
     if lookback_days > 0:
         # 增量模式：多读 30 天缓冲用于 TA-Lib 计算，但只更新最近 lookback_days 天
-        cur.execute(f'''
+        cur.execute(sql.SQL('''
             SELECT trade_date, open, high, low, close
-            FROM "{year_table}"
+            FROM {}
             WHERE code=%s AND cycle='1d'
             ORDER BY trade_date DESC
             LIMIT %s
-        ''', (code, lookback_days + 30))
+        ''').format(sql.Identifier(year_table)), (code, lookback_days + 30))
         rows = cur.fetchall()
         rows.reverse()
     else:
-        cur.execute(f'''
+        cur.execute(sql.SQL('''
             SELECT trade_date, open, high, low, close
-            FROM "{year_table}"
+            FROM {}
             WHERE code=%s AND cycle='1d'
             ORDER BY trade_date
-        ''', (code,))
+        ''').format(sql.Identifier(year_table)), (code,))
         rows = cur.fetchall()
 
     if len(rows) < 3:
@@ -155,6 +156,11 @@ def main():
     parser.add_argument('--days', type=int, default=10, help='增量模式回溯天数 (默认 10)')
     args = parser.parse_args()
 
+    # 验证 year 参数（防止 SQL 注入）
+    if not args.year.isdigit() or len(args.year) != 4:
+        logger.error(f'无效的年份参数: {args.year}，必须是 4 位数字')
+        sys.exit(1)
+
     lookback_days = args.days if args.latest else 0
 
     db_config = config.get('database', {})
@@ -180,14 +186,14 @@ def main():
     # 全市场
     if args.latest:
         # 增量模式：只查最近 days 天有交易的股票
-        cur.execute(f'''
-            SELECT DISTINCT code FROM "{year_table}"
+        cur.execute(sql.SQL('''
+            SELECT DISTINCT code FROM {}
             WHERE cycle='1d'
-            AND trade_date >= CURRENT_DATE - INTERVAL '%s days'
+            AND trade_date >= CURRENT_DATE - %s::INTEGER
             ORDER BY code
-        ''', (args.days + 30,))
+        ''').format(sql.Identifier(year_table)), (args.days + 30,))
     else:
-        cur.execute(f'SELECT DISTINCT code FROM "{year_table}" ORDER BY code')
+        cur.execute(sql.SQL('SELECT DISTINCT code FROM {} ORDER BY code').format(sql.Identifier(year_table)))
     codes = [r[0] for r in cur.fetchall()]
     if args.limit:
         codes = codes[:args.limit]

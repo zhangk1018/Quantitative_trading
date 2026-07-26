@@ -396,8 +396,7 @@ function checkCalculateSignature(formula: string): { errors: string[]; warnings:
   }
 
   // 警告：参数名不规范（不强制，但给出提示）
-  const expectedNames = ['open_prices', 'high_prices', 'low_prices', 'close_prices', 'volumes'];
-  const lowerParams = params.map((p) => p.toLowerCase());
+const lowerParams = params.map((p) => p.toLowerCase());
   const hasOpen = lowerParams.some((p) => p.includes('open'));
   const hasHigh = lowerParams.some((p) => p.includes('high'));
   const hasLow = lowerParams.some((p) => p.includes('low'));

@@ -43,12 +43,18 @@ function loadStorage(): WatchlistStorage {
         stocks: parsed.stocks && typeof parsed.stocks === 'object' ? parsed.stocks : {},
       };
     }
-  } catch { /* ignore */ }
+  } catch {
+    console.warn('[Watchlist] localStorage 读取自选股数据失败，使用空数据');
+  }
   return { version: STORAGE_VERSION, customGroups: [], stocks: {} };
 }
 
 function saveStorage(data: WatchlistStorage): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.warn('Failed to save watchlist to localStorage', e);
+  }
 }
 
 // ============================================
@@ -82,7 +88,9 @@ async function migrateFromBackend(): Promise<WatchlistStorage | null> {
       saveStorage(data);
       return data;
     }
-  } catch { /* ignore */ }
+  } catch {
+    console.warn('[Watchlist] 后端数据迁移失败，使用本地数据');
+  }
   return null;
 }
 

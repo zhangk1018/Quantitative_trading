@@ -7,7 +7,6 @@ import {
   pushdownToQueryString,
   detectFundamentalFields,
   validateFilterNode,
-  stripUnsupportedFieldsForEngine,
   FUNDAMENTAL_FIELD_LABELS,
   type FilterAuditTrail,
 } from './filterTreeAdapter';
@@ -112,6 +111,7 @@ export async function tryRestoreFromCache(
       request.onerror = () => resolve(null);
     });
   } catch {
+    console.warn('[DataLoader] 缓存恢复失败');
     return null;
   }
 }
@@ -131,8 +131,7 @@ export async function saveToCache(
       payload,
     });
   } catch {
-    // 缓存失败不阻塞主流程
-    console.warn('[Cache] 保存缓存失败');
+    console.warn('[DataLoader] 缓存保存失败');
   }
 }
 
@@ -366,7 +365,7 @@ export async function loadBacktestData(
     const data = await resp.json();
     benchmarkOhlcv = data.data ?? [];
   } catch {
-    // 基准数据可选，加载失败不阻塞
+    console.warn('[DataLoader] 基准数据加载失败，使用空数据');
   }
 
   return {

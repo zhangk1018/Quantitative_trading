@@ -177,7 +177,7 @@ const StockPickerContent: React.FC = () => {
         confirmLoading={actions.adding}
         okText="确认添加"
         cancelText="取消"
-        destroyOnHidden
+        destroyOnClose
         maskClosable={!actions.adding}
         data-testid="add-to-watchlist-modal"
       >

@@ -91,7 +91,7 @@ const SectionTitle: React.FC<SectionTitleProps> = ({ text, color }) => (
 // 主组件
 // ---------------------------------------------------------------------------
 const StrategyBacktestDefaultsPanel: React.FC = () => {
-  const { message, modal } = App.useApp();
+  const { message } = App.useApp();
   const [defaults, setDefaults] = useState<StrategyBacktestDefaults>(
     () => getStrategyBacktestDefaults(),
   );

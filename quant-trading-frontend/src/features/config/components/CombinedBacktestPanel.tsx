@@ -17,7 +17,6 @@ import {
   Tooltip,
   Divider,
   App,
-  Modal,
 } from 'antd';
 import {
   SaveOutlined,

@@ -2,7 +2,7 @@
 // 策略条件摘要卡片 — 展示 FilterNode AST 的人类可读表达
 
 import React from 'react';
-import { Tag, Button, Tooltip } from 'antd';
+import { Tag, Button } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import type { FilterNode } from '../types';
 

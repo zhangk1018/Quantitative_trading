@@ -40,7 +40,7 @@ interface CascaderOption {
 
 const DEFAULT_STOCK: StockSearchItem = { stock_code: '000001', stock_name: '平安银行' };
 
-const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, loading, onCancel, form }) => {
+const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
   const { keyword: searchKeyword, setKeyword: setSearchKeyword, options: searchOptions, loading: searchLoading } = useStockSearch(300);
   const [cascaderValue, setCascaderValue] = useState<string[]>([]);
   const [backtestVersion, setBacktestVersion] = useState(0);

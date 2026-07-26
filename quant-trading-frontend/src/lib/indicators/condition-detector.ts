@@ -274,7 +274,7 @@ export function detectConditions(
   }
 
   // 遍历每个条件执行检测
-  for (const { fieldKey, lookbackDays } of conditions) {
+  for (const { fieldKey } of conditions) {
     const config = visualConfig[fieldKey];
     if (!config) continue;
 

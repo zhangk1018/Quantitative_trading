@@ -29,7 +29,6 @@ import {
   RSI_COLORS,
   KDJ_COLORS,
   getCandleColors,
-  getVolumeColors,
   PANE_RATIOS,
   REF_LINES,
 } from '@/lib/indicators/chart-config';
@@ -357,7 +356,6 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
     chartRef.current = chart;
 
     const candleColors = getCandleColors();
-    const volumeColors = getVolumeColors();
 
     // 创建所有 series
     const candle = chart.addCandlestickSeries({
