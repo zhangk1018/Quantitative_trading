@@ -12,13 +12,13 @@ import baostock as bs
 import pandas as pd
 import numpy as np
 import time
-import threading
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from .base import BaseDataSource
 from utils.logger import setup_logger
 from utils.stock_code_utils import normalize_code
+from utils.rate_limiter import RateLimiter
 
 logger = setup_logger('baostock_datasource')
 
@@ -28,6 +28,16 @@ BAOSTOCK_REQUEST_TIMEOUT = 30
 # 全局线程池：限制最大工作线程数，防止超时后孤儿线程堆积导致资源泄漏
 # 设为 5 以降低因 Baostock 卡死导致池满的概率（2 个线程容易被僵尸线程占满）
 _baostock_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="baostock_worker")
+
+def _shutdown_baostock_executor():
+    """进程退出时安全关闭线程池（通过 atexit 注册）"""
+    try:
+        _baostock_executor.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+
+import atexit
+atexit.register(_shutdown_baostock_executor)
 
 def _run_baostock_with_timeout(func, args=(), kwargs={}, timeout=BAOSTOCK_REQUEST_TIMEOUT):
     """带超时的 Baostock 函数执行（使用线程池替代原生 Thread，避免孤儿线程泄漏）"""
@@ -43,33 +53,6 @@ BAOSTOCK_RATE_LIMIT = {
     'max_requests_per_minute': 20,
     'burst_size': 3,
 }
-
-class RateLimiter:
-    """令牌桶算法实现的频率限制器"""
-    def __init__(self, rate: float = 1.0, burst: int = 3):
-        self.rate = rate
-        self.burst = burst
-        self.tokens = burst
-        self.last_update = time.time()
-        self.lock = threading.Lock()
-
-    def acquire(self, timeout: float = None) -> bool:
-        start_time = time.time()
-        while True:
-            with self.lock:
-                now = time.time()
-                elapsed = now - self.last_update
-                self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
-                self.last_update = now
-                if self.tokens >= 1:
-                    self.tokens -= 1
-                    return True
-                wait_time = (1 - self.tokens) / self.rate
-                if timeout is not None:
-                    elapsed_total = time.time() - start_time
-                    if elapsed_total + wait_time > timeout:
-                        return False
-            time.sleep(wait_time)
 
 class BaostockDataSource(BaseDataSource):
     """Baostock 数据源实现（带频率限制与全链路超时保护）"""
@@ -94,7 +77,9 @@ class BaostockDataSource(BaseDataSource):
         self._last_minute_requests = []
         
         # 🟢 新增：复权因子内存缓存，避免重复全量查询
-        self._adj_cache = {}  # 格式: {(code, date): adj_factor}
+        # 缓存键: (code, date) → adj_factor，最大 10000 条，超额按 LRU 淘汰
+        self._adj_cache = {}
+        self._adj_cache_max_size = 10000
 
     def _wait_for_rate_limit(self):
         self.rate_limiter.acquire(timeout=60)
@@ -138,7 +123,7 @@ class BaostockDataSource(BaseDataSource):
                 logger.warning("⚠️ Baostock 保活失败")
                 return False
             return True
-        except Exception as e:
+        except (ConnectionError, TimeoutError, ValueError) as e:
             logger.warning(f"⚠️ Baostock 保活异常: {str(e)}")
             return False
 
@@ -172,7 +157,7 @@ class BaostockDataSource(BaseDataSource):
                     self._last_request_time = time.time()
                     logger.info(f"✅ Baostock 重连成功（第 {i+1} 次）")
                     return True
-            except Exception as e:
+            except (ConnectionError, TimeoutError, ValueError) as e:
                 logger.warning(f"⚠️ Baostock 重连失败（第 {i+1}/{self._max_reconnect} 次）: {str(e)}")
         return False
 
@@ -193,7 +178,7 @@ class BaostockDataSource(BaseDataSource):
                 return False
             # 首次失败后调用 _ensure_connected 的重试逻辑
             return self._ensure_connected()
-        except Exception:
+        except (ConnectionError, TimeoutError, ValueError):
             if not retry:
                 return False
             return self._ensure_connected()
@@ -203,7 +188,7 @@ class BaostockDataSource(BaseDataSource):
             bs.logout()
             self.connected = False
             return True
-        except Exception:
+        except (ConnectionError, OSError):
             return False
 
     def _get_latest_trade_date(self) -> str:
@@ -227,7 +212,7 @@ class BaostockDataSource(BaseDataSource):
             if open_days.empty:
                 return today_str
             return open_days.iloc[-1]
-        except Exception:
+        except (ConnectionError, TimeoutError, ValueError):
             return today_str
 
     def get_stock_list(self) -> pd.DataFrame:
@@ -260,7 +245,7 @@ class BaostockDataSource(BaseDataSource):
             result = result[~((result['code'].str.startswith('000')) & (result['exchange'] == 'SH'))]
             result = result[~result['code'].str.startswith('399')]
             return result
-        except Exception as e:
+        except (ConnectionError, TimeoutError, ValueError, KeyError) as e:
             raise RuntimeError(f"获取股票列表异常: {str(e)}")
 
     def get_adj_factor(self, trade_date: str) -> pd.DataFrame:
@@ -270,7 +255,7 @@ class BaostockDataSource(BaseDataSource):
         bs_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
         try:
             stocks = self.get_stock_list()
-        except Exception:
+        except (ConnectionError, TimeoutError, ValueError, KeyError):
             return pd.DataFrame()
             
         if stocks.empty:
@@ -339,11 +324,15 @@ class BaostockDataSource(BaseDataSource):
                                     break
                                     
                     if adj_val is not None:
+                        # LRU 淘汰：缓存满时删除最早插入的条目
+                        if len(self._adj_cache) >= self._adj_cache_max_size:
+                            oldest_key = next(iter(self._adj_cache))
+                            del self._adj_cache[oldest_key]
                         self._adj_cache[cache_key] = adj_val  # 写入缓存
 
                 if adj_val is not None:
                     results.append({'code': code_raw, 'trade_date': trade_date, 'adj_factor': adj_val})
-            except Exception as e:
+            except (ConnectionError, TimeoutError, ValueError) as e:
                 logger.debug(f"获取 {code_raw} 复权因子失败: {e}")
                 continue
                 
@@ -404,7 +393,7 @@ class BaostockDataSource(BaseDataSource):
                 df = df.sort_values('trade_date').reset_index(drop=True)
             return df
 
-        except Exception as e:
+        except (ConnectionError, TimeoutError, ValueError) as e:
             logger.warning(f"  {code}: Baostock 复权因子历史查询失败: {e}")
             return pd.DataFrame()
 
@@ -430,7 +419,7 @@ class BaostockDataSource(BaseDataSource):
             df = df.rename(columns={'code_name': 'name'})
             df['code'] = df['code'].apply(lambda x: normalize_code(x) or x)
             return df[['code', 'name', 'industry']].dropna(subset=['code'])
-        except Exception as e:
+        except (ConnectionError, TimeoutError, ValueError, KeyError) as e:
             raise RuntimeError(f"获取股票基本资料异常: {str(e)}")
 
     def get_daily_basic(self, trade_date: str, **kwargs) -> pd.DataFrame:
@@ -441,7 +430,7 @@ class BaostockDataSource(BaseDataSource):
         try:
             stocks = self.get_stock_list()
             if stocks.empty: return pd.DataFrame()
-        except Exception:
+        except (ConnectionError, TimeoutError, ValueError, KeyError):
             return pd.DataFrame()
             
         results = []
@@ -477,7 +466,7 @@ class BaostockDataSource(BaseDataSource):
                         'pb': float(r[3]) if r[3] else None, 'turnover_rate': float(r[4]) if r[4] else None,
                         'volume_ratio': None, 'total_mv': None, 'circ_mv': None,
                     })
-            except Exception:
+            except (ConnectionError, TimeoutError, ValueError):
                 failed += 1
                 continue
                 
@@ -516,7 +505,7 @@ class BaostockDataSource(BaseDataSource):
                     'pe_ttm': float(rows[0][2]),
                 }])
             return pd.DataFrame()
-        except Exception:
+        except (ConnectionError, TimeoutError, ValueError):
             return pd.DataFrame()
 
     def get_kline(self, code: str, cycle: str = 'daily', start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
@@ -589,7 +578,7 @@ class BaostockDataSource(BaseDataSource):
                     self.connected = False
                     continue
                 raise RuntimeError(f"获取 {code} K线数据超时，已重试3次")
-            except Exception as e:
+            except (ConnectionError, TimeoutError, ValueError, KeyError) as e:
                 error_msg = str(e)
                 if attempt < 2 and ('用户未登录' in error_msg or '连接' in error_msg.lower() or '超时' in error_msg or 'None' in error_msg):
                     self.connected = False
@@ -623,7 +612,7 @@ class BaostockDataSource(BaseDataSource):
                 'is_open': df[trade_day_col].apply(lambda x: 1 if str(x) == '1' else 0),
                 'exchange': exchange
             })
-        except Exception as e:
+        except (ConnectionError, TimeoutError, ValueError) as e:
             return self._generate_simple_calendar(start, end, exchange)
 
     def get_next_trade_date(self, last_date: str, exchange: str = 'SH') -> Optional[str]:
@@ -636,7 +625,7 @@ class BaostockDataSource(BaseDataSource):
             if next_dates.empty: return None
             next_date = next_dates.iloc[0]
             return next_date if next_date <= self._get_today_str() else None
-        except Exception:
+        except (ValueError, KeyError, TypeError):
             return self._simple_next_trade_date(last_date)
 
     def _simple_next_trade_date(self, last_date: str) -> Optional[str]:
@@ -648,7 +637,7 @@ class BaostockDataSource(BaseDataSource):
                 if next_dt.weekday() < 5 and next_dt.date() <= today.date():
                     return next_dt.strftime('%Y-%m-%d')
             return None
-        except Exception:
+        except (ValueError, TypeError):
             return None
 
     def _normalize_code(self, code: str) -> Optional[str]:
@@ -686,7 +675,7 @@ class BaostockDataSource(BaseDataSource):
                 dates.append({'cal_date': date_str, 'is_open': is_open, 'exchange': exchange})
                 current_dt += timedelta(days=1)
             return pd.DataFrame(dates)
-        except Exception:
+        except (ValueError, TypeError):
             return pd.DataFrame()
 
     @property

@@ -54,12 +54,8 @@ def get_missing_stocks(storage: PostgreSQLStorage, min_days: int = 60, market: O
         股票代码列表（6位纯数字，不带后缀）
     """
     # 构建市场筛选条件（基于股票代码前缀，排除北交所）
-    where_conds = [
-        "sb.code NOT LIKE '8%%'",
-        "sb.code NOT LIKE '43%%'",
-        "sb.code NOT LIKE '92%%'",
-        "sb.delist_date IS NULL"  # 排除已退市股票
-    ]
+    from backend.utils.market_classifier import build_exclude_bse_filter
+    where_conds = build_exclude_bse_filter("sb")
     
     if market == 'kcb':
         where_conds.append("sb.code LIKE '688%%'")
@@ -445,7 +441,7 @@ def _safe_import_quotes(storage: PostgreSQLStorage, df: pd.DataFrame, code: str)
                 execute_values(cur, insert_sql, data_tuples, page_size=1000)
                 import_count = len(cur.fetchall())
         return import_count
-    except Exception as e:
+    except psycopg2.Error as e:
         logger.error(f"  {code}: 批量导入失败: {e}")
         return 0
 
@@ -556,24 +552,20 @@ def main():
             fail = 0
             total_records = 0
 
-            # 单只股票超时设置：每只股票最多 120 秒，防止 Baostock 卡死阻塞整个补全流程
-            STOCK_TIMEOUT = 120
-
             try:
-                for i, code in enumerate(codes):
-                    logger.info(f"  [{start_idx+i+1}/{total}] 补全 {code}...")
+                # 复用单个线程池执行多只股票导入，避免每只股票创建/销毁线程池的开销
+                STOCK_TIMEOUT = 120
+                with ThreadPoolExecutor(max_workers=5, thread_name_prefix="fill_missing") as stock_executor:
+                    for i, code in enumerate(codes):
+                        logger.info(f"  [{start_idx+i+1}/{total}] 补全 {code}...")
 
-                    imp_start = args.start_date or '2000-01-01'
-                    imp_end = args.end_date or datetime.now().strftime('%Y-%m-%d')
+                        imp_start = args.start_date or '2000-01-01'
+                        imp_end = args.end_date or datetime.now().strftime('%Y-%m-%d')
 
-                    # 使用独立线程执行每只股票的导入，带超时保护
-                    def _do_import():
-                        return import_stock_via_baostock(storage, ds, code,
-                                                         start_date=imp_start,
-                                                         end_date=imp_end)
-
-                    with ThreadPoolExecutor(max_workers=1) as stock_executor:
-                        stock_future = stock_executor.submit(_do_import)
+                        stock_future = stock_executor.submit(
+                            import_stock_via_baostock, storage, ds, code,
+                            start_date=imp_start, end_date=imp_end
+                        )
                         try:
                             count = stock_future.result(timeout=STOCK_TIMEOUT)
                             if count > 0:

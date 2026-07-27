@@ -126,7 +126,8 @@ def get_latest_trade_date(engine) -> str:
             try:
                 r = conn.execute(text(q)).scalar()
                 if r is not None: return str(r)[:10]
-            except Exception: continue
+            except Exception:
+                pass  # 查询失败时静默跳过，使用默认日期
     return datetime.now().strftime("%Y-%m-%d")
 
 def generate_batch_id() -> str:

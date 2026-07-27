@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """配置管理模块 - 加载外置化配置"""
 import os
+import copy
 import yaml
 import re
 import logging
@@ -193,6 +194,11 @@ def load_config(path: str = None, env: str = None) -> Config:
     if env is None:
         env = os.environ.get('APP_ENV', 'dev')
     
+    # 安全校验：防止路径遍历攻击（env 仅允许字母数字和连字符）
+    if not re.match(r'^[a-zA-Z0-9_-]+$', env):
+        logger.warning(f"非法的 APP_ENV 值 '{env}'，已回退为 'dev'")
+        env = 'dev'
+    
     # 设置环境变量
     os.environ['APP_ENV'] = env
     
@@ -203,7 +209,7 @@ def load_config(path: str = None, env: str = None) -> Config:
     _load_env_file()
     _load_env_file(os.path.abspath(os.path.join(backend_dir, "..", ".env")))
     
-    config = _DEFAULT_CONFIG.copy()
+    config = copy.deepcopy(_DEFAULT_CONFIG)
     
     # 默认配置文件路径（使用绝对路径）
     default_paths = [
@@ -282,7 +288,8 @@ def _deep_merge(base: Dict, update: Dict) -> Dict:
     return result
 
 
-# 全局配置实例
+# 全局配置实例（模块级加载，首次导入时触发 I/O）
+# TODO(P2): 改为延迟加载，避免 import 时触发文件 I/O
 config = load_config()
 
 

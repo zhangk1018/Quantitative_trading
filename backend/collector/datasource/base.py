@@ -417,10 +417,9 @@ class DataSourceManager:
             method = getattr(self.current_source, method_name)
             result = method(**kwargs)
 
-            # 验证结果
+            # 验证结果：空 DataFrame 是合法结果（如查询日期无数据），不应触发降级
             if isinstance(result, pd.DataFrame) and result.empty:
-                # 空结果也尝试切换
-                return self._try_fallback(method_name, Exception("返回空数据"), **kwargs)
+                return result  # 空结果直接返回，不触发 failover
 
             return result
 

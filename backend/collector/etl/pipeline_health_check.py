@@ -80,7 +80,7 @@ def get_db_conn():
     """获取数据库连接"""
     return psycopg2.connect(
         host=os.getenv('PG_HOST', 'localhost'),
-        port=os.getenv('PG_PORT', '5432'),
+        port=int(os.getenv('PG_PORT', '5432')),
         database=os.getenv('PG_DATABASE', 'quant_trading'),
         user=os.getenv('PG_USER', 'quant_user'),
         password=os.getenv('PG_PASSWORD', '')

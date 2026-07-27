@@ -11,11 +11,11 @@ Tushare Pro 数据源实现 — 仅支持日线数据下载
 import os
 import time
 import pandas as pd
-import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 from .base import BaseDataSource
 from utils.logger import setup_logger
+from utils.rate_limiter import RateLimiter
 
 logger = setup_logger('tushare_datasource')
 
@@ -25,35 +25,6 @@ TUSHARE_RATE_LIMIT = {
     'max_requests_per_minute': 45,
     'burst_size': 3,
 }
-
-
-class RateLimiter:
-    """令牌桶算法实现的频率限制器"""
-
-    def __init__(self, rate: float = 1.0, burst: int = 3):
-        self.rate = rate
-        self.burst = burst
-        self.tokens = burst
-        self.last_update = time.time()
-        self.lock = threading.Lock()
-
-    def acquire(self, timeout: float = None) -> bool:
-        start_time = time.time()
-        while True:
-            with self.lock:
-                now = time.time()
-                elapsed = now - self.last_update
-                self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
-                self.last_update = now
-                if self.tokens >= 1:
-                    self.tokens -= 1
-                    return True
-                wait_time = (1 - self.tokens) / self.rate
-            if timeout is not None:
-                elapsed_total = time.time() - start_time
-                if elapsed_total + wait_time > timeout:
-                    return False
-            time.sleep(wait_time)
 
 
 class TushareDataSource(BaseDataSource):
@@ -239,14 +210,14 @@ class TushareDataSource(BaseDataSource):
     # ── 以下方法受用户等级限制，不可使用 ──────────────────────────────
 
     def get_stock_list(self) -> pd.DataFrame:
-        raise NotImplementedError(
-            "Tushare 免费版不支持 stock_basic 接口。请使用 BaostockDataSource 获取股票列表。"
-        )
+        """Tushare 免费版不支持 stock_basic 接口，返回空 DataFrame（不抛异常，由调用方降级）"""
+        logger.warning("Tushare 免费版不支持 stock_basic 接口，返回空列表。请使用 BaostockDataSource 获取股票列表。")
+        return pd.DataFrame()
 
     def get_stock_basic(self) -> pd.DataFrame:
-        raise NotImplementedError(
-            "Tushare 免费版不支持 stock_basic 接口。请使用 BaostockDataSource 获取股票基本信息。"
-        )
+        """Tushare 免费版不支持 stock_basic 接口，返回空 DataFrame"""
+        logger.warning("Tushare 免费版不支持 stock_basic 接口。请使用 BaostockDataSource 获取股票基本信息。")
+        return pd.DataFrame()
 
     def get_trade_calendar(
         self,
@@ -254,9 +225,9 @@ class TushareDataSource(BaseDataSource):
         end_date: Optional[str] = None,
         exchange: str = 'SH'
     ) -> pd.DataFrame:
-        raise NotImplementedError(
-            "Tushare 免费版不支持 trade_cal 接口。请使用 BaostockDataSource 获取交易日历。"
-        )
+        """Tushare 免费版不支持 trade_cal 接口，返回空 DataFrame"""
+        logger.warning("Tushare 免费版不支持 trade_cal 接口。请使用 BaostockDataSource 获取交易日历。")
+        return pd.DataFrame()
 
     def get_daily_basic(
         self,
@@ -330,7 +301,7 @@ class TushareDataSource(BaseDataSource):
             logger.debug(f"✅ daily_basic 获取 {len(df)} 条")
             return df
 
-        except Exception as e:
+        except (ConnectionError, TimeoutError, ValueError, KeyError) as e:
             logger.error(f"daily_basic 调用失败: {e}")
             return pd.DataFrame()
 

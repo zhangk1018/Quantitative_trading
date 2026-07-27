@@ -406,6 +406,7 @@ class BaseDataImporter(ABC):
         except ValueError:
             raise ValueError(f"日期格式非法: {date_str}，请使用 YYYY-MM-DD")
 
+    # TODO(D2): 迁移到 utils.retry.retry_on_error，消除重复实现
     @staticmethod
     def retry_on_network_error(func, *args, max_retries: int = 3, initial_delay: int = 5,
                                max_delay: int = 30, **kwargs):
@@ -489,6 +490,7 @@ class BaseDataImporter(ABC):
 
         raise last_error
 
+    # TODO(D2): 迁移到 utils.retry.retry_on_error，消除重复实现
     @staticmethod
     def retry_with_failover(sources: list, method_name: str, max_total_attempts: int = 6,
                             initial_delay: int = 5, **kwargs):

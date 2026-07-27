@@ -105,6 +105,10 @@ class SortParams:
 # ============================================
 @lru_cache(maxsize=1)
 def get_loader() -> DataLoader:
+    """获取 DataLoader 单例。
+
+    热重载场景（如 parquet 文件更新后）可调用 get_loader.cache_clear() 释放旧实例。
+    """
     return DataLoader().load()
 LoaderDep = Annotated[DataLoader, Depends(get_loader)]
 

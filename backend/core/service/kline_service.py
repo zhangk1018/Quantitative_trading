@@ -223,11 +223,11 @@ class KlineService:
         """设置缓存"""
         # 如果缓存已满，删除最早的10%
         if len(self._cache) >= self.CACHE_SIZE:
-            # 获取所有键并按过期时间排序，删除前10%
-            sorted_keys = sorted(self._cache.keys(), key=lambda k: self._cache[k][0])
-            to_delete = sorted_keys[:int(self.CACHE_SIZE * 0.1)]
-            for key in to_delete:
-                del self._cache[key]
+            # 按插入顺序删除最早的 10%（Python 3.7+ dict 保序），避免 O(n log n) 排序
+            to_delete_count = int(self.CACHE_SIZE * 0.1)
+            for _ in range(to_delete_count):
+                if self._cache:
+                    self._cache.pop(next(iter(self._cache)))
         
         # 设置新缓存（过期时间=当前时间+TTL）
         self._cache[cache_key] = (time.time() + self.CACHE_TTL, data)
@@ -318,7 +318,7 @@ class KlineService:
 
         try:
             return self._storage.get_pattern_markers(db_code, start_date, end_date)
-        except Exception as e:
+        except (ValueError, KeyError) as e:
             logger.warning(f"pattern_markers 查询失败 ({stock_code}): {e}")
             return []
 

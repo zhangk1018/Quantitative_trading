@@ -32,8 +32,21 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from collector.db.models import StockDailySnapshot, Base
+from backend.utils.market_classifier import build_listed_board_sql_case
 
 logger = logging.getLogger(__name__)
+
+# TODO(P2): 从 StockDailySnapshot 模型动态生成 INSERT/SELECT/UPDATE 列清单，
+# 消除 3 处硬编码的字段列表，降低新增字段时的维护成本。
+# 示例：columns = [c.name for c in StockDailySnapshot.__table__.columns if not c.primary_key]
+
+
+def _get_snapshot_columns() -> list[str]:
+    """从模型动态获取宽表列清单（排除主键 code/trade_date）。"""
+    from sqlalchemy import inspect
+    mapper = inspect(StockDailySnapshot)
+    return [c.name for c in mapper.columns if c.name not in ('code', 'trade_date')]
+
 
 # 2026-06-22 修复：涨跌停阈值使用精确值（考虑浮点误差，使用略低于理论阈值）
 # 理论阈值：主板10%，创业板/科创板20%，北交所30%
@@ -50,7 +63,7 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
     try:
         logger.info(f"🔄 开始同步 {target_date} 的宽表数据...")
 
-        upsert_sql = text("""
+        upsert_sql = text(f"""
             INSERT INTO stock_daily_snapshot (
                 code, stock_name, listed_board, industry, sub_industry, area,
                 trade_date, open, high, low, close, pre_close, volume, amount, adjust_type,
@@ -113,14 +126,7 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
             SELECT
                 q.code,
                 COALESCE(b.name, '') AS stock_name,
-                CASE
-                    WHEN q.code LIKE '60%' THEN '上海主板'
-                    WHEN q.code LIKE '000%' OR q.code LIKE '001%' OR q.code LIKE '002%' OR q.code LIKE '003%' THEN '深圳主板'
-                    WHEN q.code LIKE '300%' OR q.code LIKE '301%' OR q.code LIKE '302%' THEN '创业板'
-                    WHEN q.code LIKE '688%' OR q.code LIKE '689%' THEN '科创板'
-                    WHEN q.code LIKE '92%' OR q.code LIKE '8%' OR q.code LIKE '43%' THEN '北交所'
-                    ELSE '其他'
-                END AS listed_board,
+                {build_listed_board_sql_case()} AS listed_board,
                 COALESCE(b.industry, '') AS industry,
                 COALESCE(b.industry, '') AS sub_industry,
                 COALESCE(b.area, '') AS area,

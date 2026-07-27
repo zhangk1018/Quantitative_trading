@@ -184,6 +184,7 @@ class QuotesUpsertWriter:
             raise
         return result
 
+# TODO(D2): 迁移到 utils.retry.retry_on_error，消除重复实现
 class RetryHandler:
     @staticmethod
     def retry_with_backoff(func, max_retries=3, initial_delay=1.0, exceptions=(Exception,), connection_reset_callback=None):

@@ -8,8 +8,10 @@ import os
 from contextlib import contextmanager
 from typing import Generator
 
+import psycopg2
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 
 # 加载环境变量
@@ -50,12 +52,36 @@ def get_db_session() -> Generator[Session, None, None]:
     session = SessionLocal()
     try:
         yield session
-        session.commit()
+        if session.dirty or session.new:
+            session.commit()
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
+
+
+@contextmanager
+def get_raw_connection() -> Generator:
+    """获取原始 psycopg2 连接（统一从连接池获取，复用数据库配置）。
+
+    用于需要 psycopg2 特有功能（如 execute_values、cursor）的场景。
+    所有直接使用 psycopg2.connect() 的脚本应迁移到此接口。
+
+    Yields:
+        psycopg2 connection 对象（autocommit=False）
+    """
+    conn = psycopg2.connect(
+        host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
+        user=DB_USER, password=DB_PASSWORD
+    )
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def test_connection() -> bool:

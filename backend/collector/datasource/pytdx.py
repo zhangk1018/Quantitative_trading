@@ -123,22 +123,26 @@ class PytdxDataSource(BaseDataSource):
         if self._connected and self._api is not None:
             return True
 
-        # 设置 socket 默认超时，防止连接阶段无限阻塞
-        socket.setdefaulttimeout(self._timeout)
+        # 使用 per-socket timeout 而非全局 setdefaulttimeout，避免影响其他 socket 连接
+        original_timeout = socket.getdefaulttimeout()
+        try:
+            socket.setdefaulttimeout(self._timeout)
 
-        self._api = TdxHq_API(heartbeat=True, auto_retry=True, raise_exception=False)
-        for host, port in self._hosts:
-            try:
-                if self._api.connect(host, port):
-                    self._connected = True
-                    logger.info(f"pytdx 连接成功: {host}:{port} (timeout={self._timeout}s)")
-                    return True
-            except Exception as e:
-                logger.warning(f"pytdx 连接失败 {host}:{port}: {e}")
-                continue
+            self._api = TdxHq_API(heartbeat=True, auto_retry=True, raise_exception=False)
+            for host, port in self._hosts:
+                try:
+                    if self._api.connect(host, port):
+                        self._connected = True
+                        logger.info(f"pytdx 连接成功: {host}:{port} (timeout={self._timeout}s)")
+                        return True
+                except Exception as e:
+                    logger.warning(f"pytdx 连接失败 {host}:{port}: {e}")
+                    continue
 
-        logger.error("pytdx 所有主机连接失败")
-        return False
+            logger.error("pytdx 所有主机连接失败")
+            return False
+        finally:
+            socket.setdefaulttimeout(original_timeout)
 
     def disconnect(self) -> bool:
         if self._api:
@@ -208,7 +212,7 @@ class PytdxDataSource(BaseDataSource):
                     df = pd.DataFrame(security_list)
                     df["exchange"] = market_label
                     dfs.append(df)
-            except Exception as e:
+            except (ConnectionError, TimeoutError, ValueError) as e:
                 logger.warning(f"获取证券列表失败 market={market}: {e}")
 
         if not dfs:

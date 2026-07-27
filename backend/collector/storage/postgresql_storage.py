@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 # ==================== 重试装饰器 ====================
+# TODO(D2): 迁移到 utils.retry.retry_on_error，消除重复实现
 def _retry_on_error(max_retries: int = 3, delay: float = 0.5, backoff: float = 2.0):
     """自动重试数据库操作（幂等操作）"""
     def decorator(func):

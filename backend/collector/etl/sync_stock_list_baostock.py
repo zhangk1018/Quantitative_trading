@@ -13,6 +13,7 @@ import logging
 backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 project_dir = os.path.dirname(backend_dir)
 sys.path.insert(0, backend_dir)
+sys.path.insert(0, project_dir)  # 确保 collector 包可导入
 sys.path.insert(0, os.path.join(project_dir, 'src'))
 
 from dotenv import load_dotenv
@@ -28,31 +29,15 @@ logger = logging.getLogger(__name__)
 
 
 def get_connection():
-    return psycopg2.connect(
-        host=os.environ.get('PG_HOST', 'localhost'),
-        port=int(os.environ.get('PG_PORT', 5432)),
-        database=os.environ.get('PG_DATABASE', 'quant_trading'),
-        user=os.environ.get('PG_USER', 'quant_user'),
-        password=os.environ.get('PG_PASSWORD', '')
-    )
+    """获取数据库连接（统一使用 database.py 的 get_raw_connection 上下文管理器）"""
+    from collector.db.database import get_raw_connection
+    return get_raw_connection()
 
 
 def _classify_market(code: str) -> str:
-    """按代码前缀分类市场板块"""
-    p = code[:3]
-    if p in ('600', '601', '602', '603', '604', '605'):
-        return '上海主板'
-    if p in ('688', '689'):
-        return '科创板'
-    if p in ('000', '001', '002', '003'):
-        return '深圳主板'
-    if p in ('300', '301', '302'):
-        return '创业板'
-    if p == '920':
-        return '北交所'
-    if code[0] == '8':
-        return '北交所'
-    return '其他'
+    """按代码前缀分类市场板块（委托给统一模块）"""
+    from utils.market_classifier import classify_market
+    return classify_market(code)
 
 
 def fetch_stock_list_from_baostock():
@@ -202,7 +187,7 @@ def fetch_stock_list_from_tushare() -> pd.DataFrame:
 
         return result
 
-    except Exception as e:
+    except (ConnectionError, TimeoutError, ValueError, Exception) as e:
         logger.error(f"Tushare 获取股票列表失败: {type(e).__name__}: {e}")
         return pd.DataFrame()
 
@@ -377,15 +362,14 @@ def main():
     logger.info("股票列表同步脚本（多数据源: Tushare → Baostock）")
     logger.info("=" * 60)
 
-    conn = get_connection()
-    try:
+    with get_connection() as conn:
         # Step 1: 多源获取股票列表（Tushare 主 → Baostock 备）
         logger.info("\n--- Step 1: 获取股票列表 ---")
         stock_df, source_name = fetch_stock_list_with_fallback()
 
         if stock_df.empty:
             logger.error("获取股票列表失败，终止同步")
-            print('TASK_RESULT:' + json.dumps({"rows_affected": 0, "error": "所有数据源均失败"}))
+            print('TASK_RESULT:' + json.dumps({"rows_affected": 0, "extra_metrics": {"error": "所有数据源均失败"}}))
             return
 
         logger.info(f"使用数据源: {source_name} | 获取 {len(stock_df)} 只股票")
@@ -402,8 +386,6 @@ def main():
         logger.info(f"同步完成 | 数据源: {source_name}")
         logger.info("=" * 60)
         print(f'TASK_RESULT:{json.dumps({"rows_affected": len(stock_df), "extra_metrics": {"total_stocks": len(stock_df), "data_source": source_name}})}')
-    finally:
-        conn.close()
 
 
 if __name__ == '__main__':

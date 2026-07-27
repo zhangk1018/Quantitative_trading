@@ -202,7 +202,10 @@ def build_akshare_symbol(code: str, exchange: str) -> Optional[str]:
 
 def expand_factor_to_daily(code: str, df: pd.DataFrame, start_date: date, end_date: date) -> pd.DataFrame:
     """
-    将 Akshare 返回的变更日复权因子展开为每日复权因子（前向填充）。
+    将 Akshare (Sina qfq-factor) 返回的变更日累积复权因子展开为每日复权因子（前向填充）。
+
+    Akshare 返回的是 **累积型前复权因子**（每个变更日一个因子值），
+    本函数将其展开为每日因子：变更日之间的日期使用上一个变更日的因子值填充。
 
     Args:
         code: 股票代码
@@ -227,6 +230,13 @@ def expand_factor_to_daily(code: str, df: pd.DataFrame, start_date: date, end_da
     for _, row in df.iterrows():
         change_date = row['date']
         current_factor = float(row['qfq_factor'])
+
+        # 边界保护：复权因子应为正数且在合理范围内
+        if current_factor <= 0:
+            logger.warning(f"  [{code}] 复权因子异常(<=0): {current_factor}，跳过该变更日")
+            continue
+        if current_factor > 100:
+            logger.warning(f"  [{code}] 复权因子异常大(>100): {current_factor}，可能为数据错误")
 
         if prev_factor is not None:
             d = prev_date
@@ -440,7 +450,7 @@ def sync_adj_factor(incremental: bool = False):
 
         print(f'TASK_RESULT:{json.dumps({"rows_affected": total_saved, "extra_metrics": {"total_stocks": total_with_data, "skipped": total_skipped, "new_stocks": len(new_stocks)}})}')
 
-    except Exception as e:
+    except (psycopg2.Error, ValueError, ConnectionError, OSError) as e:
         logger.error(f"❌ 同步复权因子失败: {e}", exc_info=True)
         raise
     finally:
