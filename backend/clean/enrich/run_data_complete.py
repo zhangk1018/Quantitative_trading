@@ -212,7 +212,7 @@ def main():
     
     # 加载配置
     config = load_config()
-    db_url = config.get('database', {}).get('url', 'postgresql://quant_user:quant_password@localhost:5432/quant_trading')
+    db_url = config.get('database', {}).get('url', 'postgresql://quant_user@localhost:5432/quant_trading')
     engine = create_engine(db_url)
     
     # 日期配置（从parquet文件读取）

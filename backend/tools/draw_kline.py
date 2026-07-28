@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-CONN = dict(host="localhost", port=5432, dbname="quant_trading", user="quant_user", password="990518")
+CONN = dict(host="localhost", port=5432, dbname="quant_trading", user="quant_user", password=os.getenv('PG_PASSWORD', ''))
 
 PATTERN_STYLE = {
     'pattern_morning_star':     {'color': '#00C853', 'symbol': 'triangle-up',   'short': 'MS', 'name': '早晨之星'},

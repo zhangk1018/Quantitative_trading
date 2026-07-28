@@ -3,6 +3,24 @@
 import type { Dayjs } from 'dayjs';
 import type { KlineBar } from '../../lib/indicators/indicators';
 
+// ==================== 卖出策略 ====================
+
+/**
+ * 卖出策略类型（基于沪深300成分股2010-2023回测数据筛选）
+ *
+ * 策略一：高点回落移动止损 — 从持仓最高价回撤8%即卖出
+ * 策略二：ATR吊灯止损 — 收盘价跌破(最高价-3×14日ATR)即卖出
+ * 策略三：双均线死叉 — 10日EMA下穿30日EMA即卖出
+ */
+export type SellStrategy = 'trailing_stop' | 'atr_chandelier' | 'ema_cross';
+
+/** 卖出策略显示标签 */
+export const SELL_STRATEGY_LABELS: Record<SellStrategy, string> = {
+  trailing_stop: '高点回落移动止损（8%回撤）',
+  atr_chandelier: 'ATR吊灯止损（3×14日ATR）',
+  ema_cross: '双均线死叉（10/30 EMA）',
+};
+
 // ==================== 条件定义 ====================
 
 /**
@@ -62,6 +80,18 @@ export interface BacktestConfig {
   capital: number;
   /** 买入条件：仅允许一个自编指标 */
   buyCondition: BacktestCondition;
+  /** 卖出策略 */
+  sellStrategy: SellStrategy;
+  /** 高点回落比例（仅trailing_stop），如 0.08 = 8% */
+  trailingStopPct: number;
+  /** ATR周期（仅atr_chandelier），默认14 */
+  atrPeriod: number;
+  /** ATR倍数（仅atr_chandelier），默认3 */
+  atrMultiplier: number;
+  /** 短期EMA周期（仅ema_cross），默认10 */
+  emaShort: number;
+  /** 长期EMA周期（仅ema_cross），默认30 */
+  emaLong: number;
   indicatorParams: IndicatorParams;
   executionPrice: 'next_open' | 'next_close';
   maxDeferDays: number;
@@ -72,6 +102,12 @@ export interface BacktestConfig {
 
 export const DEFAULT_BACKTEST_CONFIG: Partial<BacktestConfig> = {
   capital: 100000,
+  sellStrategy: 'trailing_stop',
+  trailingStopPct: 0.08,
+  atrPeriod: 14,
+  atrMultiplier: 3,
+  emaShort: 10,
+  emaLong: 30,
   executionPrice: 'next_open',
   maxDeferDays: 3,
   feeRate: 0,
@@ -89,6 +125,12 @@ export type BacktestEngineConfig = Pick<
   | 'startDate'
   | 'endDate'
   | 'capital'
+  | 'sellStrategy'
+  | 'trailingStopPct'
+  | 'atrPeriod'
+  | 'atrMultiplier'
+  | 'emaShort'
+  | 'emaLong'
   | 'feeRate'
   | 'slippage'
   | 'riskFreeRate'
@@ -104,9 +146,26 @@ export type BacktestEngineConfig = Pick<
  *
  * 注意：不包含 buyCondition，避免表单值与持久化字段冗余。
  */
-export interface BacktestFormValues extends Omit<BacktestConfig, 'buyCondition'> {
+export interface BacktestFormValues {
+  stockCode?: string;
+  stockName?: string;
+  startDate?: string;
+  endDate?: string;
+  capital?: number;
   indicatorId?: string;
   dateRange?: [Dayjs, Dayjs];
+  /** 卖出策略（表单中使用字符串，提交时转为 SellStrategy） */
+  sellStrategy?: string;
+  /** 高点回落比例 */
+  trailingStopPct?: number;
+  /** ATR周期 */
+  atrPeriod?: number;
+  /** ATR倍数 */
+  atrMultiplier?: number;
+  /** 短期EMA周期 */
+  emaShort?: number;
+  /** 长期EMA周期 */
+  emaLong?: number;
 }
 
 // ==================== 回测引擎输入/输出 ====================

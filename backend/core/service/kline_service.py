@@ -360,7 +360,9 @@ class KlineService:
             def safe_dec(val, digits=2):
                 if pd.isna(val): return None
                 try: return Decimal(str(round(float(val), digits)))
-                except: return None
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"Decimal转换失败: val={val}, digits={digits}, {e}")
+                    return None
 
             kline_item = KLineItem(
                 trade_date=row.get("trade_date", ""),

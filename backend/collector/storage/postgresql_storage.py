@@ -106,7 +106,7 @@ class PostgreSQLStorage(BaseStorage):
         self.port = config.get('port', 5432)
         self.database = config.get('database', 'quant_trading')
         self.username = config.get('username', 'quant_user')
-        self.password = config.get('password', 'quant_password')
+        self.password = config.get('password', '')
         self.min_pool = config.get('min_pool', 1)
         self.max_pool = config.get('max_pool', 10)
         self.connect_timeout = config.get('connect_timeout', 10)

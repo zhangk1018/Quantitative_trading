@@ -389,12 +389,16 @@ def sync_adj_factor(incremental: bool = False):
                         skipped_log_count += 1
                     continue
 
-            count = sync_stock_adj_factor_akshare(
-                storage, code, symbol, start_date, end_date
-            )
-            if count > 0:
-                total_saved += count
-                total_with_data += 1
+            try:
+                count = sync_stock_adj_factor_akshare(
+                    storage, code, symbol, start_date, end_date
+                )
+                if count > 0:
+                    total_saved += count
+                    total_with_data += 1
+            except Exception as e:
+                logger.warning(f"  ⚠️ {code} 复权因子同步失败: {type(e).__name__}: {e}")
+                total_skipped += 1
 
             if (idx + 1) % 200 == 0:
                 elapsed = time.time() - t_start

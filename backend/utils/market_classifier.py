@@ -63,8 +63,8 @@ def build_exclude_bse_filter(table_alias: str = "sb") -> List[str]:
         WHERE 条件字符串列表
     """
     return [
-        f"{table_alias}.code NOT LIKE '8%'",
-        f"{table_alias}.code NOT LIKE '43%'",
-        f"{table_alias}.code NOT LIKE '92%'",
+        f"{table_alias}.code NOT LIKE '8%%'",
+        f"{table_alias}.code NOT LIKE '43%%'",
+        f"{table_alias}.code NOT LIKE '92%%'",
         f"{table_alias}.delist_date IS NULL",
     ]

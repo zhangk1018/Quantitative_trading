@@ -448,8 +448,11 @@ class DailyDataImporter(BaseDataImporter):
         df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
         df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
 
+        # 注意：is_batch 路径的数据来自 Tushare batch_get_daily()，
+        # 该方法已内置 vol×100(手→股) 和 amount×1000(千元→元) 转换，
+        # 因此此处不再重复转换，避免双重乘法导致数据偏差 100 倍。
         if is_batch:
-            df['volume'] = df['volume'] * 100
+            pass  # batch_get_daily() 已做单位转换，无需重复
 
         # 过滤无效数据
         price_cols = ['open', 'high', 'low', 'close']
@@ -887,8 +890,21 @@ class DailyDataImporter(BaseDataImporter):
                     stats["rows_affected"] += success
                     stats["batch_days"] += 1
 
-            if not batch_success:
-                logger.warning("⚠️  Tushare 批量接口未获取到数据，"
+            # 批量导入后校验今日数据完整度：Tushare 批量接口可能只返回部分股票
+            # （如仅新股），完整度不足时自动触发 fallback 单线程补全
+            need_fallback = not batch_success
+            if batch_success:
+                check_result = self._check_data_completeness(today)
+                logger.info(f"📊 批量导入后今日数据完整度: {check_result['existing_count']}/"
+                           f"{check_result['total_stocks']} "
+                           f"({check_result['completeness']:.1%})")
+                if not check_result['is_complete']:
+                    logger.warning(f"⚠️ 批量导入后今日完整度仅 {check_result['completeness']:.1%}，"
+                                 f"低于阈值 {self.MIN_COMPLETENESS_THRESHOLD:.0%}，触发 fallback 补全")
+                    need_fallback = True
+
+            if need_fallback:
+                logger.warning("⚠️  Tushare 批量接口未获取到完整数据，"
                              f"回退到单线程逐个导入 (Baostock→Tushare→pytdx, 最近 {self.FALLBACK_LOOKBACK_DAYS} 天)")
                 fallback_start = (datetime.now() -
                                  timedelta(days=self.FALLBACK_LOOKBACK_DAYS)).strftime('%Y-%m-%d')

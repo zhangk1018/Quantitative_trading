@@ -26,7 +26,7 @@ from utils.config import load_config
 def calculate_highs(date_str=None):
     """计算新高（20/60/120/250日）"""
     config = load_config()
-    db_url = config.get('database', {}).get('url', 'postgresql://quant_user:quant_password@localhost:5432/quant_trading')
+    db_url = config.get('database', {}).get('url', 'postgresql://quant_user@localhost:5432/quant_trading')
     engine = create_engine(db_url)
     
     # 使用指定日期或最新日期

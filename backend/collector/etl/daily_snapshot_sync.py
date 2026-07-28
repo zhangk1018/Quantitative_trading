@@ -27,7 +27,10 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_dir = os.path.dirname(backend_dir)
+sys.path.insert(0, backend_dir)
+sys.path.insert(0, project_dir)  # 确保 backend 包可导入
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
@@ -294,7 +297,11 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
         row_count = result.scalar()
         logger.info(f"✅ {target_date} 基础数据同步完成，共 {row_count} 条")
 
-        _update_tech_patterns(session, target_date)
+        try:
+            _update_tech_patterns(session, target_date)
+        except Exception as e:
+            logger.warning(f"⚠️ {target_date} 技术形态更新失败（基础数据已保存）: {e}")
+            # 技术形态更新失败不阻塞基础数据同步
 
         session.commit()
         logger.info(f"✅ {target_date} 宽表同步完成")

@@ -4,6 +4,7 @@
 
 import type { LineData, HistogramData, Time } from 'lightweight-charts';
 import { cleanBars, calcAllIndicators, type KlineBar } from './indicators';
+import { getVolumeColors } from './chart-config';
 
 export interface RawBarDetail {
   time: string;
@@ -91,10 +92,11 @@ export function buildChartData(rawBarsInput: ExtendedKlineBar[]): ChartDataResul
     open: b.open, high: b.high, low: b.low, close: b.close,
   }));
 
-  const volumeData: HistogramData<Time>[] = cleaned.map((b, i) => ({
+  const volColors = getVolumeColors();
+  const volumeData: HistogramData<Time>[] = cleaned.map((b) => ({
     time: b.time as Time,
     value: b.volume,
-    color: ind.volumeColors[i],
+    color: b.close >= b.open ? volColors.up : volColors.down,
   }));
 
   const macdHistData: HistogramData<Time>[] = [];

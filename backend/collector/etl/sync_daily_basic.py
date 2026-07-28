@@ -164,6 +164,8 @@ class DailyBasicSync:
 
         filled = 0
         failed = 0
+        consecutive_failures = 0
+        max_consecutive_failures = 5  # 连续失败5次后放弃补全
         updates = []
 
         for i, code in enumerate(missing_codes):
@@ -175,13 +177,28 @@ class DailyBasicSync:
                     if pd.notna(pe_ttm_val):
                         updates.append((float(pe_ttm_val), code, trade_date))
                         filled += 1
+                        consecutive_failures = 0
                     else:
                         failed += 1
+                        consecutive_failures += 1
                 else:
                     failed += 1
-            except Exception:
+                    consecutive_failures += 1
+            except Exception as e:
                 failed += 1
+                consecutive_failures += 1
+                # 只记录前3次失败详情，避免日志刷屏
+                if consecutive_failures <= 3:
+                    logger.debug(f"  pe_ttm 补全 {code} 失败: {type(e).__name__}: {e}")
                 continue
+
+            # 连续失败过多，大概率 Baostock 已不可用
+            if consecutive_failures >= max_consecutive_failures:
+                logger.warning(
+                    f"  ⚠️ Baostock pe_ttm 补全连续失败 {consecutive_failures} 次，"
+                    f"停止补全（已补 {filled}/{len(missing_codes)}，剩余 {len(missing_codes) - i - 1} 只跳过）"
+                )
+                break
 
             if (i + 1) % 200 == 0:
                 logger.info(f"  pe_ttm 补全进度: {i+1}/{len(missing_codes)} (已补:{filled} 失败:{failed})")

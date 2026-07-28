@@ -1,77 +1,182 @@
-"""统一重试装饰器 — 消除分散在多个模块中的重试逻辑。
-
-提供单一重试入口，支持指数退避、可配置重试异常、连接重置回调、限流检测。
-
-使用示例:
-    from utils.retry import retry_on_error
-
-    @retry_on_error(max_retries=3, exceptions=(ConnectionError, TimeoutError))
-    def fetch_data(url):
-        ...
-
-    # 带连接重置
-    @retry_on_error(max_retries=3, exceptions=(OperationalError,),
-                    on_retry=reset_connection)
-    def db_query():
-        ...
 """
+通用重试装饰器
 
-import time
-import logging
+支持：
+- 可配置重试次数、退避策略
+- 仅对可恢复错误（网络/超时/数据源）重试
+- 致命错误不重试，直接抛出
+- 重试日志记录
+"""
+from __future__ import annotations
+
 import functools
-from typing import Callable, Tuple, Type, Optional
+import logging
+import time
+import random
+from typing import Callable, Type, Union, Tuple
+
+from backend.utils.error_handler import PipelineError, ErrorSeverity, ErrorCategory
 
 logger = logging.getLogger(__name__)
 
+# 默认不可重试的异常类型
+DEFAULT_NON_RETRYABLE: Tuple[Type[BaseException], ...] = (
+    NotImplementedError,
+    ModuleNotFoundError,
+    ImportError,
+    SyntaxError,
+    TypeError,
+    ValueError,
+    AttributeError,
+    KeyError,
+    IndexError,
+    SystemExit,
+    KeyboardInterrupt,
+)
 
-def retry_on_error(
-    max_retries: int = 3,
-    initial_delay: float = 1.0,
+
+def is_retryable_error(exc: BaseException) -> bool:
+    """判断异常是否可重试"""
+    # PipelineError 由自身判断
+    if isinstance(exc, PipelineError):
+        return exc.is_retryable()
+
+    # 致命严重级别的 PipelineError 不可重试
+    if isinstance(exc, PipelineError) and exc.is_fatal():
+        return False
+
+    # 默认不可重试的异常类型
+    if isinstance(exc, DEFAULT_NON_RETRYABLE):
+        return False
+
+    # 网络/连接类异常可重试
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+
+    return False
+
+
+def retry(
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
     max_delay: float = 60.0,
-    backoff: float = 2.0,
-    exceptions: Tuple[Type[BaseException], ...] = (ConnectionError, TimeoutError),
-    on_retry: Optional[Callable[[], None]] = None,
-    rate_limit_detector: Optional[Callable[[Exception], Optional[float]]] = None,
+    backoff_factor: float = 2.0,
+    jitter: bool = True,
+    on_retry: Callable = None,
 ):
-    """指数退避重试装饰器。
+    """
+    重试装饰器
 
     Args:
-        max_retries: 最大重试次数（不含首次执行）
-        initial_delay: 初始延迟（秒）
-        max_delay: 最大延迟上限（秒）
-        backoff: 退避倍数
-        exceptions: 可重试的异常类型元组
-        on_retry: 每次重试前执行的回调（如重置连接）
-        rate_limit_detector: 限流检测函数，接收异常返回等待秒数（None 表示不重试）
+        max_attempts: 最大尝试次数（含首次）
+        base_delay: 基础延迟秒数
+        max_delay: 最大延迟秒数
+        backoff_factor: 退避倍数
+        jitter: 是否添加随机抖动
+        on_retry: 重试回调函数，签名为 (exception, attempt, max_attempts) -> None
 
-    Returns:
-        装饰后的函数
+    Usage:
+        @retry(max_attempts=3, base_delay=1.0)
+        def fetch_data():
+            ...
     """
-    def decorator(func: Callable):
+    def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            delay = initial_delay
-            for attempt in range(max_retries + 1):
+            last_exception = None
+
+            for attempt in range(1, max_attempts + 1):
                 try:
                     return func(*args, **kwargs)
-                except exceptions as e:
-                    if attempt == max_retries:
+                except Exception as e:
+                    last_exception = e
+
+                    # 判断是否可重试
+                    if not is_retryable_error(e):
+                        logger.warning(
+                            f"不可重试错误，直接抛出: {type(e).__name__}: {e}"
+                        )
                         raise
+
+                    # 最后一次尝试，不再重试
+                    if attempt >= max_attempts:
+                        logger.error(
+                            f"重试 {max_attempts} 次后仍失败: {type(e).__name__}: {e}"
+                        )
+                        raise
+
+                    # 计算延迟
+                    delay = min(base_delay * (backoff_factor ** (attempt - 1)), max_delay)
+                    if jitter:
+                        delay *= random.uniform(0.5, 1.5)
+
                     logger.warning(
-                        f"⚠️  {func.__name__} 失败 (尝试 {attempt+1}/{max_retries+1}): {e}"
+                        f"尝试 {attempt}/{max_attempts} 失败: {type(e).__name__}: {e}. "
+                        f"{delay:.1f}s 后重试..."
                     )
+
                     if on_retry:
                         try:
-                            on_retry()
+                            on_retry(e, attempt, max_attempts)
                         except Exception:
                             pass
-                    # 限流检测：返回特定等待秒数
-                    if rate_limit_detector:
-                        wait = rate_limit_detector(e)
-                        if wait is not None:
-                            delay = wait
-                    logger.info(f"    {delay:.1f}s 后重试...")
+
                     time.sleep(delay)
-                    delay = min(delay * backoff, max_delay)
+
+            # 理论上不会到这里，但安全起见
+            if last_exception:
+                raise last_exception
+
+        return wrapper
+    return decorator
+
+
+def retry_async(
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    backoff_factor: float = 2.0,
+    jitter: bool = True,
+):
+    """异步版本的重试装饰器"""
+    import asyncio
+
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+
+                    if not is_retryable_error(e):
+                        logger.warning(
+                            f"不可重试错误，直接抛出: {type(e).__name__}: {e}"
+                        )
+                        raise
+
+                    if attempt >= max_attempts:
+                        logger.error(
+                            f"重试 {max_attempts} 次后仍失败: {type(e).__name__}: {e}"
+                        )
+                        raise
+
+                    delay = min(base_delay * (backoff_factor ** (attempt - 1)), max_delay)
+                    if jitter:
+                        delay *= random.uniform(0.5, 1.5)
+
+                    logger.warning(
+                        f"尝试 {attempt}/{max_attempts} 失败: {type(e).__name__}: {e}. "
+                        f"{delay:.1f}s 后重试..."
+                    )
+
+                    await asyncio.sleep(delay)
+
+            if last_exception:
+                raise last_exception
+
         return wrapper
     return decorator

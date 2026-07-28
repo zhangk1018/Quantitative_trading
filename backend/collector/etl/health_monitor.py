@@ -149,7 +149,7 @@ def query_db_snapshot() -> dict:
                 '-c', sql
             ],
             capture_output=True, text=True, timeout=10,
-            env={**os.environ, 'PGPASSWORD': os.environ.get('PG_PASSWORD', '990518')}
+            env={**os.environ, 'PGPASSWORD': os.environ.get('PG_PASSWORD', '')}
         )
         if result.returncode == 0 and result.stdout.strip():
             for line in result.stdout.strip().split('\n'):
@@ -171,7 +171,7 @@ def query_db_snapshot() -> dict:
                 '-c', sql2
             ],
             capture_output=True, text=True, timeout=10,
-            env={**os.environ, 'PGPASSWORD': os.environ.get('PG_PASSWORD', '990518')}
+            env={**os.environ, 'PGPASSWORD': os.environ.get('PG_PASSWORD', '')}
         )
         if result2.returncode == 0 and result2.stdout.strip():
             for line in result2.stdout.strip().split('\n'):

@@ -18,7 +18,9 @@ import sys
 import os
 import json
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_dir = os.path.dirname(backend_dir)
 sys.path.insert(0, backend_dir)
+sys.path.insert(0, project_dir)  # 确保 backend 包可导入
 
 import argparse
 import time
@@ -30,10 +32,16 @@ from psycopg2.extras import execute_values
 
 from collector.datasource.baostock import BaostockDataSource
 from collector.datasource.tushare import TushareDataSource
+from collector.datasource.pytdx import PytdxDataSource
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
 from utils.logger import setup_logger
 from utils.stock_code_utils import normalize_code, filter_out_bse
+from backend.utils.error_handler import (
+    PipelineError, ErrorSeverity, ErrorCategory,
+    datasource_error, network_error, log_error,
+)
+from backend.utils.datasource_health import get_health_manager
 
 logger = setup_logger('data_filler')
 
@@ -365,6 +373,60 @@ def _import_single_via_tushare(storage: PostgreSQLStorage, code: str,
         ds.disconnect()
 
 
+def _import_single_via_pytdx(storage: PostgreSQLStorage, code: str,
+                              start_date: str, end_date: str) -> int:
+    """
+    使用 pytdx（通达信）单只接口补全数据（不复权 → 前复权）。
+
+    pytdx 免费、无配额限制，作为主补全源。
+    返回不复权数据，需通过 stock_adj_factor 表转换为前复权后存储。
+    """
+    # 跳过北交所（pytdx 不支持 8/92 开头）
+    if code.startswith('8') or code.startswith('92'):
+        logger.debug(f"  {code}: pytdx 不支持北交所，跳过")
+        return 0
+
+    ds = PytdxDataSource()
+    if not ds.connect():
+        logger.warning(f"  {code}: pytdx 连接失败")
+        return 0
+    try:
+        df = ds.get_kline(code=code, cycle='daily', start_date=start_date, end_date=end_date)
+        if df is None or df.empty:
+            return 0
+
+        # pytdx 返回的列名已标准化（open/high/low/close/volume/amount/trade_date）
+        if 'code' not in df.columns:
+            df['code'] = code
+        df['code'] = df['code'].apply(lambda x: normalize_code(x) or x)
+
+        # 数值转换
+        numeric_cols = ['open', 'high', 'low', 'close', 'amount']
+        df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+
+        # 过滤无效数据
+        price_cols = ['open', 'high', 'low', 'close']
+        mask = (df[price_cols] > 0).all(axis=1) & df['volume'].notna() & (df['volume'] > 0)
+        df = df[mask].copy()
+        if df.empty:
+            return 0
+
+        # 前复权转换：复用 _apply_qfq_for_tushare_batch 逻辑
+        df = _apply_qfq_for_tushare_batch(storage, df, df['trade_date'].iloc[-1])
+        if df is None or df.empty:
+            return 0
+
+        df['cycle'] = '1d'
+        df['adjust_type'] = 'qfq'
+        df['trade_datetime'] = pd.to_datetime(df['trade_date']) + pd.Timedelta(hours=15)
+        df['volume'] = df['volume'].round().astype('Int64')
+
+        return _safe_import_quotes(storage, df, code)
+    finally:
+        ds.disconnect()
+
+
 def _apply_qfq_for_tushare_batch(storage: PostgreSQLStorage, df: pd.DataFrame,
                                  trade_date: str) -> pd.DataFrame:
     """
@@ -446,20 +508,83 @@ def _safe_import_quotes(storage: PostgreSQLStorage, df: pd.DataFrame, code: str)
         return 0
 
 
+def _import_stock_with_fallback(
+    storage: PostgreSQLStorage,
+    ds_pytdx: Optional[PytdxDataSource],
+    ds_baostock: Optional[BaostockDataSource],
+    code: str,
+    start_date: str,
+    end_date: str,
+    health_mgr,
+) -> tuple[int, str]:
+    """
+    多数据源降级补全：pytdx（主）→ Tushare（备）→ Baostock（兜底）。
+
+    Returns:
+        (导入记录数, 使用的数据源名称)
+    """
+    # 策略1: pytdx/通达信（主补全源，免费无配额）
+    if ds_pytdx is not None and health_mgr.is_available("pytdx"):
+        try:
+            count = _import_single_via_pytdx(storage, code,
+                                             start_date=start_date, end_date=end_date)
+            if count > 0:
+                health_mgr.record_success("pytdx")
+                return count, "pytdx"
+            elif count == 0:
+                health_mgr.record_success("pytdx")
+                return 0, "pytdx"
+        except Exception as e:
+            health_mgr.record_failure("pytdx", str(e))
+            logger.warning(f"  {code}: pytdx 导入失败，尝试降级到 Tushare: {e}")
+
+    # 策略2: Tushare 全量历史补全
+    if health_mgr.is_available("tushare"):
+        try:
+            count = _import_single_via_tushare(storage, code,
+                                               start_date=start_date, end_date=end_date)
+            if count > 0:
+                health_mgr.record_success("tushare")
+                return count, "tushare"
+            else:
+                health_mgr.record_success("tushare")
+                return 0, "tushare"
+        except Exception as e:
+            health_mgr.record_failure("tushare", str(e))
+            logger.warning(f"  {code}: Tushare 降级也失败: {e}")
+
+    # 策略3: Baostock（兜底，前复权数据无需转换）
+    if ds_baostock is not None and health_mgr.is_available("baostock"):
+        try:
+            count = import_stock_via_baostock(storage, ds_baostock, code,
+                                              start_date=start_date, end_date=end_date)
+            if count > 0:
+                health_mgr.record_success("baostock")
+                return count, "baostock"
+            elif count == 0:
+                health_mgr.record_success("baostock")
+                return 0, "baostock"
+        except Exception as e:
+            health_mgr.record_failure("baostock", str(e))
+            logger.warning(f"  {code}: Baostock 兜底也失败: {e}")
+
+    return 0, "none"
+
+
 def main():
     parser = argparse.ArgumentParser(description='缺失数据补全脚本')
     parser.add_argument('--code', type=str, help='单只股票代码')
     parser.add_argument('--market', type=str, choices=['kcb', 'cyb', 'sh', 'sz'],
                         help='市场筛选：kcb(科创板), cyb(创业板), sh(上证), sz(深证)')
-    parser.add_argument('--min-days', type=int, default=60, 
+    parser.add_argument('--min-days', type=int, default=60,
                         help='指定日期范围内最少交易日数，低于此值的将被补全')
-    parser.add_argument('--start-date', type=str, 
+    parser.add_argument('--start-date', type=str,
                         help='检查数据缺失的起始日期 (YYYY-MM-DD)')
-    parser.add_argument('--end-date', type=str, 
+    parser.add_argument('--end-date', type=str,
                         help='检查数据缺失的结束日期 (YYYY-MM-DD)')
-    parser.add_argument('--start', type=int, default=0, 
+    parser.add_argument('--start', type=int, default=0,
                         help='从第几只开始（断点续传，跳过前 N 只）')
-    parser.add_argument('--limit', type=int, default=0, 
+    parser.add_argument('--limit', type=int, default=0,
                         help='限制补全数量')
     parser.add_argument('--dry-run', action='store_true',
                         help='试运行模式：仅打印需补全的股票，不实际导入')
@@ -467,7 +592,7 @@ def main():
                         help='使用 Tushare 批量接口补全（Baostock 不可用时降级）')
     args = parser.parse_args()
 
-    # 连接数据库：优先从配置读取，缺失时从环境变量构建
+    # 连接数据库
     db_config = config.get('storage.postgresql')
     if not db_config:
         db_config = {
@@ -480,33 +605,68 @@ def main():
     storage = PostgreSQLStorage(db_config)
     storage.connect()
 
+    # 初始化数据源健康管理器
+    health_mgr = get_health_manager()
+    health_mgr.register("pytdx", failure_threshold=3, cooldown_seconds=600)
+    health_mgr.register("tushare", failure_threshold=5, cooldown_seconds=300)
+    health_mgr.register("baostock", failure_threshold=3, cooldown_seconds=600)
+
     try:
         if args.code:
             # 单只股票补全
             logger.info(f"补全单只股票: {args.code}")
+            imp_start = args.start_date or '2020-01-01'
+            imp_end = args.end_date or datetime.now().strftime('%Y-%m-%d')
+
             if args.use_tushare:
                 count = _import_single_via_tushare(storage, args.code,
-                                                   args.start_date or '2020-01-01',
-                                                   args.end_date or datetime.now().strftime('%Y-%m-%d'))
+                                                   imp_start, imp_end)
             else:
-                ds = BaostockDataSource()
-                ds.connect()
+                # 多数据源降级：pytdx（主）→ Tushare → Baostock
+                ds_pytdx = None
+                ds_baostock = None
                 try:
-                    count = import_stock_via_baostock(storage, ds, args.code)
-                finally:
-                    ds.disconnect()
+                    ds_pytdx = PytdxDataSource()
+                    ds_pytdx.connect()
+                    health_mgr.record_success("pytdx")
+                    logger.info("✅ pytdx 连接成功，作为主补全源")
+                except Exception as e:
+                    logger.warning(f"pytdx 连接失败: {e}，将降级到 Tushare")
+                    health_mgr.record_failure("pytdx", str(e))
+                    ds_pytdx = None
+
+                # 尝试 Baostock 兜底连接
+                try:
+                    ds_baostock = BaostockDataSource()
+                    ds_baostock.connect()
+                    health_mgr.record_success("baostock")
+                except Exception:
+                    health_mgr.record_failure("baostock", "连接失败")
+                    ds_baostock = None
+
+                count, source = _import_stock_with_fallback(
+                    storage, ds_pytdx, ds_baostock, args.code,
+                    imp_start, imp_end, health_mgr
+                )
+                for ds in [ds_pytdx, ds_baostock]:
+                    if ds:
+                        try:
+                            ds.disconnect()
+                        except Exception:
+                            pass
+
             logger.info(f"  {args.code}: 导入 {count} 条记录")
             print(f'TASK_RESULT:{json.dumps({"rows_affected": count, "extra_metrics": {"code": args.code}})}')
         else:
             # 批量补全
             codes = get_missing_stocks(
-                storage, 
-                min_days=args.min_days, 
+                storage,
+                min_days=args.min_days,
                 market=args.market,
                 start_date=args.start_date,
                 end_date=args.end_date
             )
-            
+
             total = len(codes)
             if total == 0:
                 logger.info("没有需要补全的股票 ✅")
@@ -521,7 +681,7 @@ def main():
                 codes = codes[:args.limit]
 
             logger.info(f"需补全股票: {len(codes)} 只（从 #{start_idx} 开始）")
-            
+
             # Dry-run 模式
             if args.dry_run:
                 logger.info("🔍 [DRY-RUN] 试运行模式，以下股票将被补全：")
@@ -544,58 +704,160 @@ def main():
                 print(f'TASK_RESULT:{json.dumps({"rows_affected": total_records, "extra_metrics": {"total": len(codes), "success": success, "fail": fail}})}')
                 return
 
-            # 全局复用 Baostock 连接
-            ds = BaostockDataSource()
-            ds.connect()
+            # 尝试连接 pytdx（主补全源，免费无配额）
+            ds_pytdx = None
+            pytdx_available = True
+            try:
+                ds_pytdx = PytdxDataSource()
+                ds_pytdx.connect()
+                health_mgr.record_success("pytdx")
+                logger.info("✅ pytdx/通达信 连接成功，作为主补全源")
+            except Exception as e:
+                pytdx_available = False
+                health_mgr.record_failure("pytdx", str(e))
+                logger.warning(f"⚠️ pytdx 连接失败: {e}，将自动降级到 Tushare/Baostock")
+                ds_pytdx = None
+
+            # 尝试连接 Baostock（兜底）
+            ds_baostock = None
+            baostock_available = True
+            try:
+                ds_baostock = BaostockDataSource()
+                ds_baostock.connect()
+                health_mgr.record_success("baostock")
+                logger.info("✅ Baostock 连接成功，作为兜底数据源")
+            except Exception as e:
+                baostock_available = False
+                health_mgr.record_failure("baostock", str(e))
+                logger.warning(f"⚠️ Baostock 连接失败: {e}")
+                ds_baostock = None
+
+            # 检查是否所有数据源都不可用
+            if not pytdx_available and not health_mgr.is_available("tushare") and not baostock_available:
+                err = datasource_error(
+                    "所有数据源均不可用，无法补全缺失数据",
+                    detail=f"pytdx: {'连接失败' if not pytdx_available else '可用'}, "
+                           f"Tushare: {'已禁用' if not health_mgr.is_available('tushare') else '可用'}, "
+                           f"Baostock: {'连接失败' if not baostock_available else '可用'}",
+                    pytdx_status=health_mgr.get("pytdx").summary() if health_mgr.get("pytdx") else {},
+                    tushare_status=health_mgr.get("tushare").summary() if health_mgr.get("tushare") else {},
+                    baostock_status=health_mgr.get("baostock").summary() if health_mgr.get("baostock") else {},
+                )
+                log_error(err, logger)
+                result_data = {
+                    "rows_affected": 0,
+                    "extra_metrics": {
+                        "total": len(codes), "success": 0, "fail": len(codes),
+                        "error": "all_sources_unavailable",
+                    }
+                }
+                print(f'TASK_RESULT:{json.dumps(result_data)}')
+                return
 
             success = 0
             fail = 0
+            pytdx_count = 0
+            tushare_count = 0
+            baostock_count = 0
             total_records = 0
+            consecutive_pytdx_fails = 0
+            pytdx_auto_disabled = False
+
+            imp_start = args.start_date or '2000-01-01'
+            imp_end = args.end_date or datetime.now().strftime('%Y-%m-%d')
 
             try:
-                # 复用单个线程池执行多只股票导入，避免每只股票创建/销毁线程池的开销
                 STOCK_TIMEOUT = 120
                 with ThreadPoolExecutor(max_workers=5, thread_name_prefix="fill_missing") as stock_executor:
                     for i, code in enumerate(codes):
-                        logger.info(f"  [{start_idx+i+1}/{total}] 补全 {code}...")
+                        # 自动检测 pytdx 失效：连续3次返回0且无数据，自动禁用
+                        if ds_pytdx is not None and consecutive_pytdx_fails >= 3:
+                            logger.warning(
+                                f"⚠️ pytdx 连续 {consecutive_pytdx_fails} 次无效，"
+                                f"自动切换为 Tushare 模式（剩余 {len(codes) - i} 只）"
+                            )
+                            try:
+                                ds_pytdx.disconnect()
+                            except Exception:
+                                pass
+                            ds_pytdx = None
+                            pytdx_auto_disabled = True
+                            health_mgr.record_failure("pytdx", "连续3次无效，自动禁用")
 
-                        imp_start = args.start_date or '2000-01-01'
-                        imp_end = args.end_date or datetime.now().strftime('%Y-%m-%d')
+                        logger.info(f"  [{start_idx + i + 1}/{total}] 补全 {code}...")
 
                         stock_future = stock_executor.submit(
-                            import_stock_via_baostock, storage, ds, code,
-                            start_date=imp_start, end_date=imp_end
+                            _import_stock_with_fallback,
+                            storage, ds_pytdx, ds_baostock, code,
+                            imp_start, imp_end, health_mgr,
                         )
                         try:
-                            count = stock_future.result(timeout=STOCK_TIMEOUT)
+                            count, source = stock_future.result(timeout=STOCK_TIMEOUT)
                             if count > 0:
                                 success += 1
                                 total_records += count
-                                logger.info(f"    ✅ 导入 {count} 条")
+                                consecutive_pytdx_fails = 0
+                                if source == "pytdx":
+                                    pytdx_count += 1
+                                elif source == "tushare":
+                                    tushare_count += 1
+                                elif source == "baostock":
+                                    baostock_count += 1
+                                logger.info(f"    ✅ [{source}] 导入 {count} 条")
                             else:
                                 fail += 1
+                                if source == "pytdx":
+                                    consecutive_pytdx_fails += 1
+                                    logger.info(f"    ⚪ [{source}] 无新数据 (连续 {consecutive_pytdx_fails} 次)")
+                                elif source == "baostock":
+                                    logger.info(f"    ⚪ [{source}] 无新数据")
+                                else:
+                                    logger.info(f"    ⚪ [{source}] 无新数据")
                         except FuturesTimeoutError:
                             fail += 1
                             logger.warning(f"    ⏰ 超时（>{STOCK_TIMEOUT}s），跳过 {code}")
 
-                    if (i + 1) % 50 == 0:
-                        logger.info(f"  进度: {i+1}/{len(codes)}, 成功 {success}, 失败 {fail}, 记录 {total_records}")
+                        # 进度日志
+                        if (i + 1) % 50 == 0:
+                            logger.info(f"  进度: {i + 1}/{len(codes)}, 成功 {success}, 失败 {fail}")
 
-                    # 简单限流，防止 Baostock 封禁
-                    if i % 10 == 9:
-                        time.sleep(0.5)
+                        # 限流
+                        if i % 10 == 9:
+                            time.sleep(0.5)
             finally:
-                ds.disconnect()
+                for ds, name in [(ds_pytdx, "pytdx"), (ds_baostock, "Baostock")]:
+                    if ds:
+                        try:
+                            ds.disconnect()
+                        except Exception as e:
+                            logger.warning(f"{name} 断开连接异常: {e}")
+
+            # 输出数据源健康状态
+            ds_status = health_mgr.summary()
 
             logger.info("=" * 60)
             logger.info("📊 补全完成")
             logger.info(f"  处理: {len(codes)} 只")
-            logger.info(f"  成功: {success} 只")
+            logger.info(f"  成功: {success} 只 (pytdx: {pytdx_count}, Tushare: {tushare_count}, Baostock: {baostock_count})")
             logger.info(f"  失败: {fail} 只")
             logger.info(f"  记录: {total_records} 条")
+            logger.info(f"  数据源状态: {ds_status}")
             logger.info("=" * 60)
-            print(f'TASK_RESULT:{json.dumps({"rows_affected": total_records, "extra_metrics": {"total": len(codes), "success": success, "fail": fail}})}')
-            
+
+            result_data = {
+                "rows_affected": total_records,
+                "extra_metrics": {
+                    "total": len(codes),
+                    "success": success,
+                    "fail": fail,
+                    "pytdx": pytdx_count,
+                    "tushare": tushare_count,
+                    "baostock": baostock_count,
+                    "datasource_status": ds_status,
+                }
+            }
+            print(f'TASK_RESULT:{json.dumps(result_data)}')
+
     finally:
         storage.disconnect()
 

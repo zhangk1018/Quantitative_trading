@@ -35,7 +35,7 @@ class StorageFactory:
             'port': pg_config.get('port', 5432),
             'database': pg_config.get('database', 'quant_trading'),
             'username': pg_config.get('username', 'quant_user'),
-            'password': pg_config.get('password', 'quant_password')
+            'password': pg_config.get('password', '')
         })
 
     @staticmethod

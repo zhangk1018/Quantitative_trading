@@ -753,7 +753,8 @@ class DataService:
         """验证连接状态"""
         try:
             stats = self.storage.get_stats()
-        except:
+        except Exception as e:
+            logger.error(f"连接验证失败: {e}")
             return False
         return self.dsm.current_source is not None
     

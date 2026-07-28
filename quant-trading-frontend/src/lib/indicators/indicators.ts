@@ -28,7 +28,6 @@ export interface CalculatedIndicators {
   kdjK: (number | null)[];
   kdjD: (number | null)[];
   kdjJ: (number | null)[];
-  volumeColors: string[];
 }
 
 // ---- 通用工具 ----
@@ -249,16 +248,11 @@ export function calcAllIndicators(bars: KlineBar[]): CalculatedIndicators {
 
   const kdj = calcKDJ(highs, lows, closes, 9, 3, 3);
 
-  const volumeColors: string[] = cleaned.map(b =>
-    b.close >= b.open ? 'rgba(0,212,170,0.6)' : 'rgba(242,54,69,0.6)'
-  );
-
   return {
     ma5, ma10, ma20, ma60,
     bollUpper, bollLower,
     dif: difRaw, dea, macdHist, macdColors,
     rsi6, rsi12, rsi24,
     kdjK: kdj.K, kdjD: kdj.D, kdjJ: kdj.J,
-    volumeColors,
   };
 }

@@ -7,9 +7,10 @@ import {
 } from 'antd';
 import { CloseOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import type { BacktestConfig, BacktestFormValues, IndicatorParams } from './backtestTypes';
+import type { BacktestConfig, BacktestFormValues, IndicatorParams, SellStrategy } from './backtestTypes';
 import {
   DEFAULT_BACKTEST_CONFIG,
+  SELL_STRATEGY_LABELS,
 } from './backtestTypes';
 import { useStockSearch } from './useStockSearch';
 import { getBacktestList, removeFromBacktestList } from './backtestListStorage';
@@ -253,6 +254,19 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
     [customIndicators],
   );
 
+  const sellStrategyOptions = useMemo(
+    () =>
+      (Object.keys(SELL_STRATEGY_LABELS) as SellStrategy[]).map((key) => ({
+        value: key,
+        label: SELL_STRATEGY_LABELS[key],
+      })),
+    [],
+  );
+
+  const [selectedSellStrategy, setSelectedSellStrategy] = useState<SellStrategy>(
+    (globalDefaults.sellStrategy as SellStrategy) ?? 'trailing_stop',
+  );
+
   const handleIndicatorChange = (indicatorId: string) => {
     form.setFieldsValue({ indicatorId });
   };
@@ -260,6 +274,7 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
   const handleFinish = (values: BacktestFormValues) => {
     const [startDate, endDate] = (values.dateRange ?? []).map((d: dayjs.Dayjs) => d.format('YYYY-MM-DD'));
     const indicator = customIndicators.find((i) => i.id === values.indicatorId);
+    const strategy = (values.sellStrategy as SellStrategy) ?? selectedSellStrategy;
     const config: BacktestConfig = {
       stockCode: values.stockCode ?? '',
       stockName: values.stockName ?? '',
@@ -269,6 +284,12 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
       buyCondition: indicator
         ? { indicatorId: indicator.id, indicatorName: indicator.name, formula: indicator.formula }
         : { indicatorId: '', indicatorName: '', formula: '' },
+      sellStrategy: strategy,
+      trailingStopPct: values.trailingStopPct ?? globalDefaults.trailingStopPct,
+      atrPeriod: values.atrPeriod ?? globalDefaults.atrPeriod,
+      atrMultiplier: values.atrMultiplier ?? globalDefaults.atrMultiplier,
+      emaShort: values.emaShort ?? globalDefaults.emaShort,
+      emaLong: values.emaLong ?? globalDefaults.emaLong,
       // 回测参数统一从系统配置页签"回测设置"读取
       indicatorParams: { ...globalDefaults.indicatorParams } as IndicatorParams,
       executionPrice: globalDefaults.executionPrice,
@@ -391,6 +412,116 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
           <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
             脚本约定：返回每日信号数组，1 表示满足买入，0 表示不满足。
           </Text>
+        </Card>
+
+        {/* 卖出策略：从策略回测复用 */}
+        <Card
+          size="small"
+          title={
+            <Space>
+              <span>卖出策略</span>
+              <Tag color="orange">可选</Tag>
+            </Space>
+          }
+        >
+          <Form.Item
+            name="sellStrategy"
+            label="选择卖出策略"
+            initialValue={selectedSellStrategy}
+          >
+            <Select
+              placeholder="请选择卖出策略"
+              options={sellStrategyOptions}
+              onChange={(val) => setSelectedSellStrategy(val as SellStrategy)}
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
+
+          {/* 高点回落参数（仅 trailing_stop 时显示） */}
+          {selectedSellStrategy === 'trailing_stop' && (
+            <Form.Item
+              name="trailingStopPct"
+              label="回撤比例"
+              initialValue={globalDefaults.trailingStopPct}
+              tooltip="从持仓期间最高价回撤达到此比例时触发卖出"
+            >
+              <InputNumber
+                style={{ width: '100%' }}
+                min={0.01}
+                max={0.30}
+                step={0.01}
+                formatter={(v) => `${((v ?? 0) as number * 100).toFixed(0)}%`}
+                parser={(v) => parseFloat((v ?? '0').replace('%', '')) / 100 as any}
+              />
+            </Form.Item>
+          )}
+
+          {/* ATR吊灯参数（仅 atr_chandelier 时显示） */}
+          {selectedSellStrategy === 'atr_chandelier' && (
+            <>
+              <Form.Item
+                name="atrPeriod"
+                label="ATR周期"
+                initialValue={globalDefaults.atrPeriod}
+                tooltip="计算平均真实波幅的周期，默认14日"
+              >
+                <InputNumber
+                  style={{ width: '100%' }}
+                  min={5}
+                  max={30}
+                  step={1}
+                  addonAfter="日"
+                />
+              </Form.Item>
+              <Form.Item
+                name="atrMultiplier"
+                label="ATR倍数"
+                initialValue={globalDefaults.atrMultiplier}
+                tooltip="止损线 = 最高价 - 倍数 × ATR，默认3倍"
+              >
+                <InputNumber
+                  style={{ width: '100%' }}
+                  min={1}
+                  max={5}
+                  step={0.5}
+                />
+              </Form.Item>
+            </>
+          )}
+
+          {/* 双均线参数（仅 ema_cross 时显示） */}
+          {selectedSellStrategy === 'ema_cross' && (
+            <>
+              <Form.Item
+                name="emaShort"
+                label="短期EMA周期"
+                initialValue={globalDefaults.emaShort}
+                tooltip="短期指数移动平均线周期，默认10日"
+              >
+                <InputNumber
+                  style={{ width: '100%' }}
+                  min={3}
+                  max={20}
+                  step={1}
+                  addonAfter="日"
+                />
+              </Form.Item>
+              <Form.Item
+                name="emaLong"
+                label="长期EMA周期"
+                initialValue={globalDefaults.emaLong}
+                tooltip="长期指数移动平均线周期，默认30日"
+              >
+                <InputNumber
+                  style={{ width: '100%' }}
+                  min={10}
+                  max={60}
+                  step={1}
+                  addonAfter="日"
+                />
+              </Form.Item>
+            </>
+          )}
         </Card>
       </div>
     </Form>

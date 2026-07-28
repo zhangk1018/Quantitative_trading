@@ -130,6 +130,12 @@ class BaseDataImporter(ABC):
             params.append(message)
 
         params.append(self.task_id)
+        # 白名单校验：防止 SQL 注入，仅允许已知列名出现在 SET 子句中
+        allowed_fields = {'updated_at', 'status', 'progress', 'message'}
+        for uf in update_fields:
+            col_name = uf.split()[0]  # 提取列名（如 "status = %s" → "status"）
+            if col_name not in allowed_fields:
+                raise ValueError(f"不允许的更新字段: {col_name}")
         sql = f"UPDATE task_progress SET {', '.join(update_fields)} WHERE id = %s"
 
         try:

@@ -17,6 +17,7 @@ import {
   type IndicatorParams,
   type ProgressInfo,
   type DiagnosticEntry,
+  type SellStrategy,
 } from './backtestTypes';
 import { getCustomIndicatorRunner } from '../strategy-backtest/utils/customIndicatorRunner';
 import {
@@ -92,6 +93,12 @@ interface IndicatorCache {
   bollUpper: (number | null)[];
   bollLower: (number | null)[];
   bollMid: (number | null)[];
+  /** ATR(14) — 用于吊灯止损策略 */
+  atr14: (number | null)[];
+  /** EMA(10) — 用于双均线死叉策略 */
+  ema10: (number | null)[];
+  /** EMA(30) — 用于双均线死叉策略 */
+  ema30: (number | null)[];
 }
 
 function computeIndicators(bars: KlineBar[], params: IndicatorParams): IndicatorCache {
@@ -176,6 +183,36 @@ function computeIndicators(bars: KlineBar[], params: IndicatorParams): Indicator
     }
   }
 
+  // ATR(14) — 使用 Wilder's smoothing：首值简单平均，后续 EMA 平滑
+  const atrPeriod = 14;
+  const atr14: (number | null)[] = new Array(n).fill(null);
+  if (n >= atrPeriod + 1) {
+    // True Range 数组
+    const tr: number[] = new Array(n).fill(0);
+    for (let i = 0; i < n; i++) {
+      const prevClose = i > 0 ? closes[i - 1] : opens[i];
+      tr[i] = Math.max(
+        highs[i] - lows[i],
+        Math.abs(highs[i] - prevClose),
+        Math.abs(lows[i] - prevClose),
+      );
+    }
+    // 初始 ATR = 前14根 TR 的简单平均
+    let atrSum = 0;
+    for (let i = 0; i < atrPeriod; i++) {
+      atrSum += tr[i];
+    }
+    atr14[atrPeriod - 1] = atrSum / atrPeriod;
+    // Wilder's EMA: ATR_t = (ATR_{t-1} * (period-1) + TR_t) / period
+    for (let i = atrPeriod; i < n; i++) {
+      atr14[i] = (atr14[i - 1]! * (atrPeriod - 1) + tr[i]) / atrPeriod;
+    }
+  }
+
+  // EMA(10) 和 EMA(30) — 用于双均线死叉策略
+  const ema10 = ema(closes as (number | null)[], 10);
+  const ema30 = ema(closes as (number | null)[], 30);
+
   return {
     closes,
     opens,
@@ -194,19 +231,117 @@ function computeIndicators(bars: KlineBar[], params: IndicatorParams): Indicator
     bollUpper,
     bollLower,
     bollMid,
+    atr14,
+    ema10,
+    ema30,
   };
 }
 
-// ==================== 卖出信号：MA5 下穿 MA20 ====================
+// ==================== 卖出信号检测（策略可配置）====================
 
-function checkMaDeathCross(cache: IndicatorCache, idx: number): boolean {
-  if (idx < 1) return false;
-  const short = cache.ma5[idx];
-  const long = cache.ma20[idx];
-  const prevShort = cache.ma5[idx - 1];
-  const prevLong = cache.ma20[idx - 1];
-  if (short === null || long === null || prevShort === null || prevLong === null) return false;
-  return prevShort >= prevLong && short < long;
+interface SellSignalParams {
+  strategy: SellStrategy;
+  /** 高点回落比例（trailing_stop），如 0.08 = 8% */
+  trailingStopPct: number;
+  /** ATR周期（atr_chandelier），默认14 */
+  atrPeriod: number;
+  /** ATR倍数（atr_chandelier），默认3 */
+  atrMultiplier: number;
+  /** 短期EMA周期（ema_cross），默认10 */
+  emaShort: number;
+  /** 长期EMA周期（ema_cross），默认30 */
+  emaLong: number;
+}
+
+interface SellSignalContext {
+  bar: KlineBar;
+  idx: number;
+  entryPrice: number;
+  entryIdx: number;
+  peakPriceSinceEntry: number;
+  cache: IndicatorCache;
+}
+
+/**
+ * 检测当前 K 线是否触发卖出信号。
+ * 返回 { triggered: boolean, reason: string, newPeak: number }
+ *
+ * 策略一（trailing_stop）：从持仓最高价回撤 trailingStopPct 即卖出
+ * 策略二（atr_chandelier）：收盘价 < 最高价 - atrMultiplier × ATR 即卖出
+ * 策略三（ema_cross）：短期EMA下穿长期EMA即卖出
+ */
+function checkSellSignal(
+  params: SellSignalParams,
+  ctx: SellSignalContext,
+): { triggered: boolean; reason: string; newPeak: number } {
+  const { strategy, trailingStopPct, atrMultiplier, emaShort, emaLong } = params;
+  const { bar, idx, peakPriceSinceEntry, cache } = ctx;
+  let newPeak = peakPriceSinceEntry;
+
+  switch (strategy) {
+    // ==================== 策略一：高点回落移动止损 ====================
+    case 'trailing_stop': {
+      // 更新持仓期间最高价
+      if (bar.high > peakPriceSinceEntry) {
+        newPeak = bar.high;
+      }
+      // 从最高价回撤超过阈值即卖出
+      const drawdown = (bar.close - newPeak) / newPeak;
+      if (drawdown <= -trailingStopPct) {
+        return {
+          triggered: true,
+          reason: `高点回落${(trailingStopPct * 100).toFixed(0)}%止损（峰值${newPeak.toFixed(2)}，当前${bar.close.toFixed(2)}，回撤${Math.abs(drawdown * 100).toFixed(1)}%）`,
+          newPeak,
+        };
+      }
+      return { triggered: false, reason: '', newPeak };
+    }
+
+    // ==================== 策略二：ATR吊灯止损 ====================
+    case 'atr_chandelier': {
+      // 更新持仓期间最高价
+      if (bar.high > peakPriceSinceEntry) {
+        newPeak = bar.high;
+      }
+      // 需要 ATR 值有效
+      const atr = cache.atr14[idx];
+      if (atr === null || atr <= 0) return { triggered: false, reason: '', newPeak };
+      // 吊灯止损线 = 最高价 - atrMultiplier × ATR
+      const stopPrice = newPeak - atrMultiplier * atr;
+      if (bar.close < stopPrice) {
+        return {
+          triggered: true,
+          reason: `ATR吊灯止损（峰值${newPeak.toFixed(2)}，ATR=${atr.toFixed(2)}，止损线=${stopPrice.toFixed(2)}，收盘${bar.close.toFixed(2)}）`,
+          newPeak,
+        };
+      }
+      return { triggered: false, reason: '', newPeak };
+    }
+
+    // ==================== 策略三：双均线死叉 ====================
+    case 'ema_cross': {
+      if (idx < 1) return { triggered: false, reason: '', newPeak };
+      const shortNow = cache.ema10[idx];
+      const longNow = cache.ema30[idx];
+      const shortPrev = cache.ema10[idx - 1];
+      const longPrev = cache.ema30[idx - 1];
+      if (shortNow === null || longNow === null || shortPrev === null || longPrev === null) {
+        return { triggered: false, reason: '', newPeak };
+      }
+      // 前一日短均 >= 长均，当日短均 < 长均 → 死叉
+      if (shortPrev >= longPrev && shortNow < longNow) {
+        return {
+          triggered: true,
+          reason: `双均线死叉（EMA${emaShort}=${shortNow.toFixed(2)} < EMA${emaLong}=${longNow.toFixed(2)}）`,
+          newPeak,
+        };
+      }
+      return { triggered: false, reason: '', newPeak };
+    }
+
+    default:
+      return { triggered: false, reason: '', newPeak };
+  }
 }
 
 // ==================== 涨跌停检查 ====================
@@ -331,6 +466,12 @@ export async function runBacktest(
     startDate,
     endDate,
     capital,
+    sellStrategy,
+    trailingStopPct,
+    atrPeriod,
+    atrMultiplier,
+    emaShort,
+    emaLong,
     feeRate,
     slippage,
     riskFreeRate,
@@ -338,6 +479,16 @@ export async function runBacktest(
     maxDeferDays,
     indicatorParams,
   } = config;
+
+  // 卖出策略参数
+  const sellParams: SellSignalParams = {
+    strategy: sellStrategy,
+    trailingStopPct,
+    atrPeriod,
+    atrMultiplier,
+    emaShort,
+    emaLong,
+  };
 
   // P0-1: 参数合法性校验（致命错误：Worker 层捕获后向 UI 报告错误码）
   try {
@@ -367,7 +518,7 @@ export async function runBacktest(
 
   safeProgress(onProgress, { stage: 'fetching', percent: 5, message: '数据清洗完成，开始计算指标...' });
 
-  // 1. 计算指标（卖出条件 MA5 下穿 MA20 依赖 ma5/ma20）
+  // 1. 计算指标（含 ATR、EMA10/30，供卖出策略使用）
   const cache = computeIndicators(bars, indicatorParams);
   safeProgress(onProgress, { stage: 'indicators', percent: 20, message: '技术指标计算完成' });
 
@@ -411,6 +562,8 @@ export async function runBacktest(
     indicatorParams.bollPeriod,
     indicatorParams.macdSlow + indicatorParams.macdSignal,
     indicatorParams.rsiPeriod,
+    atrPeriod + 1,   // ATR 需要 period+1 根 K 线
+    emaLong + 1,     // 长周期 EMA 需要 period+1 根 K 线
     MIN_WARMUP_DAYS,
   );
   const firstValidIdx = warmupDays;
@@ -428,6 +581,8 @@ export async function runBacktest(
   let pendingSellSignal: { idx: number; deferCount: number } | null = null;
   let currentEntryIdx = -1;
   let currentEntryPrice = 0;
+  /** 持仓期间的最高价（用于移动止盈策略） */
+  let peakPriceSinceEntry = 0;
 
   // 诊断计数器 + 结构化日志
   let buySignalCount = 0;
@@ -506,6 +661,7 @@ export async function runBacktest(
             shares = buyShares;
             currentEntryIdx = i;
             currentEntryPrice = execPrice;
+            peakPriceSinceEntry = execPrice;
             state = 'holding';
             diagnostics.push({
               time: bar.time,
@@ -570,10 +726,15 @@ export async function runBacktest(
           const actualProfit = sellProceeds - buyCost;
           cash += sellProceeds;
 
+          // 从最近一次卖出信号诊断中获取原因
+          const sellReason = diagnostics
+            .filter((d) => d.event === 'sell_signal')
+            .slice(-1)[0]?.reason?.replace(' 发出卖出信号', '') || '卖出信号';
+
           diagnostics.push({
             time: bar.time,
             event: 'sell_executed',
-            reason: `MA5下穿MA20，卖出 ${shares} 股 @ ${execPrice}`,
+            reason: `${sellReason}，卖出 ${shares} 股 @ ${execPrice}`,
             data: { shares, price: execPrice, profit: actualProfit },
           });
           trades.push({
@@ -589,7 +750,7 @@ export async function runBacktest(
             holdDays: i - currentEntryIdx - 1,
             isForcedClose: false,
             entryReason: buildEntryReason(buyCondition),
-            exitReason: 'MA5下穿MA20',
+            exitReason: sellReason,
           });
           shares = 0;
           state = 'idle';
@@ -641,14 +802,26 @@ export async function runBacktest(
         pendingBuySignal = { idx: i, deferCount: 0 };
       }
 
-      if (state === 'holding' && pendingSellSignal === null && checkMaDeathCross(cache, i)) {
-        sellSignalCount++;
-        diagnostics.push({
-          time: bar.time,
-          event: 'sell_signal',
-          reason: 'MA5下穿MA20 发出卖出信号',
+      if (state === 'holding' && pendingSellSignal === null) {
+        const sellResult = checkSellSignal(sellParams, {
+          bar,
+          idx: i,
+          entryPrice: currentEntryPrice,
+          entryIdx: currentEntryIdx,
+          peakPriceSinceEntry,
+          cache,
         });
-        pendingSellSignal = { idx: i, deferCount: 0 };
+        // 更新峰值（trailing_stop 策略会更新）
+        peakPriceSinceEntry = sellResult.newPeak;
+        if (sellResult.triggered) {
+          sellSignalCount++;
+          diagnostics.push({
+            time: bar.time,
+            event: 'sell_signal',
+            reason: `${sellResult.reason} 发出卖出信号`,
+          });
+          pendingSellSignal = { idx: i, deferCount: 0 };
+        }
       }
     }
 
