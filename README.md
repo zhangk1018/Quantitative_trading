@@ -1,271 +1,162 @@
 # 量化交易系统
 
-**Quantitative Trading System** — 沪深 A 股数据采集、清洗、回测与策略研发一体化平台
+**Quantitative Trading System** — 沪深 A 股数据采集、清洗、选股与回测一体化平台
 
 ---
 
-## 📋 目录
-
-- [架构总览](#一架构总览)
-- [目录结构](#二目录结构)
-- [数据流](#三数据流)
-- [快速开始](#四快速开始)
-- [文档导航](#五文档导航)
-- [变更记录](#六变更记录)
-
----
-
-## 一、架构总览
+## 架构
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    shared/   共享数据契约                      │
-│              Pydantic schemas · 常量 · 工具函数                 │
-└────────────────────┬───────────────────┬─────────────────────┘
-                     │                   │
-        ┌────────────▼──────┐    ┌───────▼─────────┐
-        │      backend/     │    │    frontend/    │
-        │   数据采集与清洗    │    │  策略研发与展示   │
-        │                   │    │                 │
-        │ • collector 数据源│    │ • strategies    │
-        │ • imputer 补全/复权│    │ • backtester    │
-        │ • clean 清洗      │    │ • analyzer      │
-        │ • core/api REST  │◄───┤ • dashboard     │
-        │   (FastAPI)       │    │   (Streamlit)   │
-        └───────────────────┘    └─────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                    backend/                           │
+│  ┌──────────────┐  ┌──────────┐  ┌───────────────┐  │
+│  │  collector/  │  │  clean/  │  │   core/api/   │  │
+│  │  数据采集     │─▶│  清洗计算 │─▶│  FastAPI REST │  │
+│  │  ETL 管道    │  │  指标/形态│  │  (端口 8000)  │  │
+│  └──────────────┘  └──────────┘  └───────┬───────┘  │
+│  ┌──────────────────────────────────────┐ │          │
+│  │  shared/  数据模型 + 常量 (Pydantic) │◀┘          │
+│  └──────────────────────────────────────┘            │
+└──────────────────────────────────────────────────────┘
+                         │
+┌────────────────────────┼────────────────────────────┐
+│                  frontend/                            │
+│  React + TypeScript + Vite + Ant Design              │
+│  ┌────────────┐  ┌──────────────┐  ┌─────────────┐  │
+│  │ stock-picker│  │  backtest    │  │ strategy-   │  │
+│  │ 选股器      │  │  回测分析     │  │ backtest    │  │
+│  │            │  │             │  │ 策略回测     │  │
+│  └────────────┘  └──────────────┘  └─────────────┘  │
+│  ┌────────────┐  ┌──────────────┐                   │
+│  │ watchlist  │  │ stock-detail │                   │
+│  │ 自选股      │  │  个股详情     │                   │
+│  └────────────┘  └──────────────┘                   │
+└──────────────────────────────────────────────────────┘
 ```
-
-### 核心设计原则
-
-| 原则 | 落地方式 |
-|------|----------|
-| **数据契约统一** | 前后端共用 `shared/`，避免字段/类型不一致 |
-| **防未来函数** | `imputer/` 严格禁止 `bfill`，策略基类禁 `shift(-N)` |
-| **复权标准** | `Adjuster` 统一前/后复权入口，K线 API 支持 `adj` 参数 |
-| **可观测性** | `health_monitor.py` 守护进程，每分钟输出心跳 |
-| **增量优先** | 数据下载、宽表同步均支持增量运行 |
 
 ---
 
-## 二、目录结构
+## 目录结构
 
 ```
 Quantitative_trading/
-├── shared/                        # 【新】前后端共享契约
-│   ├── schemas.py                 #   Pydantic 数据模型
-│   ├── constants.py               #   枚举/字段白名单
-│   └── utils.py                   #   公共工具函数
-│
-├── backend/                       # 数据后台
-│   ├── collector/                 #   数据采集
-│   │   ├── datasource/            #     Tushare / Baostock / AkShare
-│   │   ├── etl/                   #     ETL 流程（含 health_monitor）
-│   │   ├── scheduler/             #     智能调度（断路器、熔断）
-│   │   └── storage/               #     PostgreSQL / SQLite
-│   ├── imputer/                   # 【新】数据补全与复权
-│   │   ├── missing_handler.py     #   缺失值（ffill/interpolate，禁 bfill）
-│   │   ├── incomplete_handler.py  #   缺口检测与补全
-│   │   └── adjuster.py            #   前/后复权
-│   ├── clean/                     # 数据清洗（已部分迁移到 imputer/）
+├── backend/
+│   ├── collector/                 # 数据采集
+│   │   ├── datasource/            #   Baostock / Tushare / pytdx
+│   │   ├── etl/                   #   ETL 脚本（导入/同步/快照/补全）
+│   │   ├── db/                    #   数据库模型与迁移
+│   │   ├── config/                #   数据源配置
+│   │   └── storage/               #   PostgreSQL 存储
+│   ├── clean/
+│   │   ├── etl/                   #   指标计算 / 形态识别 / 信号生成
+│   │   ├── enrich/                #   数据增强 / Parquet 导出
+│   │   └── processor/             #   数据导入基类 / 技术指标 / 数据清洗
 │   ├── core/
-│   │   ├── api/                   #   FastAPI REST 服务
-│   │   │   ├── router/            #     kline / stocks / signals
-│   │   │   └── models/            #     兼容层（re-export shared）
+│   │   ├── api/                   #   FastAPI 路由 + 模型
 │   │   └── service/               #   业务服务层
-│   ├── utils/                     # 工具（logger / config / error_classifier）
-│   └── main.py                    # 后台入口
-│
-├── frontend/                      # 前端工作区
-│   ├── src/                       #   React + TS 主应用
-│   ├── backtester/                # 【新】回测引擎（纯 Python）
-│   ├── strategies/                # 【新】策略基类 + 示例
-│   ├── analyzer/                  # 【新】绩效分析
-│   ├── dashboard/                 # 【新】Streamlit 看板
-│   ├── utils/                     # 【新】API 客户端
-│   ├── PROJECT_DESIGN.md          #   前端设计文档
-│   ├── RUNNING_GUIDE.md           #   前端运行指南
-│   ├── CODING_STANDARDS.md        #   前端编码规范
-│   └── README.md                  #   前端工作区说明
-│
-├── tests/                         # 正式测试（pytest）
-│   └── frontend/                  #   前端/跨端测试
-│
-├── tmp/                           # 临时脚本与调试文件（.gitignore）
-│   ├── scripts/                   #   诊断/修复脚本
-│   ├── browser_test/              #   前端浏览器测试截图
-│   ├── phase_6_1_d/              #   Phase 6.1d 调试文件
-│   └── [theme/jqka/kline/safari] #   专项调试资源
-│
-├── .trae/                         # IDE 配置 + 工作规则
-├── .env                           # 环境变量（PG / Tushare Token）
-└── README.md                      # 本文档
+│   ├── cron/                      #   定时任务 (daily_job_runner.py)
+│   ├── monitoring/                #   系统监控
+│   ├── shared/                    #   前后端共享 Pydantic 模型
+│   ├── utils/                     #   日志 / 配置 / 重试 / 错误分类
+│   └── tests/                     #   后端测试
+├── frontend/
+│   ├── src/
+│   │   ├── features/              #   选股 / 回测 / 自选股 / 个股详情
+│   │   ├── lib/indicators/        #   前端指标计算 + K线适配
+│   │   └── shared/contexts/       #   全局设置上下文
+│   ├── tests/                     #   单元测试 + E2E 测试
+│   ├── public/pyodide/            #   Pyodide 运行时（自编指标执行）
+│   ├── docs/                      #   前端设计文档
+│   ├── vite.config.ts             #   Vite 构建配置
+│   ├── tsconfig.json              #   TypeScript 配置
+│   └── package.json               #   依赖与脚本
+├── scripts/                       #   启停 / 部署 / Git 推送
+├── docker/                        #   PostgreSQL 初始化脚本
+├── data/                          #   Parquet 导出数据
+├── docs/                          #   项目文档 + 日报
+├── tests/                         #   根级测试与调试脚本
+├── .env.production.example        #   生产环境变量模板
+├── docker-compose.yml             #   生产环境编排
+├── Dockerfile.backend             #   后端镜像
+├── Dockerfile.frontend            #   前端镜像 (含 Nginx)
+├── nginx.conf                     #   Nginx 反向代理配置
+├── start_prod.sh                  #   生产环境启动
+└── verify_prod.sh                 #   生产健康检查
 ```
 
 ---
 
-## 三、数据流
+## 快速开始
 
-### 3.1 盘后自动流程（crontab）
-
-```
-┌──────────────┐    ┌──────────────────┐    ┌──────────────────┐
-│  Tushare /   │───▶│ import_daily_    │───▶│   stock_quotes   │
-│  Baostock    │    │ data.py --incremental│  (PostgreSQL)    │
-└──────────────┘    └──────────────────┘    └────────┬─────────┘
-                                                     │
-                                            ┌────────▼─────────┐
-                                            │ sync_quotes_to_  │
-                                            │ snapshot.py      │──▶ stock_daily_snapshot
-                                            └──────────────────┘    (宽表)
-                                                     │
-                                            ┌────────▼─────────┐
-                                            │ run_data_complete│──▶ 缺口/缺失补全
-                                            └──────────────────┘
-```
-
-- **16:05** `import_daily_data.py --incremental`（默认并行：沪→Tushare，深→Baostock）
-- **16:30** `sync_quotes_to_snapshot.py --latest`（从 stock_quotes 计算指标并同步宽表）
-
-### 3.2 心跳守护
+### 开发环境
 
 ```bash
-python backend/collector/etl/health_monitor.py --daemon
-# 每分钟输出: 18:29:18, 下载, 正常, 58/4876(1%), 处理到 SZ.000066
+# 安装依赖
+./scripts/start.sh install
+
+# 启动前后端
+./scripts/start.sh dev start
+
+# 查看状态
+./scripts/start.sh dev status
 ```
 
-### 3.3 API 服务
+### 生产环境
 
 ```bash
-cd backend && python -m uvicorn core.api.main:app --reload
-# 默认 http://localhost:8000/docs
+# 配置环境变量
+cp .env.production.example .env.production
+# 编辑 .env.production 替换密码
+
+# 部署
+./start_prod.sh start
+./verify_prod.sh
 ```
 
-主要路由：
-- `GET /api/stocks` — 股票筛选（按行情/估值/技术指标）
-- `GET /api/kline/{code}?adj=forward` — K线 + 复权参数
-- `GET /api/signals/{code}` — 买卖信号
-- `GET /api/meta` — 元信息（交易日历、复权因子等）
+### 数据管道
 
-### 3.4 策略回测
+```bash
+# 一键执行全流程（3 阶段）
+PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/cron/daily_job_runner.py
 
-```python
-from frontend.strategies import DoubleMAStrategy
-from frontend.backtester import BacktestEngine
+# 阶段 1: 健康检查 + 股票列表同步
+PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/cron/daily_job_runner.py --stage 1
 
-engine = BacktestEngine(strategy=DoubleMAStrategy(fast=5, slow=20))
-result = engine.run(kline_df, stock_code='000001.SZ')
-print(result.metrics.sharpe_ratio, result.metrics.max_drawdown)
+# 阶段 2: 日线行情导入
+PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/cron/daily_job_runner.py --stage 2
+
+# 阶段 3: 复权因子 → 补全 → 基本面 → 指标 → 形态 → 信号 → 宽表 → Parquet
+PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/cron/daily_job_runner.py --stage 3
 ```
+
+完整 ETL 流程见 [.trae/rules/ETL_PIPELINE.md](.trae/rules/ETL_PIPELINE.md)。
 
 ---
 
-## 四、快速开始
+## API
 
-### 4.1 环境准备
-
-```bash
-# Python 3.11+
-python -m venv venv
-source venv/bin/activate
-pip install -r backend/requirements.txt
-pip install -r backend/requirements_api.txt
-```
-
-### 4.2 配置
-
-复制并编辑 `.env`：
-```env
-PG_HOST=localhost
-PG_PORT=5432
-PG_DATABASE=quant_trading
-PG_USER=quant_user
-PG_PASSWORD=xxx
-TUSHARE_TOKEN=your_token_here
-```
-
-### 4.3 启动
-
-```bash
-# 1) 手动执行一次今日增量
-python backend/collector/etl/import_daily_data.py --incremental
-
-# 2) 同步宽表
-python sync_quotes_to_snapshot.py --latest
-
-# 3) 启动 API
-cd backend && python -m uvicorn core.api.main:app --reload --port 8000
-
-# 4) 启动 Streamlit 看板
-streamlit run frontend/dashboard/app.py
-
-# 5) 启动心跳守护
-python backend/collector/etl/health_monitor.py --daemon
-```
+| 端点 | 说明 |
+|------|------|
+| `GET /api/meta/` | 元信息（行业/板块/筛选条件） |
+| `GET /api/stocks/` | 股票筛选（行情/财务/技术指标/形态） |
+| `GET /api/snapshot/` | 全量快照（宽表数据） |
+| `GET /api/kline/{code}` | K线数据（日/周/月，支持复权） |
+| `GET /api/signals/{code}` | 交易信号 |
+| `GET /api/watchlist/` | 自选股管理 |
+| `GET /api/monitor/` | 数据监控（管道状态/数据质量） |
+| `GET /admin` | 系统监控看板 |
+| `GET /health` | 健康检查 |
+| `GET /docs` | Swagger API 文档 |
 
 ---
 
-## 五、文档导航
-
-### 5.1 项目级文档（`docs/`）
+## 文档
 
 | 文档 | 说明 |
 |------|------|
-| [docs/project_README.md](./docs/project_README.md) | 项目概述与功能特性 |
-| [docs/PROJECT_PLAN.md](./docs/PROJECT_PLAN.md) | 项目总体计划 |
-| [docs/DATA_COLLECTION_DESIGN.md](./docs/DATA_COLLECTION_DESIGN.md) | 数据采集与定时任务设计 |
-| [docs/DATA_SCHEMA.md](./docs/DATA_SCHEMA.md) | 数据库 Schema 说明 |
-| [docs/AI_COLLABORATION.md](./docs/AI_COLLABORATION.md) | AI 协作记录 |
-| [docs/AI_Agent_Workflow_Config.md](./docs/AI_Agent_Workflow_Config.md) | AI 角色与工作流配置 |
-| [docs/CODE_QUALITY_GUIDE.md](./docs/CODE_QUALITY_GUIDE.md) | 代码质量规范 |
-| [docs/DEPLOYMENT_CHECKLIST.md](./docs/DEPLOYMENT_CHECKLIST.md) | 部署检查清单 |
-| [docs/DAILY_REPORT_POLICY.md](./docs/DAILY_REPORT_POLICY.md) | 日报规范 |
-| [docs/SCHEDULER_GUIDE.md](./docs/SCHEDULER_GUIDE.md) | 调度器指南 |
-
-### 5.2 模块级文档
-
-| 模块 | 文档 |
-|------|------|
-| 共享契约（新） | [shared/README.md](./shared/README.md) |
-| 数据补全/复权（新） | [backend/imputer/README.md](./backend/imputer/README.md) |
-| 后台 ETL | [backend/collector/etl/README.md](./backend/collector/etl/README.md) |
-| 后台开发规范 | [backend/PROJECT_RULES.md](./backend/PROJECT_RULES.md) |
-| 前端工作区 | [frontend/README.md](./frontend/README.md) |
-| 前端设计 | [frontend/PROJECT_DESIGN.md](./frontend/PROJECT_DESIGN.md) |
-| 前端运行 | [frontend/RUNNING_GUIDE.md](./frontend/RUNNING_GUIDE.md) |
-| 前端编码规范 | [frontend/CODING_STANDARDS.md](./frontend/CODING_STANDARDS.md) |
-
-### 5.3 调研资料（`docs/research/`）
-
-前端图表库调研：klinecharts / lightweight-charts / echarts / highcharts-stock / chartjs / d3js / lightningchart / streamlit-grafana
-
-### 5.4 参考资料（`docs/reference/`）
-
-- Tushare / AkShare / Baostock 接口参考
-- PostgreSQL 常用命令
-- 量化交易 AI 助手提示词
-
----
-
-## 六、变更记录
-
-### v0.6.1 (2026-06-17) — 项目结构清理
-- 合并散落的诊断/调试脚本至 `tmp/scripts/`（11 个文件）
-- 清理 `frontend/temp/browser_test/` 至 `tmp/browser_test/`（55 个截图/脚本）
-- 整理 `tests/`：真实 pytest 测试保留，临时工具移入 `tmp/`
-- 将 `backend/tests/` 合并入根 `tests/frontend/`
-- 更新 README.md 目录结构，删除已清空的 `backend/temp/`、`backend/tests/`
-
-### v0.6.0 (2026-06-06) — 架构重构
-- ✅ 新增 `shared/` 目录统一前后端数据契约
-- ✅ 新增 `backend/imputer/` 整合补全与复权
-- ✅ 新增 `frontend/{backtester,strategies,analyzer,dashboard}/`
-- ✅ K线 API 新增 `adj` 参数（none/forward/backward）
-- ✅ 缺失值填充严格禁止 `bfill`，消除未来函数风险
-- ✅ FastAPI Settings `extra="ignore"`，兼容多源环境变量
-
-### v0.5.0 (2026-05-31)
-- 完成并行下载（沪市Tushare / 深市Baostock）
-- 修复 crontab 缺少下载任务的故障
-
-### v0.4.0
-- 同步宽表从 `stock_indicators` 改为从 `stock_quotes` 计算指标
+| [ETL_PIPELINE.md](.trae/rules/ETL_PIPELINE.md) | 数据管道完整流程 |
+| [量化交易.md](.trae/rules/量化交易.md) | 项目技术规范 |
+| [frontend/docs/项目规划文档.md](frontend/docs/项目规划文档.md) | 前端架构设计 |
+| [frontend/docs/项目使用手册.md](frontend/docs/项目使用手册.md) | 前端使用指南 |
+| [frontend/docs/策略回测方案设计-v4.md](frontend/docs/策略回测方案设计-v4.md) | 策略回测方案设计 |
+| [frontend/docs/自编指标开发规范.md](frontend/docs/自编指标开发规范.md) | 自编指标开发规范 |

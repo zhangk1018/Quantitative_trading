@@ -312,8 +312,12 @@ def run_task(task, task_logger: TaskLogger, stage: int, engine) -> bool:
     
     try:
         task_timeout = task.get("timeout", TASK_TIMEOUT_SEC)
+        env = os.environ.copy()
+        backend_dir = os.path.join(BASE_DIR, "backend")
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{backend_dir}:{existing_pythonpath}" if existing_pythonpath else backend_dir
         proc = subprocess.run(cmd, cwd=BASE_DIR, capture_output=True, text=True, 
-                              encoding="utf-8", timeout=task_timeout)
+                              encoding="utf-8", timeout=task_timeout, env=env)
         
         if proc.stdout: task_logger_instance.info(proc.stdout)
         if proc.stderr: task_logger_instance.warning(proc.stderr)

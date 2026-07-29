@@ -21,7 +21,7 @@ source venv/bin/activate
 bash scripts/start.sh
 
 # 启动前端（Vite 开发服务器）
-cd quant-trading-frontend
+cd frontend
 npm run dev
 ```
 

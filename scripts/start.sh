@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 
 BACKEND_DIR="$SCRIPT_DIR/backend"
-FRONTEND_DIR="$SCRIPT_DIR/quant-trading-frontend"
+FRONTEND_DIR="$SCRIPT_DIR/frontend"
 VENV_DIR="$SCRIPT_DIR/venv"
 BACKEND_PID_FILE="/tmp/quant_backend.pid"
 FRONTEND_PID_FILE="/tmp/quant_frontend.pid"
