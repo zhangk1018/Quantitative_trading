@@ -151,6 +151,13 @@ class FileLock:
 
     def acquire(self) -> bool:
         os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
+        # 先读取已有锁信息（如果存在），避免 truncate 后丢失
+        prev_info = ""
+        try:
+            if os.path.exists(self.lock_path):
+                prev_info = open(self.lock_path).read().strip()
+        except Exception:
+            pass
         self.lock_fd = open(self.lock_path, "w")
         try:
             if os.name == 'nt':
@@ -164,11 +171,7 @@ class FileLock:
             self.lock_fd.flush()
             return True
         except (IOError, OSError):
-            try:
-                info = open(self.lock_path).read().strip()
-                print(f"[WARN] 另一个 runner 实例正在运行 ({info})，本次退出")
-            except Exception:
-                print("[WARN] 另一个 runner 实例正在运行，本次退出")
+            print(f"[WARN] 另一个 runner 实例正在运行 ({prev_info or '未知PID'})，本次退出")
             self.lock_fd.close()
             self.lock_fd = None
             return False
@@ -424,8 +427,18 @@ def main():
         stage_label = "全量 (阶段1→3 顺序执行，仅日级数据)"
 
     file_lock = FileLock(LOCK_FILE)
-    if not file_lock.acquire():
-        sys.exit(1)
+    lock_acquired = file_lock.acquire()
+    if not lock_acquired:
+        # 锁被占用时等待重试（最多 5 次，每次 60 秒），避免 Stage 间时间窗口重叠导致跳过
+        for retry in range(1, 6):
+            print(f"[WARN] 文件锁被占用，60 秒后重试 ({retry}/5)...")
+            time.sleep(60)
+            lock_acquired = file_lock.acquire()
+            if lock_acquired:
+                break
+        if not lock_acquired:
+            print("[ERROR] 5 次重试后仍无法获取文件锁，退出")
+            sys.exit(1)
 
     os.makedirs(LOG_DIR, exist_ok=True)
     try:

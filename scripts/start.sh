@@ -202,7 +202,7 @@ dev_start_backend() {
     load_env "$SCRIPT_DIR/.env"
 
     nohup "$VENV_DIR/bin/python" -m uvicorn core.api.main:app \
-        --host 0.0.0.0 --port "$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
+        --host 0.0.0.0 --port "$BACKEND_PORT" < /dev/null > "$BACKEND_LOG" 2>&1 &
     local new_pid=$!
     echo "$new_pid" > "$BACKEND_PID_FILE"
 
@@ -258,7 +258,7 @@ dev_start_frontend() {
     fi
 
     cd "$FRONTEND_DIR"
-    nohup npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" > "$FRONTEND_LOG" 2>&1 &
+    nohup npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" < /dev/null > "$FRONTEND_LOG" 2>&1 &
     local new_pid=$!
     echo "$new_pid" > "$FRONTEND_PID_FILE"
 
