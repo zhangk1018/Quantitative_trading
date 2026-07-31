@@ -235,8 +235,8 @@ def expand_factor_to_daily(code: str, df: pd.DataFrame, start_date: date, end_da
         if current_factor <= 0:
             logger.warning(f"  [{code}] 复权因子异常(<=0): {current_factor}，跳过该变更日")
             continue
-        if current_factor > 100:
-            logger.warning(f"  [{code}] 复权因子异常大(>100): {current_factor}，可能为数据错误")
+        if current_factor > 50000:
+            logger.warning(f"  [{code}] 复权因子异常大(>50000): {current_factor}，可能为数据错误")
 
         if prev_factor is not None:
             d = prev_date
