@@ -400,8 +400,8 @@ def main():
         "host": db_conf.get("host", "localhost"),
         "port": db_conf.get("port", 5432),
         "database": db_conf.get("database", "quant_trading"),
-        "username": db_conf.get("username", ""),
-        "password": db_conf.get("password", "")
+        "username": db_conf.get("username", "quant_user"),
+        "password": db_conf.get("password", ""),
     })
     
     try:

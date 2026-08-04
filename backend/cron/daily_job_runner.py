@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-量化交易 - 每日盘后多阶段任务调度脚本（v10）
+量化交易 - 每日盘后多阶段任务调度脚本（v11）
 
 任务顺序（仅日级数据）：
-  阶段1 (15:30): 健康检查 + 股票列表同步
-  阶段2 (17:45): 日线行情导入
-  阶段3 (18:15): 复权因子同步 → 缺失数据补全 → 基本面 → 技术指标 → 形态识别 → 信号 → 宽表 → Parquet
+  阶段1 (15:30): 健康检查 + 股票列表同步 + 复权因子同步
+  阶段2 (17:30): 日线行情导入（使用阶段1的最新复权因子转换前复权）
+  阶段3 (18:15): 缺失数据补全 → 基本面 → 技术指标 → 形态识别 → 信号 → 宽表 → Parquet
 
-v10 核心改进：
+v11 核心改进：
+- sync_adj_factor 从阶段3迁移至阶段1，确保阶段2导入时使用最新复权因子
 - 仅保留日级数据流程，分钟/周线/月线数据下载任务已下线
 - 阶段3与阶段4合并为单一阶段3（18:15），避免文件锁冲突
 - 阶段间通过 task_run_log 实现断点续跑
@@ -54,15 +55,16 @@ TASK_TIMEOUT_SEC = 3600       # 1 小时
 ZOMBIE_THRESHOLD_SEC = 7200   # 2 小时
 
 # ===================== Stage 常量 =====================
-STAGE_PRE_IMPORT = 1      # 阶段1：健康检查 + 股票列表同步 (15:30)
-STAGE_DAILY_IMPORT = 2    # 阶段2：日线行情导入 (17:45)
-STAGE_DAILY_COMPUTE = 3   # 阶段3：复权因子→补全→基本面→指标→形态→信号→宽表→Parquet (18:15)
+STAGE_PRE_IMPORT = 1      # 阶段1：健康检查 + 股票列表同步 + 复权因子同步 (15:30)
+STAGE_DAILY_IMPORT = 2    # 阶段2：日线行情导入 (17:30)
+STAGE_DAILY_COMPUTE = 3   # 阶段3：补全→基本面→指标→形态→信号→宽表→Parquet (18:15)
 PIPELINE_STAGE = 0        # etl_pipeline 整体状态记录专用值，与子任务 stage 语义隔离
 
 # ===================== 阶段定义 =====================
 STAGE1_TASKS = [
     {"name": "pipeline_health_check", "script": os.path.join("backend", "collector", "etl", "pipeline_health_check.py"), "args": ["--pre-import"]},
     {"name": "stock_list_sync", "script": os.path.join("backend", "collector", "etl", "sync_stock_list_baostock.py"), "args": []},
+    {"name": "adj_factor_sync", "script": os.path.join("backend", "collector", "etl", "sync_adj_factor.py"), "args": ["--incremental"]},
 ]
 
 STAGE2_TASKS = [
@@ -70,7 +72,6 @@ STAGE2_TASKS = [
 ]
 
 STAGE3_TASKS = [
-    {"name": "adj_factor_sync", "script": os.path.join("backend", "collector", "etl", "sync_adj_factor.py"), "args": ["--incremental"]},
     {"name": "fill_missing_data", "script": os.path.join("backend", "collector", "etl", "fill_missing_data.py"), "args": []},
     {"name": "daily_basic_sync", "script": os.path.join("backend", "collector", "etl", "sync_daily_basic.py"), "args": ["--latest"]},
     {"name": "indicators_compute", "script": os.path.join("backend", "clean", "etl", "compute_indicators_daily.py"), "args": []},
@@ -144,20 +145,53 @@ def is_retryable_error(exit_code: int, stderr: str) -> bool:
 
 # ===================== 跨平台文件锁 =====================
 class FileLock:
-    """兼容 Windows (msvcrt) 和 Unix (fcntl)"""
+    """兼容 Windows (msvcrt) 和 Unix (fcntl)，支持僵尸锁检测与清理"""
+
     def __init__(self, lock_path: str):
         self.lock_path = lock_path
         self.lock_fd = None
 
-    def acquire(self) -> bool:
-        os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
-        # 先读取已有锁信息（如果存在），避免 truncate 后丢失
-        prev_info = ""
+    def _read_lock_info(self) -> tuple:
+        """读取锁文件内容，返回 (pid: int|None, info: str)"""
         try:
             if os.path.exists(self.lock_path):
-                prev_info = open(self.lock_path).read().strip()
+                content = open(self.lock_path).read().strip()
+                if not content:
+                    return None, ""
+                # 格式: "PID|timestamp"
+                parts = content.split("|", 1)
+                pid = int(parts[0]) if parts[0].isdigit() else None
+                return pid, content
         except Exception:
             pass
+        return None, ""
+
+    def _is_pid_alive(self, pid: int) -> bool:
+        """检查进程是否存活"""
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    def _cleanup_stale_lock(self):
+        """清理僵尸锁文件"""
+        try:
+            if os.path.exists(self.lock_path):
+                os.remove(self.lock_path)
+        except OSError:
+            pass
+
+    def acquire(self) -> bool:
+        os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
+
+        # 先检查已有锁是否僵尸锁
+        prev_pid, prev_info = self._read_lock_info()
+        if prev_pid is not None and not self._is_pid_alive(prev_pid):
+            print(f"[INFO] 检测到僵尸锁 (PID={prev_pid} 已不存在)，自动清理")
+            self._cleanup_stale_lock()
+            prev_pid, prev_info = None, ""
+
         self.lock_fd = open(self.lock_path, "w")
         try:
             if os.name == 'nt':
@@ -166,14 +200,22 @@ class FileLock:
             else:
                 import fcntl
                 fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                
+
             self.lock_fd.write(f"{os.getpid()}|{datetime.now().isoformat()}\n")
             self.lock_fd.flush()
             return True
         except (IOError, OSError):
-            print(f"[WARN] 另一个 runner 实例正在运行 ({prev_info or '未知PID'})，本次退出")
             self.lock_fd.close()
             self.lock_fd = None
+
+            # 再次检查是否是僵尸锁（持有锁的进程可能刚好在获取锁之后退出）
+            if prev_pid is not None:
+                if self._is_pid_alive(prev_pid):
+                    print(f"[WARN] 另一个 runner 实例正在运行 (PID={prev_pid})，本次退出")
+                else:
+                    print(f"[WARN] 锁文件被占用但进程 (PID={prev_pid}) 已不存在，可能是瞬时竞争，稍后重试")
+            else:
+                print(f"[WARN] 另一个 runner 实例正在运行 (未知PID)，本次退出")
             return False
 
     def release(self):
@@ -187,8 +229,12 @@ class FileLock:
                     import fcntl
                     fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
                 self.lock_fd.close()
-            except Exception: pass
-            finally: self.lock_fd = None
+            except Exception:
+                pass
+            finally:
+                self.lock_fd = None
+            # 清理锁文件
+            self._cleanup_stale_lock()
 
 # ===================== TaskLogger =====================
 class TaskLogger:
@@ -405,17 +451,17 @@ def run_task_chain(task_logger: TaskLogger, engine, tasks: list, stage: int) -> 
 
 # ===================== 主函数 =====================
 def main():
-    parser = argparse.ArgumentParser(description='每日盘后多阶段任务调度器 v10')
+    parser = argparse.ArgumentParser(description='每日盘后多阶段任务调度器 v11')
     parser.add_argument('--stage', type=int,
                         choices=[STAGE_PRE_IMPORT, STAGE_DAILY_IMPORT, STAGE_DAILY_COMPUTE],
-                        help='执行阶段: 1=健康检查+股票列表, 2=日线导入, 3=复权因子→补全→基本面→指标→信号→宽表→Parquet')
+                        help='执行阶段: 1=健康检查+股票列表+复权因子, 2=日线导入, 3=补全→基本面→指标→信号→宽表→Parquet')
     parser.add_argument('--dry-run', action='store_true', help='试运行模式：只打印计划执行的任务')
     args = parser.parse_args()
 
     stage_map = {
-        STAGE_PRE_IMPORT: (STAGE1_TASKS, STAGE_PRE_IMPORT, "阶段1 (15:30) | 健康检查 + 股票列表同步"),
-        STAGE_DAILY_IMPORT: (STAGE2_TASKS, STAGE_DAILY_IMPORT, "阶段2 (17:45) | 日线行情导入"),
-        STAGE_DAILY_COMPUTE: (STAGE3_TASKS, STAGE_DAILY_COMPUTE, "阶段3 (18:15) | 复权因子→补全→基本面→指标→形态→信号→宽表→Parquet"),
+        STAGE_PRE_IMPORT: (STAGE1_TASKS, STAGE_PRE_IMPORT, "阶段1 (15:30) | 健康检查 + 股票列表同步 + 复权因子同步"),
+        STAGE_DAILY_IMPORT: (STAGE2_TASKS, STAGE_DAILY_IMPORT, "阶段2 (17:30) | 日线行情导入"),
+        STAGE_DAILY_COMPUTE: (STAGE3_TASKS, STAGE_DAILY_COMPUTE, "阶段3 (18:15) | 补全→基本面→指标→形态→信号→宽表→Parquet"),
     }
 
     if args.stage in stage_map:
@@ -447,7 +493,7 @@ def main():
         
         start_time = datetime.now()
         print("=" * 60)
-        print(f"【每日盘后多阶段任务 v10】| {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"【每日盘后多阶段任务 v11】| {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"执行阶段: {stage_label}")
         print(f"Python: {PYTHON}")
         print(f"任务数: {len(tasks)} | batch_id: {task_logger.batch_id}")

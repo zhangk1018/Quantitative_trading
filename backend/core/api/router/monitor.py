@@ -479,9 +479,9 @@ def get_coverage_trend(days: int = Query(30, ge=1, le=365)):
 
 # 管道阶段定义：反映数据处理进度的三个阶段
 PIPELINE_STAGES = [
-    {"id": "download", "name": "数据下载", "task_patterns": ["日线数据导入", "分钟线数据导入"]},
+    {"id": "download", "name": "数据下载", "task_patterns": ["日线数据导入", "分钟线数据导入", "复权因子"]},
     {"id": "clean", "name": "数据清洗", "task_patterns": ["数据修复", "数据清洗", "缺失值处理"]},
-    {"id": "complete", "name": "数据补全", "task_patterns": ["指标计算", "复权因子", "基本面同步"]},
+    {"id": "complete", "name": "数据补全", "task_patterns": ["指标计算", "基本面同步"]},
 ]
 
 
@@ -766,9 +766,9 @@ TASK_CHAIN = [
     # 阶段1 (15:30)
     {"id": "A", "name": "管道健康检查", "key": "pipeline_health_check", "desc": "pipeline_health_check"},
     {"id": "B", "name": "股票列表同步", "key": "stock_list_sync", "desc": "sync_stock_list_baostock"},
-    # 阶段2 (16:30)
-    {"id": "C", "name": "增量导入行情", "key": "daily_import", "desc": "import_daily_data"},
     {"id": "D", "name": "复权因子同步", "key": "adj_factor_sync", "desc": "sync_adj_factor"},
+    # 阶段2 (17:30)
+    {"id": "C", "name": "增量导入行情", "key": "daily_import", "desc": "import_daily_data"},
     {"id": "E", "name": "基本面同步", "key": "daily_basic_sync", "desc": "sync_daily_basic"},
     {"id": "F", "name": "技术指标计算", "key": "indicators_compute", "desc": "compute_indicators"},
     {"id": "G", "name": "信号预计算", "key": "signal_precompute", "desc": "signal_precompute"},
@@ -902,7 +902,7 @@ def get_task_chain_status():
     """
     返回每日盘后 A→I 任务链的执行状态（按实际执行顺序排列）。
 
-    执行顺序：管道健康检查 → 股票列表同步 → 增量导入行情 → 复权因子同步 → 基本面同步
+    执行顺序：管道健康检查 → 股票列表同步 → 复权因子同步 → 增量导入行情 → 基本面同步
             → 技术指标计算 → 信号预计算 → 宽表同步 → Parquet 导出
 
     数据源：仅以数据库为准（用户硬性要求）。

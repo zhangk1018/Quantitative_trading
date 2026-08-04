@@ -77,9 +77,9 @@ class SystemMonitor:
             # 检查关键表的数据量（仅日级数据相关表）
             tables_to_check = [
                 ('stock_basic', '股票基础信息'),
+                ('stock_adj_factor', '复权因子'),
                 ('stock_quotes', '股票行情数据'),
                 ('stock_indicators', '技术指标'),
-                ('stock_adj_factor', '复权因子'),
                 ('stock_daily_snapshot', '每日快照宽表'),
                 ('stock_daily_basic', '日频基本面'),
                 ('trade_signals', '交易信号')
