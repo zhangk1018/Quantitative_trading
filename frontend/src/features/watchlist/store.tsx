@@ -109,6 +109,7 @@ type WatchlistAction =
   | { type: 'ADD_STOCK'; payload: { code: string; groupName: string } }
   | { type: 'BATCH_ADD_STOCKS'; payload: { codes: string[]; groupName: string } }
   | { type: 'REMOVE_FROM_GROUP'; payload: { code: string; groupName: string } }
+  | { type: 'BATCH_REMOVE'; payload: { codes: string[]; groupName: string } }
   | { type: 'CREATE_GROUP'; payload: { name: string } }
   | { type: 'DELETE_GROUP'; payload: { name: string } }
   | { type: 'SET_LOADING'; payload: boolean };
@@ -196,6 +197,45 @@ export function watchlistReducer(state: WatchlistState, action: WatchlistAction)
       return { ...state, stocks: newStocks, customGroups: newCustomGroups };
     }
 
+    case 'BATCH_REMOVE': {
+      const { codes, groupName } = action.payload;
+      const codeSet = new Set(codes);
+      const newStocks = { ...state.stocks };
+
+      if (SYSTEM_GROUP_SET.has(groupName)) {
+        // 从系统分组删除 = 从全部分组中移除这些股票
+        for (const g of Object.keys(newStocks)) {
+          newStocks[g] = newStocks[g].filter((c) => !codeSet.has(c));
+          if (newStocks[g].length === 0 && !SYSTEM_GROUP_SET.has(g)) {
+            delete newStocks[g];
+          }
+        }
+      } else {
+        // 从自建分组删除：仅从该分组移除
+        if (newStocks[groupName]) {
+          newStocks[groupName] = newStocks[groupName].filter((c) => !codeSet.has(c));
+          if (newStocks[groupName].length === 0) {
+            delete newStocks[groupName];
+          }
+        }
+        // 检查每只股票是否还在其他自建分组中
+        for (const code of codes) {
+          const inOtherCustom = Object.entries(newStocks).some(
+            ([g, cs]) => !SYSTEM_GROUP_SET.has(g) && g !== groupName && cs.includes(code),
+          );
+          if (!inOtherCustom) {
+            for (const sys of SYSTEM_GROUPS) {
+              if (newStocks[sys]) {
+                newStocks[sys] = newStocks[sys].filter((c) => c !== code);
+              }
+            }
+          }
+        }
+      }
+
+      return { ...state, stocks: newStocks, customGroups: state.customGroups };
+    }
+
     case 'CREATE_GROUP': {
       const { name } = action.payload;
       if (state.customGroups.includes(name)) return state;
@@ -264,6 +304,8 @@ interface WatchlistContextValue {
   addMany: (codes: string[], groupName: string) => { added: number; skipped: number; failed: number; errors: string[] };
   /** 从指定分组移除股票 */
   removeOne: (code: string, groupName: string) => void;
+  /** 从指定分组批量移除股票 */
+  removeMany: (codes: string[], groupName: string) => void;
   /** 创建自建分组 */
   createGroup: (name: string) => boolean;
   /** 删除自建分组 */
@@ -342,6 +384,14 @@ export function WatchlistProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const removeMany = useCallback(
+    (codes: string[], groupName: string) => {
+      if (codes.length === 0) return;
+      dispatch({ type: 'BATCH_REMOVE', payload: { codes, groupName } });
+    },
+    [],
+  );
+
   const createGroup = useCallback(
     (name: string): boolean => {
       const trimmed = name.trim();
@@ -411,7 +461,7 @@ export function WatchlistProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <WatchlistContext.Provider value={{ state, allGroups, addOne, addMany, removeOne, createGroup, deleteGroup, refresh }}>
+    <WatchlistContext.Provider value={{ state, allGroups, addOne, addMany, removeOne, removeMany, createGroup, deleteGroup, refresh }}>
       {children}
     </WatchlistContext.Provider>
   );

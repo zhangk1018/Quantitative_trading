@@ -1,8 +1,9 @@
 import React from 'react';
-import { Button, App } from 'antd';
-import { PlusCircleOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Button, App, Dropdown } from 'antd';
+import { PlusCircleOutlined, DownloadOutlined, ReloadOutlined, DownOutlined } from '@ant-design/icons';
 import { addToBacktestList } from '../../backtest/backtestListStorage';
 import type { StockItem } from '../types';
+import type { MenuProps } from 'antd';
 
 interface StockPickerBottomBarProps {
   selectedCount: number;
@@ -11,7 +12,7 @@ interface StockPickerBottomBarProps {
   items: StockItem[];
   selectedCodes: Set<string>;
   onAddToWatchlist: () => void;
-  onExport: () => void;
+  onExport: (format: 'csv' | 'txt') => void;
   onRefresh: () => void;
 }
 
@@ -45,6 +46,19 @@ export const StockPickerBottomBar: React.FC<StockPickerBottomBarProps> = React.m
     }
   };
 
+  const exportMenuItems: MenuProps['items'] = [
+    {
+      key: 'csv',
+      label: 'CSV 格式',
+      onClick: () => onExport('csv'),
+    },
+    {
+      key: 'txt',
+      label: 'TXT 格式',
+      onClick: () => onExport('txt'),
+    },
+  ];
+
   return (
     <div className="h-10 px-4 flex items-center justify-between border-t border-border-color bg-bg-panel">
       <div className="flex items-center gap-2">
@@ -66,15 +80,17 @@ export const StockPickerBottomBar: React.FC<StockPickerBottomBarProps> = React.m
         >
           添加自选{selectedCount > 0 ? `(${selectedCount})` : ''}
         </Button>
-        <Button
-          icon={<DownloadOutlined />}
-          className="bg-bg-card border-border-color text-text-secondary hover:text-text-primary text-sm"
-          onClick={onExport}
-          disabled={loading || itemsLength === 0}
-          data-testid="export-result-btn"
-        >
-          导出结果{itemsLength > 0 ? `(${itemsLength})` : ''}
-        </Button>
+        <Dropdown menu={{ items: exportMenuItems }} disabled={loading || itemsLength === 0}>
+          <Button
+            icon={<DownloadOutlined />}
+            className="bg-bg-card border-border-color text-text-secondary hover:text-text-primary text-sm"
+            disabled={loading || itemsLength === 0}
+            data-testid="export-result-btn"
+          >
+            导出结果{itemsLength > 0 ? `(${itemsLength})` : ''}
+            <DownOutlined className="ml-1 text-xs" />
+          </Button>
+        </Dropdown>
       </div>
       <div className="flex items-center gap-4">
         <Button

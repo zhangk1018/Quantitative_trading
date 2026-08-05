@@ -56,7 +56,7 @@ function toModalStock(row: WatchlistStockRow) {
 
 const Watchlist: React.FC = () => {
   const { message } = App.useApp();
-  const { state, addMany, removeOne, createGroup, allGroups } = useWatchlist();
+  const { state, addMany, removeOne, removeMany, createGroup, allGroups } = useWatchlist();
 
   // 暴露 addMany 到 window，供 E2E 性能测试使用
   useEffect(() => {
@@ -146,6 +146,16 @@ const Watchlist: React.FC = () => {
       message.success('已从自选股移除');
     },
     [activeGroup, removeOne, message],
+  );
+
+  // 批量删除：根据当前分组删除多个股票
+  const handleDeleteMany = useCallback(
+    (codes: string[]) => {
+      const group = activeGroup || '全部';
+      removeMany(codes, group);
+      message.success(`已移除 ${codes.length} 只股票`);
+    },
+    [activeGroup, removeMany, message],
   );
 
   // 双击查看K线
@@ -251,9 +261,11 @@ const Watchlist: React.FC = () => {
               </div>
             )}
             <WatchlistTable
+              key={activeGroup || '__default__'}
               rows={mergedRows}
               activeGroup={activeGroup}
               onDelete={handleDelete}
+              onDeleteMany={handleDeleteMany}
               onDoubleClick={handleDoubleClick}
             />
           </>

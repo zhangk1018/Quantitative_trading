@@ -424,7 +424,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
    *   - 排序变化 → 仅本地重排，不重新拉取或计算
    */
   const runFullScreening = useCallback(
-    async (sortByParam: string, sortAscParam: boolean): Promise<boolean> => {
+    async (sortByParam: string, sortAscParam: boolean): Promise<{ items: StockItem[]; total: number } | null> => {
       const state = stateRef.current;
       const cache = cacheRef.current;
       const rangeHash = getRangeConditionHash(state);
@@ -463,7 +463,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
           setSortAsc(sortAscParam);
           setPhase('ready');
           setProgress(100);
-          return true;
+          return { items: [], total: 0 };
         }
 
         if (!customChanged && !rangeChanged && cache._lastPassedCodes && cache.customHash !== null) {
@@ -478,7 +478,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
           setSortAsc(sortAscParam);
           setPhase('ready');
           setProgress(100);
-          return true;
+          return { items: resultItems, total: resultItems.length };
         }
 
         setPhase('loading-ohlcv');
@@ -542,18 +542,18 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
         setSortAsc(sortAscParam);
         setPhase('ready');
         setProgress(100);
-        return true;
+        return { items: resultItems, total: resultItems.length };
       } catch (err) {
         if ((err as Error).message === '已取消' || signal.aborted) {
           setPhase('idle');
           setProgress(0);
-          return false;
+          return null;
         }
         const msg = getErrorMessage(err, '选股失败，请稍后重试');
         setError(msg);
         setPhase('idle');
         messageApi.error(msg);
-        return false;
+        return null;
       } finally {
         if (abortRef.current === abortController) {
           abortRef.current = null;
@@ -591,15 +591,15 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
       setLoading(true);
       setPhase('fetching-candidates');
 
-      const success = await runFullScreening(sortByParam, sortAscParam);
+      const result = await runFullScreening(sortByParam, sortAscParam);
       setLoading(false);
 
-      if (success) {
-        return { items, total } as FetchStocksResponse;
+      if (result) {
+        return result as FetchStocksResponse;
       }
       return null;
     },
-    [fetchScreeningData, runFullScreening, sortBy, sortAsc, items, total],
+    [fetchScreeningData, runFullScreening, sortBy, sortAsc],
   );
 
   const fetchNextPage = useCallback(() => {

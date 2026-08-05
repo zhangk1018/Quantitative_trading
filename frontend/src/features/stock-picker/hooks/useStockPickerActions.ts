@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo } from 'react';
 import { App } from 'antd';
 import { useScreenerDispatch, useScreenerSelector } from '../context/ScreenerContext';
-import { exportToCsv, CONFIG } from '../utils/screener';
+import { exportToCsv, exportToTxt, CONFIG } from '../utils/screener';
 import { useSelection } from './useSelection';
 import { useWatchlistAdd } from './useWatchlistAdd';
 import { useStrategyUI } from './useStrategyUI';
@@ -50,13 +50,17 @@ export function useStockPickerActions(
   );
 
   // ========== 导出 ==========
-  const handleExport = useCallback(() => {
+  const handleExport = useCallback((format: 'csv' | 'txt') => {
     if (items.length === 0) {
       message.warning('暂无可导出的数据，请先选股');
       return;
     }
-    exportToCsv(items);
-    message.success(`已导出 ${items.length} 只股票`);
+    if (format === 'csv') {
+      exportToCsv(items);
+    } else {
+      exportToTxt(items);
+    }
+    message.success(`已导出 ${items.length} 只股票（${format.toUpperCase()}）`);
   }, [items]);
 
   // ========== 重置 ==========
@@ -70,9 +74,13 @@ export function useStockPickerActions(
   const handleStartScreening = useCallback(async () => {
     const result = await fetchFirstPage();
     if (result && result.items.length > 0) {
+      // 滚动到顶部，确保展示完整列表
+      if (tableContainerRef.current) {
+        tableContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      }
       message.success(`选股成功，共 ${result.total} 只`);
     }
-  }, [fetchFirstPage]);
+  }, [fetchFirstPage, tableContainerRef]);
 
   // ========== 双击查看分析 ==========
   const [analysisStock, setAnalysisStock] = useState<StockItem | null>(null);

@@ -1,5 +1,5 @@
-import React, { memo, useState, useMemo } from 'react';
-import { Button, Popconfirm } from 'antd';
+import React, { memo, useState, useMemo, useCallback } from 'react';
+import { Button, Popconfirm, Checkbox } from 'antd';
 import { DeleteOutlined, CaretUpOutlined, CaretDownOutlined } from '@ant-design/icons';
 import { useSettings } from '@/shared/contexts/SettingsContext';
 import {
@@ -18,6 +18,7 @@ interface WatchlistTableProps {
   rows: WatchlistStockRow[];
   activeGroup: string | null;
   onDelete: (code: string) => void;
+  onDeleteMany: (codes: string[]) => void;
   onDoubleClick: (row: WatchlistStockRow) => void;
 }
 
@@ -55,9 +56,11 @@ const SortHeader: React.FC<{
 
 const TableRow = memo<{
   row: WatchlistStockRow;
+  checked: boolean;
+  onToggleCheck: (code: string) => void;
   onDelete: (code: string) => void;
   onDoubleClick: (row: WatchlistStockRow) => void;
-}>(({ row, onDelete, onDoubleClick }) => {
+}>(({ row, checked, onToggleCheck, onDelete, onDoubleClick }) => {
   const { colors } = useSettings();
   const changePct = row.change_pct != null && isFinite(row.change_pct) ? row.change_pct : null;
   const isUp = changePct !== null && changePct >= 0;
@@ -66,10 +69,19 @@ const TableRow = memo<{
 
   return (
     <tr
-      className="border-b border-border-color hover:bg-bg-panel/60 transition-colors cursor-pointer"
+      className={`border-b border-border-color hover:bg-bg-panel/60 transition-colors cursor-pointer ${
+        checked ? 'bg-color-accent/5' : ''
+      }`}
       onDoubleClick={() => onDoubleClick(row)}
       data-testid={`watchlist-row-${row.stock_code}`}
     >
+      <td className="px-3 py-2 text-center" onClick={(e) => e.stopPropagation()}>
+        <Checkbox
+          checked={checked}
+          onChange={() => onToggleCheck(row.stock_code)}
+          data-testid={`watchlist-checkbox-${row.stock_code}`}
+        />
+      </td>
       <td className="px-3 py-2 text-text-primary font-mono">{row.stock_code}</td>
       <td className="px-3 py-2 text-text-primary">{row.stock_name}</td>
       <td className="px-3 py-2 text-right font-mono" style={{ color }}>
@@ -124,10 +136,12 @@ TableRow.displayName = 'TableRow';
 const WatchlistTable: React.FC<WatchlistTableProps> = ({
   rows,
   onDelete,
+  onDeleteMany,
   onDoubleClick,
 }) => {
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -154,13 +168,79 @@ const WatchlistTable: React.FC<WatchlistTableProps> = ({
     });
   }, [rows, sortField, sortDir]);
 
+  // 全选/取消全选
+  const allSelected = rows.length > 0 && selectedCodes.size === rows.length;
+  const indeterminate = selectedCodes.size > 0 && selectedCodes.size < rows.length;
+
+  const handleToggleAll = useCallback(() => {
+    if (allSelected) {
+      setSelectedCodes(new Set());
+    } else {
+      setSelectedCodes(new Set(rows.map((r) => r.stock_code)));
+    }
+  }, [allSelected, rows]);
+
+  const handleToggleOne = useCallback((code: string) => {
+    setSelectedCodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) {
+        next.delete(code);
+      } else {
+        next.add(code);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleDeleteSelected = useCallback(() => {
+    if (selectedCodes.size === 0) return;
+    onDeleteMany(Array.from(selectedCodes));
+    setSelectedCodes(new Set());
+  }, [selectedCodes, onDeleteMany]);
+
   if (rows.length === 0) return null;
 
   return (
     <div className="w-full" data-testid="watchlist-table">
+      {/* 批量操作栏 */}
+      {selectedCodes.size > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2 bg-color-accent/5 border-b border-border-color">
+          <span className="text-text-secondary text-sm">
+            已选 <span className="text-color-accent font-medium">{selectedCodes.size}</span> 只
+          </span>
+          <Popconfirm
+            title="批量删除"
+            description={`确定要删除选中的 ${selectedCodes.size} 只股票？`}
+            onConfirm={handleDeleteSelected}
+            okText="删除"
+            cancelText="取消"
+            placement="bottom"
+            okButtonProps={{ danger: true, 'data-testid': 'watchlist-batch-delete-ok' }}
+            cancelButtonProps={{ 'data-testid': 'watchlist-batch-delete-cancel' }}
+          >
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              data-testid="watchlist-batch-delete-btn"
+            >
+              删除选中
+            </Button>
+          </Popconfirm>
+        </div>
+      )}
+
       <table className="w-full text-sm border-collapse">
         <thead className="sticky top-0 z-10 bg-bg-panel">
           <tr className="text-text-secondary text-xs border-b border-border-color">
+            <th className="px-3 py-2 text-center w-10">
+              <Checkbox
+                checked={allSelected}
+                indeterminate={indeterminate}
+                onChange={handleToggleAll}
+                data-testid="watchlist-select-all"
+              />
+            </th>
             <SortHeader label="代码" field="stock_code" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="text-left" />
             <SortHeader label="名称" field="stock_name" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="text-left" />
             <SortHeader label="最新价" field="close" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="text-right" />
@@ -178,6 +258,8 @@ const WatchlistTable: React.FC<WatchlistTableProps> = ({
             <TableRow
               key={`${row.stock_code}-${row.group_name}`}
               row={row}
+              checked={selectedCodes.has(row.stock_code)}
+              onToggleCheck={handleToggleOne}
               onDelete={onDelete}
               onDoubleClick={onDoubleClick}
             />

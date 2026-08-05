@@ -239,3 +239,47 @@ export function exportToCsv<T extends Record<string, any>>(
     URL.revokeObjectURL(url); // revoke 即使多次调用也无副作用
   }
 }
+
+// ==================== TXT 导出（制表符分隔，方便直接粘贴到文本文件） ====================
+export function exportToTxt<T extends Record<string, any>>(
+  items: T[],
+  options?: { headers?: string[]; fields?: string[]; filename?: string },
+): void {
+  if (!items.length) {
+    console.warn('无数据可导出');
+    return;
+  }
+
+  const { headers, fields, filename } = options || {};
+  const fieldKeys = fields || Object.keys(items[0]);
+  const headerRow = headers || fieldKeys;
+
+  const formatValue = (value: unknown): string => {
+    if (value == null) return '-';
+    let str = String(value);
+    if (str.length > 10000) str = str.slice(0, 10000) + '…';
+    // 制表符替换为空格，防止错列
+    return str.replace(/\t/g, ' ');
+  };
+
+  const rows = items.map((item) =>
+    fieldKeys.map((key) => formatValue(item[key])).join('\t'),
+  );
+  const txtContent = [headerRow.join('\t'), ...rows].join('\n');
+  const blob = new Blob([txtContent], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename || `screener-result-${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}.txt`;
+
+  try {
+    document.body.appendChild(link);
+    link.click();
+  } finally {
+    if (link.parentNode) {
+      document.body.removeChild(link);
+    }
+    URL.revokeObjectURL(url);
+  }
+}
