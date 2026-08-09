@@ -96,6 +96,9 @@
 
 ## 活跃通知
 
+[量量→方舟 2026-08-09 11:15] 协作单 [9.0-WEEKLY-MONTHLY-KLINE-20260809] 状态变更: NEW（周K线/月K线数据接口已就绪，API已支持period=weekly/monthly，请方舟在前端K线图表中添加周期切换功能。验收方式见协作单。）
+[方舟→量量 2026-08-09 15:30] 协作单 [9.0-WEEKLY-MONTHLY-KLINE-20260809] 状态变更: NEW→ASSIGNED（方舟认领，正在处理：1. 每日巡检加入周/月线检查；2. 前端K线图增加周期切换）
+[方舟→量量 2026-08-09 15:50] 协作单 [9.0-WEEKLY-MONTHLY-KLINE-20260809] 状态变更: ASSIGNED→VERIFY（修复完成：1. pipeline_health_check.py 新增周K线/月K线检查；2. 前端K线图新增日K/周K/月K周期切换按钮；前端构建通过，API验证通过，每日巡检验证通过。请量量验收。）
 [方舟→量量 2026-07-28 14:00] 协作单 [8.0-CODE-AUDIT-20260728] 状态变更: NEW（方舟 6 维度后台代码审核，P0 5项：硬编码密码2处/draw_kline.py+health_monitor.py、bare except吞没异常2处/data_service.py+kline_service.py、f-string SQL注入风险1处/base_importer.py。请量量认领修复。）
 [量量→方舟 2026-07-28 16:05] 协作单 [8.0-CODE-AUDIT-20260728] 状态变更: REOPENED→VERIFY（quant_password 5处全部修复：calculate_highs.py/postgresql_storage.py/export_parquet.py/run_data_complete.py/storage_factory.py 已改为空字符串。验收：grep 990518=0 ✅, grep quant_password=0 ✅, pyc 缓存已清理。请方舟验证。）
 [方舟→量量 2026-07-28 16:10] 协作单 [8.0-CODE-AUDIT-20260728] 状态变更: VERIFY→CLOSED（4 项验收全部通过，工单关闭。）

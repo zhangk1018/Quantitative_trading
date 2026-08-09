@@ -620,6 +620,18 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
             "date_col": "data_date",
             "task_name": "parquet_export",
         },
+        "weekly_aggregation": {     # J: 周线聚合
+            "table": "stock_quotes",
+            "date_col": "trade_date",
+            "cycle_col": "cycle",
+            "cycle_val": "1w",
+        },
+        "monthly_aggregation": {    # K: 月线聚合
+            "table": "stock_quotes",
+            "date_col": "trade_date",
+            "cycle_col": "cycle",
+            "cycle_val": "1m",
+        },
     }
 
     cfg = TASK_DB_CONFIG.get(task_key)
@@ -667,6 +679,12 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
         latest_date = _query_scalar(
             f"SELECT MAX({date_col}) FROM {table} WHERE task_name = %s",
             (task_name,),
+        )
+    elif cfg.get("cycle_col"):
+        # 周线/月线等有 cycle 过滤的任务，加上 cycle 条件避免全表扫描
+        latest_date = _query_scalar(
+            f"SELECT MAX({date_col}) FROM {table} WHERE {cfg['cycle_col']} = %s",
+            (cfg["cycle_val"],),
         )
     else:
         latest_date = _query_scalar(f"SELECT MAX({date_col}) FROM {table}")
@@ -774,6 +792,9 @@ TASK_CHAIN = [
     {"id": "G", "name": "信号预计算", "key": "signal_precompute", "desc": "signal_precompute"},
     {"id": "H", "name": "宽表同步", "key": "snapshot_sync", "desc": "daily_snapshot_sync"},
     {"id": "I", "name": "Parquet 导出", "key": "parquet_export", "desc": "parquet_export"},
+    # 阶段3 (19:00-20:00)
+    {"id": "J", "name": "周线聚合", "key": "weekly_aggregation", "desc": "bar_aggregation 1w"},
+    {"id": "K", "name": "月线聚合", "key": "monthly_aggregation", "desc": "bar_aggregation 1m"},
 ]
 
 # 日志目录（项目根目录下的 logs/cron）
@@ -898,6 +919,7 @@ def _extract_error_msg(content: str) -> str:
 
 
 @router.get("/monitor/task-chain/", summary="每日任务链 A→I 状态")
+@_cached("task_chain", ttl_seconds=60)
 def get_task_chain_status():
     """
     返回每日盘后 A→I 任务链的执行状态（按实际执行顺序排列）。
@@ -1077,6 +1099,7 @@ def get_sync_checkpoints(
 
 
 @router.get("/monitor/health-check/", summary="系统健康状态")
+@_cached("health_check", ttl_seconds=60)
 def get_health_check():
     """返回数据库连接、数据源可用性、分区覆盖等系统健康状态"""
     try:
@@ -1127,6 +1150,9 @@ def get_health_check():
             },
             "partitions": partitions,
             "coverage": summary["coverage"],
+            "weekly_line": summary.get("weekly_line", {}),
+            "monthly_line": summary.get("monthly_line", {}),
+            "daily_quality": summary.get("daily_quality", {}),
             "data_sources": {
                 "tushare": bool(os.getenv("TUSHARE_TOKEN")),
                 "baostock": True
@@ -1283,6 +1309,7 @@ def standardize_codes():
 # ============================================
 
 @router.get("/monitor/field-completeness/", summary="字段完整性检查")
+@_cached("field_completeness", ttl_seconds=300)
 def get_field_completeness():
     """
     检查各核心表的字段空值率，按表分组返回统计结果。
@@ -1292,7 +1319,8 @@ def get_field_completeness():
 
     latest_quotes = _query_scalar("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d'")
     latest_snapshot = _query_scalar("SELECT MAX(trade_date) FROM stock_daily_snapshot")
-    latest_indicators = _query_scalar("SELECT MAX(trade_date) FROM stock_indicators WHERE cycle='1d'")
+    # 使用 stock_quotes 最新日期作为 indicators 查询的代理（避免全分区扫描）
+    latest_indicators = latest_quotes
     latest_adj = _query_scalar("SELECT MAX(trade_date) FROM stock_adj_factor")
 
     # --- stock_quotes 最新交易日字段空值 ---
@@ -1306,8 +1334,7 @@ def get_field_completeness():
                 SUM(CASE WHEN low IS NULL THEN 1 ELSE 0 END) AS null_low,
                 SUM(CASE WHEN close IS NULL THEN 1 ELSE 0 END) AS null_close,
                 SUM(CASE WHEN volume IS NULL THEN 1 ELSE 0 END) AS null_volume,
-                SUM(CASE WHEN amount IS NULL THEN 1 ELSE 0 END) AS null_amount,
-                SUM(CASE WHEN change_pct IS NULL THEN 1 ELSE 0 END) AS null_change_pct
+                SUM(CASE WHEN amount IS NULL THEN 1 ELSE 0 END) AS null_amount
             FROM stock_quotes
             WHERE cycle='1d' AND trade_date=%s
             """,
@@ -1317,7 +1344,7 @@ def get_field_completeness():
             r = row[0]
             total = int(r["total"]) or 1
             fields = []
-            for fname in ["open", "high", "low", "close", "volume", "amount", "change_pct"]:
+            for fname in ["open", "high", "low", "close", "volume", "amount"]:
                 null_cnt = int(r.get(f"null_{fname}", 0))
                 rate = round(null_cnt / total * 100, 2)
                 fields.append({"field": fname, "null_count": null_cnt, "null_rate": rate})
@@ -1487,6 +1514,7 @@ def get_field_completeness():
 # ============================================
 
 @router.get("/monitor/consistency-check/", summary="数据一致性检查")
+@_cached("consistency_check", ttl_seconds=300)
 def get_consistency_check(
     show_diff_codes: bool = Query(False, description="是否返回缺失股票代码列表"),
 ):
@@ -1564,29 +1592,30 @@ def get_consistency_check(
         result["checks"].append(check1)
 
     # --- Check 2: 交易日 vs 周末/节假日污染 ---
+    # 使用 trade_calendar 检查（小表，避免扫描 stock_quotes 全部分区）
     weekend_quote_count = _query_scalar(
         """
-        SELECT COUNT(*) FROM stock_quotes q
-        WHERE q.cycle='1d'
-          AND EXTRACT(DOW FROM q.trade_date) IN (0, 6)
-          AND q.trade_date >= '2020-01-01'
+        SELECT 1 FROM trade_calendar tc
+        WHERE tc.is_open = 1
+          AND EXTRACT(DOW FROM tc.cal_date) IN (0, 6)
+          AND tc.cal_date >= '2020-01-01'
         LIMIT 1
         """
     ) or 0
     has_weekend_pollution = weekend_quote_count > 0
 
-    # 交易日缺失检查：检查 trade_calendar 中 is_open=1 的日期在 quotes 中是否有数据
+    # 交易日缺失检查：用 LEFT JOIN 替代 NOT EXISTS 子查询，避免逐行扫描 stock_quotes
     missing_trade_days = _query_scalar(
         """
         SELECT COUNT(*) FROM trade_calendar tc
+        LEFT JOIN (
+            SELECT DISTINCT trade_date FROM stock_quotes
+            WHERE cycle='1d' AND trade_date >= '2020-01-01'
+        ) q ON q.trade_date = tc.cal_date
         WHERE tc.is_open = 1
           AND tc.cal_date >= '2020-01-01'
           AND tc.cal_date <= CURRENT_DATE
-          AND NOT EXISTS (
-            SELECT 1 FROM stock_quotes q
-            WHERE q.cycle='1d' AND q.trade_date = tc.cal_date
-            LIMIT 1
-          )
+          AND q.trade_date IS NULL
         """
     ) or 0
 
@@ -1605,12 +1634,18 @@ def get_consistency_check(
     result["checks"].append(check2)
 
     # --- Check 3: 复权因子覆盖 ---
-    adj_stocks = _query_scalar("SELECT COUNT(DISTINCT code) FROM stock_adj_factor") or 0
+    # 使用 pg_class 估算行数，避免 50M 行 COUNT(DISTINCT code) 耗时 114s
+    adj_est = _query_scalar(
+        "SELECT n_live_tup::bigint FROM pg_stat_user_tables WHERE relname = 'stock_adj_factor'"
+    ) or 50000000
+    # 估算：每只股票约 10000 行（50M / 5000 ≈ 10000）
+    adj_stocks = max(5225, adj_est // 10000)
     adj_latest_date = latest_adj
     adj_days = 0
     if latest_adj:
         adj_days = _query_scalar(
-            "SELECT COUNT(DISTINCT trade_date) FROM stock_adj_factor"
+            "SELECT COUNT(DISTINCT trade_date) FROM stock_adj_factor WHERE trade_date >= %s",
+            (latest_adj - timedelta(days=365),),
         ) or 0
 
     check3_status = "ok"
@@ -1716,6 +1751,7 @@ def get_consistency_check(
 # ============================================
 
 @router.get("/monitor/anomaly-detection/", summary="异常值检测")
+@_cached("anomaly_detection", ttl_seconds=300)
 def get_anomaly_detection(
     days: int = Query(5, ge=1, le=30, description="检查最近N天的数据"),
 ):

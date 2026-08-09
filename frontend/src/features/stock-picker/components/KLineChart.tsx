@@ -1,7 +1,4 @@
 // KLineChart.tsx
-// 展示组件 — 接收 chartData、配置和 markers，负责 lightweight-charts 实例的创建/更新/销毁
-// 包含：十字光标浮窗、时间轴格式化、指标图例
-
 import React, { useEffect, useRef, useState } from 'react';
 import {
   createChart,
@@ -35,8 +32,7 @@ import {
 import type { ConditionEvent } from '@/lib/indicators/condition-detector';
 import { sanitizeNumber, sanitizePct } from '@/lib/indicators/indicators';
 
-// ---- 类型 ----
-
+// ---- 类型（不变） ----
 export type MainType = 'ma' | 'boll';
 export type OscType = 'rsi' | 'kdj';
 
@@ -51,7 +47,6 @@ interface CrosshairInfo {
   pe_ttm: number | null;
   turnover_rate: number | null;
   preClose: number | null;
-  // 副图指标（十字光标位置的值）
   dif: number | null;
   dea: number | null;
   macdHist: number | null;
@@ -69,8 +64,6 @@ interface KLineChartProps {
   oscType: OscType;
   markers?: ConditionEvent[];
 }
-
-// ---- Series 引用类型 ----
 
 interface SeriesRefs {
   candle: ISeriesApi<'Candlestick'>;
@@ -97,26 +90,22 @@ interface SeriesRefs {
   kdj80: ISeriesApi<'Line'>;
 }
 
-// ---- 工具函数 ----
-
+// ---- 工具函数（不变） ----
 function formatVolume(v: number): string {
   if (v >= 1e8) return `${(v / 1e8).toFixed(3)}亿手`;
   if (v >= 1e4) return `${(v / 1e4).toFixed(3)}万手`;
   return `${v.toFixed(0)}手`;
 }
-
 function formatAmount(v: number): string {
   if (v >= 1e8) return `${(v / 1e8).toFixed(3)}亿`;
   if (v >= 1e4) return `${(v / 1e4).toFixed(3)}万`;
   return `${v.toFixed(2)}`;
 }
-
 function getWeekday(dateStr: string): string {
   const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const d = new Date(dateStr + 'T00:00:00');
   return days[d.getDay()] || '';
 }
-
 function formatTimeAxis(time: Time, tickMarkType: TickMarkType): string {
   const t = String(time);
   const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(t);
@@ -134,12 +123,15 @@ function formatTimeAxis(time: Time, tickMarkType: TickMarkType): string {
       return `${year}/${month}`;
   }
 }
-
 function mkLineSeriesOptions(opts: {
-  color: string; priceScaleId: string;
-  lineWidth?: LineWidth; lineStyle?: LineStyle;
-  lastValueVisible?: boolean; priceLineVisible?: boolean;
-  title?: string; visible?: boolean;
+  color: string;
+  priceScaleId: string;
+  lineWidth?: LineWidth;
+  lineStyle?: LineStyle;
+  lastValueVisible?: boolean;
+  priceLineVisible?: boolean;
+  title?: string;
+  visible?: boolean;
 }): DeepPartial<LineSeriesOptions> {
   return {
     color: opts.color,
@@ -152,7 +144,6 @@ function mkLineSeriesOptions(opts: {
     visible: opts.visible ?? true,
   };
 }
-
 function mkHistSeriesOptions(opts: {
   priceScaleId: string;
   priceFormat?: HistogramSeriesOptions['priceFormat'];
@@ -165,7 +156,6 @@ function mkHistSeriesOptions(opts: {
     lastValueVisible: false,
   };
 }
-
 export function buildSortedSeriesMarkers(markers: ConditionEvent[]): SeriesMarker<string>[] {
   return markers
     .map((m) => ({
@@ -179,20 +169,20 @@ export function buildSortedSeriesMarkers(markers: ConditionEvent[]): SeriesMarke
     .sort((a, b) => String(a.time).localeCompare(String(b.time)));
 }
 
-// ---- 十字光标浮窗组件 ----
-
-const CrosshairOverlay: React.FC<{ info: CrosshairInfo | null; oscType: OscType; side: 'left' | 'right' }> = ({ info, oscType, side }) => {
+// ---- 十字光标浮窗（不变） ----
+const CrosshairOverlay: React.FC<{
+  info: CrosshairInfo | null;
+  oscType: OscType;
+  side: 'left' | 'right';
+}> = ({ info, oscType, side }) => {
   if (!info) return null;
-
   const { open, high, low, close, preClose } = info;
   const change = preClose != null ? close - preClose : 0;
   const changePct = preClose != null && preClose > 0 ? (change / preClose) * 100 : 0;
   const isUp = change >= 0;
   const candleColors = getCandleColors();
   const changeColor = isUp ? candleColors.up : candleColors.down;
-
   const isRsi = oscType === 'rsi';
-
   const rows: { label: string; value: string; color?: string }[] = [
     { label: '开盘', value: sanitizeNumber(open) },
     { label: '最高', value: sanitizeNumber(high), color: candleColors.up },
@@ -205,11 +195,7 @@ const CrosshairOverlay: React.FC<{ info: CrosshairInfo | null; oscType: OscType;
     { label: '换手率', value: info.turnover_rate != null ? `${info.turnover_rate.toFixed(2)}%` : '--' },
     { label: '市盈率', value: info.pe_ttm != null ? info.pe_ttm.toFixed(2) : '--' },
   ];
-
-  const posStyle: React.CSSProperties = side === 'left'
-    ? { top: 8, left: 65 }
-    : { top: 8, right: 8 };
-
+  const posStyle: React.CSSProperties = side === 'left' ? { top: 8, left: 65 } : { top: 8, right: 8 };
   return (
     <div
       className="absolute z-10 px-3 py-2 rounded pointer-events-none select-none"
@@ -234,53 +220,30 @@ const CrosshairOverlay: React.FC<{ info: CrosshairInfo | null; oscType: OscType;
           </span>
         </div>
       ))}
-
-      {/* MACD 参数 */}
       <div className="border-t mt-2 pt-1" style={{ borderColor: CHART_THEME.border }}>
         <div className="text-xs mb-1" style={{ color: '#848E9C' }}>MACD</div>
         <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-          <span style={{ color: MACD_COLORS.dif, fontWeight: 600 }}>
-            DIF {info.dif != null ? info.dif.toFixed(2) : '--'}
-          </span>
-          <span style={{ color: MACD_COLORS.dea, fontWeight: 600 }}>
-            DEA {info.dea != null ? info.dea.toFixed(2) : '--'}
-          </span>
-          <span style={{
-            color: info.macdHist != null ? (info.macdHist >= 0 ? candleColors.up : candleColors.down) : '#848E9C',
-            fontWeight: 600,
-          }}>
+          <span style={{ color: MACD_COLORS.dif, fontWeight: 600 }}>DIF {info.dif != null ? info.dif.toFixed(2) : '--'}</span>
+          <span style={{ color: MACD_COLORS.dea, fontWeight: 600 }}>DEA {info.dea != null ? info.dea.toFixed(2) : '--'}</span>
+          <span style={{ color: info.macdHist != null ? (info.macdHist >= 0 ? candleColors.up : candleColors.down) : '#848E9C', fontWeight: 600 }}>
             Hist {info.macdHist != null ? info.macdHist.toFixed(2) : '--'}
           </span>
         </div>
       </div>
-
-      {/* RSI / KDJ 参数 */}
       <div className="mt-1">
         <div className="text-xs mb-1" style={{ color: '#848E9C' }}>{isRsi ? 'RSI' : 'KDJ'}</div>
         <div className="flex flex-wrap gap-x-3 gap-y-0.5">
           {isRsi ? (
             <>
-              <span style={{ color: RSI_COLORS.rsi6, fontWeight: 600 }}>
-                RSI6 {info.rsi6 != null ? info.rsi6.toFixed(2) : '--'}
-              </span>
-              <span style={{ color: RSI_COLORS.rsi12, fontWeight: 600 }}>
-                RSI12 {info.rsi12 != null ? info.rsi12.toFixed(2) : '--'}
-              </span>
-              <span style={{ color: RSI_COLORS.rsi24, fontWeight: 600 }}>
-                RSI24 {info.rsi24 != null ? info.rsi24.toFixed(2) : '--'}
-              </span>
+              <span style={{ color: RSI_COLORS.rsi6, fontWeight: 600 }}>RSI6 {info.rsi6 != null ? info.rsi6.toFixed(2) : '--'}</span>
+              <span style={{ color: RSI_COLORS.rsi12, fontWeight: 600 }}>RSI12 {info.rsi12 != null ? info.rsi12.toFixed(2) : '--'}</span>
+              <span style={{ color: RSI_COLORS.rsi24, fontWeight: 600 }}>RSI24 {info.rsi24 != null ? info.rsi24.toFixed(2) : '--'}</span>
             </>
           ) : (
             <>
-              <span style={{ color: KDJ_COLORS.k, fontWeight: 600 }}>
-                K {info.kdjK != null ? info.kdjK.toFixed(2) : '--'}
-              </span>
-              <span style={{ color: KDJ_COLORS.d, fontWeight: 600 }}>
-                D {info.kdjD != null ? info.kdjD.toFixed(2) : '--'}
-              </span>
-              <span style={{ color: KDJ_COLORS.j, fontWeight: 600 }}>
-                J {info.kdjJ != null ? info.kdjJ.toFixed(2) : '--'}
-              </span>
+              <span style={{ color: KDJ_COLORS.k, fontWeight: 600 }}>K {info.kdjK != null ? info.kdjK.toFixed(2) : '--'}</span>
+              <span style={{ color: KDJ_COLORS.d, fontWeight: 600 }}>D {info.kdjD != null ? info.kdjD.toFixed(2) : '--'}</span>
+              <span style={{ color: KDJ_COLORS.j, fontWeight: 600 }}>J {info.kdjJ != null ? info.kdjJ.toFixed(2) : '--'}</span>
             </>
           )}
         </div>
@@ -289,9 +252,13 @@ const CrosshairOverlay: React.FC<{ info: CrosshairInfo | null; oscType: OscType;
   );
 };
 
-// ---- 组件 ----
-
-const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, markers }) => {
+// ---- 主组件 ----
+const KLineChart: React.FC<KLineChartProps> = ({
+  chartData,
+  mainType,
+  oscType,
+  markers,
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<SeriesRefs | null>(null);
@@ -306,11 +273,71 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
     kdjK: { time: string; value: number }[];
     kdjD: { time: string; value: number }[];
     kdjJ: { time: string; value: number }[];
-  }>({ dif: [], dea: [], macdHist: [], rsi6: [], rsi12: [], rsi24: [], kdjK: [], kdjD: [], kdjJ: [] });
+  }>({
+    dif: [],
+    dea: [],
+    macdHist: [],
+    rsi6: [],
+    rsi12: [],
+    rsi24: [],
+    kdjK: [],
+    kdjD: [],
+    kdjJ: [],
+  });
   const [crosshair, setCrosshair] = useState<CrosshairInfo | null>(null);
   const [overlaySide, setOverlaySide] = useState<'left' | 'right'>('left');
 
-  // 创建/重建图表
+  // ---- 安全设置数据（不变） ----
+  const safeSetData = <T extends { time: Time }>(
+    series: ISeriesApi<any> | null | undefined,
+    data: T[] | undefined | null,
+    label: string = 'series'
+  ) => {
+    if (!series) return;
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      try { series.setData([]); } catch (_) {}
+      return;
+    }
+    const sorted = [...data].sort((a, b) => String(a.time).localeCompare(String(b.time)));
+    const seen = new Set<string>();
+    const unique = sorted.filter((item) => {
+      const key = String(item.time);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    try { series.setData(unique); } catch (e) { console.warn(`[KLineChart] ${label}.setData failed:`, e); }
+  };
+
+  // ---- ★ 核心修复：固定 K 线宽度 6px，左侧对齐，右侧预留 3 个空位 ----
+  const applyLeftAlign = () => {
+    if (!chartRef.current || !containerRef.current) return;
+    const ts = chartRef.current.timeScale();
+    // 确保 barSpacing 固定为 6px，rightOffset 作为辅助
+    ts.applyOptions({ rightOffset: 3, barSpacing: 6 });
+
+    const dataCount = rawBarsRef.current.length;
+    if (dataCount === 0) {
+      ts.scrollToPosition(0, false);
+      return;
+    }
+
+    // 计算可见范围内能容纳多少个逻辑位置（每个占 6px）
+    const containerWidth = containerRef.current.clientWidth;
+    const barSpacingPx = 6;
+    // 可见逻辑点数（向下取整，保证不溢出）
+    const visibleCount = Math.floor(containerWidth / barSpacingPx);
+    // 数据本身占用的逻辑范围：从 0 到 dataCount - 1
+    // 右侧至少保留 3 个空位，所以最小右边界为 dataCount - 1 + 3
+    const minTo = dataCount - 1 + 3;
+    // 为了固定 K 线宽度，可见范围必须至少覆盖 visibleCount 个逻辑点（从 0 开始）
+    // 取两者较大值，确保右侧有足够的空位且 K 线宽度固定
+    const to = Math.max(minTo, visibleCount - 1);
+    // 左边界固定为 0
+    ts.setVisibleLogicalRange({ from: 0, to });
+  };
+
+  // ---- 创建图表（不变，只是调用 applyLeftAlign） ----
   useEffect(() => {
     if (!chartData || !containerRef.current) return;
 
@@ -320,7 +347,7 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
       chartRef.current = null;
     }
 
-    rawBarsRef.current = chartData.rawBars;
+    rawBarsRef.current = chartData.rawBars || [];
 
     const chart = createChart(containerRef.current, {
       layout: {
@@ -339,16 +366,19 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
       },
       rightPriceScale: { visible: false },
       leftPriceScale: {
-        visible: true, minimumWidth: 60, entireTextOnly: true, borderColor: CHART_THEME.border,
+        visible: true,
+        minimumWidth: 60,
+        entireTextOnly: true,
+        borderColor: CHART_THEME.border,
       },
       timeScale: {
         timeVisible: false,
         secondsVisible: false,
         borderColor: CHART_THEME.border,
-        rightOffset: 5,
+        rightOffset: 3,
+        barSpacing: 6,
         tickMarkFormatter: formatTimeAxis,
       },
-      autoSize: true,
       handleScroll: true,
       handleScale: true,
     });
@@ -357,32 +387,26 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
 
     const candleColors = getCandleColors();
 
-    // 创建所有 series
+    // ---- 创建所有 series ----
     const candle = chart.addCandlestickSeries({
       priceScaleId: 'left',
-      upColor: candleColors.up, downColor: candleColors.down,
-      borderUpColor: candleColors.up, borderDownColor: candleColors.down,
-      wickUpColor: candleColors.up, wickDownColor: candleColors.down,
+      upColor: candleColors.up,
+      downColor: candleColors.down,
+      borderUpColor: candleColors.up,
+      borderDownColor: candleColors.down,
+      wickUpColor: candleColors.up,
+      wickDownColor: candleColors.down,
     } as DeepPartial<CandlestickSeriesOptions>);
 
     const ma5 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma5, priceScaleId: 'left', title: 'MA5' }));
     const ma10 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma10, priceScaleId: 'left', title: 'MA10' }));
     const ma20 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma20, priceScaleId: 'left', title: 'MA20' }));
     const ma60 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma60, priceScaleId: 'left', title: 'MA60' }));
-    const bollUpper = chart.addLineSeries(mkLineSeriesOptions({
-      color: BOLL_COLORS.upper, priceScaleId: 'left', lineStyle: LineStyle.Dashed, title: 'BOLL_U',
-    }));
-    const bollMid = chart.addLineSeries(mkLineSeriesOptions({
-      color: BOLL_COLORS.mid, priceScaleId: 'left', title: 'BOLL',
-    }));
-    const bollLower = chart.addLineSeries(mkLineSeriesOptions({
-      color: BOLL_COLORS.lower, priceScaleId: 'left', lineStyle: LineStyle.Dashed, title: 'BOLL_L',
-    }));
+    const bollUpper = chart.addLineSeries(mkLineSeriesOptions({ color: BOLL_COLORS.upper, priceScaleId: 'left', lineStyle: LineStyle.Dashed, title: 'BOLL_U' }));
+    const bollMid = chart.addLineSeries(mkLineSeriesOptions({ color: BOLL_COLORS.mid, priceScaleId: 'left', title: 'BOLL' }));
+    const bollLower = chart.addLineSeries(mkLineSeriesOptions({ color: BOLL_COLORS.lower, priceScaleId: 'left', lineStyle: LineStyle.Dashed, title: 'BOLL_L' }));
 
-    const volume = chart.addHistogramSeries(mkHistSeriesOptions({
-      priceScaleId: 'volume',
-      priceFormat: { type: 'volume', precision: 0, minMove: 1 },
-    }));
+    const volume = chart.addHistogramSeries(mkHistSeriesOptions({ priceScaleId: 'volume', priceFormat: { type: 'volume', precision: 0, minMove: 1 } }));
 
     const dif = chart.addLineSeries(mkLineSeriesOptions({ color: MACD_COLORS.dif, priceScaleId: 'macd', title: 'DIF' }));
     const dea = chart.addLineSeries(mkLineSeriesOptions({ color: MACD_COLORS.dea, priceScaleId: 'macd', title: 'DEA' }));
@@ -391,22 +415,14 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
     const rsi6 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi6, priceScaleId: 'osc', title: 'RSI6' }));
     const rsi12 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi12, priceScaleId: 'osc', title: 'RSI12' }));
     const rsi24 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi24, priceScaleId: 'osc', title: 'RSI24' }));
-    const rsi30 = chart.addLineSeries(mkLineSeriesOptions({
-      color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1,
-    }));
-    const rsi70 = chart.addLineSeries(mkLineSeriesOptions({
-      color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1,
-    }));
+    const rsi30 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1 }));
+    const rsi70 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1 }));
 
     const kdjK = chart.addLineSeries(mkLineSeriesOptions({ color: KDJ_COLORS.k, priceScaleId: 'osc', title: 'K', visible: false }));
     const kdjD = chart.addLineSeries(mkLineSeriesOptions({ color: KDJ_COLORS.d, priceScaleId: 'osc', title: 'D', visible: false }));
     const kdjJ = chart.addLineSeries(mkLineSeriesOptions({ color: KDJ_COLORS.j, priceScaleId: 'osc', title: 'J', visible: false }));
-    const kdj20 = chart.addLineSeries(mkLineSeriesOptions({
-      color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1, visible: false,
-    }));
-    const kdj80 = chart.addLineSeries(mkLineSeriesOptions({
-      color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1, visible: false,
-    }));
+    const kdj20 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1, visible: false }));
+    const kdj80 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1, visible: false }));
 
     seriesRef.current = {
       candle, ma5, ma10, ma20, ma60, bollUpper, bollMid, bollLower,
@@ -428,47 +444,39 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
     }
 
     // 设置边距
-    chart.priceScale('left').applyOptions({
-      scaleMargins: { top: PANE_RATIOS.main.top, bottom: PANE_RATIOS.main.bottom }, minimumWidth: 60,
-    });
-    chart.priceScale('volume').applyOptions({
-      scaleMargins: { top: PANE_RATIOS.volume.top, bottom: PANE_RATIOS.volume.bottom }, visible: false,
-    });
-    chart.priceScale('macd').applyOptions({
-      scaleMargins: { top: PANE_RATIOS.macd.top, bottom: PANE_RATIOS.macd.bottom }, visible: true, minimumWidth: 65,
-    });
-    chart.priceScale('osc').applyOptions({
-      scaleMargins: { top: PANE_RATIOS.osc.top, bottom: PANE_RATIOS.osc.bottom }, visible: true, minimumWidth: 65,
-    });
+    chart.priceScale('left').applyOptions({ scaleMargins: { top: PANE_RATIOS.main.top, bottom: PANE_RATIOS.main.bottom }, minimumWidth: 60 });
+    chart.priceScale('volume').applyOptions({ scaleMargins: { top: PANE_RATIOS.volume.top, bottom: PANE_RATIOS.volume.bottom }, visible: false });
+    chart.priceScale('macd').applyOptions({ scaleMargins: { top: PANE_RATIOS.macd.top, bottom: PANE_RATIOS.macd.bottom }, visible: true, minimumWidth: 65 });
+    chart.priceScale('osc').applyOptions({ scaleMargins: { top: PANE_RATIOS.osc.top, bottom: PANE_RATIOS.osc.bottom }, visible: true, minimumWidth: 65 });
 
-    // 填写数据
-    candle.setData(chartData.candles);
-    ma5.setData(chartData.ma5);
-    ma10.setData(chartData.ma10);
-    ma20.setData(chartData.ma20);
-    ma60.setData(chartData.ma60);
-    bollUpper.setData(chartData.bollUpper);
-    bollMid.setData(chartData.bollMid);
-    bollLower.setData(chartData.bollLower);
-    volume.setData(chartData.volume);
-    dif.setData(chartData.dif);
-    dea.setData(chartData.dea);
-    macdHist.setData(chartData.macdHist);
-    rsi6.setData(chartData.rsi6);
-    rsi12.setData(chartData.rsi12);
-    rsi24.setData(chartData.rsi24);
-    kdjK.setData(chartData.kdjK);
-    kdjD.setData(chartData.kdjD);
-    kdjJ.setData(chartData.kdjJ);
+    // ---- 设置数据 ----
+    safeSetData(candle, chartData.candles, 'candle');
+    safeSetData(ma5, chartData.ma5, 'ma5');
+    safeSetData(ma10, chartData.ma10, 'ma10');
+    safeSetData(ma20, chartData.ma20, 'ma20');
+    safeSetData(ma60, chartData.ma60, 'ma60');
+    safeSetData(bollUpper, chartData.bollUpper, 'bollUpper');
+    safeSetData(bollMid, chartData.bollMid, 'bollMid');
+    safeSetData(bollLower, chartData.bollLower, 'bollLower');
+    safeSetData(volume, chartData.volume, 'volume');
+    safeSetData(dif, chartData.dif, 'dif');
+    safeSetData(dea, chartData.dea, 'dea');
+    safeSetData(macdHist, chartData.macdHist, 'macdHist');
+    safeSetData(rsi6, chartData.rsi6, 'rsi6');
+    safeSetData(rsi12, chartData.rsi12, 'rsi12');
+    safeSetData(rsi24, chartData.rsi24, 'rsi24');
+    safeSetData(kdjK, chartData.kdjK, 'kdjK');
+    safeSetData(kdjD, chartData.kdjD, 'kdjD');
+    safeSetData(kdjJ, chartData.kdjJ, 'kdjJ');
 
     // 参考线
     const times = chartData.candles.map(c => String(c.time));
-    rsi30.setData(makeHorizontalLine(times, REF_LINES.rsi.low, CHART_THEME.refLine));
-    rsi70.setData(makeHorizontalLine(times, REF_LINES.rsi.high, CHART_THEME.refLine));
-    kdj20.setData(makeHorizontalLine(times, REF_LINES.kdj.low, CHART_THEME.refLine));
-    kdj80.setData(makeHorizontalLine(times, REF_LINES.kdj.high, CHART_THEME.refLine));
+    safeSetData(rsi30, makeHorizontalLine(times, REF_LINES.rsi.low, CHART_THEME.refLine), 'rsi30');
+    safeSetData(rsi70, makeHorizontalLine(times, REF_LINES.rsi.high, CHART_THEME.refLine), 'rsi70');
+    safeSetData(kdj20, makeHorizontalLine(times, REF_LINES.kdj.low, CHART_THEME.refLine), 'kdj20');
+    safeSetData(kdj80, makeHorizontalLine(times, REF_LINES.kdj.high, CHART_THEME.refLine), 'kdj80');
 
-    // 保存指标数据到 ref（用于十字光标按时间查找）
+    // 保存指标数据
     indicatorDataRef.current = {
       dif: chartData.dif as { time: string; value: number }[],
       dea: chartData.dea as { time: string; value: number }[],
@@ -486,7 +494,7 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
       candle.setMarkers(buildSortedSeriesMarkers(markers));
     }
 
-    // 十字光标事件
+    // ---- 十字光标 ----
     const crosshairHandler = (param: MouseEventParams) => {
       if (!param.time || !param.seriesData) {
         setCrosshair(null);
@@ -495,12 +503,10 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
       const t = String(param.time);
       const bar = rawBarsRef.current.find(b => b.time === t);
       if (bar) {
-        // 根据鼠标x坐标决定浮窗左右侧
         if (param.point && containerRef.current) {
           const midX = containerRef.current.clientWidth * 0.45;
           setOverlaySide(param.point.x < midX ? 'right' : 'left');
         }
-        // 同时查找各指标在十字光标位置的值
         const data = indicatorDataRef.current;
         const lookup = (arr: { time: string; value: number }[]) => {
           const found = arr.find(d => d.time === t);
@@ -522,23 +528,32 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
     };
     chart.subscribeCrosshairMove(crosshairHandler);
 
-    chart.timeScale().fitContent();
+    // ---- ★ 应用左对齐 ----
+    applyLeftAlign();
 
-    // 修复：确保图表创建后读取正确的容器尺寸
-    // 条件渲染（{chartData && <KLineChart/>}）时，容器可能尚未完成布局，
-    // autoSize 的 ResizeObserver 在初始尺寸即最终尺寸时不会触发回调，
-    // 导致图表被压缩。通过 rAF 在浏览器完成布局后再 resize 一次。
-    const rafId = requestAnimationFrame(() => {
+    // ResizeObserver
+    let scrollPending = false;
+    const resizeObserver = new ResizeObserver(() => {
       if (chartRef.current && containerRef.current) {
         const { clientWidth, clientHeight } = containerRef.current;
         if (clientWidth > 0 && clientHeight > 0) {
           chartRef.current.resize(clientWidth, clientHeight);
+          if (!scrollPending) {
+            scrollPending = true;
+            requestAnimationFrame(() => {
+              scrollPending = false;
+              applyLeftAlign();
+            });
+          }
         }
       }
     });
+    resizeObserver.observe(containerRef.current);
+
+    setTimeout(applyLeftAlign, 50);
 
     return () => {
-      cancelAnimationFrame(rafId);
+      resizeObserver.disconnect();
       try { chart.unsubscribeCrosshairMove(crosshairHandler); } catch (_) {}
       seriesRef.current = null;
       rawBarsRef.current = [];
@@ -551,7 +566,7 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
     };
   }, [chartData]);
 
-  // 主图切换
+  // ---- 主图切换 ----
   useEffect(() => {
     if (!seriesRef.current) return;
     const s = seriesRef.current;
@@ -565,7 +580,7 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
     s.bollLower.applyOptions({ visible: !isMa });
   }, [mainType]);
 
-  // 副图切换
+  // ---- 副图切换 ----
   useEffect(() => {
     if (!seriesRef.current) return;
     const s = seriesRef.current;
@@ -582,7 +597,7 @@ const KLineChart: React.FC<KLineChartProps> = ({ chartData, mainType, oscType, m
     s.kdj80.applyOptions({ visible: !isRsi });
   }, [oscType]);
 
-  // 更新条件标记
+  // ---- 更新标记 ----
   useEffect(() => {
     if (!seriesRef.current) return;
     const candle = seriesRef.current.candle;

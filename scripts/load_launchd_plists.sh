@@ -25,7 +25,14 @@ echo "=== 加载阶段3（18:15 复权因子→补全→基本面→指标→形
 launchctl load -w "$PLIST_DIR/com.quant.daily_job_runner.stage3.plist" && echo "✅ stage3 loaded"
 
 echo ""
+echo "=== 加载周线聚合（19:00 交易日执行，脚本自动判断周最后交易日）==="
+launchctl load -w "$PLIST_DIR/com.quant.bar_aggregation.weekly.plist" && echo "✅ weekly loaded"
+
+echo "=== 加载月线聚合（20:00 交易日执行，脚本自动判断月最后交易日）==="
+launchctl load -w "$PLIST_DIR/com.quant.bar_aggregation.monthly.plist" && echo "✅ monthly loaded"
+
+echo ""
 echo "=== 验证 ==="
-launchctl list | grep com.quant.daily
+launchctl list | grep com.quant
 echo ""
 echo "✅ 全部加载完成"

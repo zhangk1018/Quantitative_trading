@@ -285,6 +285,12 @@ function renderHealth(health) {
   const missingYears = expectedYears.filter(y => !partitionYears.includes(y));
   const allOk = missingYears.length === 0;
 
+  // 周线/月线状态
+  const weekly = health?.weekly_line || {};
+  const monthly = health?.monthly_line || {};
+  const weeklyStatus = weekly.status === 'fresh' ? '✅' : weekly.status === 'stale' ? '⚠️' : '○';
+  const monthlyStatus = monthly.status === 'fresh' ? '✅' : monthly.status === 'stale' ? '⚠️' : '○';
+
   $('health').innerHTML = `
     <div class="stat-row" style="grid-template-columns:repeat(4,1fr);gap:12px;">
       <div class="stat-card ${dbOk ? 'green' : 'red'}"><div class="value">${dbOk ? '✅' : '❌'}</div><div class="label">数据库</div></div>
@@ -298,6 +304,10 @@ function renderHealth(health) {
       ${!allOk ? `<span style="color:var(--red);">缺失分区: ${missingYears.join(', ')}</span>` : ''}
       &nbsp;|&nbsp; 共 ${stockQuotesParts.length} 个分区
     </div>` : '<div style="font-size:12px;color:var(--red);margin-top:8px;">❌ 未找到任何分区</div>'}
+    <div style="display:flex;gap:16px;margin-top:12px;padding-top:10px;border-top:1px solid var(--border);font-size:12px;">
+      <span>周线: ${weeklyStatus} ${weekly.latest_week_end || '--'} (${weekly.weeks_available || 0}周)</span>
+      <span>月线: ${monthlyStatus} ${monthly.latest_month_end || '--'} (${monthly.months_available || 0}月)</span>
+    </div>
   `;
 }
 
@@ -314,7 +324,9 @@ async function renderDataQualityDeep() {
     '/api/monitor/consistency-check/',
     '/api/monitor/anomaly-detection/',
   ];
-  const results = await Promise.allSettled(endpoints.map(e => fetchAPI(e)))
+  // 120s 超时（首次调用较慢，后续缓存命中则很快）
+  const timeout = (ms) => new Promise(r => setTimeout(() => r(null), ms));
+  const results = await Promise.allSettled(endpoints.map(e => Promise.race([fetchAPI(e), timeout(120000)])))
     .then(r => r.map(x => x.status === 'fulfilled' ? x.value : null));
   const [fc, cc, ad] = results;
 

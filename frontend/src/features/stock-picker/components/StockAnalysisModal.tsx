@@ -40,6 +40,7 @@ interface StockAnalysisModalProps {
 }
 
 type ChartStatus = 'idle' | 'loading' | 'ready' | 'error';
+type PeriodType = 'daily' | 'weekly' | 'monthly';
 
 const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, onClose, conditions }) => {
   const [status, setStatus] = useState<ChartStatus>('idle');
@@ -47,6 +48,7 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
   const [chartData, setChartData] = useState<ChartDataResult | null>(null);
   const [mainType, setMainType] = useState<MainType>('ma');
   const [oscType, setOscType] = useState<OscType>('rsi');
+  const [period, setPeriod] = useState<PeriodType>('daily');
   const [retryCount, setRetryCount] = useState(0);
   const [markers, setMarkers] = useState<ConditionEvent[]>([]);
   const [undetectable, setUndetectable] = useState<{ fieldKey: string; label: string; reason: string }[]>([]);
@@ -77,12 +79,18 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
 
     const load = async () => {
       try {
-        // 默认显示最近 1 年数据（约 250 个交易日）
-        const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)
-          .toISOString().split('T')[0];
+        // 根据周期调整请求范围，确保获取约 250 根K线
+        const now = Date.now();
+        const getStartDate = (p: PeriodType): string => {
+          switch (p) {
+            case 'daily':   return new Date(now - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];   // 1年 ≈ 250交易日
+            case 'weekly':  return new Date(now - 5 * 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];  // 5年 ≈ 260周
+            case 'monthly': return new Date(now - 21 * 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]; // 21年 ≈ 252月
+          }
+        };
         const klineResult = await fetchKLineData(
           stock.stock_code,
-          { start_date: oneYearAgo, limit: 500, adj: 'forward' },
+          { period, start_date: getStartDate(period), limit: 1000, adj: 'forward' },
           abortController.signal,
         );
 
@@ -230,7 +238,7 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
     load();
 
     return () => { abortController.abort(); };
-  }, [open, stock?.stock_code, retryCount]);
+  }, [open, stock?.stock_code, period, retryCount]);
 
   const handleRetry = useCallback(() => {
     setRetryCount(c => c + 1);
@@ -318,6 +326,17 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
             )}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
+            <Segmented
+              value={period}
+              onChange={(v) => setPeriod(v as PeriodType)}
+              options={[
+                { label: '日K', value: 'daily' },
+                { label: '周K', value: 'weekly' },
+                { label: '月K', value: 'monthly' },
+              ]}
+              size="small"
+              style={{ background: CHART_THEME.border }}
+            />
             <Segmented
               value={mainType}
               onChange={(v) => setMainType(v as MainType)}

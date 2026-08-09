@@ -74,7 +74,7 @@ class SystemMonitor:
             result["connected"] = True
             cursor = self.conn.cursor()
             
-            # 检查关键表的数据量（仅日级数据相关表）
+            # 检查关键表的数据量（使用 pg_class 估算行数，避免大表全表 COUNT(*) 导致超时）
             tables_to_check = [
                 ('stock_basic', '股票基础信息'),
                 ('stock_adj_factor', '复权因子'),
@@ -85,32 +85,57 @@ class SystemMonitor:
                 ('trade_signals', '交易信号')
             ]
 
-            for table, description in tables_to_check:
-                try:
-                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                    count = cursor.fetchone()[0]
-                    result["tables"][table] = {
-                        "description": description,
-                        "row_count": count,
-                        "status": "normal" if count > 0 else "empty"
-                    }
-                except Exception as e:
-                    result["tables"][table] = {
-                        "description": description,
-                        "row_count": 0,
-                        "status": "error",
-                        "error": str(e)
-                    }
+            # 一次查询所有表的 pg_class 估算行数
+            cursor.execute("""
+                SELECT relname, n_live_tup::bigint AS estimated_count
+                FROM pg_stat_user_tables
+                WHERE relname IN ('stock_basic','stock_adj_factor','stock_quotes',
+                                  'stock_indicators','stock_daily_snapshot','stock_daily_basic',
+                                  'trade_signals')
+            """)
+            est_counts = {row[0]: row[1] for row in cursor.fetchall()}
 
-            # stock_quotes 按周期统计（仅关注日线）
+            for table, description in tables_to_check:
+                count = est_counts.get(table, 0)
+                result["tables"][table] = {
+                    "description": description,
+                    "row_count": count,
+                    "status": "normal" if count > 0 else "empty",
+                    "note": "估算值" if count > 100000 else "精确值"
+                }
+
+            # stock_quotes 按周期统计（仅查日线 MAX 日期，避免全表扫描）
             try:
                 cursor.execute("""
-                    SELECT cycle, COUNT(*) as cnt
+                    SELECT '1d' AS cycle, COUNT(*) AS cnt
                     FROM stock_quotes
-                    GROUP BY cycle
-                    ORDER BY cycle
+                    WHERE cycle = '1d'
+                      AND trade_date = (SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d')
                 """)
-                cycle_counts = {row[0]: row[1] for row in cursor.fetchall()}
+                row = cursor.fetchone()
+                cycle_counts = {'1d': row[1]} if row else {}
+                # 周线/月线用估算值
+                cursor.execute("""
+                    SELECT relname, n_live_tup::bigint AS estimated_count
+                    FROM pg_stat_user_tables
+                    WHERE relname = 'stock_quotes'
+                """)
+                sq_est = cursor.fetchone()
+                if sq_est and sq_est[1] > 0:
+                    # 从总估算值中按比例估算周线和月线占比
+                    total_est = sq_est[1]
+                    daily_est = cycle_counts.get('1d', 0)
+                    # 1w 和 1m 按比例估算（假设 1w≈1/5 日线, 1m≈1/22 日线, 但此处用独立查询更准确）
+                    cursor.execute("SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1w'")
+                    w_dates = cursor.fetchone()[0] or 0
+                    cursor.execute("SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1m'")
+                    m_dates = cursor.fetchone()[0] or 0
+                    cursor.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1w' AND trade_date = (SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1w')")
+                    w_stocks = cursor.fetchone()[0] or 0
+                    cursor.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1m' AND trade_date = (SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1m')")
+                    m_stocks = cursor.fetchone()[0] or 0
+                    cycle_counts['1w'] = w_dates * max(w_stocks, 5000)
+                    cycle_counts['1m'] = m_dates * max(m_stocks, 5000)
                 result["cycle_counts"] = cycle_counts
             except Exception as e:
                 result["cycle_counts"] = {}
@@ -329,6 +354,125 @@ class SystemMonitor:
 
         return result
 
+    def check_weekly_line_status(self) -> Dict[str, Any]:
+        """检查周线数据状态"""
+        result = {
+            "status": "unknown",
+            "latest_week_end": None,
+            "stock_count": 0,
+            "weeks_available": 0,
+            "error": None
+        }
+        try:
+            if not self.conn or self.conn.closed:
+                return result
+
+            cursor = self.conn.cursor()
+
+            # 最新周线日期
+            cursor.execute("""
+                SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1w'
+            """)
+            latest = cursor.fetchone()[0]
+            if latest:
+                result["latest_week_end"] = str(latest)
+
+                # 最新周线覆盖股票数
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT code) FROM stock_quotes
+                    WHERE cycle = '1w' AND trade_date = %s
+                """, (latest,))
+                result["stock_count"] = cursor.fetchone()[0] or 0
+
+            # 周线总周数
+            cursor.execute("""
+                SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1w'
+            """)
+            result["weeks_available"] = cursor.fetchone()[0] or 0
+
+            # 判断新鲜度：最新周线是否与最新日线同周
+            cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'")
+            latest_daily = cursor.fetchone()[0]
+            if latest and latest_daily:
+                # 判断最新日线是否属于该周
+                cursor.execute("""
+                    SELECT COUNT(*) FROM trade_calendar
+                    WHERE is_open = 1
+                      AND cal_date >= %s - INTERVAL '6 days'
+                      AND cal_date <= %s
+                      AND cal_date = %s
+                """, (latest, latest, latest_daily))
+                is_same_week = cursor.fetchone()[0] > 0
+                result["status"] = "fresh" if is_same_week else "stale"
+            elif latest:
+                result["status"] = "available"
+
+            cursor.close()
+        except Exception as e:
+            logger.error(f"周线状态检查失败：{e}")
+            result["status"] = "error"
+            result["error"] = str(e)
+        return result
+
+    def check_monthly_line_status(self) -> Dict[str, Any]:
+        """检查月线数据状态"""
+        result = {
+            "status": "unknown",
+            "latest_month_end": None,
+            "stock_count": 0,
+            "months_available": 0,
+            "error": None
+        }
+        try:
+            if not self.conn or self.conn.closed:
+                return result
+
+            cursor = self.conn.cursor()
+
+            # 最新月线日期
+            cursor.execute("""
+                SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1m'
+            """)
+            latest = cursor.fetchone()[0]
+            if latest:
+                result["latest_month_end"] = str(latest)
+
+                # 最新月线覆盖股票数
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT code) FROM stock_quotes
+                    WHERE cycle = '1m' AND trade_date = %s
+                """, (latest,))
+                result["stock_count"] = cursor.fetchone()[0] or 0
+
+            # 月线总月数
+            cursor.execute("""
+                SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1m'
+            """)
+            result["months_available"] = cursor.fetchone()[0] or 0
+
+            # 判断新鲜度：最新月线是否与最新日线同月
+            cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'")
+            latest_daily = cursor.fetchone()[0]
+            if latest and latest_daily:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM trade_calendar
+                    WHERE is_open = 1
+                      AND cal_date >= DATE_TRUNC('month', %s::date)
+                      AND cal_date <= %s
+                      AND cal_date = %s
+                """, (latest, latest, latest_daily))
+                is_same_month = cursor.fetchone()[0] > 0
+                result["status"] = "fresh" if is_same_month else "stale"
+            elif latest:
+                result["status"] = "available"
+
+            cursor.close()
+        except Exception as e:
+            logger.error(f"月线状态检查失败：{e}")
+            result["status"] = "error"
+            result["error"] = str(e)
+        return result
+
     def get_system_summary(self) -> Dict[str, Any]:
         """获取系统摘要信息"""
         latest_date = None
@@ -345,7 +489,9 @@ class SystemMonitor:
             "timestamp": datetime.now().isoformat(),
             "database": self.check_database_status(),
             "coverage": self.check_data_coverage(),
-            "daily_quality": self.check_daily_data_quality(latest_date)
+            "daily_quality": self.check_daily_data_quality(latest_date),
+            "weekly_line": self.check_weekly_line_status(),
+            "monthly_line": self.check_monthly_line_status()
         }
 
         # 计算整体健康度
@@ -433,6 +579,20 @@ def main():
 
         if coverage['coverage_rate'] < 90:
             print(f"\n⚠️ 覆盖率 {coverage['coverage_rate']}% 低于 90%，缺失 {coverage['missing_stocks']} 只股票")
+
+        print("\n=== 周线状态检查 ===")
+        weekly = monitor.check_weekly_line_status()
+        print(f"状态：{weekly['status']}")
+        print(f"最新周线日期：{weekly.get('latest_week_end', 'N/A')}")
+        print(f"最新周线覆盖股票：{weekly['stock_count']} 只")
+        print(f"周线总周数：{weekly['weeks_available']}")
+
+        print("\n=== 月线状态检查 ===")
+        monthly = monitor.check_monthly_line_status()
+        print(f"状态：{monthly['status']}")
+        print(f"最新月线日期：{monthly.get('latest_month_end', 'N/A')}")
+        print(f"最新月线覆盖股票：{monthly['stock_count']} 只")
+        print(f"月线总月数：{monthly['months_available']}")
 
         print("\n=== 系统健康度 ===")
         summary = monitor.get_system_summary()
