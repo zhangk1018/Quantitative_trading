@@ -25,6 +25,7 @@ load_dotenv(os.path.join(_project_root, ".env"))
 from core.api.config import settings
 from core.api.dependencies import init_pg_pool, close_pg_pool, get_loader, get_screener_service, get_snapshot_service
 from core.api.router import meta, stocks, kline, signals, monitor, watchlist, snapshot
+from core.api.router.pdca import router as pdca_router
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ app.include_router(signals.router, prefix="/api/signals", tags=["买卖信号"])
 app.include_router(monitor.router, prefix="/api", tags=["数据监控"])
 app.include_router(watchlist.router, prefix="/api/watchlist", tags=["自选股管理"])
 app.include_router(snapshot.router, prefix="/api/snapshot", tags=["全量快照"])
+app.include_router(pdca_router)
 
 # 挂载静态资源
 app.mount("/static", StaticFiles(directory=_STATIC_DIR, html=True), name="static")

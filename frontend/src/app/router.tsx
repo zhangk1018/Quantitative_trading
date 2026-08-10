@@ -9,6 +9,7 @@ const Backtest = React.lazy(() => import('@/features/backtest'));
 const Watchlist = React.lazy(() => import('@/features/watchlist'));
 const Config = React.lazy(() => import('@/features/config'));
 const StrategyBacktest = React.lazy(() => import('@/features/strategy-backtest'));
+const PDCA = React.lazy(() => import('@/features/pdca'));
 
 // 加载中组件
 const Loading = () => (
@@ -68,6 +69,14 @@ export const router = createBrowserRouter([
         element: (
           <Suspense fallback={<Loading />}>
             <StrategyBacktest />
+          </Suspense>
+        ) 
+      },
+      { 
+        path: 'pdca', 
+        element: (
+          <Suspense fallback={<Loading />}>
+            <PDCA />
           </Suspense>
         ) 
       },
