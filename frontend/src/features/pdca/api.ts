@@ -1,6 +1,15 @@
-/** PDCA 交易自律系统 — API 调用封装 */
+/**
+ * PDCA 交易自律系统 — API 调用封装
+ *
+ * 统一 Axios 实例：
+ * - 基础路径从环境变量获取
+ * - 全局请求拦截器注入 Authorization 头
+ * - 全局响应拦截器统一处理错误
+ * - 标准错误对象抛出
+ */
 
 import axios from 'axios';
+import { downloadBlob } from '@/utils/download';
 import type {
   ApiResponse,
   PaginatedData,
@@ -18,7 +27,44 @@ import type {
   ImportParseResult,
 } from './types';
 
-const BASE = '/api/pdca';
+// Axios 实例（统一配置）
+const client = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' },
+});
+
+// ── 请求拦截器：注入认证头 ──
+client.interceptors.request.use((config) => {
+  const token = localStorage.getItem('auth_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// ── 响应拦截器：统一错误处理 ──
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const serverMsg = error.response?.data?.message;
+
+      if (status === 401) {
+        // 未授权：清除本地 token，可考虑跳转登录页
+        localStorage.removeItem('auth_token');
+      }
+
+      // 抛出标准化错误，各组件可统一 catch 处理
+      const message = serverMsg || (status === 0 ? '网络连接失败' : `请求失败 (${status || '未知'})`);
+      return Promise.reject(new Error(message));
+    }
+    return Promise.reject(new Error('请求异常'));
+  },
+);
+
+const BASE = '/pdca';
 
 // ============================================================
 // 交易台账 CRUD
@@ -35,7 +81,7 @@ export async function fetchRecords(params: {
   sort_by?: string;
   sort_asc?: boolean;
 }): Promise<ApiResponse<PaginatedData<TradingRecord>>> {
-  const { data } = await axios.get(`${BASE}/records`, { params });
+  const { data } = await client.get(`${BASE}/records`, { params });
   return data;
 }
 
@@ -43,7 +89,7 @@ export async function fetchRecords(params: {
 export async function createRecord(
   record: TradingRecordFormData,
 ): Promise<ApiResponse<TradingRecord>> {
-  const { data } = await axios.post(`${BASE}/records`, record);
+  const { data } = await client.post(`${BASE}/records`, record);
   return data;
 }
 
@@ -52,13 +98,13 @@ export async function updateRecord(
   id: number,
   record: Partial<TradingRecordFormData>,
 ): Promise<ApiResponse<TradingRecord>> {
-  const { data } = await axios.put(`${BASE}/records/${id}`, record);
+  const { data } = await client.put(`${BASE}/records/${id}`, record);
   return data;
 }
 
 /** 软删除交易记录 */
 export async function deleteRecord(id: number): Promise<ApiResponse<null>> {
-  const { data } = await axios.delete(`${BASE}/records/${id}`);
+  const { data } = await client.delete(`${BASE}/records/${id}`);
   return data;
 }
 
@@ -71,7 +117,7 @@ export async function fetchSnapshots(params: {
   date_from?: string;
   date_to?: string;
 }): Promise<ApiResponse<AccountSnapshot[]>> {
-  const { data } = await axios.get(`${BASE}/snapshots`, { params });
+  const { data } = await client.get(`${BASE}/snapshots`, { params });
   return data;
 }
 
@@ -79,7 +125,7 @@ export async function fetchSnapshots(params: {
 export async function saveSnapshot(
   snapshot: AccountSnapshotFormData,
 ): Promise<ApiResponse<AccountSnapshot>> {
-  const { data } = await axios.post(`${BASE}/snapshots`, snapshot);
+  const { data } = await client.post(`${BASE}/snapshots`, snapshot);
   return data;
 }
 
@@ -88,7 +134,7 @@ export async function fetchCapitalCurve(params?: {
   date_from?: string;
   date_to?: string;
 }): Promise<ApiResponse<CapitalCurvePoint[]>> {
-  const { data } = await axios.get(`${BASE}/snapshots/curve`, { params });
+  const { data } = await client.get(`${BASE}/snapshots/curve`, { params });
   return data;
 }
 
@@ -101,7 +147,7 @@ export async function fetchDiaries(params: {
   record_id?: number;
   cycle_id?: number;
 }): Promise<ApiResponse<TradingDiary[]>> {
-  const { data } = await axios.get(`${BASE}/diaries/`, { params });
+  const { data } = await client.get(`${BASE}/diaries`, { params });
   return data;
 }
 
@@ -109,7 +155,7 @@ export async function fetchDiaries(params: {
 export async function createDiary(
   diary: TradingDiaryFormData,
 ): Promise<ApiResponse<TradingDiary>> {
-  const { data } = await axios.post(`${BASE}/diaries/`, diary);
+  const { data } = await client.post(`${BASE}/diaries`, diary);
   return data;
 }
 
@@ -118,7 +164,7 @@ export async function updateDiary(
   id: number,
   diary: Partial<TradingDiaryFormData>,
 ): Promise<ApiResponse<TradingDiary>> {
-  const { data } = await axios.put(`${BASE}/diaries/${id}`, diary);
+  const { data } = await client.put(`${BASE}/diaries/${id}`, diary);
   return data;
 }
 
@@ -129,7 +175,7 @@ export async function uploadDiaryAttachment(
 ): Promise<ApiResponse<{ file_path: string }>> {
   const formData = new FormData();
   formData.append('file', file);
-  const { data } = await axios.post(`${BASE}/diaries/${id}/upload`, formData, {
+  const { data } = await client.post(`${BASE}/diaries/${id}/upload`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return data;
@@ -141,16 +187,21 @@ export async function uploadDiaryAttachment(
 
 /** 获取系统配置 */
 export async function fetchConfig(): Promise<ApiResponse<SystemConfigItem[]>> {
-  const { data } = await axios.get(`${BASE}/config`);
+  const { data } = await client.get(`${BASE}/config`);
   return data;
 }
 
 /** 更新系统配置 */
 export async function updateConfig(
   configKey: string,
-  updates: { config_value?: string; numeric_value?: number; bool_value?: boolean; modify_reason: string },
+  updates: {
+    config_value?: string;
+    numeric_value?: number;
+    bool_value?: boolean;
+    modify_reason: string;
+  },
 ): Promise<ApiResponse<SystemConfigItem>> {
-  const { data } = await axios.put(`${BASE}/config`, {
+  const { data } = await client.put(`${BASE}/config`, {
     config_key: configKey,
     ...updates,
   });
@@ -169,7 +220,7 @@ export async function parseImportExcel(
   const formData = new FormData();
   formData.append('file', file);
   formData.append('broker_name', brokerName);
-  const { data } = await axios.post(`${BASE}/import/parse`, formData, {
+  const { data } = await client.post(`${BASE}/import/parse`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return data;
@@ -179,7 +230,7 @@ export async function parseImportExcel(
 export async function confirmImport(
   records: TradingRecordFormData[],
 ): Promise<ApiResponse<{ imported: number }>> {
-  const { data } = await axios.post(`${BASE}/import/confirm`, { records });
+  const { data } = await client.post(`${BASE}/import/confirm`, { records });
   return data;
 }
 
@@ -188,7 +239,7 @@ export async function exportRecords(params?: {
   date_from?: string;
   date_to?: string;
 }): Promise<Blob> {
-  const { data } = await axios.get(`${BASE}/export`, {
+  const { data } = await client.get(`${BASE}/export`, {
     params,
     responseType: 'blob',
   });
@@ -197,7 +248,7 @@ export async function exportRecords(params?: {
 
 /** 全量备份 */
 export async function backupDatabase(): Promise<Blob> {
-  const { data } = await axios.get(`${BASE}/backup`, {
+  const { data } = await client.get(`${BASE}/backup`, {
     responseType: 'blob',
   });
   return data;
@@ -208,8 +259,10 @@ export async function backupDatabase(): Promise<Blob> {
 // ============================================================
 
 /** 搜索股票代码 */
-export async function searchStocks(q: string): Promise<ApiResponse<StockSearchResult[]>> {
-  const { data } = await axios.get(`${BASE}/stocks/search`, { params: { q } });
+export async function searchStocks(
+  q: string,
+): Promise<ApiResponse<StockSearchResult[]>> {
+  const { data } = await client.get(`${BASE}/stocks/search`, { params: { q } });
   return data;
 }
 
@@ -218,8 +271,10 @@ export async function searchStocks(q: string): Promise<ApiResponse<StockSearchRe
 // ============================================================
 
 /** 获取可用券商适配器列表 */
-export async function fetchBrokerAdapters(): Promise<ApiResponse<BrokerAdapter[]>> {
-  const { data } = await axios.get(`${BASE}/import/brokers`);
+export async function fetchBrokerAdapters(): Promise<
+  ApiResponse<BrokerAdapter[]>
+> {
+  const { data } = await client.get(`${BASE}/import/brokers`);
   return data;
 }
 
@@ -231,6 +286,25 @@ export async function fetchBrokerAdapters(): Promise<ApiResponse<BrokerAdapter[]
 export async function fetchCycles(params?: {
   status?: string;
 }): Promise<ApiResponse<PDCACycle[]>> {
-  const { data } = await axios.get(`${BASE}/cycles`, { params });
+  const { data } = await client.get(`${BASE}/cycles`, { params });
   return data;
+}
+
+// ============================================================
+// 通用下载辅助函数
+// ============================================================
+
+/** 下载 Excel 文件 */
+export async function downloadExcel(
+  blobPromise: Promise<Blob>,
+  prefix: string,
+): Promise<void> {
+  const blob = await blobPromise;
+  downloadBlob(blob, `${prefix}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+/** 下载备份 SQL 文件 */
+export async function downloadBackup(blobPromise: Promise<Blob>): Promise<void> {
+  const blob = await blobPromise;
+  downloadBlob(blob, `pdca_backup_${new Date().toISOString().slice(0, 10)}.sql`);
 }

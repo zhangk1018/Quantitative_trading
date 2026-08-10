@@ -65,7 +65,7 @@ const TradingDiaryEditor: React.FC = () => {
     try {
       const data: TradingDiaryFormData = {
         review_text: reviewText.trim(),
-        pdca_cycle_id: 1,
+        // pdca_cycle_id 不硬编码，让后端按默认周期处理
       };
       if (selectedRecordId) data.trading_record_id = selectedRecordId;
       if (emotionNote.trim()) data.emotion_note = emotionNote.trim();

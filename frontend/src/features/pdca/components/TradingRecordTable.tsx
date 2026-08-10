@@ -5,13 +5,14 @@
  * - 分页表格展示交易记录
  * - 按代码/日期/周期筛选
  * - 新增/编辑/删除记录
- * - 数值校验（前后端双重）
+ * - 导出 Excel
+ * - 乐观更新（删除后立即从本地移除）
  */
 
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Table, Button, Space, Input, DatePicker, Tag, Popconfirm,
-  App,
+  App, Skeleton,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { PlusOutlined, SearchOutlined, ReloadOutlined, ExportOutlined } from '@ant-design/icons';
@@ -22,6 +23,7 @@ import {
   INSTRUMENT_TYPE_LABELS,
 } from '../types';
 import { fetchRecords, deleteRecord, exportRecords } from '../api';
+import { downloadBlob } from '@/utils/download';
 import TradingRecordForm from './TradingRecordForm';
 
 const { RangePicker } = DatePicker;
@@ -37,19 +39,27 @@ const TradingRecordTable: React.FC = () => {
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editingRecord, setEditingRecord] = useState<TradingRecord | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  // 使用 ref 保存不触发重新渲染的筛选值
+  const loadParamsRef = useRef({ page, pageSize, codeFilter, dateRange });
+  loadParamsRef.current = { page, pageSize, codeFilter, dateRange };
+
+  const loadData = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
+    const params: Record<string, unknown> = {
+      page: loadParamsRef.current.page,
+      limit: loadParamsRef.current.pageSize,
+    };
+    const cf = loadParamsRef.current.codeFilter;
+    const dr = loadParamsRef.current.dateRange;
+    if (cf) params.code = cf;
+    if (dr) {
+      params.entry_date_from = dr[0].format('YYYY-MM-DD');
+      params.entry_date_to = dr[1].format('YYYY-MM-DD');
+    }
     try {
-      const params: Record<string, unknown> = {
-        page,
-        limit: pageSize,
-      };
-      if (codeFilter) params.code = codeFilter;
-      if (dateRange) {
-        params.entry_date_from = dateRange[0].format('YYYY-MM-DD');
-        params.entry_date_to = dateRange[1].format('YYYY-MM-DD');
-      }
       const res = await fetchRecords(params);
       if (res.code === 200) {
         setRecords(res.data.items);
@@ -61,52 +71,15 @@ const TradingRecordTable: React.FC = () => {
       message.error('网络错误，请稍后重试');
     } finally {
       setLoading(false);
+      setInitialLoading(false);
     }
-  }, [page, pageSize, codeFilter, dateRange, message]);
+  }, [message]);
 
   useEffect(() => {
     loadData();
-  }, [loadData]);
+  }, [loadData, page, pageSize, codeFilter, dateRange]);
 
-  const handleDelete = useCallback(async (id: number) => {
-    try {
-      const res = await deleteRecord(id);
-      if (res.code === 200) {
-        message.success('已删除');
-        loadData();
-      } else {
-        message.error(res.message || '删除失败');
-      }
-    } catch {
-      message.error('网络错误');
-    }
-  }, [message, loadData]);
-
-  const handleExport = useCallback(async () => {
-    try {
-      const blob = await exportRecords(
-        dateRange
-          ? { date_from: dateRange[0].format('YYYY-MM-DD'), date_to: dateRange[1].format('YYYY-MM-DD') }
-          : undefined,
-      );
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `交易台账_${dayjs().format('YYYYMMDD')}.xlsx`;
-      a.click();
-      URL.revokeObjectURL(url);
-      message.success('导出成功');
-    } catch {
-      message.error('导出失败');
-    }
-  }, [dateRange, message]);
-
-  const handleFormSuccess = useCallback(() => {
-    setFormOpen(false);
-    setEditingRecord(null);
-    loadData();
-  }, [loadData]);
-
+  // 分离依赖：columns 不依赖 handleDelete
   const columns: ColumnsType<TradingRecord> = useMemo(() => [
     {
       title: '代码',
@@ -261,7 +234,62 @@ const TradingRecordTable: React.FC = () => {
         </Space>
       ),
     },
-  ], [handleDelete]);
+  ], []); // columns 定义不依赖任何外部变量
+
+  // 乐观删除：先移除本地记录，再请求后端
+  const handleDelete = useCallback(async (id: number) => {
+    const prevRecords = records;
+    const prevTotal = total;
+    // 乐观更新
+    setRecords((prev) => prev.filter((r) => r.id !== id));
+    setTotal((prev) => prev - 1);
+    try {
+      const res = await deleteRecord(id);
+      if (res.code !== 200) {
+        // 回滚
+        setRecords(prevRecords);
+        setTotal(prevTotal);
+        message.error(res.message || '删除失败');
+      } else {
+        message.success('已删除');
+      }
+    } catch {
+      setRecords(prevRecords);
+      setTotal(prevTotal);
+      message.error('网络错误，删除失败');
+    }
+  }, [records, total, message]);
+
+  const handleExport = useCallback(async () => {
+    setExporting(true);
+    try {
+      const blob = await exportRecords(
+        dateRange
+          ? { date_from: dateRange[0].format('YYYY-MM-DD'), date_to: dateRange[1].format('YYYY-MM-DD') }
+          : undefined,
+      );
+      downloadBlob(blob, `交易台账_${dayjs().format('YYYYMMDD')}.xlsx`);
+      message.success('导出成功');
+    } catch {
+      message.error('导出失败');
+    } finally {
+      setExporting(false);
+    }
+  }, [dateRange, message]);
+
+  const handleFormSuccess = useCallback(() => {
+    setFormOpen(false);
+    setEditingRecord(null);
+    loadData();
+  }, [loadData]);
+
+  if (initialLoading) {
+    return (
+      <div className="p-4">
+        <Skeleton active paragraph={{ rows: 8 }} />
+      </div>
+    );
+  }
 
   return (
     <div className="h-full flex flex-col">
@@ -282,10 +310,10 @@ const TradingRecordTable: React.FC = () => {
             placeholder={['入场日期起', '入场日期止']}
             style={{ width: 240 }}
           />
-          <Button icon={<ReloadOutlined />} onClick={loadData}>刷新</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => loadData()}>刷新</Button>
         </Space>
         <Space>
-          <Button icon={<ExportOutlined />} onClick={handleExport}>导出 Excel</Button>
+          <Button icon={<ExportOutlined />} onClick={handleExport} loading={exporting}>导出 Excel</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditingRecord(null); setFormOpen(true); }}>
             新增交易
           </Button>

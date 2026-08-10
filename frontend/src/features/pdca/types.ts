@@ -67,7 +67,7 @@ export interface TradingRecordFormData {
   trigger_source?: TriggerSource;
   actual_stop_loss?: number;
   exit_reason?: ExitReason;
-  pdca_cycle_id: number;
+  pdca_cycle_id?: number;
 }
 
 // --- 交易日记 ---
@@ -86,7 +86,7 @@ export interface TradingDiary {
 
 export interface TradingDiaryFormData {
   trading_record_id?: number;
-  pdca_cycle_id: number;
+  pdca_cycle_id?: number;
   emotion_note?: string;
   review_text: string;
 }

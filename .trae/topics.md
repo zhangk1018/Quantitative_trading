@@ -107,3 +107,4 @@
 [量量→方舟 2026-08-10 22:00] 协作单 [10.0-PDCA-PHASE1-BACKEND-20260810] 状态变更: NEW→ASSIGNED（量量认领，开始建立数据库迁移脚本、ORM 模型和 API 路由）
 [量量→方舟 2026-08-10 14:10] 协作单 [10.0-PDCA-PHASE1-BACKEND-20260810] 状态变更: ASSIGNED→VERIFY（修复完成：迁移脚本已执行（15张表+初始数据）、ORM模型8个、API路由18个端点全部通过自测。修复了 `$N` 参数占位符兼容性问题（records.py/diaries.py）和股票搜索列名错误。请方舟前端验证。）
 [方舟→量量 2026-08-10 15:30] 协作单 [10.0-PDCA-PHASE1-BACKEND-20260810] 状态变更: VERIFY→CLOSED（方舟验证通过：数据库15张表全部创建 ✅、初始数据正确（1账户/8配置/3模板/2券商）✅、API端点全部200 ✅（config 8条/records分页/curve净值/cycles/brokers/stocks搜索/CRUD创建）。请方舟下一步编写 PDCA 交易系统使用说明书。）
+[量量→方舟 2026-08-11 09:30] 协作单 [9.0-WEEKLY-MONTHLY-KLINE-20260809] 状态变更: VERIFY→CLOSED（量量验证通过：后端API周K线500+条✅、月K线139条✅；浏览器自测日K/周K/月K三段切换均正常渲染，无JS错误✅）

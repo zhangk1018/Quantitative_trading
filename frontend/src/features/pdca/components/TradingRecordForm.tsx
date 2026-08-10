@@ -2,13 +2,13 @@
  * TradingRecordForm.tsx — 交易记录录入/编辑表单
  *
  * 功能：
- * - 股票代码自动补全（搜索 stock_basic）
+ * - 股票代码自动补全（搜索 stock_basic，带防抖）
  * - 数值范围校验（前后端双重）
- * - 日期先后校验
+ * - 日期先后校验（出场日期 > 入场日期）
  * - 支持新增和编辑模式
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Modal, Form, Input, InputNumber, DatePicker, Select, App, Row, Col, AutoComplete,
 } from 'antd';
@@ -32,6 +32,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [stockOptions, setStockOptions] = useState<{ value: string; label: string; code: string }[]>([]);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isEdit = !!record;
 
   useEffect(() => {
@@ -58,25 +59,36 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     }
   }, [open, record, form]);
 
-  const handleStockSearch = useCallback(async (q: string) => {
+  // 搜索防抖（300ms）
+  const handleStockSearch = useCallback((q: string) => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
     if (!q || q.length < 1) {
       setStockOptions([]);
       return;
     }
-    try {
-      const res = await searchStocks(q);
-      if (res.code === 200) {
-        setStockOptions(
-          res.data.map((s: StockSearchResult) => ({
-            value: s.code,
-            label: `${s.code} ${s.name}`,
-            code: s.code,
-          })),
-        );
+    debounceTimer.current = setTimeout(async () => {
+      try {
+        const res = await searchStocks(q);
+        if (res.code === 200) {
+          setStockOptions(
+            res.data.map((s: StockSearchResult) => ({
+              value: s.code,
+              label: `${s.code} ${s.name}`,
+              code: s.code,
+            })),
+          );
+        }
+      } catch {
+        // 后端未就绪时静默
       }
-    } catch {
-      // 后端未就绪时静默
-    }
+    }, 300);
+  }, []);
+
+  // 清理定时器
+  useEffect(() => {
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    };
   }, []);
 
   const handleStockSelect = useCallback((_value: string, option: { label: string }) => {
@@ -93,8 +105,18 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
         ...values,
         entry_date: values.entry_date?.format('YYYY-MM-DD'),
         exit_date: values.exit_date?.format('YYYY-MM-DD') || undefined,
-        pdca_cycle_id: values.pdca_cycle_id || 1,
+        // pdca_cycle_id 不硬编码，让后端按默认周期处理
       };
+      // 删除未设置的可选字段，避免发送 undefined
+      if (!data.entry_score) delete data.entry_score;
+      if (!data.exit_score) delete data.exit_score;
+      if (!data.trade_score) delete data.trade_score;
+      if (!data.trade_grade) delete data.trade_grade;
+      if (!data.trigger_source) delete data.trigger_source;
+      if (!data.exit_reason) delete data.exit_reason;
+      if (!data.actual_stop_loss) delete data.actual_stop_loss;
+      if (!data.channel_height) delete data.channel_height;
+      if (!data.gross_profit) delete data.gross_profit;
 
       let res;
       if (isEdit) {
@@ -193,7 +215,22 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
 
         <Row gutter={16}>
           <Col span={8}>
-            <Form.Item name="exit_date" label="出场日期">
+            <Form.Item
+              name="exit_date"
+              label="出场日期"
+              dependencies={['entry_date']}
+              rules={[
+                ({ getFieldValue }) => ({
+                  validator(_, value) {
+                    if (!value || !getFieldValue('entry_date')) return Promise.resolve();
+                    if (value.isBefore(getFieldValue('entry_date'), 'day')) {
+                      return Promise.reject(new Error('出场日期必须晚于或等于入场日期'));
+                    }
+                    return Promise.resolve();
+                  },
+                }),
+              ]}
+            >
               <DatePicker style={{ width: '100%' }} />
             </Form.Item>
           </Col>

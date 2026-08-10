@@ -120,16 +120,49 @@ const ImportExcel: React.FC = () => {
           accept=".xlsx,.xls"
           maxCount={1}
           beforeUpload={(f) => {
-            setFile(f);
-            setParseResult(null);
-            return false;
+            // 文件大小校验（≤10MB）
+            const maxSize = 10 * 1024 * 1024;
+            if (f.size > maxSize) {
+              message.error('文件大小不超过 10MB');
+              return Upload.LIST_IGNORE;
+            }
+            // 文件类型校验（检查扩展名和 MIME 类型）
+            const ext = f.name.split('.').pop()?.toLowerCase();
+            const validExts = ['xlsx', 'xls'];
+            if (!ext || !validExts.includes(ext)) {
+              message.error('仅支持 .xlsx / .xls 格式的 Excel 文件');
+              return Upload.LIST_IGNORE;
+            }
+            // 检查文件头魔数（xlsx = PK\x03\x04, xls = \xD0\xCF\x11\xE0）
+            // 仅读取前 4 字节做快速检查
+            return new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onload = (e) => {
+                const arr = new Uint8Array(e.target!.result as ArrayBuffer);
+                const header = Array.from(arr.slice(0, 4)).map(b => b.toString(16)).join('');
+                const validHeaders = ['504b0304', 'd0cf11e0'];
+                if (validHeaders.includes(header)) {
+                  setFile(f);
+                  setParseResult(null);
+                  resolve(false);
+                } else {
+                  message.error('文件格式异常，请确认是有效的 Excel 文件');
+                  resolve(Upload.LIST_IGNORE);
+                }
+              };
+              reader.onerror = () => {
+                message.error('无法读取文件');
+                resolve(Upload.LIST_IGNORE);
+              };
+              reader.readAsArrayBuffer(f.slice(0, 4));
+            });
           }}
           onRemove={() => { setFile(null); setParseResult(null); }}
           fileList={file ? [{ uid: '-1', name: file.name, status: 'done' } as never] : []}
         >
           <p className="ant-upload-drag-icon"><InboxOutlined /></p>
           <p className="text-text-secondary">点击或拖拽 Excel 文件到此处</p>
-          <p className="text-text-secondary text-xs">支持 .xlsx / .xls 格式</p>
+          <p className="text-text-secondary text-xs">支持 .xlsx / .xls 格式，最大 10MB</p>
         </Dragger>
       </div>
 

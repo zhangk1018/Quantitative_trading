@@ -3,17 +3,18 @@
  *
  * 功能：
  * - 展示/编辑系统配置（2%/6% 风控阈值等）
- * - 数据导出 Excel
- * - 全量备份下载
+ * - 数据导出 Excel（使用通用下载工具）
+ * - 全量备份下载（使用通用下载工具）
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
 import {
-  InputNumber, Button, Divider, App, Space, Typography, Spin, Empty, Card, Switch,
+  InputNumber, Button, Divider, App, Space, Typography, Empty, Card, Switch, Skeleton,
 } from 'antd';
 import { ExportOutlined, DownloadOutlined, SaveOutlined } from '@ant-design/icons';
 import type { SystemConfigItem } from '../types';
 import { fetchConfig, updateConfig, exportRecords, backupDatabase } from '../api';
+import { downloadBlob } from '@/utils/download';
 
 const { Text, Title } = Typography;
 
@@ -24,20 +25,25 @@ const SystemConfig: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
+  const [savingKey, setSavingKey] = useState<string | null>(null);
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetchConfig();
       if (res.code === 200) setConfigs(res.data);
-    } catch { /* 后端未就绪 */ }
-    finally { setLoading(false); }
-  }, []);
+    } catch (err) {
+      message.error('加载配置失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [message]);
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
 
   const handleSave = useCallback(async (configKey: string, numericValue: number | null, boolValue: boolean | null) => {
     setSaving(true);
+    setSavingKey(configKey);
     try {
       const res = await updateConfig(configKey, {
         numeric_value: numericValue ?? undefined,
@@ -54,6 +60,7 @@ const SystemConfig: React.FC = () => {
       message.error('保存失败');
     } finally {
       setSaving(false);
+      setSavingKey(null);
     }
   }, [message, loadConfig]);
 
@@ -61,12 +68,7 @@ const SystemConfig: React.FC = () => {
     setExporting(true);
     try {
       const blob = await exportRecords();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `交易台账_${new Date().toISOString().slice(0, 10)}.xlsx`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `交易台账_${new Date().toISOString().slice(0, 10)}.xlsx`);
       message.success('导出成功');
     } catch {
       message.error('导出失败');
@@ -79,12 +81,7 @@ const SystemConfig: React.FC = () => {
     setBackingUp(true);
     try {
       const blob = await backupDatabase();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `pdca_backup_${new Date().toISOString().slice(0, 10)}.sql`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `pdca_backup_${new Date().toISOString().slice(0, 10)}.sql`);
       message.success('备份下载成功');
     } catch {
       message.error('备份失败');
@@ -107,7 +104,9 @@ const SystemConfig: React.FC = () => {
       <Title level={5} className="text-text-primary mb-4">系统配置</Title>
 
       {loading ? (
-        <div className="flex justify-center py-8"><Spin /></div>
+        <div className="p-4">
+          <Skeleton active paragraph={{ rows: 6 }} />
+        </div>
       ) : configs.length === 0 ? (
         <Empty description="暂无配置数据" />
       ) : (
@@ -134,7 +133,7 @@ const SystemConfig: React.FC = () => {
                     type="primary"
                     size="small"
                     icon={<SaveOutlined />}
-                    loading={saving}
+                    loading={saving && savingKey === 'risk_per_trade'}
                     onClick={() => handleSave('risk_per_trade', riskPerTrade?.numeric_value ?? 2, null)}
                   >
                     保存
@@ -161,7 +160,7 @@ const SystemConfig: React.FC = () => {
                     type="primary"
                     size="small"
                     icon={<SaveOutlined />}
-                    loading={saving}
+                    loading={saving && savingKey === 'risk_per_month'}
                     onClick={() => handleSave('risk_per_month', riskPerMonth?.numeric_value ?? 6, null)}
                   >
                     保存
@@ -186,7 +185,7 @@ const SystemConfig: React.FC = () => {
                     type="primary"
                     size="small"
                     icon={<SaveOutlined />}
-                    loading={saving}
+                    loading={saving && savingKey === 'max_position_count'}
                     onClick={() => handleSave('max_position_count', maxPositionCount?.numeric_value ?? 5, null)}
                   >
                     保存
@@ -213,7 +212,7 @@ const SystemConfig: React.FC = () => {
                     type="primary"
                     size="small"
                     icon={<SaveOutlined />}
-                    loading={saving}
+                    loading={saving && savingKey === 'stop_loss_hard_limit'}
                     onClick={() => handleSave('stop_loss_hard_limit', stopLossHardLimit?.numeric_value ?? 8, null)}
                   >
                     保存
@@ -233,7 +232,7 @@ const SystemConfig: React.FC = () => {
               <Switch
                 checked={autoScoreEnabled?.bool_value ?? false}
                 onChange={(checked) => handleSave('auto_score_enabled', null, checked)}
-                loading={saving}
+                loading={saving && savingKey === 'auto_score_enabled'}
               />
             </div>
           </Card>
