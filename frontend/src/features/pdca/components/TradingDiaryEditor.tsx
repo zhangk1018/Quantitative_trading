@@ -10,12 +10,12 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import {
-  Button, Input, Select, Upload, List, Typography, App, Space, Tag, Empty, Spin,
+  Button, Input, Select, Upload, List, Typography, App, Space, Tag, Empty, Spin, Alert,
 } from 'antd';
 import { UploadOutlined, FileImageOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import type { TradingDiary, TradingDiaryFormData, TradingRecord } from '../types';
-import { fetchDiaries, createDiary, updateDiary, uploadDiaryAttachment } from '../api';
+import type { TradingDiary, TradingDiaryFormData, TradingRecord, PDCACycle } from '../types';
+import { fetchDiaries, createDiary, updateDiary, uploadDiaryAttachment, fetchCycles } from '../api';
 import { fetchRecords } from '../api';
 
 const { TextArea } = Input;
@@ -25,6 +25,7 @@ const TradingDiaryEditor: React.FC = () => {
   const { message } = App.useApp();
   const [diaries, setDiaries] = useState<TradingDiary[]>([]);
   const [records, setRecords] = useState<TradingRecord[]>([]);
+  const [activeCycle, setActiveCycle] = useState<PDCACycle | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [selectedRecordId, setSelectedRecordId] = useState<number | null>(null);
@@ -33,28 +34,44 @@ const TradingDiaryEditor: React.FC = () => {
   const [editingDiaryId, setEditingDiaryId] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
 
+  // 获取当前活跃周期（DO 状态），用于日记关联
+  const loadActiveCycle = useCallback(async () => {
+    try {
+      const res = await fetchCycles({ status: 'DO' });
+      if (res.code === 200 && res.data?.items?.length > 0) {
+        setActiveCycle(res.data.items[0]);
+      }
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '获取当前周期失败');
+    }
+  }, [message]);
+
   // 加载交易记录列表（用于下拉选择）
   const loadRecords = useCallback(async () => {
     try {
       const res = await fetchRecords({ page_size: 200, sort_by: 'entry_date', sort_asc: false });
-      if (res.code === 200) setRecords(res.data.items);
-    } catch { /* 后端未就绪 */ }
-  }, []);
+      if (res.code === 200) setRecords(res.data.items || []);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '加载交易记录失败');
+    }
+  }, [message]);
 
   // 加载日记列表
   const loadDiaries = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetchDiaries({});
-      if (res.code === 200) setDiaries(res.data);
-    } catch { /* 后端未就绪 */ }
-    finally { setLoading(false); }
-  }, []);
+      if (res.code === 200) setDiaries(res.data?.items || []);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '加载日记列表失败');
+    } finally { setLoading(false); }
+  }, [message]);
 
   useEffect(() => {
+    loadActiveCycle();
     loadRecords();
     loadDiaries();
-  }, [loadRecords, loadDiaries]);
+  }, [loadActiveCycle, loadRecords, loadDiaries]);
 
   const handleSave = useCallback(async () => {
     if (!reviewText.trim()) {
@@ -65,7 +82,7 @@ const TradingDiaryEditor: React.FC = () => {
     try {
       const data: TradingDiaryFormData = {
         review_text: reviewText.trim(),
-        // pdca_cycle_id 不硬编码，让后端按默认周期处理
+        pdca_cycle_id: activeCycle?.id, // 从当前活跃周期获取，确保日记正确关联
       };
       if (selectedRecordId) data.trading_record_id = selectedRecordId;
       if (emotionNote.trim()) data.emotion_note = emotionNote.trim();
@@ -87,12 +104,12 @@ const TradingDiaryEditor: React.FC = () => {
       } else {
         message.error(res.message || '保存失败');
       }
-    } catch {
-      message.error('保存失败');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '保存失败');
     } finally {
       setSaving(false);
     }
-  }, [reviewText, emotionNote, selectedRecordId, editingDiaryId, message, loadDiaries]);
+  }, [reviewText, emotionNote, selectedRecordId, editingDiaryId, message, loadDiaries, activeCycle]);
 
   const handleEdit = useCallback((diary: TradingDiary) => {
     setEditingDiaryId(diary.id);
@@ -118,8 +135,8 @@ const TradingDiaryEditor: React.FC = () => {
       } else {
         message.error(res.message || '上传失败');
       }
-    } catch {
-      message.error('上传失败');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '上传失败');
     } finally {
       setUploading(false);
     }
@@ -175,6 +192,15 @@ const TradingDiaryEditor: React.FC = () => {
         <Text className="text-text-primary font-semibold mb-3 block">
           {editingDiaryId ? '编辑日记' : '新建日记'}
         </Text>
+
+        {activeCycle === null && (
+          <Alert
+            type="warning"
+            message="当前无活跃周期，日记将保存为独立记录（不关联周期）"
+            className="mb-3"
+            showIcon
+          />
+        )}
 
         <div className="mb-3">
           <Text className="text-text-secondary text-xs mb-1 block">关联交易记录</Text>

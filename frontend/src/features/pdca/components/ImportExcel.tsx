@@ -15,6 +15,7 @@ import {
 import { UploadOutlined, InboxOutlined } from '@ant-design/icons';
 import type { BrokerAdapter, ImportParseResult } from '../types';
 import { parseImportExcel, confirmImport, fetchBrokerAdapters } from '../api';
+import { MAX_FILE_SIZE, VALID_FILE_EXTENSIONS, VALID_EXCEL_MAGICS } from '@/config/constants';
 
 const { Dragger } = Upload;
 const { Text } = Typography;
@@ -35,14 +36,50 @@ const ImportExcel: React.FC = () => {
     try {
       const res = await fetchBrokerAdapters();
       if (res.code === 200) {
-        setBrokers(res.data);
+        setBrokers(res.data?.items || []);
         setBrokersLoaded(true);
       }
-    } catch { /* 后端未就绪 */ }
+    } catch (err) { message.error(err instanceof Error ? err.message : '加载券商列表失败'); }
   }, [brokersLoaded]);
 
   // 打开面板时加载
   React.useEffect(() => { loadBrokers(); }, [loadBrokers]);
+
+  // 文件校验（同步，返回 true=通过）
+  const validateFile = useCallback((f: File): boolean => {
+    if (f.size > MAX_FILE_SIZE) {
+      message.error('文件大小不超过 10MB');
+      return false;
+    }
+    const ext = f.name.split('.').pop()?.toLowerCase();
+    if (!ext || !VALID_FILE_EXTENSIONS.includes(ext)) {
+      message.error('仅支持 .xlsx / .xls 格式的 Excel 文件');
+      return false;
+    }
+    return true;
+  }, [message]);
+
+  // 文件头魔数校验（异步，仅读取前 4 字节）
+  const validateMagic = useCallback((f: File): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const arr = new Uint8Array(e.target!.result as ArrayBuffer);
+        const header = Array.from(arr.slice(0, 4)).map(b => b.toString(16)).join('');
+        if (VALID_EXCEL_MAGICS.includes(header)) {
+          resolve(true);
+        } else {
+          message.error('文件格式异常，请确认是有效的 Excel 文件');
+          resolve(false);
+        }
+      };
+      reader.onerror = () => {
+        message.error('无法读取文件');
+        resolve(false);
+      };
+      reader.readAsArrayBuffer(f.slice(0, 4));
+    });
+  }, [message]);
 
   const handleParse = useCallback(async () => {
     if (!file || !selectedBroker) {
@@ -59,8 +96,8 @@ const ImportExcel: React.FC = () => {
       } else {
         message.error(res.message || '解析失败');
       }
-    } catch {
-      message.error('解析失败，请检查网络连接');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '解析失败，请检查网络连接');
     } finally {
       setParsing(false);
     }
@@ -81,8 +118,8 @@ const ImportExcel: React.FC = () => {
       } else {
         message.error(res.message || '导入失败');
       }
-    } catch {
-      message.error('导入失败');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '导入失败');
     } finally {
       setImporting(false);
     }
@@ -106,6 +143,7 @@ const ImportExcel: React.FC = () => {
       <div className="mb-4">
         <Text className="text-text-secondary text-xs mb-2 block">选择券商模板</Text>
         <Select
+          data-testid="broker-select"
           placeholder="选择券商（华泰证券/中信证券）"
           value={selectedBroker || undefined}
           onChange={setSelectedBroker}
@@ -119,43 +157,25 @@ const ImportExcel: React.FC = () => {
         <Dragger
           accept=".xlsx,.xls"
           maxCount={1}
-          beforeUpload={(f) => {
-            // 文件大小校验（≤10MB）
-            const maxSize = 10 * 1024 * 1024;
-            if (f.size > maxSize) {
-              message.error('文件大小不超过 10MB');
-              return Upload.LIST_IGNORE;
+          beforeUpload={async (f) => {
+            // 校验与状态管理分离：beforeUpload 仅负责校验，返回 boolean
+            if (!validateFile(f)) return Upload.LIST_IGNORE;
+            const magicOk = await validateMagic(f);
+            if (!magicOk) return Upload.LIST_IGNORE;
+            return false; // 阻止自动上传，由 onChange 管理文件状态
+          }}
+          onChange={(info) => {
+            // 通过 onChange 统一管理文件状态，避免 beforeUpload 异步竞态
+            if (info.fileList.length === 0) {
+              setFile(null);
+              setParseResult(null);
+            } else {
+              const lastFile = info.fileList[info.fileList.length - 1];
+              if (lastFile.originFileObj) {
+                setFile(lastFile.originFileObj);
+                setParseResult(null);
+              }
             }
-            // 文件类型校验（检查扩展名和 MIME 类型）
-            const ext = f.name.split('.').pop()?.toLowerCase();
-            const validExts = ['xlsx', 'xls'];
-            if (!ext || !validExts.includes(ext)) {
-              message.error('仅支持 .xlsx / .xls 格式的 Excel 文件');
-              return Upload.LIST_IGNORE;
-            }
-            // 检查文件头魔数（xlsx = PK\x03\x04, xls = \xD0\xCF\x11\xE0）
-            // 仅读取前 4 字节做快速检查
-            return new Promise((resolve) => {
-              const reader = new FileReader();
-              reader.onload = (e) => {
-                const arr = new Uint8Array(e.target!.result as ArrayBuffer);
-                const header = Array.from(arr.slice(0, 4)).map(b => b.toString(16)).join('');
-                const validHeaders = ['504b0304', 'd0cf11e0'];
-                if (validHeaders.includes(header)) {
-                  setFile(f);
-                  setParseResult(null);
-                  resolve(false);
-                } else {
-                  message.error('文件格式异常，请确认是有效的 Excel 文件');
-                  resolve(Upload.LIST_IGNORE);
-                }
-              };
-              reader.onerror = () => {
-                message.error('无法读取文件');
-                resolve(Upload.LIST_IGNORE);
-              };
-              reader.readAsArrayBuffer(f.slice(0, 4));
-            });
           }}
           onRemove={() => { setFile(null); setParseResult(null); }}
           fileList={file ? [{ uid: '-1', name: file.name, status: 'done' } as never] : []}

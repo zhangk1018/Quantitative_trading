@@ -9,12 +9,11 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import {
-  InputNumber, Button, Divider, App, Space, Typography, Empty, Card, Switch, Skeleton,
+  InputNumber, Button, Divider, App, Space, Typography, Empty, Card, Switch, Skeleton, Input, Modal,
 } from 'antd';
 import { ExportOutlined, DownloadOutlined, SaveOutlined } from '@ant-design/icons';
 import type { SystemConfigItem } from '../types';
-import { fetchConfig, updateConfig, exportRecords, backupDatabase } from '../api';
-import { downloadBlob } from '@/utils/download';
+import { fetchConfig, updateConfig, exportRecords, backupDatabase, downloadExcel, downloadBackup } from '../api';
 
 const { Text, Title } = Typography;
 
@@ -26,14 +25,21 @@ const SystemConfig: React.FC = () => {
   const [exporting, setExporting] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [modifyReason, setModifyReason] = useState('');
+  const [reasonModalVisible, setReasonModalVisible] = useState(false);
+  const [pendingSave, setPendingSave] = useState<{
+    configKey: string;
+    numericValue: number | null;
+    boolValue: boolean | null;
+  } | null>(null);
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetchConfig();
-      if (res.code === 200) setConfigs(res.data);
+      if (res.code === 200) setConfigs(Array.isArray(res.data) ? res.data : (res.data?.items || []));
     } catch (err) {
-      message.error('加载配置失败');
+      message.error(err instanceof Error ? err.message : '加载配置失败');
     } finally {
       setLoading(false);
     }
@@ -41,14 +47,26 @@ const SystemConfig: React.FC = () => {
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
 
-  const handleSave = useCallback(async (configKey: string, numericValue: number | null, boolValue: boolean | null) => {
+  // 打开修改原因弹窗，收集用户输入后再保存
+  const handleSaveRequest = useCallback((configKey: string, numericValue: number | null, boolValue: boolean | null) => {
+    setPendingSave({ configKey, numericValue, boolValue });
+    setModifyReason('');
+    setReasonModalVisible(true);
+  }, []);
+
+  // 确认保存（带修改原因）
+  const handleConfirmSave = useCallback(async () => {
+    if (!pendingSave) return;
+    const { configKey, numericValue, boolValue } = pendingSave;
+    const reason = modifyReason.trim() || '用户手动修改';
     setSaving(true);
     setSavingKey(configKey);
+    setReasonModalVisible(false);
     try {
       const res = await updateConfig(configKey, {
         numeric_value: numericValue ?? undefined,
         bool_value: boolValue ?? undefined,
-        modify_reason: '用户手动修改',
+        modify_reason: reason,
       });
       if (res.code === 200) {
         message.success('配置已保存');
@@ -56,22 +74,26 @@ const SystemConfig: React.FC = () => {
       } else {
         message.error(res.message || '保存失败');
       }
-    } catch {
-      message.error('保存失败');
+    } catch (err) {
+      if (err instanceof Error) {
+        message.error(err.message);
+      } else {
+        message.error('保存失败，请检查网络连接');
+      }
     } finally {
       setSaving(false);
       setSavingKey(null);
+      setPendingSave(null);
     }
-  }, [message, loadConfig]);
+  }, [pendingSave, modifyReason, message, loadConfig]);
 
   const handleExport = useCallback(async () => {
     setExporting(true);
     try {
-      const blob = await exportRecords();
-      downloadBlob(blob, `交易台账_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      await downloadExcel(exportRecords(), '交易台账');
       message.success('导出成功');
-    } catch {
-      message.error('导出失败');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '导出失败');
     } finally {
       setExporting(false);
     }
@@ -80,11 +102,10 @@ const SystemConfig: React.FC = () => {
   const handleBackup = useCallback(async () => {
     setBackingUp(true);
     try {
-      const blob = await backupDatabase();
-      downloadBlob(blob, `pdca_backup_${new Date().toISOString().slice(0, 10)}.sql`);
+      await downloadBackup(backupDatabase());
       message.success('备份下载成功');
-    } catch {
-      message.error('备份失败');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '备份失败');
     } finally {
       setBackingUp(false);
     }
@@ -134,7 +155,7 @@ const SystemConfig: React.FC = () => {
                     size="small"
                     icon={<SaveOutlined />}
                     loading={saving && savingKey === 'risk_per_trade'}
-                    onClick={() => handleSave('risk_per_trade', riskPerTrade?.numeric_value ?? 2, null)}
+                    onClick={() => handleSaveRequest('risk_per_trade', riskPerTrade?.numeric_value ?? 2, null)}
                   >
                     保存
                   </Button>
@@ -161,7 +182,7 @@ const SystemConfig: React.FC = () => {
                     size="small"
                     icon={<SaveOutlined />}
                     loading={saving && savingKey === 'risk_per_month'}
-                    onClick={() => handleSave('risk_per_month', riskPerMonth?.numeric_value ?? 6, null)}
+                    onClick={() => handleSaveRequest('risk_per_month', riskPerMonth?.numeric_value ?? 6, null)}
                   >
                     保存
                   </Button>
@@ -186,7 +207,7 @@ const SystemConfig: React.FC = () => {
                     size="small"
                     icon={<SaveOutlined />}
                     loading={saving && savingKey === 'max_position_count'}
-                    onClick={() => handleSave('max_position_count', maxPositionCount?.numeric_value ?? 5, null)}
+                    onClick={() => handleSaveRequest('max_position_count', maxPositionCount?.numeric_value ?? 5, null)}
                   >
                     保存
                   </Button>
@@ -213,7 +234,7 @@ const SystemConfig: React.FC = () => {
                     size="small"
                     icon={<SaveOutlined />}
                     loading={saving && savingKey === 'stop_loss_hard_limit'}
-                    onClick={() => handleSave('stop_loss_hard_limit', stopLossHardLimit?.numeric_value ?? 8, null)}
+                    onClick={() => handleSaveRequest('stop_loss_hard_limit', stopLossHardLimit?.numeric_value ?? 8, null)}
                   >
                     保存
                   </Button>
@@ -231,7 +252,7 @@ const SystemConfig: React.FC = () => {
               </div>
               <Switch
                 checked={autoScoreEnabled?.bool_value ?? false}
-                onChange={(checked) => handleSave('auto_score_enabled', null, checked)}
+                onChange={(checked) => handleSaveRequest('auto_score_enabled', null, checked)}
                 loading={saving && savingKey === 'auto_score_enabled'}
               />
             </div>
@@ -262,6 +283,30 @@ const SystemConfig: React.FC = () => {
       <Text className="text-text-secondary text-xs mt-2 block">
         导出的 Excel 文件首行包含免责声明。备份文件为 SQL 格式，仅包含 pdca schema 数据。
       </Text>
+
+      {/* 修改原因弹窗 */}
+      <Modal
+        title="修改原因"
+        open={reasonModalVisible}
+        onOk={handleConfirmSave}
+        onCancel={() => { setReasonModalVisible(false); setPendingSave(null); }}
+        okText="确认保存"
+        cancelText="取消"
+        confirmLoading={saving}
+      >
+        <div className="py-2">
+          <Text className="text-text-secondary text-xs mb-2 block">
+            请说明修改配置的原因（可选，用于审计追溯）
+          </Text>
+          <Input
+            placeholder="如：调整风控参数以适应市场波动"
+            value={modifyReason}
+            onChange={(e) => setModifyReason(e.target.value)}
+            maxLength={200}
+            showCount
+          />
+        </div>
+      </Modal>
     </div>
   );
 };

@@ -238,3 +238,11 @@ export const TRIGGER_SOURCE_LABELS: Record<TriggerSource, string> = {
   scanner: '选股器',
   manual: '手动',
 };
+
+// --- 预计算 Select options 数组，避免组件内重复 Object.entries 转换 ---
+export const INSTRUMENT_TYPE_OPTIONS = Object.entries(INSTRUMENT_TYPE_LABELS).map(([value, label]) => ({ value, label }));
+export const LONG_SHORT_OPTIONS = Object.entries(LONG_SHORT_LABELS).map(([value, label]) => ({ value, label }));
+export const ORDER_TYPE_OPTIONS = Object.entries(ORDER_TYPE_LABELS).map(([value, label]) => ({ value, label }));
+export const TRADE_GRADE_OPTIONS = Object.entries(TRADE_GRADE_LABELS).map(([value, label]) => ({ value, label }));
+export const EXIT_REASON_OPTIONS = Object.entries(EXIT_REASON_LABELS).map(([value, label]) => ({ value, label }));
+export const TRIGGER_SOURCE_OPTIONS = Object.entries(TRIGGER_SOURCE_LABELS).map(([value, label]) => ({ value, label }));

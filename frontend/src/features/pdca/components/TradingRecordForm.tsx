@@ -15,8 +15,8 @@ import {
 import dayjs from 'dayjs';
 import type { TradingRecord, TradingRecordFormData, StockSearchResult } from '../types';
 import {
-  INSTRUMENT_TYPE_LABELS, LONG_SHORT_LABELS, ORDER_TYPE_LABELS,
-  TRADE_GRADE_LABELS, EXIT_REASON_LABELS, TRIGGER_SOURCE_LABELS,
+  INSTRUMENT_TYPE_OPTIONS, LONG_SHORT_OPTIONS, ORDER_TYPE_OPTIONS,
+  TRADE_GRADE_OPTIONS, EXIT_REASON_OPTIONS, TRIGGER_SOURCE_OPTIONS,
 } from '../types';
 import { createRecord, updateRecord, searchStocks } from '../api';
 
@@ -78,8 +78,8 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
             })),
           );
         }
-      } catch {
-        // 后端未就绪时静默
+      } catch (err) {
+        // 搜索失败时静默，不影响用户操作
       }
     }, 300);
   }, []);
@@ -103,6 +103,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
 
       const data: TradingRecordFormData = {
         ...values,
+        security_name: form.getFieldValue('security_name') || '',  // disabled Input 不出现在 validateFields 结果中
         entry_date: values.entry_date?.format('YYYY-MM-DD'),
         exit_date: values.exit_date?.format('YYYY-MM-DD') || undefined,
         // pdca_cycle_id 不硬编码，让后端按默认周期处理
@@ -134,6 +135,8 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) {
         // 表单校验失败，不处理
+      } else if (err instanceof Error) {
+        message.error(err.message);
       } else {
         message.error('保存失败，请检查网络连接');
       }
@@ -150,7 +153,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
       onOk={handleSubmit}
       confirmLoading={loading}
       width={720}
-      destroyOnClose
+      destroyOnHidden
       okText="保存"
       cancelText="取消"
     >
@@ -180,17 +183,17 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
         <Row gutter={16}>
           <Col span={8}>
             <Form.Item name="instrument_type" label="品种" rules={[{ required: true }]}>
-              <Select options={Object.entries(INSTRUMENT_TYPE_LABELS).map(([k, v]) => ({ value: k, label: v }))} />
+              <Select options={INSTRUMENT_TYPE_OPTIONS} />
             </Form.Item>
           </Col>
           <Col span={8}>
             <Form.Item name="long_short" label="方向" rules={[{ required: true }]}>
-              <Select options={Object.entries(LONG_SHORT_LABELS).map(([k, v]) => ({ value: k, label: v }))} />
+              <Select options={LONG_SHORT_OPTIONS} />
             </Form.Item>
           </Col>
           <Col span={8}>
             <Form.Item name="order_type" label="订单类型">
-              <Select options={Object.entries(ORDER_TYPE_LABELS).map(([k, v]) => ({ value: k, label: v }))} />
+              <Select options={ORDER_TYPE_OPTIONS} />
             </Form.Item>
           </Col>
         </Row>
@@ -242,10 +245,10 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
           <Col span={8}>
             <Form.Item name="exit_reason" label="出场原因">
               <Select
-                allowClear
-                placeholder="选择出场原因"
-                options={Object.entries(EXIT_REASON_LABELS).map(([k, v]) => ({ value: k, label: v }))}
-              />
+            allowClear
+            placeholder="选择出场原因"
+            options={EXIT_REASON_OPTIONS}
+          />
             </Form.Item>
           </Col>
         </Row>
@@ -305,10 +308,10 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
           <Col span={6}>
             <Form.Item name="trade_grade" label="等级">
               <Select
-                allowClear
-                placeholder="选择"
-                options={Object.entries(TRADE_GRADE_LABELS).map(([k, v]) => ({ value: k, label: v }))}
-              />
+              allowClear
+              placeholder="选择"
+              options={TRADE_GRADE_OPTIONS}
+            />
             </Form.Item>
           </Col>
         </Row>
@@ -317,7 +320,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
           <Select
             allowClear
             placeholder="选择触发来源"
-            options={Object.entries(TRIGGER_SOURCE_LABELS).map(([k, v]) => ({ value: k, label: v }))}
+            options={TRIGGER_SOURCE_OPTIONS}
           />
         </Form.Item>
       </Form>

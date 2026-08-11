@@ -30,4 +30,4 @@ async def search_stocks(q: str = Query(..., min_length=1)):
             )
             columns = [desc[0] for desc in cur.description]
             items = [dict(zip(columns, row)) for row in cur.fetchall()]
-            return ApiResponse(code=200, message="success", data={"items": items})
+            return ApiResponse(code=200, message="success", data=items)

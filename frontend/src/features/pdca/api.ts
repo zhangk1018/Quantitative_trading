@@ -10,6 +10,7 @@
 
 import axios from 'axios';
 import { downloadBlob } from '@/utils/download';
+import { API_PREFIX, API_TIMEOUT } from '@/config/constants';
 import type {
   ApiResponse,
   PaginatedData,
@@ -30,7 +31,7 @@ import type {
 // Axios 实例（统一配置）
 const client = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
-  timeout: 30000,
+  timeout: API_TIMEOUT,
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -64,7 +65,7 @@ client.interceptors.response.use(
   },
 );
 
-const BASE = '/pdca';
+const BASE = API_PREFIX;
 
 // ============================================================
 // 交易台账 CRUD
@@ -220,10 +221,12 @@ export async function parseImportExcel(
   const formData = new FormData();
   formData.append('file', file);
   formData.append('broker_name', brokerName);
-  const { data } = await client.post(`${BASE}/import/parse`, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
+  // 使用 fetch 而非 client.post：axios + FormData 在 MSW 测试环境下存在兼容性问题
+  const res = await fetch(`${client.defaults.baseURL}${BASE}/import/parse`, {
+    method: 'POST',
+    body: formData,
   });
-  return data;
+  return res.json();
 }
 
 /** 确认导入解析后的数据 */

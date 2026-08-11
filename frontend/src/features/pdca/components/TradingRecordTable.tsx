@@ -17,13 +17,13 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { PlusOutlined, SearchOutlined, ReloadOutlined, ExportOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import { DEFAULT_PAGE_SIZE } from '@/config/constants';
 import type { TradingRecord } from '../types';
 import {
   LONG_SHORT_LABELS, TRADE_GRADE_LABELS, EXIT_REASON_LABELS,
   INSTRUMENT_TYPE_LABELS,
 } from '../types';
-import { fetchRecords, deleteRecord, exportRecords } from '../api';
-import { downloadBlob } from '@/utils/download';
+import { fetchRecords, deleteRecord, exportRecords, downloadExcel } from '../api';
 import TradingRecordForm from './TradingRecordForm';
 
 const { RangePicker } = DatePicker;
@@ -34,7 +34,7 @@ const TradingRecordTable: React.FC = () => {
   const [records, setRecords] = useState<TradingRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [codeFilter, setCodeFilter] = useState('');
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -62,24 +62,58 @@ const TradingRecordTable: React.FC = () => {
     try {
       const res = await fetchRecords(params);
       if (res.code === 200) {
-        setRecords(res.data.items);
+        setRecords(res.data.items || []);
         setTotal(res.data.total);
       } else {
         message.error(res.message || '加载失败');
       }
-    } catch {
-      message.error('网络错误，请稍后重试');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '网络错误，请稍后重试');
     } finally {
       setLoading(false);
       setInitialLoading(false);
     }
   }, [message]);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData, page, pageSize, codeFilter, dateRange]);
+  // 使用 ref 持有最新引用，避免闭包陷阱
+  const loadDataRef = useRef(loadData);
+  loadDataRef.current = loadData;
 
-  // 分离依赖：columns 不依赖 handleDelete
+  // 仅监听筛选参数变化触发加载，避免 useCallback 重建导致的重复请求
+  useEffect(() => {
+    loadDataRef.current();
+  }, [page, pageSize, codeFilter, dateRange]);
+
+  // 乐观删除：先移除本地记录，再请求后端
+  const handleDelete = useCallback(async (id: number) => {
+    const prevRecords = records;
+    const prevTotal = total;
+    // 乐观更新
+    setRecords((prev) => prev.filter((r) => r.id !== id));
+    setTotal((prev) => prev - 1);
+    try {
+      const res = await deleteRecord(id);
+      if (res.code !== 200) {
+        // 回滚
+        setRecords(prevRecords);
+        setTotal(prevTotal);
+        message.error(res.message || '删除失败');
+      } else {
+        message.success('已删除');
+        // 删除成功后刷新后端数据，确保分页和排序一致
+        loadDataRef.current(false);
+      }
+    } catch (err) {
+      setRecords(prevRecords);
+      setTotal(prevTotal);
+      message.error(err instanceof Error ? err.message : '网络错误，删除失败');
+    }
+  }, [records, total, message]);
+
+  // 通过 ref 避免 columns 闭包陷阱
+  const handleDeleteRef = useRef(handleDelete);
+  handleDeleteRef.current = handleDelete;
+
   const columns: ColumnsType<TradingRecord> = useMemo(() => [
     {
       title: '代码',
@@ -123,7 +157,10 @@ const TradingRecordTable: React.FC = () => {
       key: 'entry_price',
       width: 80,
       align: 'right',
-      render: (v: number) => v?.toFixed(2),
+      render: (v: unknown) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n.toFixed(2) : '-';
+      },
     },
     {
       title: '出场价',
@@ -131,7 +168,10 @@ const TradingRecordTable: React.FC = () => {
       key: 'exit_price',
       width: 80,
       align: 'right',
-      render: (v: number | null) => v?.toFixed(2) ?? '-',
+      render: (v: unknown) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n.toFixed(2) : '-';
+      },
     },
     {
       title: '数量',
@@ -139,7 +179,10 @@ const TradingRecordTable: React.FC = () => {
       key: 'quantity',
       width: 70,
       align: 'right',
-      render: (v: number) => v?.toLocaleString(),
+      render: (v: unknown) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n.toLocaleString() : '-';
+      },
     },
     {
       title: '毛盈亏',
@@ -147,11 +190,12 @@ const TradingRecordTable: React.FC = () => {
       key: 'gross_profit',
       width: 90,
       align: 'right',
-      render: (v: number | null) => {
-        if (v == null) return '-';
+      render: (v: unknown) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return '-';
         return (
-          <span className={v >= 0 ? 'text-red-500' : 'text-green-500'}>
-            {v >= 0 ? '+' : ''}{v.toFixed(2)}
+          <span className={n >= 0 ? 'text-red-500' : 'text-green-500'}>
+            {n >= 0 ? '+' : ''}{n.toFixed(2)}
           </span>
         );
       },
@@ -162,7 +206,10 @@ const TradingRecordTable: React.FC = () => {
       key: 'entry_score',
       width: 75,
       align: 'right',
-      render: (v: number | null) => v?.toFixed(1) ?? '-',
+      render: (v: unknown) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n.toFixed(1) : '-';
+      },
     },
     {
       title: '出场分',
@@ -170,7 +217,10 @@ const TradingRecordTable: React.FC = () => {
       key: 'exit_score',
       width: 75,
       align: 'right',
-      render: (v: number | null) => v?.toFixed(1) ?? '-',
+      render: (v: unknown) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n.toFixed(1) : '-';
+      },
     },
     {
       title: '总评分',
@@ -178,7 +228,10 @@ const TradingRecordTable: React.FC = () => {
       key: 'trade_score',
       width: 75,
       align: 'right',
-      render: (v: number | null) => v?.toFixed(1) ?? '-',
+      render: (v: unknown) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n.toFixed(1) : '-';
+      },
     },
     {
       title: '等级',
@@ -225,7 +278,7 @@ const TradingRecordTable: React.FC = () => {
           <Popconfirm
             title="确定删除此交易记录？"
             description="删除后可在回收站中恢复"
-            onConfirm={() => handleDelete(record.id)}
+            onConfirm={() => handleDeleteRef.current(record.id)}
             okText="删除"
             cancelText="取消"
           >
@@ -234,44 +287,22 @@ const TradingRecordTable: React.FC = () => {
         </Space>
       ),
     },
-  ], []); // columns 定义不依赖任何外部变量
-
-  // 乐观删除：先移除本地记录，再请求后端
-  const handleDelete = useCallback(async (id: number) => {
-    const prevRecords = records;
-    const prevTotal = total;
-    // 乐观更新
-    setRecords((prev) => prev.filter((r) => r.id !== id));
-    setTotal((prev) => prev - 1);
-    try {
-      const res = await deleteRecord(id);
-      if (res.code !== 200) {
-        // 回滚
-        setRecords(prevRecords);
-        setTotal(prevTotal);
-        message.error(res.message || '删除失败');
-      } else {
-        message.success('已删除');
-      }
-    } catch {
-      setRecords(prevRecords);
-      setTotal(prevTotal);
-      message.error('网络错误，删除失败');
-    }
-  }, [records, total, message]);
+  ], []); // 使用 ref 持有 handleDelete 最新引用，无需依赖变量
 
   const handleExport = useCallback(async () => {
     setExporting(true);
     try {
-      const blob = await exportRecords(
-        dateRange
-          ? { date_from: dateRange[0].format('YYYY-MM-DD'), date_to: dateRange[1].format('YYYY-MM-DD') }
-          : undefined,
+      await downloadExcel(
+        exportRecords(
+          dateRange
+            ? { date_from: dateRange[0].format('YYYY-MM-DD'), date_to: dateRange[1].format('YYYY-MM-DD') }
+            : undefined,
+        ),
+        '交易台账',
       );
-      downloadBlob(blob, `交易台账_${dayjs().format('YYYYMMDD')}.xlsx`);
       message.success('导出成功');
-    } catch {
-      message.error('导出失败');
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '导出失败');
     } finally {
       setExporting(false);
     }

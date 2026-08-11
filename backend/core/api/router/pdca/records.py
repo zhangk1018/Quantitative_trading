@@ -20,7 +20,7 @@ router = APIRouter(tags=["交易台账"])
 # ============================================================
 
 class TradingRecordCreate(BaseModel):
-    pdca_cycle_id: int
+    pdca_cycle_id: Optional[int] = None
     code: str = Field(..., min_length=1, max_length=32)
     security_name: Optional[str] = None
     long_short: str = Field(..., pattern="^(long|short)$")
@@ -43,14 +43,30 @@ class TradingRecordCreate(BaseModel):
 
 
 class TradingRecordUpdate(BaseModel):
+    code: Optional[str] = None
+    security_name: Optional[str] = None
+    long_short: Optional[str] = None
+    entry_date: Optional[date] = None
+    entry_price: Optional[float] = Field(None, gt=0)
+    quantity: Optional[int] = None
     exit_date: Optional[date] = None
     exit_price: Optional[float] = Field(None, gt=0)
+    commission_entry: Optional[float] = None
     commission_exit: Optional[float] = None
     slip_point: Optional[float] = None
     channel_height: Optional[float] = None
+    order_type: Optional[str] = None
+    trigger_source: Optional[str] = None
     exit_reason: Optional[str] = None
+    instrument_type: Optional[str] = None
+    settlement_currency: Optional[str] = None
+    trading_plan_id: Optional[int] = None
     actual_stop_loss: Optional[float] = None
-    security_name: Optional[str] = None
+    entry_score: Optional[float] = None
+    exit_score: Optional[float] = None
+    trade_score: Optional[float] = None
+    trade_grade: Optional[str] = None
+    gross_profit: Optional[float] = None
 
 
 # ============================================================
@@ -129,6 +145,17 @@ async def create_record(record: TradingRecordCreate):
                 if record.exit_date and record.exit_date < record.entry_date:
                     raise HTTPException(status_code=400, detail="40008: 出场日期不能早于进场日期")
 
+                # pdca_cycle_id 为空时自动获取当前活跃周期
+                if record.pdca_cycle_id is None:
+                    cur.execute(
+                        "SELECT id FROM pdca.pdca_cycle WHERE status = 'DO' ORDER BY id DESC LIMIT 1"
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        record.pdca_cycle_id = row[0]
+                    else:
+                        raise HTTPException(status_code=400, detail="40012: 没有活跃的 PDCA 周期，请先创建周期")
+
                 cur.execute(
                     """
                     INSERT INTO pdca.trading_record
@@ -174,8 +201,13 @@ async def update_record(record_id: int, record: TradingRecordUpdate):
 
             # 构建动态更新
             updates = {}
-            for field in ("exit_date", "exit_price", "commission_exit", "slip_point",
-                          "channel_height", "exit_reason", "actual_stop_loss", "security_name"):
+            for field in ("code", "security_name", "long_short", "entry_date", "entry_price",
+                          "quantity", "exit_date", "exit_price", "commission_entry",
+                          "commission_exit", "slip_point", "channel_height", "order_type",
+                          "trigger_source", "exit_reason", "instrument_type",
+                          "settlement_currency", "trading_plan_id", "actual_stop_loss",
+                          "entry_score", "exit_score", "trade_score", "trade_grade",
+                          "gross_profit"):
                 val = getattr(record, field, None)
                 if val is not None:
                     updates[field] = val
