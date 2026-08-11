@@ -1,5 +1,5 @@
 # 量量量化交易系统 - 定时任务 crontab
-# 安装: crontab temp/crontab_quant.txt
+# 安装: crontab /Users/zhangk/workspace/Quantitative_trading/backend/cron/crontab_quant.txt
 # 查看: crontab -l
 # 卸载: crontab -r
 #
