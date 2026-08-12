@@ -17,13 +17,12 @@ import {
   EditOutlined,
   LineChartOutlined,
   ImportOutlined,
-  SettingOutlined,
 } from '@ant-design/icons';
 import TradingRecordTable from './components/TradingRecordTable';
 import TradingDiaryEditor from './components/TradingDiaryEditor';
 import EquityCurve from './components/EquityCurve';
 import ImportExcel from './components/ImportExcel';
-import SystemConfig from './components/SystemConfig';
+
 
 const { Text } = Typography;
 
@@ -70,16 +69,6 @@ const PDCADashboard: React.FC = () => {
         </span>
       ),
       children: <ImportExcel />,
-    },
-    {
-      key: 'config',
-      label: (
-        <span className="flex items-center gap-2">
-          <SettingOutlined />
-          <span>系统配置</span>
-        </span>
-      ),
-      children: <SystemConfig />,
     },
   ];
 

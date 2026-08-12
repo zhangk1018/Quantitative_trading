@@ -13,11 +13,12 @@
 
 import React, { useState } from 'react';
 import { Card, Radio, Space, Typography, Divider, Tag, Tabs } from 'antd';
-import { BgColorsOutlined, CodeOutlined, ExperimentOutlined } from '@ant-design/icons';
+import { BgColorsOutlined, CodeOutlined, ExperimentOutlined, SettingOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
 import { useSettings, COLOR_SCHEMES, ColorScheme } from '@/shared/contexts/SettingsContext';
 import { CustomIndicatorManager } from './components/CustomIndicatorManager';
 import CombinedBacktestPanel from './components/CombinedBacktestPanel';
+import TradingConfigPanel from './components/TradingConfigPanel';
 
 const { Title, Text } = Typography;
 
@@ -135,6 +136,8 @@ const Config: React.FC = () => {
       next.set('tab', 'indicators');
     } else if (key === 'backtest') {
       next.set('tab', 'backtest');
+    } else if (key === 'trading') {
+      next.set('tab', 'trading');
     } else {
       next.delete('tab');
     }
@@ -178,6 +181,20 @@ const Config: React.FC = () => {
                 </span>
               ),
               children: <CombinedBacktestPanel />,
+            },
+            {
+              key: 'trading',
+              label: (
+                <span data-testid="config-tab-trading">
+                  <SettingOutlined className="mr-1" />
+                  交易设置
+                </span>
+              ),
+              children: (
+                <div className="h-full overflow-auto pr-1">
+                  <TradingConfigPanel />
+                </div>
+              ),
             },
             {
               key: 'indicators',

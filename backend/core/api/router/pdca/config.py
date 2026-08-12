@@ -33,10 +33,10 @@ async def get_config():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, config_key, config_value, numeric_value, bool_value,
+                SELECT DISTINCT ON (config_key) id, config_key, config_value, numeric_value, bool_value,
                        description, version, modified_at, modified_by, modify_reason
                 FROM pdca.system_config
-                ORDER BY config_key
+                ORDER BY config_key, id DESC
                 """
             )
             columns = [desc[0] for desc in cur.description]
@@ -51,9 +51,9 @@ async def update_config(update: ConfigUpdate):
         with conn.cursor() as cur:
             config_key = update.config_key
 
-            # 获取当前配置
+            # 获取当前配置（取最新版本，避免版本号冲突）
             cur.execute(
-                "SELECT id, config_key, config_value, numeric_value, bool_value, version FROM pdca.system_config WHERE config_key = %s",
+                "SELECT id, config_key, config_value, numeric_value, bool_value, version FROM pdca.system_config WHERE config_key = %s ORDER BY id DESC LIMIT 1",
                 (config_key,),
             )
             current = cur.fetchone()
