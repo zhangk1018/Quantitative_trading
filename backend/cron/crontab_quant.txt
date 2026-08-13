@@ -19,8 +19,8 @@ SHELL=/bin/bash
 # ─── 阶段3: 补全→基本面→指标→形态→信号→宽表→Parquet (18:15, 周一至周五) ───
 15 18 * * 1-5 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python backend/cron/daily_job_runner.py --stage 3 >> logs/cron/daily_stage3.stdout.log 2>> logs/cron/daily_stage3.stderr.log
 
-# ─── 周K线聚合 (19:00, 周一至周五) ───
+# ─── 周K线聚合 (19:00, 每日运行，脚本自动判断是否本周最后交易日) ───
 0 19 * * 1-5 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python backend/collector/etl/compute_bar_aggregation.py --cycle 1w >> logs/cron/weekly_kline.stdout.log 2>> logs/cron/weekly_kline.stderr.log
 
-# ─── 月K线聚合 (20:00, 周一至周五) ───
+# ─── 月K线聚合 (20:00, 每日运行，脚本自动判断是否本月最后交易日) ───
 0 20 * * 1-5 cd /Users/zhangk/workspace/Quantitative_trading && ./venv/bin/python backend/collector/etl/compute_bar_aggregation.py --cycle 1m >> logs/cron/monthly_kline.stdout.log 2>> logs/cron/monthly_kline.stderr.log

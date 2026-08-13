@@ -48,16 +48,22 @@ def get_db_conn():
 
 
 def is_last_trade_day_of_week(conn, target_date: date) -> bool:
-    """判断 target_date 是否为该周的最后一个交易日"""
+    """
+    基于 pretrade_date 判断 target_date 是否为该交易周的最后一个交易日。
+    使用 trade_week_id(连续交易日之间无 gap 则同周) 判断。
+    """
     with conn.cursor() as cur:
-        # 该周的最大交易日
         cur.execute("""
-            SELECT MAX(cal_date) FROM trade_calendar
-            WHERE is_open = 1
-              AND cal_date >= (SELECT MIN(cal_date) FROM trade_calendar
-                               WHERE is_open = 1 AND cal_date >= %s - INTERVAL '6 days')
-              AND cal_date <= %s
-        """, (target_date, target_date))
+            WITH trade_weeks AS (
+                SELECT cal_date,
+                    SUM(CASE WHEN pretrade_date != cal_date - 1 THEN 1 ELSE 0 END)
+                        OVER (ORDER BY cal_date) AS week_id
+                FROM trade_calendar
+                WHERE is_open = 1
+            )
+            SELECT MAX(cal_date) FROM trade_weeks
+            WHERE week_id = (SELECT week_id FROM trade_weeks WHERE cal_date = %s)
+        """, (target_date,))
         max_date = cur.fetchone()[0]
         return max_date == target_date
 
@@ -68,9 +74,8 @@ def is_last_trade_day_of_month(conn, target_date: date) -> bool:
         cur.execute("""
             SELECT MAX(cal_date) FROM trade_calendar
             WHERE is_open = 1
-              AND cal_date >= DATE_TRUNC('month', %s::date)
-              AND cal_date <= %s
-        """, (target_date, target_date))
+              AND DATE_TRUNC('month', cal_date) = DATE_TRUNC('month', %s::date)
+        """, (target_date,))
         max_date = cur.fetchone()[0]
         return max_date == target_date
 
@@ -82,22 +87,25 @@ def get_period_range(conn, target_date: date, cycle: str) -> tuple:
     """
     with conn.cursor() as cur:
         if cycle == '1w':
-            # 该周第一个交易日
             cur.execute("""
-                SELECT MIN(cal_date) FROM trade_calendar
-                WHERE is_open = 1
-                  AND cal_date >= %s - INTERVAL '6 days'
-                  AND cal_date <= %s
-            """, (target_date, target_date))
+                WITH trade_weeks AS (
+                    SELECT cal_date,
+                        SUM(CASE WHEN pretrade_date != cal_date - 1 THEN 1 ELSE 0 END)
+                            OVER (ORDER BY cal_date) AS week_id
+                    FROM trade_calendar
+                    WHERE is_open = 1
+                )
+                SELECT MIN(cal_date), MAX(cal_date) FROM trade_weeks
+                WHERE week_id = (SELECT week_id FROM trade_weeks WHERE cal_date = %s)
+            """, (target_date,))
         else:  # '1m'
             cur.execute("""
-                SELECT MIN(cal_date) FROM trade_calendar
+                SELECT MIN(cal_date), MAX(cal_date) FROM trade_calendar
                 WHERE is_open = 1
-                  AND cal_date >= DATE_TRUNC('month', %s::date)
-                  AND cal_date <= %s
-            """, (target_date, target_date))
-        start = cur.fetchone()[0]
-        return start, target_date
+                  AND DATE_TRUNC('month', cal_date) = DATE_TRUNC('month', %s::date)
+            """, (target_date,))
+        start, end = cur.fetchone()
+        return start, end
 
 
 def check_should_run(conn, target_date: date, cycle: str) -> tuple:

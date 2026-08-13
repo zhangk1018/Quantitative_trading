@@ -360,6 +360,84 @@ df = pro.daily_basic(ts_code='', trade_date='20180726',
 
 ---
 
+## 10. 交易日历 (trade_cal)
+
+**接口**: `trade_cal`  
+**描述**: 获取沪深股市交易日历，包括全部自然日、是否开市标记、上一交易日。  
+**积分要求**: 基础积分  
+**说明**: `exchange='SSE'` 代表上交所，A股统一用此参数。
+
+### 输入参数
+
+| 名称 | 类型 | 必选 | 描述 |
+|---|---|---|---|
+| exchange | str | N | 交易所代码: SSE上交所 SZSE深交所，默认SSE |
+| start_date | str | N | 开始日期 (YYYYMMDD) |
+| end_date | str | N | 结束日期 (YYYYMMDD) |
+| is_open | str | N | 是否交易: ""空返回全部日历, "1"仅交易日, "0"仅休市日 |
+
+### 输出参数
+
+| 字段 | 类型 | 描述 |
+|---|---|---|
+| exchange | str | 交易所代码 |
+| cal_date | str | 日历日期 (YYYYMMDD) |
+| is_open | int | 是否交易日: 1=交易日, 0=休市 |
+| pretrade_date | str | 上一个交易日 (YYYYMMDD) |
+
+### 接口示例
+
+```python
+# 获取 A 股全部日历（2000-2030，一次性拉取本地缓存）
+def get_a_share_cal(start="20000101", end="20301231"):
+    df_cal = pro.trade_cal(
+        exchange="SSE",
+        start_date=start,
+        end_date=end,
+        is_open="",         # 返回全部日历
+    )
+    df_cal["cal_date"] = pd.to_datetime(df_cal["cal_date"])
+    df_cal["pretrade_date"] = pd.to_datetime(df_cal["pretrade_date"])
+    return df_cal
+
+# 判断某天是否为交易日
+cal_df = get_a_share_cal()
+trade_set = set(cal_df.loc[cal_df["is_open"] == 1, "cal_date"].dt.date)
+def is_trade_day(dt):
+    if isinstance(dt, str):
+        dt = pd.to_datetime(dt).date()
+    return dt in trade_set
+
+# 获取某月全部交易日（用于月K线聚合）
+def get_month_trade_days(year, month):
+    mask = (cal_df["cal_date"].dt.year == year) & \
+           (cal_df["cal_date"].dt.month == month) & \
+           (cal_df["is_open"] == 1)
+    return cal_df.loc[mask, "cal_date"].sort_values().tolist()
+
+# 计算交易周 ID（用于日线聚合周K，比 pandas resample 更准确）
+trade_days = cal_df[cal_df["is_open"] == 1].copy()
+trade_days["is_week_start"] = trade_days["pretrade_date"] != \
+    (trade_days["cal_date"] - pd.Timedelta(days=1)).dt.strftime("%Y%m%d")
+trade_days["trade_week_id"] = trade_days["is_week_start"].cumsum()
+```
+
+### 工程最佳实践
+
+1. 一次性拉取 2000-2030，存本地 csv，程序启动加载，避免反复调用 API
+2. 每年年初更新一次（新一年节假日安排发布后）
+3. 做周/月K聚合时，股票日线 inner join 交易日历，过滤停牌无行情日期
+4. `pretrade_date` 可直接拿到上一交易日，不用自己写回溯逻辑
+
+### 常见坑
+
+- `is_open=1` 只返回交易日，丢失自然休假日，不适合做完整日历判断
+- `cal_date` 返回字符串 `'20260813'` 格式，务必转为 datetime 类型
+- 跨年、春节长假：`pretrade_date` 自动跨长假，不需要额外处理
+- 频率限制极严（1次/小时），务必一次性全量拉取本地缓存
+
+---
+
 ## 附录: 常用接口速查表
 
 | 功能 | 接口 | 积分要求 | 复权支持 | HTTP支持 |
@@ -372,6 +450,7 @@ df = pro.daily_basic(ts_code='', trade_date='20180726',
 | 复权行情 | `pro_bar` | 基础积分 | ✅ | ❌ |
 | 复权因子 | `adj_factor` | 2000+ | N/A | ✅ |
 | 每日指标 | `daily_basic` | 2000+ | N/A | ✅ |
+| 交易日历 | `trade_cal` | 基础积分 | N/A | ✅ |
 
 ---
 
