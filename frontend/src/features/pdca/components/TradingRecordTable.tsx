@@ -12,18 +12,18 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Table, Button, Space, Input, DatePicker, Tag, Popconfirm,
-  App, Skeleton,
+  App, Skeleton, Card,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { PlusOutlined, SearchOutlined, ReloadOutlined, ExportOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { DEFAULT_PAGE_SIZE } from '@/config/constants';
-import type { TradingRecord } from '../types';
+import type { TradingRecord, ExitSlip } from '../types';
 import {
   LONG_SHORT_LABELS, TRADE_GRADE_LABELS, EXIT_REASON_LABELS,
   INSTRUMENT_TYPE_LABELS,
 } from '../types';
-import { fetchRecords, deleteRecord, exportRecords, downloadExcel } from '../api';
+import { fetchRecords, deleteRecord, exportRecords, downloadExcel, fetchExitSlips } from '../api';
 import TradingRecordForm from './TradingRecordForm';
 
 const { RangePicker } = DatePicker;
@@ -41,6 +41,8 @@ const TradingRecordTable: React.FC = () => {
   const [editingRecord, setEditingRecord] = useState<TradingRecord | null>(null);
   const [exporting, setExporting] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [exitSlipsMap, setExitSlipsMap] = useState<Record<number, ExitSlip[]>>({});
+  const [loadingRecords, setLoadingRecords] = useState<Record<number, boolean>>({}); // 行展开加载锁
 
   // 使用 ref 保存不触发重新渲染的筛选值
   const loadParamsRef = useRef({ page, pageSize, codeFilter, dateRange });
@@ -114,6 +116,68 @@ const TradingRecordTable: React.FC = () => {
   const handleDeleteRef = useRef(handleDelete);
   handleDeleteRef.current = handleDelete;
 
+  // 展开行时加载子单数据（带加载锁，防止并发重复请求）
+  const handleExpand = useCallback(async (expanded: boolean, record: TradingRecord) => {
+    if (expanded && !exitSlipsMap[record.id] && !loadingRecords[record.id]) {
+      setLoadingRecords(prev => ({ ...prev, [record.id]: true }));
+      try {
+        const res = await fetchExitSlips(record.id);
+        if (res.code === 200) {
+          setExitSlipsMap(prev => ({ ...prev, [record.id]: res.data.items || [] }));
+        } else {
+          message.warning(res.message || '加载卖出记录失败');
+        }
+      } catch {
+        message.warning('加载卖出记录失败，请检查网络连接');
+      } finally {
+        setLoadingRecords(prev => ({ ...prev, [record.id]: false }));
+      }
+    }
+  }, [exitSlipsMap, loadingRecords, message]);
+
+  // 展开行渲染：子单明细表格
+  const expandedRowRender = useCallback((record: TradingRecord) => {
+    const slips = exitSlipsMap[record.id] || [];
+    if (slips.length === 0) {
+      return <div className="text-text-secondary text-center py-4">暂无卖出记录</div>;
+    }
+    const slipColumns: ColumnsType<ExitSlip> = [
+      { title: '出场日', dataIndex: 'exit_date', key: 'exit_date', width: 100 },
+      {
+        title: '出场价', dataIndex: 'exit_price', key: 'exit_price', width: 80, align: 'right',
+        render: (v: number) => (Number.isFinite(v) ? v.toFixed(2) : '-'),
+      },
+      {
+        title: '数量', dataIndex: 'quantity', key: 'quantity', width: 70, align: 'right',
+        render: (v: number) => (Number.isFinite(v) ? v.toLocaleString() : '-'),
+      },
+      {
+        title: '出场原因', dataIndex: 'exit_reason', key: 'exit_reason', width: 90,
+        render: (v: string | null) => (v ? EXIT_REASON_LABELS[v as keyof typeof EXIT_REASON_LABELS] : '-'),
+      },
+      {
+        title: '出场分', dataIndex: 'exit_score', key: 'exit_score', width: 70, align: 'right',
+        render: (v: number | null) => (v != null ? v.toFixed(1) : '-'),
+      },
+      {
+        title: '佣金', dataIndex: 'commission', key: 'commission', width: 70, align: 'right',
+        render: (v: number) => (Number.isFinite(v) ? v.toFixed(2) : '-'),
+      },
+    ];
+    return (
+      <Card size="small" className="bg-bg-secondary" bordered={false}>
+        <Table
+          columns={slipColumns}
+          dataSource={slips}
+          rowKey="id"
+          pagination={false}
+          size="small"
+          bordered
+        />
+      </Card>
+    );
+  }, [exitSlipsMap]);
+
   const columns: ColumnsType<TradingRecord> = useMemo(() => [
     {
       title: '代码',
@@ -182,6 +246,17 @@ const TradingRecordTable: React.FC = () => {
       render: (v: unknown) => {
         const n = Number(v);
         return Number.isFinite(n) ? n.toLocaleString() : '-';
+      },
+    },
+    {
+      title: '持仓',
+      key: 'position',
+      width: 80,
+      align: 'right',
+      render: (_, record) => {
+        const remain = record.remain_qty ?? record.quantity;
+        const total = record.quantity;
+        return `${remain}/${total}`;
       },
     },
     {
@@ -287,7 +362,9 @@ const TradingRecordTable: React.FC = () => {
         </Space>
       ),
     },
-  ], []); // 使用 ref 持有 handleDelete 最新引用，无需依赖变量
+  ], []); // 使用 ref 持有 handleDelete 最新引用（ref 跨渲染稳定），无需声明依赖变量
+
+  // 添加 AbortController 支持，取消未完成的请求
 
   const handleExport = useCallback(async () => {
     setExporting(true);
@@ -311,6 +388,7 @@ const TradingRecordTable: React.FC = () => {
   const handleFormSuccess = useCallback(() => {
     setFormOpen(false);
     setEditingRecord(null);
+    setExitSlipsMap({}); // 清除子单缓存，确保下次展开时重新加载
     loadData();
   }, [loadData]);
 
@@ -358,7 +436,12 @@ const TradingRecordTable: React.FC = () => {
           dataSource={records}
           rowKey="id"
           loading={loading}
-          scroll={{ x: 1400 }}
+          expandable={{
+            expandedRowRender,
+            onExpand: handleExpand,
+            rowExpandable: () => true,
+          }}
+          scroll={{ x: 1500 }}
           size="small"
           pagination={{
             current: page,

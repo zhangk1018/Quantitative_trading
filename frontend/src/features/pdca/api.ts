@@ -10,9 +10,10 @@
 
 import axios from 'axios';
 import { downloadBlob } from '@/utils/download';
-import { API_PREFIX, API_TIMEOUT } from '@/config/constants';
+import { API_PREFIX, API_TIMEOUT, HTTP_STATUS } from '@/config/constants';
 import type {
   ApiResponse,
+  ListData,
   PaginatedData,
   TradingRecord,
   TradingRecordFormData,
@@ -26,6 +27,8 @@ import type {
   PDCACycle,
   BrokerAdapter,
   ImportParseResult,
+  ExitSlip,
+  ExitSlipFormData,
 } from './types';
 
 // Axios 实例（统一配置）
@@ -52,7 +55,7 @@ client.interceptors.response.use(
       const status = error.response?.status;
       const serverMsg = error.response?.data?.message;
 
-      if (status === 401) {
+      if (status === HTTP_STATUS.UNAUTHORIZED) {
         // 未授权：清除本地 token，可考虑跳转登录页
         localStorage.removeItem('auth_token');
       }
@@ -134,7 +137,7 @@ export async function saveSnapshot(
 export async function fetchCapitalCurve(params?: {
   date_from?: string;
   date_to?: string;
-}): Promise<ApiResponse<CapitalCurvePoint[]>> {
+}): Promise<ApiResponse<ListData<CapitalCurvePoint>>> {
   const { data } = await client.get(`${BASE}/snapshots/curve`, { params });
   return data;
 }
@@ -147,7 +150,9 @@ export async function fetchCapitalCurve(params?: {
 export async function fetchDiaries(params: {
   record_id?: number;
   cycle_id?: number;
-}): Promise<ApiResponse<TradingDiary[]>> {
+  page?: number;
+  page_size?: number;
+}): Promise<ApiResponse<PaginatedData<TradingDiary>>> {
   const { data } = await client.get(`${BASE}/diaries`, { params });
   return data;
 }
@@ -187,7 +192,7 @@ export async function uploadDiaryAttachment(
 // ============================================================
 
 /** 获取系统配置 */
-export async function fetchConfig(): Promise<ApiResponse<SystemConfigItem[]>> {
+export async function fetchConfig(): Promise<ApiResponse<ListData<SystemConfigItem>>> {
   const { data } = await client.get(`${BASE}/config`);
   return data;
 }
@@ -275,7 +280,7 @@ export async function searchStocks(
 
 /** 获取可用券商适配器列表 */
 export async function fetchBrokerAdapters(): Promise<
-  ApiResponse<BrokerAdapter[]>
+  ApiResponse<ListData<BrokerAdapter>>
 > {
   const { data } = await client.get(`${BASE}/import/brokers`);
   return data;
@@ -288,8 +293,73 @@ export async function fetchBrokerAdapters(): Promise<
 /** 获取 PDCA 周期列表 */
 export async function fetchCycles(params?: {
   status?: string;
-}): Promise<ApiResponse<PDCACycle[]>> {
+}): Promise<ApiResponse<ListData<PDCACycle>>> {
   const { data } = await client.get(`${BASE}/cycles`, { params });
+  return data;
+}
+
+/** 新建 PDCA 周期 */
+export async function createCycle(payload: {
+  cycle_name: string;
+  cycle_type: string;
+  start_date: string;
+  end_date: string;
+  goal_text?: string | null;
+}): Promise<ApiResponse<PDCACycle>> {
+  const { data } = await client.post(`${BASE}/cycles`, payload);
+  return data;
+}
+
+/** 删除 PDCA 周期（仅 PLAN 状态） */
+export async function deleteCycle(id: number): Promise<ApiResponse<null>> {
+  const { data } = await client.delete(`${BASE}/cycles/${id}`);
+  return data;
+}
+
+/** 状态流转 */
+export async function transitionCycle(
+  id: number,
+  targetStatus: string,
+): Promise<ApiResponse<PDCACycle>> {
+  const { data } = await client.put(`${BASE}/cycles/${id}/transition`, {
+    target_status: targetStatus,
+  });
+  return data;
+}
+
+// ============================================================
+// 卖出子单（一买多卖）
+// ============================================================
+
+/** 获取买入单的所有卖出子单 */
+export async function fetchExitSlips(
+  recordId: number,
+): Promise<ApiResponse<ListData<ExitSlip>>> {
+  const { data } = await client.get(`${BASE}/records/${recordId}/exit-slips`);
+  return data;
+}
+
+/** 批量新增卖出子单 */
+export async function batchCreateExitSlips(
+  recordId: number,
+  slips: ExitSlipFormData[],
+): Promise<ApiResponse<{ record_id: number; remain_qty: number; gross_profit: number }>> {
+  const { data } = await client.post(`${BASE}/records/${recordId}/exit-slips/batch`, { slips });
+  return data;
+}
+
+/** 修改卖出子单 */
+export async function updateExitSlip(
+  slipId: number,
+  payload: Partial<ExitSlipFormData>,
+): Promise<ApiResponse<ExitSlip>> {
+  const { data } = await client.put(`${BASE}/exit-slips/${slipId}`, payload);
+  return data;
+}
+
+/** 删除卖出子单 */
+export async function deleteExitSlip(slipId: number): Promise<ApiResponse<null>> {
+  const { data } = await client.delete(`${BASE}/exit-slips/${slipId}`);
   return data;
 }
 

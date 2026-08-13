@@ -17,11 +17,13 @@ import {
   EditOutlined,
   LineChartOutlined,
   ImportOutlined,
+  RadarChartOutlined,
 } from '@ant-design/icons';
 import TradingRecordTable from './components/TradingRecordTable';
 import TradingDiaryEditor from './components/TradingDiaryEditor';
 import EquityCurve from './components/EquityCurve';
 import ImportExcel from './components/ImportExcel';
+import CycleOverview from './components/CycleOverview';
 
 
 const { Text } = Typography;
@@ -59,6 +61,16 @@ const PDCADashboard: React.FC = () => {
         </span>
       ),
       children: <EquityCurve />,
+    },
+    {
+      key: 'cycles',
+      label: (
+        <span className="flex items-center gap-2">
+          <RadarChartOutlined />
+          <span>周期总览</span>
+        </span>
+      ),
+      children: <CycleOverview />,
     },
     {
       key: 'import',

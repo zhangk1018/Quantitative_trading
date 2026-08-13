@@ -36,7 +36,7 @@ const ImportExcel: React.FC = () => {
     try {
       const res = await fetchBrokerAdapters();
       if (res.code === 200) {
-        setBrokers(res.data?.items || []);
+        setBrokers(res.data.items || []);
         setBrokersLoaded(true);
       }
     } catch (err) { message.error(err instanceof Error ? err.message : '加载券商列表失败'); }

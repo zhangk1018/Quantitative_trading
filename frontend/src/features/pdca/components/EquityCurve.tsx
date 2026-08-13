@@ -28,7 +28,7 @@ const EquityCurve: React.FC = () => {
     setLoading(true);
     try {
       const curveRes = await fetchCapitalCurve();
-      if (curveRes.code === 200) setCurveData(curveRes.data?.items || []);
+      if (curveRes.code === 200) setCurveData(curveRes.data.items || []);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '加载资金曲线失败');
     } finally {
@@ -100,7 +100,7 @@ const EquityCurve: React.FC = () => {
         onCancel={() => { setFormOpen(false); form.resetFields(); }}
         onOk={handleSave}
         confirmLoading={saving}
-        destroyOnHidden
+        destroyOnClose
         okText="保存"
         cancelText="取消"
       >

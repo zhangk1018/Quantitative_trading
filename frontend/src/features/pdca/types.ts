@@ -27,6 +27,7 @@ export interface TradingRecord {
   entry_price: number;
   exit_price: number | null;
   quantity: number;
+  remain_qty: number | null;   // 新增：剩余持仓量
   commission_entry: number;
   commission_exit: number;
   slip_point: number;
@@ -40,6 +41,7 @@ export interface TradingRecord {
   actual_stop_loss: number | null;
   exit_reason: ExitReason | null;
   settlement_currency: string;
+  exit_slips?: ExitSlip[];     // 新增：卖出子单列表（展开时加载）
   created_at: string;
   updated_at: string;
 }
@@ -68,6 +70,33 @@ export interface TradingRecordFormData {
   actual_stop_loss?: number;
   exit_reason?: ExitReason;
   pdca_cycle_id?: number;
+}
+
+// --- 卖出子单（一买多卖） ---
+export interface ExitSlip {
+  id: number;
+  record_id: number;
+  exit_date: string;
+  exit_price: number;
+  quantity: number;
+  commission: number;
+  exit_reason: ExitReason | null;
+  exit_score: number | null;
+  actual_stop_loss: number | null;
+  slip_point: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExitSlipFormData {
+  exit_date: string;
+  exit_price: number;
+  quantity: number;
+  commission?: number;
+  exit_reason?: ExitReason;
+  exit_score?: number;
+  actual_stop_loss?: number;
+  slip_point?: number;
 }
 
 // --- 交易日记 ---
@@ -149,11 +178,23 @@ export interface StockSearchResult {
 }
 
 // --- PDCA 周期 ---
+export type CycleType = 'day' | 'week' | 'month' | 'quarter' | 'year';
+
+export const CYCLE_TYPE_LABELS: Record<CycleType, string> = {
+  day: '日周期',
+  week: '周周期',
+  month: '月周期',
+  quarter: '季周期',
+  year: '年周期',
+};
+
+export const CYCLE_TYPE_OPTIONS = Object.entries(CYCLE_TYPE_LABELS).map(([value, label]) => ({ value, label }));
+
 export interface PDCACycle {
   id: number;
   account_id: number;
   prev_cycle_id: number | null;
-  cycle_type: 'week' | 'month';
+  cycle_type: CycleType;
   cycle_name: string;
   status: CycleStatus;
   start_date: string;
@@ -196,6 +237,11 @@ export interface PaginatedData<T> {
   total: number;
   page: number;
   page_size: number;
+}
+
+/** 非分页列表响应（后端统一返回 {items: T[]}） */
+export interface ListData<T> {
+  items: T[];
 }
 
 // --- 枚举标签映射 ---

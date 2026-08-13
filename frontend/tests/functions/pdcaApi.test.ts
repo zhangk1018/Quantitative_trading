@@ -103,13 +103,13 @@ describe('PDCA API', () => {
   it('fetchCapitalCurve 返回资金曲线数据', async () => {
     const res = await fetchCapitalCurve();
     expect(res.code).toBe(200);
-    expect(res.data.length).toBeGreaterThan(0);
-    expect(res.data[0]).toHaveProperty('date');
-    expect(res.data[0]).toHaveProperty('total_asset');
-    expect(res.data[0]).toHaveProperty('adjusted_nav');
-    expect(res.data[0]).toHaveProperty('deposit');
-    expect(res.data[0]).toHaveProperty('withdrawal');
-    expect(res.data[0]).toHaveProperty('realized_pnl');
+    expect(res.data.items.length).toBeGreaterThan(0);
+    expect(res.data.items[0]).toHaveProperty('date');
+    expect(res.data.items[0]).toHaveProperty('total_asset');
+    expect(res.data.items[0]).toHaveProperty('adjusted_nav');
+    expect(res.data.items[0]).toHaveProperty('deposit');
+    expect(res.data.items[0]).toHaveProperty('withdrawal');
+    expect(res.data.items[0]).toHaveProperty('realized_pnl');
   });
 
   // ── fetchCycles ──
@@ -117,14 +117,14 @@ describe('PDCA API', () => {
   it('fetchCycles 按状态筛选', async () => {
     const res = await fetchCycles({ status: 'DO' });
     expect(res.code).toBe(200);
-    expect(res.data.length).toBeGreaterThan(0);
-    expect(res.data[0].status).toBe('DO');
+    expect(res.data.items.length).toBeGreaterThan(0);
+    expect(res.data.items[0].status).toBe('DO');
   });
 
   it('fetchCycles 返回空列表当无匹配状态', async () => {
     const res = await fetchCycles({ status: 'CHECK' });
     expect(res.code).toBe(200);
-    expect(res.data.length).toBe(0);
+    expect(res.data.items.length).toBe(0);
   });
 
   // ── searchStocks ──
@@ -156,9 +156,9 @@ describe('PDCA API', () => {
   it('fetchBrokerAdapters 返回券商列表', async () => {
     const res = await fetchBrokerAdapters();
     expect(res.code).toBe(200);
-    expect(res.data.length).toBeGreaterThan(0);
-    expect(res.data[0]).toHaveProperty('broker_name');
-    expect(res.data[0]).toHaveProperty('display_name');
+    expect(res.data.items.length).toBeGreaterThan(0);
+    expect(res.data.items[0]).toHaveProperty('broker_name');
+    expect(res.data.items[0]).toHaveProperty('display_name');
   });
 
   // ── fetchConfig ──
@@ -166,8 +166,8 @@ describe('PDCA API', () => {
   it('fetchConfig 返回系统配置', async () => {
     const res = await fetchConfig();
     expect(res.code).toBe(200);
-    expect(res.data.length).toBeGreaterThan(0);
-    expect(res.data[0]).toHaveProperty('config_key');
+    expect(res.data.items.length).toBeGreaterThan(0);
+    expect(res.data.items[0]).toHaveProperty('config_key');
   });
 
   // ── updateConfig ──

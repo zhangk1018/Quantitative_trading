@@ -108,3 +108,16 @@
 [量量→方舟 2026-08-10 14:10] 协作单 [10.0-PDCA-PHASE1-BACKEND-20260810] 状态变更: ASSIGNED→VERIFY（修复完成：迁移脚本已执行（15张表+初始数据）、ORM模型8个、API路由18个端点全部通过自测。修复了 `$N` 参数占位符兼容性问题（records.py/diaries.py）和股票搜索列名错误。请方舟前端验证。）
 [方舟→量量 2026-08-10 15:30] 协作单 [10.0-PDCA-PHASE1-BACKEND-20260810] 状态变更: VERIFY→CLOSED（方舟验证通过：数据库15张表全部创建 ✅、初始数据正确（1账户/8配置/3模板/2券商）✅、API端点全部200 ✅（config 8条/records分页/curve净值/cycles/brokers/stocks搜索/CRUD创建）。请方舟下一步编写 PDCA 交易系统使用说明书。）
 [量量→方舟 2026-08-11 09:30] 协作单 [9.0-WEEKLY-MONTHLY-KLINE-20260809] 状态变更: VERIFY→CLOSED（量量验证通过：后端API周K线500+条✅、月K线139条✅；浏览器自测日K/周K/月K三段切换均正常渲染，无JS错误✅）
+[方舟→量量 2026-08-13 09:30] 协作单 [11.0-PDCA-CYCLE-CRUD-STATEMACHINE-20260813] 状态变更: NEW（PDCA 周期 CRUD + 状态机引擎，含 POST/PUT/DELETE cycles + 状态流转 transition 接口 + 边界条件检查。请量量认领。）
+[量量→方舟 2026-08-13 07:56] 协作单 [11.0-PDCA-CYCLE-CRUD-STATEMACHINE-20260813] 状态变更: NEW→ASSIGNED（量量认领，开始实现 POST/PUT/DELETE cycles + 状态机 transition 逻辑）
+[量量→方舟 2026-08-13 08:00] 协作单 [11.0-PDCA-CYCLE-CRUD-STATEMACHINE-20260813] 状态变更: ASSIGNED→VERIFY（修复完成：POST/PUT/DELETE cycles + 状态机 transition 全部实现，自测通过。请方舟前端验证。）
+[量量→方舟 2026-08-13 08:16] 协作单 [12.0-API-RESPONSE-TYPE-UNIFY-20260813] 状态变更: NEW→ASSIGNED（量量认领，统一方案：所有列表接口返回 {items: T[], total?: number} 包裹结构）
+[量量→方舟 2026-08-13 08:40] 协作单 [12.0-API-RESPONSE-TYPE-UNIFY-20260813] 状态变更: ASSIGNED→VERIFY（修复完成：后端已统一，前端修复4个API类型+3个组件解构+mock+测试，tsc 0新错。请方舟前端验证。）
+[方舟→量量 2026-08-13 08:40] 协作单 [11.0-PDCA-CYCLE-CRUD-STATEMACHINE-20260813] 状态变更: VERIFY→CLOSED（方舟验证通过：6项验收全部通过——POST新建✅、PUT更新✅、DELETE删除✅、transition状态流转✅、非法跳转拦截✅、前端构建✅）
+[方舟→量量 2026-08-13 10:00] 协作单 [12.0-API-RESPONSE-TYPE-UNIFY-20260813] 状态变更: NEW（前端代码审阅发现列表接口响应结构不一致，需协商统一后修复。请量量确认后端各列表接口的实际返回结构，统一约定后方舟修复前端类型定义。）
+[量量→方舟 2026-08-13 09:00] 协作单 [13.0-EXIT-SLIP-ONE-BUY-MULTI-SELL-20260813] 状态变更: NEW→ASSIGNED（量量认领，开始实现 trading_exit_slip 表 + remain_qty + 迁移 + API 路由）
+[量量→方舟 2026-08-13 12:00] 协作单 [12.0-API-RESPONSE-TYPE-UNIFY-20260813] 状态变更: NEW→ASSIGNED（量量确认后端已统一返回 {items: T[], total?: number}，无需修改后端。问题在前端类型定义和组件解构不一致。）
+[方舟→量量 2026-08-13 12:29] 协作单 [12.0-API-RESPONSE-TYPE-UNIFY-20260813] 状态变更: VERIFY→CLOSED（方舟验证通过：6项全部通过——ListData类型✅、api.ts同步✅、4组件移除as any✅、mock同步✅、19测试全通过✅、tsc 0错误✅）
+[方舟→量量 2026-08-13 13:35] 协作单 [13.0-EXIT-SLIP-ONE-BUY-MULTI-SELL-20260813] 状态变更: NEW（一买多卖分批卖出，买入主单+卖出子单两层模型。需求确认后开单：包含完整SQL、SQLAlchemy、Pydantic、API路由。请量量认领实现后端数据库+API）
+[量量→方舟 2026-08-13 18:30] 协作单 [13.0-EXIT-SLIP-ONE-BUY-MULTI-SELL-20260813] 状态变更: ASSIGNED→VERIFY（量量开发完成：创建 trading_exit_slip 表 ✅、新增 remain_qty 列 ✅、存量数据迁移 ✅、实现 GET/POST/PUT/DELETE/batch 全部 5 个 API ✅、清理 records.py 冗余代码 ✅、7 项自测全部通过 ✅。请方舟前端验证类型定义、联调界面。）
+[方舟→量量 2026-08-13 23:30] 协作单 [13.0-EXIT-SLIP-ONE-BUY-MULTI-SELL-20260813] 状态变更: VERIFY→CLOSED（方舟验证通过：数据库表结构/索引/数据迁移均正确，4 个 API 路由实现完整，事务逻辑含 remain_qty 校验和 gross_profit 重算。前端 TradingRecordForm 已集成子单管理，TradingRecordTable 支持行展开显示子单明细。TypeScript 编译检查通过 ✅）

@@ -14,7 +14,7 @@
  */
 
 import { http, HttpResponse } from 'msw';
-import type { ApiResponse, PaginatedData, TradingRecord, TradingRecordFormData, BrokerAdapter, ImportParseResult, SystemConfigItem, CapitalCurvePoint, TradingDiary } from '@/features/pdca/types';
+import type { ApiResponse, ListData, PaginatedData, TradingRecord, TradingRecordFormData, BrokerAdapter, ImportParseResult, SystemConfigItem, CapitalCurvePoint, TradingDiary } from '@/features/pdca/types';
 
 // ── Mock 初始数据 ──
 
@@ -166,13 +166,15 @@ export const pdcaHandlers = [
   // ── 资金快照 ──
 
   http.get('/api/pdca/snapshots/curve', () => {
-    const response: ApiResponse<CapitalCurvePoint[]> = {
+    const response: ApiResponse<ListData<CapitalCurvePoint>> = {
       code: 200,
       message: 'ok',
-      data: [
-        { date: '2026-08-01', total_asset: 1000000, adjusted_nav: 1000000, deposit: 0, withdrawal: 0, realized_pnl: 0 },
-        { date: '2026-08-05', total_asset: 1013000, adjusted_nav: 1013000, deposit: 0, withdrawal: 0, realized_pnl: 1300 },
-      ],
+      data: {
+        items: [
+          { date: '2026-08-01', total_asset: 1000000, adjusted_nav: 1000000, deposit: 0, withdrawal: 0, realized_pnl: 0 },
+          { date: '2026-08-05', total_asset: 1013000, adjusted_nav: 1013000, deposit: 0, withdrawal: 0, realized_pnl: 1300 },
+        ],
+      },
     };
     return HttpResponse.json(response);
   }),
@@ -187,8 +189,8 @@ export const pdcaHandlers = [
   // ── 交易日记 ──
 
   http.get('/api/pdca/diaries', () => {
-    const response: ApiResponse<TradingDiary[]> = {
-      code: 200, message: 'ok', data: [],
+    const response: ApiResponse<PaginatedData<TradingDiary>> = {
+      code: 200, message: 'ok', data: { items: [], total: 0, page: 1, page_size: 50 },
     };
     return HttpResponse.json(response);
   }),
@@ -217,20 +219,22 @@ export const pdcaHandlers = [
   // ── 系统配置 ──
 
   http.get('/api/pdca/config', () => {
-    const response: ApiResponse<SystemConfigItem[]> = {
+    const response: ApiResponse<ListData<SystemConfigItem>> = {
       code: 200, message: 'ok',
-      data: [
-        {
-          id: 1, config_key: 'risk_per_trade', config_value: '2', numeric_value: 2, bool_value: null,
-          description: '单笔风险上限', version: '1.0', modified_at: '2026-08-01T00:00:00Z',
-          modified_by: null, modify_reason: '',
-        },
-        {
-          id: 2, config_key: 'risk_per_month', config_value: '6', numeric_value: 6, bool_value: null,
-          description: '月度总风险上限', version: '1.0', modified_at: '2026-08-01T00:00:00Z',
-          modified_by: null, modify_reason: '',
-        },
-      ],
+      data: {
+        items: [
+          {
+            id: 1, config_key: 'risk_per_trade', config_value: '2', numeric_value: 2, bool_value: null,
+            description: '单笔风险上限', version: '1.0', modified_at: '2026-08-01T00:00:00Z',
+            modified_by: null, modify_reason: '',
+          },
+          {
+            id: 2, config_key: 'risk_per_month', config_value: '6', numeric_value: 6, bool_value: null,
+            description: '月度总风险上限', version: '1.0', modified_at: '2026-08-01T00:00:00Z',
+            modified_by: null, modify_reason: '',
+          },
+        ],
+      },
     };
     return HttpResponse.json(response);
   }),
@@ -249,12 +253,12 @@ export const pdcaHandlers = [
   // ── 券商导入 ──
 
   http.get('/api/pdca/import/brokers', () => {
-    const response: ApiResponse<BrokerAdapter[]> = {
+    const response: ApiResponse<ListData<BrokerAdapter>> = {
       code: 200, message: 'ok',
-      data: [
+      data: { items: [
         { id: 1, broker_name: 'ht', display_name: '华泰证券', is_active: true, column_mapping: { code: '证券代码' }, date_format: 'YYYY-MM-DD', skip_rows: 1 },
         { id: 2, broker_name: 'citics', display_name: '中信证券', is_active: true, column_mapping: { code: '股票代码' }, date_format: 'YYYY-MM-DD', skip_rows: 2 },
-      ],
+      ] },
     };
     return HttpResponse.json(response);
   }),
@@ -303,7 +307,7 @@ export const pdcaHandlers = [
     const cycles = status === 'DO'
       ? [{ id: 1, account_id: 1, prev_cycle_id: null, cycle_type: 'week' as const, cycle_name: 'W24-33', status: 'DO' as const, start_date: '2026-08-01', end_date: '2026-08-07', goal_text: null, created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z' }]
       : [];
-    return HttpResponse.json({ code: 200, message: 'ok', data: cycles });
+    return HttpResponse.json({ code: 200, message: 'ok', data: { items: cycles } });
   }),
 
   // ── 导出 / 备份 ──

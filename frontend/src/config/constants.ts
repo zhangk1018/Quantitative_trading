@@ -22,3 +22,13 @@ export const VALID_EXCEL_MAGICS = [XLSX_MAGIC, XLS_MAGIC];
 
 // API 超时时间（毫秒）
 export const API_TIMEOUT = 30000;
+
+// HTTP 状态码
+export const HTTP_STATUS = {
+  SUCCESS: 200,
+  UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  BAD_REQUEST: 400,
+  INTERNAL_ERROR: 500,
+} as const;

@@ -244,3 +244,5 @@ async def delete_record(record_id: int):
             return ApiResponse(code=200, message="success", data={"id": record_id})
 
 
+
+

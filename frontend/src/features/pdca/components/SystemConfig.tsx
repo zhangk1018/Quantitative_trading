@@ -37,7 +37,7 @@ const SystemConfig: React.FC = () => {
     setLoading(true);
     try {
       const res = await fetchConfig();
-      if (res.code === 200) setConfigs(Array.isArray(res.data) ? res.data : (res.data?.items || []));
+      if (res.code === 200) setConfigs(res.data.items || []);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '加载配置失败');
     } finally {

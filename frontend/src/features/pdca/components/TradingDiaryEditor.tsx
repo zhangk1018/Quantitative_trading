@@ -8,7 +8,7 @@
  * - 日记列表查看
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Button, Input, Select, Upload, List, Typography, App, Space, Tag, Empty, Spin, Alert,
 } from 'antd';
@@ -17,6 +17,7 @@ import dayjs from 'dayjs';
 import type { TradingDiary, TradingDiaryFormData, TradingRecord, PDCACycle } from '../types';
 import { fetchDiaries, createDiary, updateDiary, uploadDiaryAttachment, fetchCycles } from '../api';
 import { fetchRecords } from '../api';
+import { DEFAULT_PAGE_SIZE } from '@/config/constants';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -33,15 +34,19 @@ const TradingDiaryEditor: React.FC = () => {
   const [reviewText, setReviewText] = useState('');
   const [editingDiaryId, setEditingDiaryId] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
+  const mountedRef = useRef(true);
 
   // 获取当前活跃周期（DO 状态），用于日记关联
   const loadActiveCycle = useCallback(async () => {
     try {
       const res = await fetchCycles({ status: 'DO' });
-      if (res.code === 200 && res.data?.items?.length > 0) {
-        setActiveCycle(res.data.items[0]);
+      if (!mountedRef.current) return;
+      if (res.code === 200) {
+        const items = res.data.items || [];
+        if (items.length > 0) setActiveCycle(items[0]);
       }
     } catch (err) {
+      if (!mountedRef.current) return;
       message.error(err instanceof Error ? err.message : '获取当前周期失败');
     }
   }, [message]);
@@ -49,9 +54,11 @@ const TradingDiaryEditor: React.FC = () => {
   // 加载交易记录列表（用于下拉选择）
   const loadRecords = useCallback(async () => {
     try {
-      const res = await fetchRecords({ page_size: 200, sort_by: 'entry_date', sort_asc: false });
+      const res = await fetchRecords({ page_size: DEFAULT_PAGE_SIZE, sort_by: 'entry_date', sort_asc: false });
+      if (!mountedRef.current) return;
       if (res.code === 200) setRecords(res.data.items || []);
     } catch (err) {
+      if (!mountedRef.current) return;
       message.error(err instanceof Error ? err.message : '加载交易记录失败');
     }
   }, [message]);
@@ -61,16 +68,22 @@ const TradingDiaryEditor: React.FC = () => {
     setLoading(true);
     try {
       const res = await fetchDiaries({});
-      if (res.code === 200) setDiaries(res.data?.items || []);
+      if (!mountedRef.current) return;
+      if (res.code === 200) setDiaries(res.data.items || []);
     } catch (err) {
+      if (!mountedRef.current) return;
       message.error(err instanceof Error ? err.message : '加载日记列表失败');
-    } finally { setLoading(false); }
+    } finally {
+      if (mountedRef.current) setLoading(false);
+    }
   }, [message]);
 
   useEffect(() => {
+    mountedRef.current = true;
     loadActiveCycle();
     loadRecords();
     loadDiaries();
+    return () => { mountedRef.current = false; };
   }, [loadActiveCycle, loadRecords, loadDiaries]);
 
   const handleSave = useCallback(async () => {
