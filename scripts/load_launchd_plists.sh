@@ -4,7 +4,7 @@
 
 set -e
 
-PLIST_DIR="/Users/zhangk/workspace/Quantitative_trading/scripts/launchctl"
+PLIST_DIR="/Volumes/MyData/Quantitative_trading/scripts/launchctl"
 
 echo "=== 卸载旧任务（如有）==="
 for f in "$PLIST_DIR"/com.quant.daily_job_runner.stage*.plist; do

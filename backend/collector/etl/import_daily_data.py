@@ -922,6 +922,7 @@ class DailyDataImporter(BaseDataImporter):
             stats["rows_affected"] += tr
 
         print(f'TASK_RESULT:{json.dumps({"rows_affected": stats["rows_affected"], "extra_metrics": stats})}')
+        sys.stdout.flush()
         return stats
 
     def _get_latest_trade_date(self) -> Optional[str]:
@@ -1052,6 +1053,8 @@ def main():
             task_name = f"日线数据导入_增量_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             importer.create_task(task_name, {'mode': 'incremental'})
             importer.incremental_import(parallel=not args.no_parallel)
+            sys.stdout.flush()
+            sys.stderr.flush()
         else:
             if args.code:
                 task_name = f"日线数据导入_单股_{args.code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"

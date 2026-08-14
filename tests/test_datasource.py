@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """测试 datasource.get_kline """
 import sys
-sys.path.insert(0, '/Users/zhangk/workspace/Quantitative_trading/backend')
+sys.path.insert(0, '/Volumes/MyData/Quantitative_trading/backend')
 
 from collector.datasource.baostock import BaostockDataSource
 import pandas as pd

@@ -233,7 +233,7 @@ class TestSnapshotServiceIntegration:
 
         pg_password = os.environ.get('PG_PASSWORD', '')
         if not pg_password:
-            env_path = '/Users/zhangk/workspace/Quantitative_trading/.env'
+            env_path = '/Volumes/MyData/Quantitative_trading/.env'
             with open(env_path) as f:
                 for line in f:
                     if line.startswith('PG_PASSWORD'):

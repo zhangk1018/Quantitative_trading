@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """测试保存不同格式的 trade_date """
 import sys
-sys.path.insert(0, '/Users/zhangk/workspace/Quantitative_trading/backend')
+sys.path.insert(0, '/Volumes/MyData/Quantitative_trading/backend')
 
 from collector.datasource.baostock import BaostockDataSource
 from collector.storage.postgresql_storage import PostgreSQLStorage

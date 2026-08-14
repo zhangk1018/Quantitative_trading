@@ -40,6 +40,11 @@ class TradingRecordCreate(BaseModel):
     settlement_currency: str = 'CNY'
     trading_plan_id: Optional[int] = None
     actual_stop_loss: Optional[float] = None
+    entry_score: Optional[float] = None
+    exit_score: Optional[float] = None
+    trade_score: Optional[float] = None
+    trade_grade: Optional[str] = None
+    gross_profit: Optional[float] = None
 
 
 class TradingRecordUpdate(BaseModel):
@@ -162,8 +167,10 @@ async def create_record(record: TradingRecordCreate):
                         (pdca_cycle_id, code, security_name, long_short, entry_date, entry_price,
                          quantity, exit_date, exit_price, commission_entry, commission_exit,
                          slip_point, channel_height, order_type, trigger_source, exit_reason,
-                         instrument_type, settlement_currency, trading_plan_id, actual_stop_loss)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         instrument_type, settlement_currency, trading_plan_id, actual_stop_loss,
+                         entry_score, exit_score, trade_score, trade_grade, gross_profit)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -174,6 +181,8 @@ async def create_record(record: TradingRecordCreate):
                         record.order_type, record.trigger_source, record.exit_reason,
                         record.instrument_type, record.settlement_currency,
                         record.trading_plan_id, record.actual_stop_loss,
+                        record.entry_score, record.exit_score, record.trade_score,
+                        record.trade_grade, record.gross_profit,
                     ),
                 )
                 record_id = cur.fetchone()[0]

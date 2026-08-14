@@ -6,22 +6,25 @@
  * - 数值范围校验（前后端双重）
  * - 日期先后校验（出场日期 > 入场日期）
  * - 支持新增和编辑模式
- * - 卖出子单管理（一买多卖）：支持批量新增、编辑、删除
+ * - 卖出子单管理（一买多卖）：委托 ExitSlipList / ExitSlipModal 子组件
+ * - 自动计算进场得分、出场得分、总得分、等级（《走进我的交易室》原著公式）
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Modal, Form, Input, InputNumber, DatePicker, Select, App, Row, Col, AutoComplete,
-  Button, Space, Table, Popconfirm, Card,
 } from 'antd';
-import { PlusOutlined, EditOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { TradingRecord, TradingRecordFormData, StockSearchResult, ExitSlip, ExitSlipFormData } from '../types';
 import {
   INSTRUMENT_TYPE_OPTIONS, LONG_SHORT_OPTIONS, ORDER_TYPE_OPTIONS,
-  TRADE_GRADE_OPTIONS, EXIT_REASON_OPTIONS, TRIGGER_SOURCE_OPTIONS,
+  TRADE_GRADE_OPTIONS, TRIGGER_SOURCE_OPTIONS,
 } from '../types';
-import { createRecord, updateRecord, searchStocks, fetchExitSlips, updateExitSlip, deleteExitSlip, batchCreateExitSlips } from '../api';
+import { createRecord, updateRecord, searchStocks, fetchExitSlips, updateExitSlip, deleteExitSlip, batchCreateExitSlips, fetchDailyOHLC } from '../api';
+import type { DailyOHLC } from '../api';
+import { calcEntryScore, calcExitScore, calcChannelHeight, calcTradeScore, calcTradeGrade } from '../utils/scoreCalculator';
+import ExitSlipList from './ExitSlipList';
+import ExitSlipModal from './ExitSlipModal';
 
 interface Props {
   open: boolean;
@@ -29,8 +32,6 @@ interface Props {
   onClose: () => void;
   onSuccess: () => void;
 }
-
-const { Option } = Select;
 
 const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }) => {
   const { message } = App.useApp();
@@ -42,10 +43,137 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
   const [exitSlipModalOpen, setExitSlipModalOpen] = useState(false);
   const [editingSlip, setEditingSlip] = useState<ExitSlip | null>(null);
   const [snapshotMaxSellQty, setSnapshotMaxSellQty] = useState(0);
-  const [exitSlipForm] = Form.useForm<ExitSlipFormData>();
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tempIdCounterRef = useRef(0);
   const isEdit = !!record;
+
+  // ────────── 自动计算得分 — 监听表单字段 ──────────
+
+  const code = Form.useWatch('code', form);
+  const entryDate = Form.useWatch('entry_date', form);
+  const exitDate = Form.useWatch('exit_date', form);
+  const entryPrice = Form.useWatch('entry_price', form);
+  const exitPrice = Form.useWatch('exit_price', form);
+  const longShort = Form.useWatch('long_short', form);
+
+  const [entryDayOHLC, setEntryDayOHLC] = useState<DailyOHLC | null>(null);
+  const [exitDayOHLC, setExitDayOHLC] = useState<DailyOHLC | null>(null);
+  const initialLoadRef = useRef(true);
+
+  // --- 从卖出子单推导有效出场数据（B-1口径：加权平均出场价 + 末笔子单日期） ---
+  const slipDerivedData = useMemo(() => {
+    if (exitSlips.length === 0) return null;
+    const totalQty = exitSlips.reduce((sum, s) => sum + s.quantity, 0);
+    if (totalQty === 0) return null;
+    const weightedPrice = exitSlips.reduce((sum, s) => sum + s.exit_price * s.quantity, 0) / totalQty;
+    const dates = exitSlips.map(s => s.exit_date).sort();
+    return {
+      exitPrice: Math.round(weightedPrice * 10000) / 10000,
+      exitDate: dates[dates.length - 1],
+    };
+  }, [exitSlips]);
+
+  // 有效出场日期（子单优先 → 手动输入兜底）
+  const effectiveExitDate = useMemo(() => {
+    if (slipDerivedData) return slipDerivedData.exitDate;
+    if (exitDate) return dayjs.isDayjs(exitDate) ? exitDate.format('YYYY-MM-DD') : exitDate;
+    return null;
+  }, [slipDerivedData, exitDate]);
+
+  // 有效出场价（子单优先 → 手动输入兜底）
+  const effectiveExitPrice = useMemo(() => {
+    if (slipDerivedData) return slipDerivedData.exitPrice;
+    if (exitPrice != null) return Number(exitPrice);
+    return null;
+  }, [slipDerivedData, exitPrice]);
+
+  // 初始加载完成后，标记允许自动计算（编辑模式不覆盖已有值）
+  useEffect(() => {
+    if (open) {
+      // 延迟到下一帧，确保表单初始值已经 set
+      const t = setTimeout(() => { initialLoadRef.current = false; }, 0);
+      return () => clearTimeout(t);
+    } else {
+      initialLoadRef.current = true;
+      setEntryDayOHLC(null);
+      setExitDayOHLC(null);
+    }
+  }, [open]);
+
+  // 入场日期变化 → 异步获取入场日 OHLC
+  useEffect(() => {
+    if (!code || !entryDate) {
+      setEntryDayOHLC(null);
+      return;
+    }
+    const dateStr = dayjs.isDayjs(entryDate) ? entryDate.format('YYYY-MM-DD') : entryDate;
+    if (!dateStr) return;
+
+    const timer = setTimeout(async () => {
+      const ohlc = await fetchDailyOHLC(code, dateStr);
+      if (ohlc) {
+        setEntryDayOHLC(ohlc);
+        const ch = calcChannelHeight(ohlc.high, ohlc.low);
+        form.setFieldsValue({ channel_height: ch });
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, entryDate, open]);
+
+  // 出场日期变化（子单或手动输入） → 异步获取出场日 OHLC
+  useEffect(() => {
+    if (!code || !effectiveExitDate) {
+      if (!slipDerivedData && !exitDate) setExitDayOHLC(null);
+      return;
+    }
+    const dateStr = effectiveExitDate;
+    if (!dateStr) return;
+
+    const timer = setTimeout(async () => {
+      const ohlc = await fetchDailyOHLC(code, dateStr);
+      if (ohlc) {
+        setExitDayOHLC(ohlc);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, effectiveExitDate, open]);
+
+  // 核心计算：入场价/出场价/方向/OHLC 变化 → 重算得分
+  useEffect(() => {
+    if (initialLoadRef.current) return;
+    if (!entryDayOHLC) return;
+
+    const ls = longShort || 'long';
+    const ep = entryPrice;
+    const ch = entryDayOHLC.high - entryDayOHLC.low;
+
+    // 进场得分
+    if (ep != null && Number.isFinite(ep)) {
+      const es = calcEntryScore(Number(ep), entryDayOHLC.high, entryDayOHLC.low, ls);
+      form.setFieldsValue({ entry_score: Math.round(es * 10) / 10 });
+    }
+
+    // 出场得分 + 总得分（需要出场价格和出场日 OHLC）
+    const xp = effectiveExitPrice;
+    if (xp != null && Number.isFinite(xp)) {
+      // 出场得分使用出场日 OHLC
+      if (exitDayOHLC) {
+        const xs = calcExitScore(Number(xp), exitDayOHLC.high, exitDayOHLC.low, ls);
+        form.setFieldsValue({ exit_score: Math.round(xs * 10) / 10 });
+      }
+
+      // 交易总得分使用进场日通道高度
+      if (ep != null && Number.isFinite(ep) && ch > 0) {
+        const ts = calcTradeScore(Number(ep), Number(xp), ch, ls);
+        const rounded = Math.round(ts * 10) / 10;
+        form.setFieldsValue({ trade_score: rounded });
+        form.setFieldsValue({ trade_grade: calcTradeGrade(ts) });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entryPrice, effectiveExitPrice, effectiveExitDate, longShort, entryDayOHLC, exitDayOHLC, exitSlips, slipDerivedData]);
 
   // --- 加载已有卖出子单（编辑模式） ---
   useEffect(() => {
@@ -137,75 +265,48 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     () => exitSlips.reduce((sum, slip) => sum + slip.quantity, 0),
     [exitSlips],
   );
-  const remainQty = useMemo(() => entryQty - totalExitQty, [entryQty, totalExitQty]);
 
   // --- 卖出子单管理 ---
   const openNewExitSlip = useCallback(() => {
     setEditingSlip(null);
-    setSnapshotMaxSellQty(Math.max(0, remainQty));
-    exitSlipForm.resetFields();
-    exitSlipForm.setFieldsValue({
-      exit_date: dayjs().format('YYYY-MM-DD'),
-      commission: 0,
-      slip_point: 0,
-    });
+    setSnapshotMaxSellQty(Math.max(0, entryQty - totalExitQty));
     setExitSlipModalOpen(true);
-  }, [exitSlipForm, remainQty]);
+  }, [entryQty, totalExitQty]);
 
   const editExitSlip = useCallback((slip: ExitSlip) => {
     setEditingSlip(slip);
     const maxQty = Math.max(0, entryQty - (totalExitQty - slip.quantity));
     setSnapshotMaxSellQty(maxQty);
-    exitSlipForm.setFieldsValue({
-      exit_date: slip.exit_date,
-      exit_price: slip.exit_price,
-      quantity: slip.quantity,
-      commission: slip.commission,
-      exit_reason: slip.exit_reason ?? undefined,
-      exit_score: slip.exit_score ?? undefined,
-      actual_stop_loss: slip.actual_stop_loss ?? undefined,
-      slip_point: slip.slip_point,
-    });
     setExitSlipModalOpen(true);
-  }, [exitSlipForm, entryQty, totalExitQty]);
+  }, [entryQty, totalExitQty]);
 
-  const saveExitSlip = useCallback(async () => {
-    try {
-      const values = await exitSlipForm.validateFields();
-      const data: ExitSlipFormData = {
-        ...values,
-        exit_date: dayjs.isDayjs(values.exit_date) ? values.exit_date.format('YYYY-MM-DD') : values.exit_date,
-      };
-
-      if (editingSlip) {
-        // 编辑已有子单 → 实时保存到后端
-        const res = await updateExitSlip(editingSlip.id, data);
-        if (res.code === 200) {
-          setExitSlips(prev => prev.map(s => s.id === editingSlip.id ? { ...s, ...data, id: s.id } : s));
-          message.success('更新成功');
-          setExitSlipModalOpen(false);
-        } else {
-          message.error(res.message || '更新失败');
-        }
-      } else {
-        // 新增临时子单 → 暂存本地，主单保存后批量提交
-        tempIdCounterRef.current -= 1;
-        const tempId = tempIdCounterRef.current;
-        const newSlip: ExitSlip = {
-          id: tempId,
-          record_id: record?.id || 0,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          ...data,
-        } as ExitSlip;
-        setExitSlips(prev => [...prev, newSlip]);
+  const saveExitSlip = useCallback(async (data: ExitSlipFormData, editing: ExitSlip | null) => {
+    if (editing) {
+      // 编辑已有子单 → 实时保存到后端
+      const res = await updateExitSlip(editing.id, data);
+      if (res.code === 200) {
+        setExitSlips(prev => prev.map(s => s.id === editing.id ? { ...s, ...data, id: s.id } : s));
+        message.success('更新成功');
         setExitSlipModalOpen(false);
-        message.success('已添加卖出记录，保存主记录时一并提交');
+      } else {
+        message.error(res.message || '更新失败');
       }
-    } catch {
-      // 表单校验失败，不处理
+    } else {
+      // 新增临时子单 → 暂存本地，主单保存后批量提交
+      tempIdCounterRef.current -= 1;
+      const tempId = tempIdCounterRef.current;
+      const newSlip: ExitSlip = {
+        id: tempId,
+        record_id: record?.id || 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        ...data,
+      } as ExitSlip;
+      setExitSlips(prev => [...prev, newSlip]);
+      setExitSlipModalOpen(false);
+      message.success('已添加卖出记录，保存主记录时一并提交');
     }
-  }, [exitSlipForm, editingSlip, record, message]);
+  }, [record, message]);
 
   const removeExitSlip = useCallback(async (id: number) => {
     if (id < 0) {
@@ -306,59 +407,6 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     }
   }, [form, isEdit, record, exitSlips, message, onSuccess]);
 
-  // --- 卖出子单表格列（使用 useMemo 缓存） ---
-  const exitSlipColumns = useMemo(
-    () => [
-      { title: '出场日期', dataIndex: 'exit_date', key: 'exit_date', width: 100 },
-      {
-        title: '出场价',
-        dataIndex: 'exit_price',
-        key: 'exit_price',
-        width: 90,
-        align: 'right' as const,
-        render: (v: number) => (Number.isFinite(v) ? v.toFixed(2) : '-'),
-      },
-      {
-        title: '数量',
-        dataIndex: 'quantity',
-        key: 'quantity',
-        width: 70,
-        align: 'right' as const,
-        render: (v: number) => (Number.isFinite(v) ? v.toLocaleString() : '-'),
-      },
-      {
-        title: '出场原因',
-        dataIndex: 'exit_reason',
-        key: 'exit_reason',
-        width: 100,
-        render: (v: string | null) => (v ? EXIT_REASON_OPTIONS.find(o => o.value === v)?.label || v : '-'),
-      },
-      {
-        title: '操作',
-        key: 'action',
-        width: 100,
-        render: (_: unknown, slip: ExitSlip) => (
-          <Space size="small">
-            <Button type="link" size="small" icon={<EditOutlined />} onClick={() => editExitSlip(slip)}>
-              编辑
-            </Button>
-            <Popconfirm
-              title="确定删除此卖出记录？"
-              onConfirm={() => removeExitSlip(slip.id)}
-              okText="删除"
-              cancelText="取消"
-            >
-              <Button type="link" size="small" danger>
-                删除
-              </Button>
-            </Popconfirm>
-          </Space>
-        ),
-      },
-    ],
-    [editExitSlip, removeExitSlip],
-  );
-
   return (
     <>
       <Modal
@@ -434,32 +482,52 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
             </Col>
           </Row>
 
-          {/* ---- 卖出子单卡片 ---- */}
-          <Card
-            title={`卖出记录（一买多卖） — 总持仓 ${entryQty} / 已卖出 ${totalExitQty} / 剩余 ${remainQty}`}
-            size="small"
-            className="mb-4"
-            extra={
-              <Button type="primary" size="small" icon={<PlusOutlined />} onClick={openNewExitSlip}>
-                新增卖出
-              </Button>
-            }
-          >
-            <Table
-              columns={exitSlipColumns}
-              dataSource={exitSlips}
-              rowKey="id"
-              pagination={false}
-              size="small"
-              loading={loadingExitSlips}
-              locale={{ emptyText: '暂无卖出记录' }}
-            />
-            {totalExitQty > entryQty && (
-              <div className="text-red-500 text-sm mt-2">
-                ⚠️ 卖出数量 {totalExitQty} 超过买入数量 {entryQty}，请检查
-              </div>
-            )}
-          </Card>
+          {/* ---- 出场日期 / 出场价 / 数据来源提示 ---- */}
+          <Row gutter={16}>
+            <Col span={8}>
+              <Form.Item
+                name="exit_date"
+                label="出场日期"
+                tooltip="有卖出子单时自动使用末笔子单日期，手动输入仅在一买一卖场景生效"
+              >
+                <DatePicker style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                name="exit_price"
+                label="出场价"
+                tooltip="有卖出子单时自动使用加权平均价，手动输入仅在一买一卖场景生效"
+              >
+                <InputNumber style={{ width: '100%' }} step={0.01} precision={4} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              {slipDerivedData && (
+                <div className="h-full flex items-center text-xs text-gray-500 pl-2">
+                  <span className="inline-block bg-blue-50 text-blue-600 px-2 py-1 rounded">
+                    子单数据：加权均价 {slipDerivedData.exitPrice} / 末笔 {slipDerivedData.exitDate}
+                  </span>
+                </div>
+              )}
+              {!slipDerivedData && (
+                <div className="h-full flex items-center text-xs text-gray-400 pl-2">
+                  无子单时使用手动输入
+                </div>
+              )}
+            </Col>
+          </Row>
+
+          {/* ---- 卖出子单列表卡片（委托子组件） ---- */}
+          <ExitSlipList
+            exitSlips={exitSlips}
+            entryQty={entryQty}
+            totalExitQty={totalExitQty}
+            loading={loadingExitSlips}
+            onAdd={openNewExitSlip}
+            onEdit={editExitSlip}
+            onDelete={removeExitSlip}
+          />
 
           {/* ---- 佣金 & 滑点 ---- */}
           <Row gutter={16}>
@@ -488,7 +556,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="channel_height" label="通道高度" tooltip="价格通道高度，用于打分">
+              <Form.Item name="channel_height" label="通道高度" tooltip="进场当日日线振幅，用于计算总得分（自动填写）">
                 <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={4} />
               </Form.Item>
             </Col>
@@ -499,26 +567,38 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
             </Col>
           </Row>
 
-          {/* ---- 评分 & 等级 ---- */}
+          {/* ---- 评分 & 等级（原著公式自动计算） ---- */}
           <Row gutter={16}>
             <Col span={6}>
-              <Form.Item name="entry_score" label="进场得分" rules={[{ type: 'number', min: 0, max: 100 }]}>
-                <InputNumber style={{ width: '100%' }} min={0} max={100} step={0.1} precision={1} />
+              <Form.Item
+                name="entry_score"
+                label="进场得分"
+                tooltip="越低越好，≤50为合格（原著公式自动计算）"
+              >
+                <InputNumber style={{ width: '100%' }} step={0.1} precision={1} />
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="exit_score" label="出场得分" rules={[{ type: 'number', min: 0, max: 100 }]}>
-                <InputNumber style={{ width: '100%' }} min={0} max={100} step={0.1} precision={1} />
+              <Form.Item
+                name="exit_score"
+                label="出场得分"
+                tooltip="越高越好，≥50为合格（原著公式自动计算）"
+              >
+                <InputNumber style={{ width: '100%' }} step={0.1} precision={1} />
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="trade_score" label="总得分" rules={[{ type: 'number', min: 0, max: 100 }]}>
-                <InputNumber style={{ width: '100%' }} min={0} max={100} step={0.1} precision={1} />
+              <Form.Item
+                name="trade_score"
+                label="总得分"
+                tooltip="负数=亏损，A>30 B≥10 C<10（原著公式自动计算，>100封顶）"
+              >
+                <InputNumber style={{ width: '100%' }} step={0.1} precision={1} />
               </Form.Item>
             </Col>
             <Col span={6}>
               <Form.Item name="trade_grade" label="等级">
-                <Select allowClear placeholder="选择" options={TRADE_GRADE_OPTIONS} />
+                <Select allowClear placeholder="自动" options={TRADE_GRADE_OPTIONS} />
               </Form.Item>
             </Col>
           </Row>
@@ -529,85 +609,14 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
         </Form>
       </Modal>
 
-      {/* ---- 新增/编辑卖出子单弹窗 ---- */}
-      <Modal
-        title={editingSlip ? '编辑卖出记录' : '新增卖出记录'}
+      {/* ---- 新增/编辑卖出子单弹窗（委托子组件） ---- */}
+      <ExitSlipModal
         open={exitSlipModalOpen}
+        editingSlip={editingSlip}
+        snapshotMaxSellQty={snapshotMaxSellQty}
+        onSave={saveExitSlip}
         onCancel={() => setExitSlipModalOpen(false)}
-        onOk={saveExitSlip}
-        okText="保存"
-        cancelText="取消"
-        width={560}
-        destroyOnClose
-      >
-        <Form form={exitSlipForm} layout="vertical">
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="exit_date" label="出场日期" rules={[{ required: true, message: '请选择' }]}>
-                <DatePicker style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="exit_price" label="出场价" rules={[{ required: true, message: '请输入' }]}>
-                <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={4} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                name="quantity"
-                label="卖出数量"
-                rules={[{ required: true, message: '请输入' }]}
-                extra={`可卖 ${snapshotMaxSellQty} 股`}
-              >
-                <InputNumber
-                  style={{ width: '100%' }}
-                  min={1}
-                  max={snapshotMaxSellQty}
-                  step={100}
-                  precision={0}
-                />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="commission" label="佣金">
-                <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={4} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="exit_reason" label="出场原因">
-                <Select allowClear placeholder="选择">
-                  {EXIT_REASON_OPTIONS.map(opt => (
-                    <Option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="exit_score" label="出场得分">
-                <InputNumber style={{ width: '100%' }} min={0} max={100} step={0.1} precision={1} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="actual_stop_loss" label="实际止损价">
-                <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={4} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="slip_point" label="滑点(元/股)">
-                <InputNumber style={{ width: '100%' }} min={0} step={0.001} precision={4} />
-              </Form.Item>
-            </Col>
-          </Row>
-        </Form>
-      </Modal>
+      />
     </>
   );
 };

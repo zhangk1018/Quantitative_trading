@@ -364,6 +364,53 @@ export async function deleteExitSlip(slipId: number): Promise<ApiResponse<null>>
 }
 
 // ============================================================
+// 日线行情查询（用于自动计算得分）
+// ============================================================
+
+/** 单日 OHLC 数据 */
+export interface DailyOHLC {
+  trade_date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+/**
+ * 查询股票在指定交易日的 OHLC 数据
+ * 依赖后端 /api/kline/{code} 接口
+ */
+export async function fetchDailyOHLC(
+  code: string,
+  date: string,
+): Promise<DailyOHLC | null> {
+  try {
+    const { data } = await client.get(`kline/${code}`, {
+      params: {
+        period: 'daily',
+        start_date: date,
+        end_date: date,
+        limit: 1,
+        adj: 'none',
+      },
+    });
+    if (data?.data?.length > 0) {
+      const item = data.data[0];
+      return {
+        trade_date: item.trade_date,
+        open: Number(item.open),
+        high: Number(item.high),
+        low: Number(item.low),
+        close: Number(item.close),
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================
 // 通用下载辅助函数
 // ============================================================
 

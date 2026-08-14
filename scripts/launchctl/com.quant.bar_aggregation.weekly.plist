@@ -7,29 +7,29 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/zhangk/workspace/Quantitative_trading/venv/bin/python</string>
-        <string>/Users/zhangk/workspace/Quantitative_trading/backend/collector/etl/compute_bar_aggregation.py</string>
+        <string>/Volumes/MyData/Quantitative_trading/venv/bin/python</string>
+        <string>/Volumes/MyData/Quantitative_trading/backend/collector/etl/compute_bar_aggregation.py</string>
         <string>--cycle</string>
         <string>1w</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/zhangk/workspace/Quantitative_trading</string>
+    <string>/Volumes/MyData/Quantitative_trading</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/Users/zhangk/workspace/Quantitative_trading/venv/bin</string>
+        <string>/usr/local/bin:/usr/bin:/bin:/Volumes/MyData/Quantitative_trading/venv/bin</string>
         <key>PYTHONPATH</key>
-        <string>/Users/zhangk/workspace/Quantitative_trading</string>
+        <string>/Volumes/MyData/Quantitative_trading</string>
         <key>APP_ENV</key>
         <string>dev</string>
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/zhangk/workspace/Quantitative_trading/logs/cron/weekly_aggregation.stdout.log</string>
+    <string>/Volumes/MyData/Quantitative_trading/logs/cron/weekly_aggregation.stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/zhangk/workspace/Quantitative_trading/logs/cron/weekly_aggregation.stderr.log</string>
+    <string>/Volumes/MyData/Quantitative_trading/logs/cron/weekly_aggregation.stderr.log</string>
 
     <key>StartCalendarInterval</key>
     <array>

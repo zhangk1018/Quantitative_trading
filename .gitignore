@@ -90,6 +90,10 @@ backend/data/
 # Accidental file
 ui_dashboard.py.py
 
+# PostgreSQL data directory (docker volume)
+postgresql_data/
+quant_trading.dump
+
 # OS files
 .DS_Store
 Thumbs.db

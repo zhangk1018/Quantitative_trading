@@ -89,8 +89,9 @@ class KlineService:
         Returns:
             KLineResponse对象，包含K线数据列表
         """
-        # 生成缓存键（包含limit和adj_method，不同复权方式/不同数据量需独立缓存）
-        cache_key = f"kline_v2_{stock_code}_{period}_{limit}_{adj_method}"
+        # 生成缓存键（包含日期范围，避免不同日期返回相同缓存数据）
+        date_part = f"{start_date or ''}_{end_date or ''}"
+        cache_key = f"kline_v2_{stock_code}_{period}_{limit}_{adj_method}_{date_part}"
         
         # 检查缓存
         cached_data = self._get_from_cache(cache_key)

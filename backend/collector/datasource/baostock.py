@@ -185,10 +185,10 @@ class BaostockDataSource(BaseDataSource):
 
     def disconnect(self) -> bool:
         try:
-            bs.logout()
+            _run_baostock_with_timeout(bs.logout, timeout=10)
             self.connected = False
             return True
-        except (ConnectionError, OSError):
+        except (ConnectionError, OSError, TimeoutError):
             return False
 
     def _get_latest_trade_date(self) -> str:
