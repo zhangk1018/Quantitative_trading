@@ -23,11 +23,9 @@ export const SELL_STRATEGY_LABELS: Record<SellStrategy, string> = {
 
 // ==================== 条件定义 ====================
 
-/**
- * 回测买入条件：仅支持自编指标。
- * 脚本约定：返回每日信号数组，1 表示满足买入，0 表示不满足。
- */
-export interface BacktestCondition {
+/** 自编指标条件 */
+export interface BacktestCustomCondition {
+  type: 'custom';
   /** 自编指标 ID */
   indicatorId: string;
   /** 自编指标名称（用于 UI 展示和日志） */
@@ -35,6 +33,49 @@ export interface BacktestCondition {
   /** 自编指标脚本公式（Worker 内无法访问 localStorage，必须随配置传入） */
   formula: string;
 }
+
+/** 系统预设条件 */
+export interface BacktestPresetCondition {
+  type: 'preset';
+  /** 预设条件 ID，如 'morningStarVolumeBreakout' */
+  presetId: string;
+  /** 预设条件显示名称 */
+  presetName: string;
+}
+
+/**
+ * 回测买入条件：支持自编指标和系统预设条件。
+ * - 自编指标：Python 脚本在 Pyodide Worker 中执行，返回每日信号数组
+ * - 系统预设：使用 condition-detector.ts 检测，与选股视图条件构建器逻辑一致
+ */
+export type BacktestCondition = BacktestCustomCondition | BacktestPresetCondition;
+
+/** 系统预设条件定义 */
+export interface PresetConditionDef {
+  id: string;
+  name: string;
+  description: string;
+  /** 对应的 condition-detector fieldKey 列表 */
+  conditionKeys: string[];
+  /**
+   * 条件之间的时间窗口（交易日）。
+   * 如果设置，表示 conditionKeys 中的条件在 windowDays 天内先后出现即视为满足，
+   * 信号日设为最后一个条件出现的日子。
+   * 如果不设置，表示所有条件在同一天同时满足。
+   */
+  windowDays?: number;
+}
+
+/** 系统预设条件列表 */
+export const PRESET_CONDITIONS: PresetConditionDef[] = [
+  {
+    id: 'morningStarVolumeBreakout',
+    name: '晨星放量',
+    description: '早晨之星出现后3日内出现放量突破（量比≥1.5）',
+    conditionKeys: ['pattern_morning_star', 'volume_breakout'],
+    windowDays: 3,
+  },
+];
 
 // ==================== 指标参数配置 ====================
 
@@ -110,8 +151,8 @@ export const DEFAULT_BACKTEST_CONFIG: Partial<BacktestConfig> = {
   emaLong: 30,
   executionPrice: 'next_open',
   maxDeferDays: 3,
-  feeRate: 0,
-  slippage: 0,
+  feeRate: 0.00025,  // 万2.5（A股券商佣金主流费率）
+  slippage: 0.0001,   // 万1（默认滑点）
   riskFreeRate: 0.03,
 };
 

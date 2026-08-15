@@ -87,13 +87,14 @@ export function useBacktestWorker(options: UseBacktestWorkerOptions): UseBacktes
       }
     };
 
-    worker.onerror = () => {
+    worker.onerror = (ev: ErrorEvent) => {
       if (!isMountedRef.current || runIdRef.current !== currentRunId) {
         worker.terminate();
         return;
       }
       setIsRunning(false);
-      onError?.('Worker 异常崩溃');
+      const detail = ev.message || ev.filename || '未知错误';
+      onError?.(`Worker 异常崩溃: ${detail}`);
       worker.terminate();
     };
 

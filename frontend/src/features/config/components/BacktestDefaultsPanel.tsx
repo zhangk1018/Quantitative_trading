@@ -7,6 +7,7 @@
 import React, { useState } from 'react';
 import { Card, Radio, InputNumber, Button, App, Tooltip, Divider } from 'antd';
 import { SaveOutlined, UndoOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { clearTradingCostCache } from '@/features/pdca/utils/tradingCostUtils';
 import {
   getBacktestDefaults,
   saveBacktestDefaults,
@@ -98,6 +99,7 @@ const BacktestDefaultsPanel: React.FC = () => {
 
   const handleSave = () => {
     saveBacktestDefaults(defaults);
+    clearTradingCostCache();
     message.success('设置已保存');
   };
 
@@ -105,6 +107,7 @@ const BacktestDefaultsPanel: React.FC = () => {
     const fresh = { ...DEFAULT_BACKTEST_DEFAULTS, indicatorParams: { ...DEFAULT_BACKTEST_DEFAULTS.indicatorParams } };
     setDefaults(fresh);
     saveBacktestDefaults(fresh);
+    clearTradingCostCache();
     message.info('已恢复默认设置');
   };
 
@@ -139,7 +142,7 @@ const BacktestDefaultsPanel: React.FC = () => {
 
         <Divider className="!my-1 !border-border-color/60" />
 
-        {/* 手续费率 + 滑点 双列 */}
+        {/* 手续费率 + 滑点 + 印花税 + 过户费 四列 */}
         <div className="grid grid-cols-2 gap-4 py-1">
           <div>
             <div className="text-text-secondary text-xs mb-1">手续费率</div>
@@ -155,6 +158,22 @@ const BacktestDefaultsPanel: React.FC = () => {
               value={feeRateToDisplay(defaults.slippage)}
               onChange={v => updateField('slippage', displayToFeeRate(v ?? 0))}
               addonAfter="万分之" controls={false}
+              className="!w-full" />
+          </div>
+          <div>
+            <div className="text-text-secondary text-xs mb-1">印花税</div>
+            <InputNumber size="small" min={0} max={30} step={0.1}
+              value={feeRateToDisplay(defaults.stampDuty)}
+              onChange={v => updateField('stampDuty', displayToFeeRate(v ?? 0))}
+              addonAfter="万分之" controls={false}
+              className="!w-full" />
+          </div>
+          <div>
+            <div className="text-text-secondary text-xs mb-1">过户费</div>
+            <InputNumber size="small" min={0} max={1} step={0.01}
+              value={defaults.transferFee * 100000}
+              onChange={v => updateField('transferFee', (v ?? 0) / 100000)}
+              addonAfter="十万分之" controls={false}
               className="!w-full" />
           </div>
         </div>

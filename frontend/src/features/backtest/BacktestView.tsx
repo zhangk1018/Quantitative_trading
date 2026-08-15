@@ -1,6 +1,6 @@
 // BacktestView.tsx — 回测分析主容器
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Card, Progress, Tabs, Collapse, Button, message, Divider, Typography, Form } from 'antd';
 import { ClearOutlined, PlayCircleOutlined, ReloadOutlined, LoadingOutlined } from '@ant-design/icons';
 import BacktestConfigPanel from './BacktestConfigPanel';
@@ -167,6 +167,19 @@ const BacktestView: React.FC = () => {
       message.error(`数据拉取失败: ${msg}`);
     }
   }, [startWorker]);
+
+  // 浏览器自测用：暴露 form 和 handleStart 到 window
+  useEffect(() => {
+    (window as any).__backtestForm = form;
+    (window as any).__backtestHandleStart = handleStart;
+    (window as any).__backtestSetOutput = setOutput;
+    (window as any).__backtestSetProgress = setProgress;
+    return () => {
+      delete (window as any).__backtestForm;
+      delete (window as any).__backtestHandleStart;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleCancel = useCallback(() => {
     cancelWorker();

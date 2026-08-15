@@ -2,11 +2,9 @@
 // 筛选条件检测引擎 — 将 ConditionBuilder 的条件映射到 K 线日期上的检测事件
 // 使用注册表模式，每个 condition fieldKey 对应一个 detectFn
 
-import { cleanBars, calcRSI, sma, ema, type KlineBar } from './indicators';
+import { calcRSI, sma, ema, type KlineBar } from './indicators';
 import { detectAllPatterns } from './patternDetector';
 import type { OHLCVArray, PatternType } from './types';
-import { getUpDownColors } from '@/shared/contexts/SettingsContext';
-
 // ==================== 类型定义 ====================
 
 export interface ConditionEvent {
@@ -45,18 +43,21 @@ export function getConditionVisualConfig(): Record<string, {
   detectable: boolean;
   reason?: string;
 }> {
-  const { up, down } = getUpDownColors();
+  // 使用硬编码默认颜色（中国惯例：红涨绿跌），避免对 React Context 的依赖
+  // 主线程 UI 可通过 getConditionVisualConfig() 覆盖颜色
+  const DEFAULT_UP = '#EF5350';
+  const DEFAULT_DOWN = '#26A69A';
   return {
-    rsi_oversold:       { color: up, shape: 'arrowUp',  label: 'RSI超卖', direction: 'buy', detectable: true },
+    rsi_oversold:       { color: DEFAULT_UP, shape: 'arrowUp',  label: 'RSI超卖', direction: 'buy', detectable: true },
     volume_breakout:    { color: '#FF9800', shape: 'circle',   label: '放量突破', direction: 'neutral', detectable: true },
     macd_golden_cross:  { color: '#2196F3', shape: 'arrowUp',  label: 'MACD金叉', direction: 'buy', detectable: true },
     bottom_volume_macd: { color: '#4CAF50', shape: 'square',   label: '底部放量', direction: 'buy', detectable: true },
     consecutive_up:     { color: '#9C27B0', shape: 'square',   label: '连续上涨', direction: 'buy', detectable: true },
     low_valuation:      { color: '#888888', shape: 'circle',   label: '低估值',   direction: 'neutral', detectable: false, reason: '需基本面数据' },
-    pattern_morning_star:      { color: up, shape: 'arrowUp',  label: '早晨之星', direction: 'buy', detectable: true },
-    pattern_evening_star:      { color: down, shape: 'arrowDown', label: '黄昏之星', direction: 'sell', detectable: true },
-    pattern_bullish_engulfing: { color: up, shape: 'arrowUp',  label: '看涨吞没', direction: 'buy', detectable: true },
-    pattern_bearish_engulfing: { color: down, shape: 'arrowDown', label: '看跌吞没', direction: 'sell', detectable: true },
+    pattern_morning_star:      { color: DEFAULT_UP, shape: 'arrowUp',  label: '早晨之星', direction: 'buy', detectable: true },
+    pattern_evening_star:      { color: DEFAULT_DOWN, shape: 'arrowDown', label: '黄昏之星', direction: 'sell', detectable: true },
+    pattern_bullish_engulfing: { color: DEFAULT_UP, shape: 'arrowUp',  label: '看涨吞没', direction: 'buy', detectable: true },
+    pattern_bearish_engulfing: { color: DEFAULT_DOWN, shape: 'arrowDown', label: '看跌吞没', direction: 'sell', detectable: true },
     pattern_hammer:            { color: '#2962FF', shape: 'arrowUp',  label: '锤子线',   direction: 'buy', detectable: true },
   };
 }
@@ -94,9 +95,12 @@ const PATTERN_TYPE_MAP: Record<string, PatternType> = {
 // ==================== 指标缓存计算 ====================
 
 function computeCache(bars: KlineBar[]): ComputedCache {
-  const cleaned = cleanBars(bars);
-  const closes = cleaned.map(b => b.close);
-  const volumes = cleaned.map(b => b.volume);
+  // 不使用 cleanBars 过滤，保留原始 bars 数组长度一致性。
+  // 关键：detectAllPatterns 返回的索引基于 ohlcvArray，必须与原始 bars 索引一一对应，
+  // 否则 computePresetBuySignals 的 dateToIdx 映射会错位，导致条件检测无命中。
+  // 无效K线由 patternDetector.ts 的 precomputeBars 内部通过 isValidBar 跳过。
+  const closes = bars.map(b => b.close);
+  const volumes = bars.map(b => b.volume);
   const rsi6 = calcRSI(closes, 6);
   const volMa5 = sma(volumes, 5);
 
@@ -112,7 +116,7 @@ function computeCache(bars: KlineBar[]): ComputedCache {
   const dea = ema(dif, 9);
 
   // OHLCV for pattern detection
-  const ohlcvArray: OHLCVArray[] = cleaned.map(b => [
+  const ohlcvArray: OHLCVArray[] = bars.map(b => [
     new Date(b.time.replace(/-/g, '/')).getTime() / 1000,
     b.open, b.high, b.low, b.close, b.volume,
   ]);

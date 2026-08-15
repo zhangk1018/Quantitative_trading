@@ -31,6 +31,8 @@ class TradingRecordCreate(BaseModel):
     exit_price: Optional[float] = Field(None, gt=0)
     commission_entry: float = 0
     commission_exit: float = 0
+    stamp_duty: float = 0
+    transfer_fee: float = 0
     slip_point: float = 0
     channel_height: Optional[float] = None
     order_type: str = 'limit'
@@ -58,6 +60,8 @@ class TradingRecordUpdate(BaseModel):
     exit_price: Optional[float] = Field(None, gt=0)
     commission_entry: Optional[float] = None
     commission_exit: Optional[float] = None
+    stamp_duty: Optional[float] = None
+    transfer_fee: Optional[float] = None
     slip_point: Optional[float] = None
     channel_height: Optional[float] = None
     order_type: Optional[str] = None

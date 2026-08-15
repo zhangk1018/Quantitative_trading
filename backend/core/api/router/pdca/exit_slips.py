@@ -20,6 +20,8 @@ class ExitSlipCreate(BaseModel):
     exit_price: float = Field(..., gt=0)
     quantity: int = Field(..., gt=0)
     commission: float = 0
+    stamp_duty: float = 0
+    transfer_fee: float = 0
     exit_reason: Optional[str] = None
     exit_score: Optional[float] = None
     actual_stop_loss: Optional[float] = None
@@ -31,6 +33,8 @@ class ExitSlipUpdate(BaseModel):
     exit_price: Optional[float] = Field(None, gt=0)
     quantity: Optional[int] = Field(None, gt=0)
     commission: Optional[float] = None
+    stamp_duty: Optional[float] = None
+    transfer_fee: Optional[float] = None
     exit_reason: Optional[str] = None
     exit_score: Optional[float] = None
     actual_stop_loss: Optional[float] = None
@@ -84,10 +88,11 @@ async def batch_create_exit_slips(record_id: int, batch: ExitSlipBatchCreate):
             for slip in batch.slips:
                 cur.execute(
                     """INSERT INTO pdca.trading_exit_slip
-                       (record_id, exit_date, exit_price, quantity, commission, exit_reason, exit_score, actual_stop_loss, slip_point)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                       (record_id, exit_date, exit_price, quantity, commission, stamp_duty, transfer_fee, exit_reason, exit_score, actual_stop_loss, slip_point)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (record_id, slip.exit_date, slip.exit_price, slip.quantity,
-                     slip.commission, slip.exit_reason, slip.exit_score,
+                     slip.commission, slip.stamp_duty, slip.transfer_fee,
+                     slip.exit_reason, slip.exit_score,
                      slip.actual_stop_loss, slip.slip_point),
                 )
 
@@ -137,6 +142,7 @@ async def update_exit_slip(slip_id: int, slip: ExitSlipUpdate):
             # 2. 构建动态更新
             updates = {}
             for field in ("exit_date", "exit_price", "quantity", "commission",
+                          "stamp_duty", "transfer_fee",
                           "exit_reason", "exit_score", "actual_stop_loss", "slip_point"):
                 val = getattr(slip, field, None)
                 if val is not None:

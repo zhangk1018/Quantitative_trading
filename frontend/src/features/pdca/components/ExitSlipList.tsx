@@ -76,7 +76,7 @@ const ExitSlipList: React.FC<Props> = ({ exitSlips, entryQty, totalExitQty, load
 
   return (
     <Card
-      title={`卖出记录（一买多卖） — 总持仓 ${entryQty} / 已卖出 ${totalExitQty} / 剩余 ${entryQty - totalExitQty}`}
+      title={`卖出记录 — 总持仓 ${entryQty} / 已卖出 ${totalExitQty} / 剩余 ${entryQty - totalExitQty}`}
       size="small"
       className="mb-4"
       extra={

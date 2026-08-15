@@ -7,7 +7,7 @@ import {
 } from 'antd';
 import { CloseOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import type { BacktestConfig, BacktestFormValues, IndicatorParams, SellStrategy } from './backtestTypes';
+import type { BacktestConfig, BacktestCondition, BacktestFormValues, IndicatorParams, SellStrategy } from './backtestTypes';
 import {
   DEFAULT_BACKTEST_CONFIG,
   SELL_STRATEGY_LABELS,
@@ -20,6 +20,7 @@ import { listCustomIndicators } from '../stock-picker/utils/customIndicatorStora
 import type { CustomIndicator } from '../stock-picker/types/customIndicator';
 import { fetchStocks } from '../stock-detail/api';
 import type { StockSearchItem } from '../stock-detail/api';
+import { PRESET_CONDITIONS } from './backtestTypes';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -245,15 +246,6 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
     setSearchKeyword(value);
   };
 
-  const indicatorOptions = useMemo(
-    () =>
-      customIndicators.map((ind) => ({
-        value: ind.id,
-        label: ind.name,
-      })),
-    [customIndicators],
-  );
-
   const sellStrategyOptions = useMemo(
     () =>
       (Object.keys(SELL_STRATEGY_LABELS) as SellStrategy[]).map((key) => ({
@@ -267,23 +259,37 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
     (globalDefaults.sellStrategy as SellStrategy) ?? 'trailing_stop',
   );
 
-  const handleIndicatorChange = (indicatorId: string) => {
-    form.setFieldsValue({ indicatorId });
+  const handleIndicatorChange = (value: string) => {
+    form.setFieldsValue({ indicatorId: value });
   };
 
   const handleFinish = (values: BacktestFormValues) => {
     const [startDate, endDate] = (values.dateRange ?? []).map((d: dayjs.Dayjs) => d.format('YYYY-MM-DD'));
-    const indicator = customIndicators.find((i) => i.id === values.indicatorId);
+    const indicatorId = values.indicatorId;
     const strategy = (values.sellStrategy as SellStrategy) ?? selectedSellStrategy;
+
+    // 构建买入条件：支持自编指标和系统预设
+    let buyCondition: BacktestCondition;
+    if (indicatorId && indicatorId.startsWith('preset_')) {
+      const presetId = indicatorId.replace('preset_', '');
+      const preset = PRESET_CONDITIONS.find((p) => p.id === presetId);
+      buyCondition = preset
+        ? { type: 'preset', presetId: preset.id, presetName: preset.name }
+        : { type: 'preset', presetId: '', presetName: '' };
+    } else {
+      const rawId = indicatorId?.replace('custom_', '');
+      const indicator = customIndicators.find((i) => i.id === rawId);
+      buyCondition = indicator
+        ? { type: 'custom', indicatorId: indicator.id, indicatorName: indicator.name, formula: indicator.formula }
+        : { type: 'custom', indicatorId: '', indicatorName: '', formula: '' };
+    }
     const config: BacktestConfig = {
       stockCode: values.stockCode ?? '',
       stockName: values.stockName ?? '',
       startDate,
       endDate,
       capital: values.capital ?? DEFAULT_BACKTEST_CONFIG.capital ?? 100000,
-      buyCondition: indicator
-        ? { indicatorId: indicator.id, indicatorName: indicator.name, formula: indicator.formula }
-        : { indicatorId: '', indicatorName: '', formula: '' },
+      buyCondition,
       sellStrategy: strategy,
       trailingStopPct: values.trailingStopPct ?? globalDefaults.trailingStopPct,
       atrPeriod: values.atrPeriod ?? globalDefaults.atrPeriod,
@@ -380,37 +386,52 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
           </Form.Item>
         </Card>
 
-        {/* 买入条件：仅支持自编指标 */}
+        {/* 买入条件：支持系统预设和自编指标 */}
         <Card
           size="small"
           title={
             <Space>
               <span>买入条件</span>
+              <Tag color="green">系统预设</Tag>
               <Tag color="blue">自编指标</Tag>
             </Space>
           }
         >
           <Form.Item
             name="indicatorId"
-            label="选择自编指标"
-            rules={[{ required: true, message: '请选择一个自编指标作为买入条件' }]}
+            label="选择买入条件"
+            rules={[{ required: true, message: '请选择一个买入条件' }]}
           >
             <Select
-              placeholder="请选择自编指标"
-              options={indicatorOptions}
+              placeholder="请选择买入条件"
               onChange={handleIndicatorChange}
-              disabled={indicatorOptions.length === 0}
               style={{ width: '100%' }}
               allowClear
-            />
+              dropdownStyle={{ maxHeight: 300, overflow: 'auto' }}
+            >
+              <Select.OptGroup label="系统预设">
+                {PRESET_CONDITIONS.map((p) => (
+                  <Select.Option key={`preset_${p.id}`} value={`preset_${p.id}`}>
+                    {p.name}
+                  </Select.Option>
+                ))}
+              </Select.OptGroup>
+              <Select.OptGroup label="自编指标">
+                {customIndicators.map((ind) => (
+                  <Select.Option key={`custom_${ind.id}`} value={`custom_${ind.id}`}>
+                    {ind.name}
+                  </Select.Option>
+                ))}
+              </Select.OptGroup>
+            </Select>
           </Form.Item>
-          {indicatorOptions.length === 0 && (
+          {customIndicators.length === 0 && PRESET_CONDITIONS.length === 0 && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              暂无自编指标，请先在选股视图中创建。
+              暂无可用条件，请先在选股视图中创建自编指标。
             </Text>
           )}
           <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-            脚本约定：返回每日信号数组，1 表示满足买入，0 表示不满足。
+            系统预设：使用与选股视图一致的检测逻辑；自编指标：需返回每日信号数组。
           </Text>
         </Card>
 

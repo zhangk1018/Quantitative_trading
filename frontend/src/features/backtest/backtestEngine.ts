@@ -14,12 +14,15 @@ import {
   type EquityPoint,
   type BacktestSummary,
   type BacktestCondition,
+  type BacktestPresetCondition,
+  PRESET_CONDITIONS,
   type IndicatorParams,
   type ProgressInfo,
   type DiagnosticEntry,
   type SellStrategy,
 } from './backtestTypes';
 import { getCustomIndicatorRunner } from '../strategy-backtest/utils/customIndicatorRunner';
+import { detectConditions } from '../../lib/indicators/condition-detector';
 import {
   TRADING_DAYS_PER_YEAR,
   LOT_SIZE,
@@ -360,12 +363,19 @@ function isPriceLimited(
   return bar.open <= downLimitPrice * LIMIT_DOWN_TOLERANCE;
 }
 
-// ==================== 买入信号预计算（Pyodide Worker）====================
+// ==================== 买入信号预计算（Pyodide Worker / 系统预设）====================
 
 async function computeBuySignals(
   condition: BacktestCondition,
   bars: KlineBar[],
+  /** 预计算量比（5日均量比），由后台数据提供，脚本可直接使用 */
+  volRatio5?: (number | null)[],
 ): Promise<boolean[]> {
+  if (condition.type === 'preset') {
+    return computePresetBuySignals(condition, bars);
+  }
+
+  // 自编指标：Pyodide Worker 执行
   if (!condition.formula || typeof condition.formula !== 'string') {
     throw new SignalError(
       BacktestErrorCode.SIGNAL_SCRIPT_ERROR,
@@ -381,15 +391,27 @@ async function computeBuySignals(
 
   let rawSignals: (number | null)[];
   try {
+    const data: {
+      open: number[];
+      high: number[];
+      low: number[];
+      close: number[];
+      volume: number[];
+      volRatio5?: number[];
+    } = {
+      open: bars.map((b) => b.open),
+      high: bars.map((b) => b.high),
+      low: bars.map((b) => b.low),
+      close: bars.map((b) => b.close),
+      volume: bars.map((b) => b.volume),
+    };
+    // 传入预计算量比（后台已有，脚本可直接使用 CUSTOM_VOL_RATIO）
+    if (volRatio5) {
+      data.volRatio5 = volRatio5.map((v) => (v !== null && Number.isFinite(v) ? v : 0));
+    }
     rawSignals = await runner.executeSingle(
       condition.formula,
-      {
-        open: bars.map((b) => b.open),
-        high: bars.map((b) => b.high),
-        low: bars.map((b) => b.low),
-        close: bars.map((b) => b.close),
-        volume: bars.map((b) => b.volume),
-      },
+      data,
       60_000,
     );
   } catch (err) {
@@ -402,6 +424,106 @@ async function computeBuySignals(
   }
 
   return rawSignals.map((v) => v !== null && v !== 0 && Number.isFinite(v));
+}
+
+/**
+ * 系统预设条件买入信号计算。
+ * 使用 condition-detector.ts 的 detectConditions 函数，
+ * 与选股视图条件构建器的检测逻辑保持一致。
+ */
+function computePresetBuySignals(
+  condition: BacktestPresetCondition,
+  bars: KlineBar[],
+): boolean[] {
+  const n = bars.length;
+  const signals = new Array(n).fill(false);
+
+  const presetDef = PRESET_CONDITIONS.find((p) => p.id === condition.presetId);
+  if (!presetDef) {
+    throw new SignalError(
+      BacktestErrorCode.SIGNAL_SCRIPT_ERROR,
+      `未知的系统预设条件：${condition.presetName}（${condition.presetId}）`,
+      { presetId: condition.presetId },
+    );
+  }
+
+  // 使用 detectConditions 检测所有条件
+  const conditions = presetDef.conditionKeys.map((k) => ({ fieldKey: k }));
+  const result = detectConditions(bars, conditions);
+
+  // 构建日期→索引映射，避免重复 findIndex
+  const dateToIdx = new Map<string, number>();
+  for (let i = 0; i < n; i++) {
+    dateToIdx.set(bars[i].time, i);
+  }
+
+  // 将事件列表按 fieldKey 分组为 Set<dayIndex>
+  const eventDays = new Map<string, Set<number>>();
+  for (const event of result.events) {
+    const idx = dateToIdx.get(event.time);
+    if (idx === undefined) continue;
+    if (!eventDays.has(event.fieldKey)) {
+      eventDays.set(event.fieldKey, new Set());
+    }
+    eventDays.get(event.fieldKey)!.add(idx);
+  }
+
+  /**
+   * 窗口内先后出现逻辑（如"晨星放量"的3日窗口）：
+   * - 最后一个 conditionKey 是"触发条件"，信号日设为触发日
+   * - 其他条件必须在 [触发日 - windowDays, 触发日] 范围内出现过
+   */
+  if (presetDef.windowDays && presetDef.conditionKeys.length >= 2) {
+    const triggerKey = presetDef.conditionKeys[presetDef.conditionKeys.length - 1];
+    const otherKeys = presetDef.conditionKeys.slice(0, -1);
+    const triggerDays = eventDays.get(triggerKey);
+
+    if (triggerDays) {
+      for (const triggerDay of triggerDays) {
+        let allMet = true;
+        for (const key of otherKeys) {
+          const days = eventDays.get(key);
+          if (!days) {
+            allMet = false;
+            break;
+          }
+          // 检查 key 是否在 [triggerDay - windowDays, triggerDay] 范围内出现过
+          let found = false;
+          const windowStart = Math.max(0, triggerDay - presetDef.windowDays);
+          for (let d = windowStart; d <= triggerDay; d++) {
+            if (days.has(d)) {
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            allMet = false;
+            break;
+          }
+        }
+        if (allMet) {
+          signals[triggerDay] = true;
+        }
+      }
+    }
+    return signals;
+  }
+
+  // 默认逻辑：所有条件在同一天同时满足（AND 逻辑）
+  // 例如"晨星放量"需要 pattern_morning_star 和 volume_breakout 同时成立
+  for (let i = 0; i < n; i++) {
+    let allMet = true;
+    for (const key of presetDef.conditionKeys) {
+      const days = eventDays.get(key);
+      if (!days || !days.has(i)) {
+        allMet = false;
+        break;
+      }
+    }
+    signals[i] = allMet;
+  }
+
+  return signals;
 }
 
 /** 从数组末尾查找第一个满足条件的元素索引（兼容 ES2023 之前的 findLastIndex） */
@@ -512,7 +634,7 @@ export async function runBacktest(
   if (bars.length === 0) {
     return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings, diagnostics };
   }
-  if (!buyCondition?.indicatorId) {
+  if (!buyCondition || (buyCondition.type === 'custom' ? !buyCondition.indicatorId : !buyCondition.presetId)) {
     return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings: [...warnings, '未配置买入条件'], diagnostics };
   }
 
@@ -525,8 +647,8 @@ export async function runBacktest(
   // 2. 预计算买入信号（Pyodide Worker）
   let buySignals: boolean[];
   try {
-    safeProgress(onProgress, { stage: 'signals', percent: 30, message: '正在执行自编指标脚本...' });
-    buySignals = await computeBuySignals(buyCondition, bars);
+    safeProgress(onProgress, { stage: 'signals', percent: 30, message: '正在计算买入条件信号...' });
+    buySignals = await computeBuySignals(buyCondition, bars, cache.volRatio5);
     safeProgress(onProgress, { stage: 'signals', percent: 50, message: '买入信号预计算完成' });
   } catch (err) {
     if (err instanceof SignalError) {
@@ -540,12 +662,12 @@ export async function runBacktest(
       return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings, diagnostics };
     }
     const msg = err instanceof Error ? err.message : String(err);
-    warnings.push(`自编指标执行失败：${msg}`);
+    warnings.push(`买入条件计算失败：${msg}`);
     diagnostics.push({
       time: new Date().toISOString().slice(0, 10),
       event: 'script_error',
-      reason: `自编指标执行失败：${msg}`,
-      data: { indicatorName: (buyCondition as BacktestCondition).indicatorName },
+      reason: `买入条件计算失败：${msg}`,
+      data: { indicatorName: getConditionName(buyCondition) },
     });
     return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings, diagnostics };
   }
@@ -796,8 +918,8 @@ export async function runBacktest(
         diagnostics.push({
           time: bar.time,
           event: 'buy_signal',
-          reason: `自编指标 "${buyCondition.indicatorName}" 发出买入信号`,
-          data: { indicatorName: buyCondition.indicatorName },
+          reason: `"${getConditionName(buyCondition)}" 发出买入信号`,
+          data: { indicatorName: getConditionName(buyCondition) },
         });
         pendingBuySignal = { idx: i, deferCount: 0 };
       }
@@ -912,8 +1034,16 @@ export async function runBacktest(
 
 // ==================== 辅助函数 ====================
 
-function buildEntryReason(condition: BacktestCondition): string {
+/** 获取条件显示名称 */
+function getConditionName(condition: BacktestCondition): string {
+  if (condition.type === 'preset') {
+    return condition.presetName;
+  }
   return condition.indicatorName || '自编指标';
+}
+
+function buildEntryReason(condition: BacktestCondition): string {
+  return getConditionName(condition) || '买入条件';
 }
 
 function buildEmptySummary(): BacktestSummary {

@@ -59,6 +59,8 @@ export interface TradingRecordFormData {
   quantity: number;
   commission_entry: number;
   commission_exit: number;
+  stamp_duty?: number;
+  transfer_fee?: number;
   slip_point: number;
   channel_height?: number;
   gross_profit?: number;
@@ -80,6 +82,8 @@ export interface ExitSlip {
   exit_price: number;
   quantity: number;
   commission: number;
+  stamp_duty: number;
+  transfer_fee: number;
   exit_reason: ExitReason | null;
   exit_score: number | null;
   actual_stop_loss: number | null;
@@ -93,6 +97,8 @@ export interface ExitSlipFormData {
   exit_price: number;
   quantity: number;
   commission?: number;
+  stamp_duty?: number;
+  transfer_fee?: number;
   exit_reason?: ExitReason;
   exit_score?: number;
   actual_stop_loss?: number;

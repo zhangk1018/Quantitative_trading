@@ -273,14 +273,8 @@ export function detectAllPatterns(
       }
     }
 
-    // 提前终止（若已找到所有目标形态）
-    if (targetSet && targetSet.size > 0) {
-      let allFound = true;
-      for (const p of targetSet) {
-        if (!hitSet.has(p)) { allFound = false; break; }
-      }
-      if (allFound) break;
-    }
+    // 注意：不提前终止，因为 caller（如 detectConditions）需要所有历史出现位置，
+    // 而非仅第一个。回测引擎中，若第一个形态出现在预热期之前，提前终止会导致错过后面的形态。
   }
 
   result.hits = Array.from(hitSet);

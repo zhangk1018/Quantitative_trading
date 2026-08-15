@@ -1,7 +1,6 @@
 // lib/indicators/chartConstants.ts
 
 import type { PatternType } from './types';
-import { getUpDownColors } from '@/shared/contexts/SettingsContext';
 
 export const CHART_CONFIG = {
   BACKGROUND_COLOR: '#1E222D',
@@ -13,13 +12,16 @@ export const CHART_CONFIG = {
   RESIZE_DEBOUNCE_MS: 100,
 } as const;
 
-/** 获取蜡烛图涨跌颜色（根据当前颜色方案动态返回） */
+/**
+ * 获取蜡烛图涨跌颜色（硬编码默认值，避免对 React Context 的依赖）
+ * 主线程 UI 可通过直接调用 getUpDownColors() 覆盖颜色
+ */
 export function getCandleUpColor(): string {
-  return getUpDownColors().up;
+  return '#EF5350'; // 中国惯例：红涨
 }
 
 export function getCandleDownColor(): string {
-  return getUpDownColors().down;
+  return '#26A69A'; // 中国惯例：绿跌
 }
 
 export interface DetectionConfig {
@@ -89,7 +91,9 @@ export function getPatternMarkerConfig(): Record<
   PatternType,
   { color: string; text: string; shape: 'arrowUp' | 'arrowDown' }
 > {
-  const { up, down } = getUpDownColors();
+  // 硬编码默认值（中国惯例：红涨绿跌），避免对 React Context 的依赖
+  const up = '#EF5350';
+  const down = '#26A69A';
   return {
     hammer: { color: '#2962FF', text: '锤子线', shape: 'arrowUp' },
     bullish_engulfing: { color: up, text: '看涨吞没', shape: 'arrowUp' },

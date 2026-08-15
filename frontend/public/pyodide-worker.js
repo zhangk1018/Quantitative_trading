@@ -39,7 +39,7 @@ function toJsValue(pyResult) {
 }
 
 async function executeScript(scriptCode, stockData, signal) {
-  const { close, high, low, open, volume } = stockData;
+  const { close, high, low, open, volume, volRatio5 } = stockData;
 
   const needsNumpy = /\bnumpy\b/.test(scriptCode) || /\bnp\./.test(scriptCode);
   const needsPandas = /\bpandas\b/.test(scriptCode) || /\bpd\./.test(scriptCode);
@@ -112,6 +112,12 @@ def _calculate_single(o, h, l, c, v):
       const l = low[i] || [];
       const c = close[i] || [];
       const v = volume[i] || [];
+      const vr = volRatio5 ? (volRatio5[i] || []) : null;
+
+      // 向 Python 暴露预计算量比数据（后台已有，脚本可直接使用 CUSTOM_VOL_RATIO）
+      if (vr) {
+        pyodide.globals.set('CUSTOM_VOL_RATIO', pyodide.toPy(vr));
+      }
 
       try {
         const pyResult = calcFunc(

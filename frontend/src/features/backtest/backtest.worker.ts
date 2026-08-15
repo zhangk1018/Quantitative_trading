@@ -75,11 +75,19 @@ export function validateBacktestInput(input: unknown): string | null {
   if (!buyCondition || typeof buyCondition !== 'object') {
     return '买入条件格式错误';
   }
-  if (!buyCondition.indicatorId || typeof buyCondition.indicatorId !== 'string') {
-    return '买入条件缺少有效的自编指标 ID';
-  }
-  if (!buyCondition.formula || typeof buyCondition.formula !== 'string') {
-    return '买入条件缺少有效的自编指标公式';
+  const cond = buyCondition as unknown as Record<string, unknown>;
+  if (cond.type === 'preset') {
+    if (!cond.presetId || typeof cond.presetId !== 'string') {
+      return '系统预设条件缺少有效的 presetId';
+    }
+  } else {
+    // 自编指标（type 为空或 'custom' 均视为自定义指标，保持向后兼容）
+    if (!cond.indicatorId || typeof cond.indicatorId !== 'string') {
+      return '买入条件缺少有效的自编指标 ID';
+    }
+    if (!cond.formula || typeof cond.formula !== 'string') {
+      return '买入条件缺少有效的自编指标公式';
+    }
   }
 
   if (!config || typeof config !== 'object') {

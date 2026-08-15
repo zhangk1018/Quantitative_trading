@@ -106,6 +106,8 @@ export class CustomIndicatorRunner {
       low: number[];
       close: number[];
       volume: number[];
+      /** 预计算量比（5日均量比），由回测引擎提供，脚本可直接使用 */
+      volRatio5?: number[];
     },
     timeoutMs: number = 60_000,
   ): Promise<(number | null)[]> {
@@ -114,13 +116,23 @@ export class CustomIndicatorRunner {
     }
 
     const batchId = `single_${this.batchIdCounter++}`;
-    const stockData = {
+    const stockData: {
+      close: (number | null)[][];
+      high: (number | null)[][];
+      low: (number | null)[][];
+      open: (number | null)[][];
+      volume: (number | null)[][];
+      volRatio5?: (number | null)[][];
+    } = {
       open: [data.open.map((v) => (Number.isFinite(v) ? v : null))],
       high: [data.high.map((v) => (Number.isFinite(v) ? v : null))],
       low: [data.low.map((v) => (Number.isFinite(v) ? v : null))],
       close: [data.close.map((v) => (Number.isFinite(v) ? v : null))],
       volume: [data.volume.map((v) => (Number.isFinite(v) ? v : null))],
     };
+    if (data.volRatio5) {
+      stockData.volRatio5 = [data.volRatio5.map((v) => (Number.isFinite(v) ? v : null))];
+    }
 
     const result = await this.executeSingleBatch(scriptCode, stockData, batchId, timeoutMs);
     if (result.error) {
@@ -368,6 +380,7 @@ export class CustomIndicatorRunner {
       low: (number | null)[][];
       open: (number | null)[][];
       volume: (number | null)[][];
+      volRatio5?: (number | null)[][];
     },
     batchId: string,
     timeoutMs: number,

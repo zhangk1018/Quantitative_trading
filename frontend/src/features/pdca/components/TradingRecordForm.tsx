@@ -6,8 +6,10 @@
  * - 数值范围校验（前后端双重）
  * - 日期先后校验（出场日期 > 入场日期）
  * - 支持新增和编辑模式
- * - 卖出子单管理（一买多卖）：委托 ExitSlipList / ExitSlipModal 子组件
- * - 自动计算进场得分、出场得分、总得分、等级（《走进我的交易室》原著公式）
+ * - 卖出记录管理：委托 ExitSlipList / ExitSlipModal 子组件（统一通过新增卖出记录操作）
+ * - 自动计算入场佣金/出场佣金/滑点（从系统设置读取手续费率/滑点率）
+ * - 保存时校验入场价/出场价在当日最高最低价范围内
+ * - 全部卖出时自动计算进场得分、出场得分、总得分、等级（《走进我的交易室》原著公式）
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
@@ -23,6 +25,7 @@ import {
 import { createRecord, updateRecord, searchStocks, fetchExitSlips, updateExitSlip, deleteExitSlip, batchCreateExitSlips, fetchDailyOHLC } from '../api';
 import type { DailyOHLC } from '../api';
 import { calcEntryScore, calcExitScore, calcChannelHeight, calcTradeScore, calcTradeGrade } from '../utils/scoreCalculator';
+import { calcCommission, calcTransferFee, calcSlippageCost } from '../utils/tradingCostUtils';
 import ExitSlipList from './ExitSlipList';
 import ExitSlipModal from './ExitSlipModal';
 
@@ -45,22 +48,22 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
   const [snapshotMaxSellQty, setSnapshotMaxSellQty] = useState(0);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tempIdCounterRef = useRef(0);
+  const dirtyFieldsRef = useRef<Set<string>>(new Set());
   const isEdit = !!record;
 
   // ────────── 自动计算得分 — 监听表单字段 ──────────
 
   const code = Form.useWatch('code', form);
   const entryDate = Form.useWatch('entry_date', form);
-  const exitDate = Form.useWatch('exit_date', form);
   const entryPrice = Form.useWatch('entry_price', form);
-  const exitPrice = Form.useWatch('exit_price', form);
+  const quantity = Form.useWatch('quantity', form);
   const longShort = Form.useWatch('long_short', form);
 
   const [entryDayOHLC, setEntryDayOHLC] = useState<DailyOHLC | null>(null);
   const [exitDayOHLC, setExitDayOHLC] = useState<DailyOHLC | null>(null);
   const initialLoadRef = useRef(true);
 
-  // --- 从卖出子单推导有效出场数据（B-1口径：加权平均出场价 + 末笔子单日期） ---
+  // --- 从卖出记录推导有效出场数据（加权平均出场价 + 末笔子单日期） ---
   const slipDerivedData = useMemo(() => {
     if (exitSlips.length === 0) return null;
     const totalQty = exitSlips.reduce((sum, s) => sum + s.quantity, 0);
@@ -73,24 +76,29 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     };
   }, [exitSlips]);
 
-  // 有效出场日期（子单优先 → 手动输入兜底）
+  // 有效出场日期（仅从卖出记录推导）
   const effectiveExitDate = useMemo(() => {
     if (slipDerivedData) return slipDerivedData.exitDate;
-    if (exitDate) return dayjs.isDayjs(exitDate) ? exitDate.format('YYYY-MM-DD') : exitDate;
     return null;
-  }, [slipDerivedData, exitDate]);
+  }, [slipDerivedData]);
 
-  // 有效出场价（子单优先 → 手动输入兜底）
+  // 有效出场价（仅从卖出记录推导）
   const effectiveExitPrice = useMemo(() => {
     if (slipDerivedData) return slipDerivedData.exitPrice;
-    if (exitPrice != null) return Number(exitPrice);
     return null;
-  }, [slipDerivedData, exitPrice]);
+  }, [slipDerivedData]);
+
+  // 是否全部卖出
+  const totalExitQty = useMemo(
+    () => exitSlips.reduce((sum, slip) => sum + slip.quantity, 0),
+    [exitSlips],
+  );
+  const entryQty = form.getFieldValue('quantity') || 0;
+  const isFullySold = totalExitQty > 0 && totalExitQty >= entryQty;
 
   // 初始加载完成后，标记允许自动计算（编辑模式不覆盖已有值）
   useEffect(() => {
     if (open) {
-      // 延迟到下一帧，确保表单初始值已经 set
       const t = setTimeout(() => { initialLoadRef.current = false; }, 0);
       return () => clearTimeout(t);
     } else {
@@ -121,10 +129,10 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, entryDate, open]);
 
-  // 出场日期变化（子单或手动输入） → 异步获取出场日 OHLC
+  // 出场日期变化（仅从卖出记录推导） → 异步获取出场日 OHLC
   useEffect(() => {
     if (!code || !effectiveExitDate) {
-      if (!slipDerivedData && !exitDate) setExitDayOHLC(null);
+      if (!slipDerivedData) setExitDayOHLC(null);
       return;
     }
     const dateStr = effectiveExitDate;
@@ -139,6 +147,38 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, effectiveExitDate, open]);
+
+  // 卖出记录变化 → 自动汇总出场佣金、印花税、过户费
+  useEffect(() => {
+    const aggCommission = exitSlips.reduce((sum, s) => sum + (s.commission || 0), 0);
+    const aggStampDuty = exitSlips.reduce((sum, s) => sum + (s.stamp_duty || 0), 0);
+    const aggExitTransfer = exitSlips.reduce((sum, s) => sum + (s.transfer_fee || 0), 0);
+    form.setFieldsValue({ commission_exit: Math.round(aggCommission * 100) / 100 });
+    form.setFieldsValue({ stamp_duty: Math.round(aggStampDuty * 100) / 100 });
+
+    // 过户费 = 入场过户费 + 出场过户费汇总
+    const entryTransfer = form.getFieldValue('transfer_fee') || 0;
+    form.setFieldsValue({ transfer_fee: Math.round((entryTransfer + aggExitTransfer) * 100) / 100 });
+  }, [exitSlips, form]);
+
+  // 入场价/数量变化 → 自动计算入场佣金、入场过户费和滑点（不覆盖用户手动编辑）
+  useEffect(() => {
+    if (entryPrice != null && quantity != null && Number.isFinite(entryPrice) && Number.isFinite(quantity)) {
+      const p = Number(entryPrice);
+      const q = Number(quantity);
+
+      // 不覆盖用户手动编辑过的字段
+      if (!dirtyFieldsRef.current.has('commission_entry')) {
+        form.setFieldsValue({ commission_entry: calcCommission(p, q) });
+      }
+      if (!dirtyFieldsRef.current.has('transfer_fee')) {
+        form.setFieldsValue({ transfer_fee: calcTransferFee(p, q) });
+      }
+      if (!dirtyFieldsRef.current.has('slip_point')) {
+        form.setFieldsValue({ slip_point: Math.round(calcSlippageCost(p) * 10000) / 10000 });
+      }
+    }
+  }, [entryPrice, quantity, form]);
 
   // 核心计算：入场价/出场价/方向/OHLC 变化 → 重算得分
   useEffect(() => {
@@ -175,7 +215,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entryPrice, effectiveExitPrice, effectiveExitDate, longShort, entryDayOHLC, exitDayOHLC, exitSlips, slipDerivedData]);
 
-  // --- 加载已有卖出子单（编辑模式） ---
+  // --- 加载已有卖出记录（编辑模式） ---
   useEffect(() => {
     if (open && record) {
       setLoadingExitSlips(true);
@@ -201,7 +241,12 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
   // --- 表单初始值 ---
   useEffect(() => {
     if (open) {
+      dirtyFieldsRef.current = new Set<string>();
       if (record) {
+        // 编辑模式：已有费用值视为用户意图，标记为脏不自动覆盖
+        dirtyFieldsRef.current.add('commission_entry');
+        dirtyFieldsRef.current.add('transfer_fee');
+        dirtyFieldsRef.current.add('slip_point');
         form.setFieldsValue({
           ...record,
           entry_date: record.entry_date ? dayjs(record.entry_date) : null,
@@ -259,14 +304,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     form.setFieldsValue({ security_name: name });
   }, [form]);
 
-  // --- 计算统计数据（使用 useMemo 缓存，避免每次渲染重复计算） ---
-  const entryQty = form.getFieldValue('quantity') || 0;
-  const totalExitQty = useMemo(
-    () => exitSlips.reduce((sum, slip) => sum + slip.quantity, 0),
-    [exitSlips],
-  );
-
-  // --- 卖出子单管理 ---
+  // --- 卖出记录管理 ---
   const openNewExitSlip = useCallback(() => {
     setEditingSlip(null);
     setSnapshotMaxSellQty(Math.max(0, entryQty - totalExitQty));
@@ -326,17 +364,61 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     }
   }, [message, onSuccess]);
 
+  // --- 价格合规校验（入场价/出场价在当日最高最低价范围内） ---
+  const validatePriceAgainstOHLC = useCallback(async (): Promise<string | null> => {
+    // 校验入场价
+    const ep = form.getFieldValue('entry_price');
+    const dateStr = dayjs.isDayjs(entryDate) ? entryDate.format('YYYY-MM-DD') : entryDate;
+    if (ep != null && dateStr && code) {
+      const ohlc = entryDayOHLC || await fetchDailyOHLC(code, dateStr);
+      if (ohlc) {
+        if (ep < ohlc.low || ep > ohlc.high) {
+          return `入场价 ${ep} 不在 ${dateStr} 的价格范围 [${ohlc.low}, ${ohlc.high}] 内，请检查输入`;
+        }
+      }
+    }
+
+    // 校验每条卖出记录的出场价
+    for (const slip of exitSlips) {
+      if (slip.exit_price != null) {
+        const slipDate = slip.exit_date;
+        const ohlc = await fetchDailyOHLC(code, slipDate);
+        if (ohlc) {
+          if (slip.exit_price < ohlc.low || slip.exit_price > ohlc.high) {
+            return `出场价 ${slip.exit_price} 不在 ${slipDate} 的价格范围 [${ohlc.low}, ${ohlc.high}] 内，请检查卖出记录`;
+          }
+        }
+      }
+    }
+
+    return null;
+  }, [code, entryDate, entryDayOHLC, exitSlips, form]);
+
   // --- 主表单提交 ---
   const handleSubmit = useCallback(async () => {
     try {
       const values = await form.validateFields();
       setLoading(true);
 
+      // 价格合规校验
+      const validationError = await validatePriceAgainstOHLC();
+      if (validationError) {
+        message.error(validationError);
+        setLoading(false);
+        return;
+      }
+
+      // 从卖出记录推导出场日期和出场价
+      const derivedExitDate = slipDerivedData?.exitDate;
+      const derivedExitPrice = slipDerivedData?.exitPrice;
+
       const data: TradingRecordFormData = {
         ...values,
         security_name: form.getFieldValue('security_name') || '',
         entry_date: values.entry_date?.format('YYYY-MM-DD'),
-        exit_date: values.exit_date?.format('YYYY-MM-DD') || undefined,
+        // 出场日期和出场价仅从卖出记录推导，不保留手动输入
+        exit_date: derivedExitDate || undefined,
+        exit_price: derivedExitPrice || undefined,
       };
 
       // 清理空字段
@@ -353,6 +435,8 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
         exit_price: s.exit_price,
         quantity: s.quantity,
         commission: s.commission,
+        stamp_duty: s.stamp_duty,
+        transfer_fee: s.transfer_fee,
         exit_reason: s.exit_reason ?? undefined,
         exit_score: s.exit_score ?? undefined,
         actual_stop_loss: s.actual_stop_loss ?? undefined,
@@ -383,12 +467,53 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
         if (localSlips.length > 0) {
           const batchRes = await batchCreateExitSlips(recordId, localSlips);
           if (batchRes.code !== 200) {
-            // 清理本地临时子单，防止重复提交导致数据重复
             setExitSlips(prev => prev.filter(s => s.id >= 0));
             message.warning(
               `主记录已保存，但 ${localSlips.length} 条卖出记录同步失败：${batchRes.message || '未知错误'}。请重新编辑该记录并添加卖出记录。`,
             );
+          } else {
+            // 全部卖出时，后端已更新 remain_qty 和 gross_profit，但需要更新得分
+            if (isFullySold && derivedExitPrice != null && entryPrice != null && entryDayOHLC) {
+              const ls = longShort || 'long';
+              const ch = entryDayOHLC.high - entryDayOHLC.low;
+              // 全量重算进场得分、出场得分、总得分、等级
+              const es = calcEntryScore(Number(entryPrice), entryDayOHLC.high, entryDayOHLC.low, ls);
+              let xs: number | null = null;
+              if (exitDayOHLC) {
+                xs = calcExitScore(Number(derivedExitPrice), exitDayOHLC.high, exitDayOHLC.low, ls);
+              }
+              const scoreData: Partial<TradingRecordFormData> = {
+                entry_score: Math.round(es * 10) / 10,
+                exit_score: xs != null ? Math.round(xs * 10) / 10 : undefined,
+              };
+              if (ch > 0) {
+                const ts = calcTradeScore(Number(entryPrice), derivedExitPrice, ch, ls);
+                scoreData.trade_score = Math.round(ts * 10) / 10;
+                scoreData.trade_grade = calcTradeGrade(ts);
+              }
+              await updateRecord(recordId, scoreData);
+            }
           }
+        } else if (isFullySold && derivedExitPrice != null && entryPrice != null && entryDayOHLC) {
+          // 没有新增子单但已全部卖出（编辑场景），也更新得分
+          const ls = longShort || 'long';
+          const ch = entryDayOHLC.high - entryDayOHLC.low;
+          // 全量重算进场得分、出场得分、总得分、等级
+          const es = calcEntryScore(Number(entryPrice), entryDayOHLC.high, entryDayOHLC.low, ls);
+          let xs: number | null = null;
+          if (exitDayOHLC) {
+            xs = calcExitScore(Number(derivedExitPrice), exitDayOHLC.high, exitDayOHLC.low, ls);
+          }
+          const scoreData: Partial<TradingRecordFormData> = {
+            entry_score: Math.round(es * 10) / 10,
+            exit_score: xs != null ? Math.round(xs * 10) / 10 : undefined,
+          };
+          if (ch > 0) {
+            const ts = calcTradeScore(Number(entryPrice), derivedExitPrice, ch, ls);
+            scoreData.trade_score = Math.round(ts * 10) / 10;
+            scoreData.trade_grade = calcTradeGrade(ts);
+          }
+          await updateRecord(recordId, scoreData);
         }
 
         message.success(isEdit ? '更新成功' : '新增成功');
@@ -398,14 +523,13 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
       }
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) {
-        // 表单校验失败，不处理
         return;
       }
       message.error(err instanceof Error ? err.message : '保存失败，请检查网络连接');
     } finally {
       setLoading(false);
     }
-  }, [form, isEdit, record, exitSlips, message, onSuccess]);
+  }, [form, isEdit, record, exitSlips, message, onSuccess, slipDerivedData, isFullySold, entryPrice, entryDayOHLC, longShort, validatePriceAgainstOHLC]);
 
   return (
     <>
@@ -482,43 +606,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
             </Col>
           </Row>
 
-          {/* ---- 出场日期 / 出场价 / 数据来源提示 ---- */}
-          <Row gutter={16}>
-            <Col span={8}>
-              <Form.Item
-                name="exit_date"
-                label="出场日期"
-                tooltip="有卖出子单时自动使用末笔子单日期，手动输入仅在一买一卖场景生效"
-              >
-                <DatePicker style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item
-                name="exit_price"
-                label="出场价"
-                tooltip="有卖出子单时自动使用加权平均价，手动输入仅在一买一卖场景生效"
-              >
-                <InputNumber style={{ width: '100%' }} step={0.01} precision={4} />
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              {slipDerivedData && (
-                <div className="h-full flex items-center text-xs text-gray-500 pl-2">
-                  <span className="inline-block bg-blue-50 text-blue-600 px-2 py-1 rounded">
-                    子单数据：加权均价 {slipDerivedData.exitPrice} / 末笔 {slipDerivedData.exitDate}
-                  </span>
-                </div>
-              )}
-              {!slipDerivedData && (
-                <div className="h-full flex items-center text-xs text-gray-400 pl-2">
-                  无子单时使用手动输入
-                </div>
-              )}
-            </Col>
-          </Row>
-
-          {/* ---- 卖出子单列表卡片（委托子组件） ---- */}
+          {/* ---- 卖出记录列表卡片（委托子组件，统一通过此组件操作卖出） ---- */}
           <ExitSlipList
             exitSlips={exitSlips}
             entryQty={entryQty}
@@ -529,23 +617,66 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
             onDelete={removeExitSlip}
           />
 
-          {/* ---- 佣金 & 滑点 ---- */}
+          {/* ---- 已全部卖出提示 ---- */}
+          {isFullySold && (
+            <div className="bg-green-50 text-green-700 text-xs px-3 py-2 rounded mb-4">
+              已全部卖出，总得分将在保存后自动计算
+            </div>
+          )}
+
+          {/* ---- 交易费用 ---- */}
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item name="commission_entry" label="入场佣金">
+              <Form.Item
+                name="commission_entry"
+                label="入场佣金"
+                tooltip="max(入场价×数量×手续费率, 最低5元)，从系统设置自动计算"
+              >
+                <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={4}
+                  onChange={() => dirtyFieldsRef.current.add('commission_entry')} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                name="commission_exit"
+                label="出场佣金（汇总）"
+                tooltip="从卖出记录自动汇总"
+              >
                 <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={4} />
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="commission_exit" label="出场佣金（汇总）">
+              <Form.Item
+                name="stamp_duty"
+                label="印花税（汇总）"
+                tooltip="出场价×数量×印花税率，仅卖出收取，从卖出记录自动汇总"
+              >
                 <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={4} />
               </Form.Item>
             </Col>
+          </Row>
+          <Row gutter={16}>
             <Col span={8}>
-              <Form.Item name="slip_point" label="滑点(元/股)" tooltip="每股滑点金额，总滑点=滑点×数量">
-                <InputNumber style={{ width: '100%' }} min={0} step={0.001} precision={4} />
+              <Form.Item
+                name="transfer_fee"
+                label="过户费（汇总）"
+                tooltip="入场过户费 + 出场过户费汇总，从系统设置自动计算"
+              >
+                <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={4}
+                  onChange={() => dirtyFieldsRef.current.add('transfer_fee')} />
               </Form.Item>
             </Col>
+            <Col span={8}>
+              <Form.Item
+                name="slip_point"
+                label="滑点(元/股)"
+                tooltip="入场价×滑点率，从系统设置自动计算"
+              >
+                <InputNumber style={{ width: '100%' }} min={0} step={0.001} precision={4}
+                  onChange={() => dirtyFieldsRef.current.add('slip_point')} />
+              </Form.Item>
+            </Col>
+            <Col span={8} />
           </Row>
 
           {/* ---- 毛盈亏 / 通道高度 / 实际止损 ---- */}
@@ -609,7 +740,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
         </Form>
       </Modal>
 
-      {/* ---- 新增/编辑卖出子单弹窗（委托子组件） ---- */}
+      {/* ---- 新增/编辑卖出记录弹窗（委托子组件） ---- */}
       <ExitSlipModal
         open={exitSlipModalOpen}
         editingSlip={editingSlip}
