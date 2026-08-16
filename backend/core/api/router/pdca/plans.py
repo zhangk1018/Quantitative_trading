@@ -6,6 +6,11 @@ plans.py - 交易计划 CRUD + 风控校验
 - PL-003 C 类标的禁止创建交易计划
 - PL-004 单笔风险比例不得超过 risk_per_trade（默认 2%）
 - PL-006/007 止损价方向校验（多头止损 < 入场价，空头止损 > 入场价）
+
+推荐索引（需在数据库端创建）：
+- pdca.trading_plan: (code, deleted_at) WHERE deleted_at IS NULL
+- pdca.trading_plan: (pdca_cycle_id, deleted_at) WHERE deleted_at IS NULL
+- pdca.pdca_cycle: (id, deleted_at) WHERE deleted_at IS NULL
 """
 import logging
 from typing import Optional
@@ -32,11 +37,11 @@ class PlanCreate(BaseModel):
     long_short: str = Field(..., pattern="^(long|short)$")
     weekly_view: str
     daily_view: str
-    entry_price: float
-    stop_loss_price: float
-    target_price: Optional[float] = None
-    max_risk_rate: float
-    plan_quantity: int
+    entry_price: float = Field(..., gt=0)
+    stop_loss_price: float = Field(..., gt=0)
+    target_price: Optional[float] = Field(None, gt=0)
+    max_risk_rate: float = Field(..., gt=0, le=1.0)
+    plan_quantity: int = Field(..., gt=0)
     abort_condition: Optional[str] = None
 
 
@@ -45,11 +50,11 @@ class PlanUpdate(BaseModel):
     long_short: Optional[str] = Field(None, pattern="^(long|short)$")
     weekly_view: Optional[str] = None
     daily_view: Optional[str] = None
-    entry_price: Optional[float] = None
-    stop_loss_price: Optional[float] = None
-    target_price: Optional[float] = None
-    max_risk_rate: Optional[float] = None
-    plan_quantity: Optional[int] = None
+    entry_price: Optional[float] = Field(None, gt=0)
+    stop_loss_price: Optional[float] = Field(None, gt=0)
+    target_price: Optional[float] = Field(None, gt=0)
+    max_risk_rate: Optional[float] = Field(None, gt=0, le=1.0)
+    plan_quantity: Optional[int] = Field(None, gt=0)
     abort_condition: Optional[str] = None
 
 
@@ -72,11 +77,14 @@ def _get_plan_or_404(conn, plan_id: int) -> dict:
 
 def _get_cycle(conn, cycle_id: int) -> dict:
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM pdca.pdca_cycle WHERE id = %s", (cycle_id,))
+        cur.execute(
+            "SELECT * FROM pdca.pdca_cycle WHERE id = %s AND deleted_at IS NULL",
+            (cycle_id,),
+        )
         columns = [desc[0] for desc in cur.description]
         row = cur.fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail=f"周期 {cycle_id} 不存在")
+            raise HTTPException(status_code=404, detail=f"周期 {cycle_id} 不存在或已删除")
         return dict(zip(columns, row))
 
 
@@ -109,7 +117,8 @@ def _check_risk(conn, max_risk_rate: float):
     with conn.cursor() as cur:
         cur.execute(
             "SELECT numeric_value FROM pdca.system_config "
-            "WHERE config_key = 'risk_per_trade' ORDER BY id DESC LIMIT 1"
+            "WHERE config_key = 'risk_per_trade' AND deleted_at IS NULL "
+            "ORDER BY id DESC LIMIT 1"
         )
         row = cur.fetchone()
     limit = float(row[0]) if row and row[0] is not None else 0.02

@@ -1,5 +1,9 @@
 """
-snapshots.py - 资金快照 + 资金曲线 API
+snapshots.py - 资金快照 CRUD + 资金曲线
+
+推荐索引（需在数据库端创建）：
+- pdca.account_snapshot: (account_id, snapshot_date)（已有唯一索引 uq_account_snapshot）
+- pdca.trading_record: (code, trade_date DESC) 用于 get_auto_equity_curve 行情查询
 """
 import logging
 from typing import Optional
@@ -244,13 +248,12 @@ async def get_equity_curve(
                     "adjusted_nav": round(nav, 2),
                 })
 
-            # 回填调整后净值到数据库
+            # 回填调整后净值到数据库（批量回写，减少网络往返）
             with conn.cursor() as update_cur:
-                for item in curve_data:
-                    update_cur.execute(
-                        "UPDATE pdca.account_snapshot SET adjusted_nav = %s WHERE account_id = 1 AND snapshot_date = %s",
-                        (item["adjusted_nav"], item["date"]),
-                    )
+                update_cur.executemany(
+                    "UPDATE pdca.account_snapshot SET adjusted_nav = %s WHERE account_id = 1 AND snapshot_date = %s",
+                    [(item["adjusted_nav"], item["date"]) for item in curve_data],
+                )
             conn.commit()
 
             return ApiResponse(code=200, message="success", data={"items": curve_data})

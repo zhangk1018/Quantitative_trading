@@ -3,6 +3,9 @@ securities.py - 标的 ABC 分类 CRUD
 
 对应《PDCA交付物三》PL-003 前置：C 类标的禁止创建交易计划。
 security_tag 表每个 code 唯一（uq_security_tag_code）。
+
+推荐索引（需在数据库端创建）：
+- pdca.security_tag: (tag, deleted_at) WHERE deleted_at IS NULL 用于按标签筛选
 """
 import logging
 from typing import Optional
