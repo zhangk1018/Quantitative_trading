@@ -113,9 +113,20 @@ export const DEFAULT_INDICATOR_PARAMS: IndicatorParams = {
 
 // ==================== 回测配置 ====================
 
+/** 回测股票（支持单只或多只批量回测） */
+export interface BacktestStock {
+  stockCode: string;
+  stockName: string;
+}
+
 export interface BacktestConfig {
   stockCode: string;
   stockName: string;
+  /**
+   * 多股票批量回测列表（选择整个自选股分组时使用）。
+   * 为空或仅一只时退化为单股回测（使用 stockCode/stockName）。
+   */
+  stocks?: BacktestStock[];
   startDate: string;
   endDate: string;
   capital: number;
@@ -190,6 +201,8 @@ export type BacktestEngineConfig = Pick<
 export interface BacktestFormValues {
   stockCode?: string;
   stockName?: string;
+  /** 批量回测股票列表（选择整个自选股分组时由表单填充） */
+  stocks?: BacktestStock[];
   startDate?: string;
   endDate?: string;
   capital?: number;
@@ -280,6 +293,17 @@ export interface BacktestOutput {
   warnings: string[];
   /** 结构化诊断日志（无交易时用于暴露具体原因） */
   diagnostics: DiagnosticEntry[];
+}
+
+/** 批量回测中单只股票的回测结果 */
+export interface BacktestUniverseResult {
+  stockCode: string;
+  stockName: string;
+  /** 该股用于图表展示的 K 线数据 */
+  bars: KlineBar[];
+  output: BacktestOutput;
+  /** 该股拉取数据或回测失败时的错误信息（成功时为空） */
+  error?: string;
 }
 
 // ==================== 回测生命周期状态 ====================

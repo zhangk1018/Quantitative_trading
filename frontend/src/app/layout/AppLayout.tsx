@@ -17,7 +17,7 @@ const AppLayout: React.FC = () => {
     { key: '/watchlist', icon: <StarOutlined />, label: '自选股' },
     { key: '/backtest', icon: <LineChartOutlined />, label: '回测分析' },
     { key: '/strategy-backtest', icon: <ExperimentOutlined />, label: '策略回测' },
-    { key: '/pdca', icon: <CheckCircleOutlined />, label: 'PDCA 交易自律' },
+    { key: '/pdca', icon: <CheckCircleOutlined />, label: '交易室' },
     { key: '/config', icon: <SettingOutlined />, label: '系统配置' },
   ];
 

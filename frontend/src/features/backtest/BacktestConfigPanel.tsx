@@ -7,7 +7,7 @@ import {
 } from 'antd';
 import { CloseOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import type { BacktestConfig, BacktestCondition, BacktestFormValues, IndicatorParams, SellStrategy } from './backtestTypes';
+import type { BacktestConfig, BacktestCondition, BacktestFormValues, BacktestStock, IndicatorParams, SellStrategy } from './backtestTypes';
 import {
   DEFAULT_BACKTEST_CONFIG,
   SELL_STRATEGY_LABELS,
@@ -37,7 +37,25 @@ interface CascaderOption {
   label: React.ReactNode;
   children?: CascaderOption[];
   stock?: StockSearchItem;
+  /** 整组回测选项所在的自选股分组名（value 为 '__group_all__' 时有效） */
+  groupName?: string;
   isLeaf?: boolean;
+}
+
+/** 整组回测叶子的 value 前缀（实际 value 需拼接分组名以保证全树唯一） */
+const GROUP_ALL_VALUE_PREFIX = '__group_all__';
+
+/** 生成整组回测叶子的唯一 value */
+function groupAllValue(groupName: string): string {
+  return `${GROUP_ALL_VALUE_PREFIX}${groupName}`;
+}
+
+/** 判断某个 value 是否为整组回测叶子，并返回其分组名 */
+function parseGroupAllValue(value: string): string | null {
+  if (value.startsWith(GROUP_ALL_VALUE_PREFIX)) {
+    return value.slice(GROUP_ALL_VALUE_PREFIX.length);
+  }
+  return null;
 }
 
 const DEFAULT_STOCK: StockSearchItem = { stock_code: '000001', stock_name: '平安银行' };
@@ -45,6 +63,8 @@ const DEFAULT_STOCK: StockSearchItem = { stock_code: '000001', stock_name: '平�
 const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
   const { keyword: searchKeyword, setKeyword: setSearchKeyword, options: searchOptions, loading: searchLoading } = useStockSearch(300);
   const [cascaderValue, setCascaderValue] = useState<string[]>([]);
+  /** 级联选择器输入框显示的文本（整组回测时显示分组提示，单股时显示代码+名称） */
+  const [cascaderLabel, setCascaderLabel] = useState<string>(`${DEFAULT_STOCK.stock_code} ${DEFAULT_STOCK.stock_name}`);
   const [backtestVersion, setBacktestVersion] = useState(0);
   const [watchlistNames, setWatchlistNames] = useState<Record<string, string>>({});
   const [customIndicators, setCustomIndicators] = useState<CustomIndicator[]>([]);
@@ -195,22 +215,36 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
       });
     }
 
-    // 自选股分组：直接作为一级选项，点击分组后二级菜单展示个股
+    // 自选股分组：直接作为一级选项，点击分组后二级菜单展示整组回测 + 个股
     for (const groupName of watchlistGroups) {
       const codes = watchlistState.stocks[groupName] || [];
       if (codes.length === 0) continue;
       options.push({
         value: `__watchlist_group__${groupName}`,
         label: `${groupName} (${codes.length})`,
-        children: codes.map((code) => ({
-          value: code,
-          label: `${code} ${watchlistNames[code] || code}`,
-          stock: {
-            stock_code: code,
-            stock_name: watchlistNames[code] || code,
+        children: [
+          // 整组回测选项：一键选择整个自选股分组
+          {
+            value: groupAllValue(groupName),
+            label: (
+              <span className="flex items-center justify-between gap-4">
+                <span className="font-medium">🎯 回测整个分组</span>
+                <span className="text-xs text-text-secondary">{codes.length} 只</span>
+              </span>
+            ),
+            groupName,
+            isLeaf: true,
           },
-          isLeaf: true,
-        })),
+          ...codes.map((code) => ({
+            value: code,
+            label: `${code} ${watchlistNames[code] || code}`,
+            stock: {
+              stock_code: code,
+              stock_name: watchlistNames[code] || code,
+            },
+            isLeaf: true,
+          })),
+        ],
       });
     }
 
@@ -234,11 +268,36 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
 
   const handleCascaderChange = (value: (string | number)[], selectedOptions: CascaderOption[]) => {
     const leaf = selectedOptions[selectedOptions.length - 1];
+    if (!leaf) return;
+
+    // 整组回测：选择整个自选股分组
+    const leafValue = String(leaf.value ?? '');
+    const allGroupName = parseGroupAllValue(leafValue);
+    if (allGroupName && allGroupName.length > 0) {
+      const codes = watchlistState.stocks[allGroupName] || [];
+      const stocks: BacktestStock[] = codes.map((code) => ({
+        stockCode: code,
+        stockName: watchlistNames[code] || code,
+      }));
+      if (stocks.length === 0) return;
+      setCascaderValue(value.map(String));
+      setCascaderLabel(`🎯 ${allGroupName} 整组 (${stocks.length}只)`);
+      form.setFieldsValue({
+        stockCode: stocks[0].stockCode,
+        stockName: stocks[0].stockName,
+        stocks,
+      });
+      return;
+    }
+
+    // 单只股票
     if (!leaf?.stock) return;
     setCascaderValue(value.map(String));
+    setCascaderLabel(`${leaf.stock.stock_code} ${leaf.stock.stock_name}`);
     form.setFieldsValue({
       stockCode: leaf.stock.stock_code,
       stockName: leaf.stock.stock_name,
+      stocks: undefined,
     });
   };
 
@@ -286,6 +345,7 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
     const config: BacktestConfig = {
       stockCode: values.stockCode ?? '',
       stockName: values.stockName ?? '',
+      stocks: Array.isArray(values.stocks) && values.stocks.length > 0 ? values.stocks : undefined,
       startDate,
       endDate,
       capital: values.capital ?? DEFAULT_BACKTEST_CONFIG.capital ?? 100000,
@@ -312,7 +372,7 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {/* 股票选择 —— 级联菜单：回测列表（可删除）、自选股分组、搜索 */}
         <Card size="small" title="股票选择">
-          <Form.Item name="stockCode" label="股票代码/名称" rules={[{ required: true, message: '请选择或搜索股票' }]}>
+          <Form.Item label="股票代码/名称">
             <Cascader
               value={cascaderValue}
               options={cascaderOptions}
@@ -323,7 +383,7 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
               placeholder="选择回测列表/自选股分组，或输入代码搜索"
               expandTrigger="click"
               style={{ width: '100%' }}
-              displayRender={(labels) => labels[labels.length - 1] || ''}
+              displayRender={() => cascaderLabel}
               dropdownRender={(menu) => (
                 <div>
                   {searchLoading && (
@@ -337,9 +397,17 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
               data-testid="stock-search-cascader"
             />
           </Form.Item>
+          {/* 隐藏字段保存股票代码（含必填校验），供表单提交使用 */}
+          <Form.Item name="stockCode" rules={[{ required: true, message: '请选择或搜索股票' }]} hidden>
+            <Input />
+          </Form.Item>
           {/* 隐藏字段保存名称，供表单提交使用 */}
           <Form.Item name="stockName" hidden>
             <Input />
+          </Form.Item>
+          {/* 隐藏字段保存批量回测股票列表（整组选择时填充），div 为占位承载组件 */}
+          <Form.Item name="stocks" hidden>
+            <div />
           </Form.Item>
         </Card>
 

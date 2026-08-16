@@ -6,12 +6,13 @@
  * - 价格合规校验（出场日在最高最低价范围内）
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Modal, Form, InputNumber, DatePicker, Select, Row, Col } from 'antd';
 import dayjs from 'dayjs';
 import type { ExitSlip, ExitSlipFormData } from '../types';
 import { EXIT_REASON_OPTIONS } from '../types';
 import { calcCommission, calcStampDuty, calcTransferFee, calcSlippageCost } from '../utils/tradingCostUtils';
+import { fetchDailyOHLC, type DailyOHLC } from '../api';
 
 const { Option } = Select;
 
@@ -19,15 +20,52 @@ interface Props {
   open: boolean;
   editingSlip: ExitSlip | null;
   snapshotMaxSellQty: number;
+  /** 股票代码，用于校验出场价是否在出场日最高最低价范围内 */
+  code: string;
   onSave: (values: ExitSlipFormData, editingSlip: ExitSlip | null) => Promise<void>;
   onCancel: () => void;
 }
 
-const ExitSlipModal: React.FC<Props> = ({ open, editingSlip, snapshotMaxSellQty, onSave, onCancel }) => {
+const ExitSlipModal: React.FC<Props> = ({ open, editingSlip, snapshotMaxSellQty, code, onSave, onCancel }) => {
   const [form] = Form.useForm();
 
   // 脏状态追踪：用户手动编辑过的字段不再自动覆盖
   const dirtyFieldsRef = useRef<Set<string>>(new Set());
+
+  // 出场日 OHLC，用于校验出场价是否超出当日最高/低于最低
+  const [exitDayOHLC, setExitDayOHLC] = useState<DailyOHLC | null>(null);
+  const exitDate = Form.useWatch('exit_date', form);
+
+  // 出场日期变化 → 异步获取出场日 OHLC，用于出场价合规校验
+  useEffect(() => {
+    if (!open || !code || !exitDate) {
+      setExitDayOHLC(null);
+      return;
+    }
+    const dateStr = dayjs.isDayjs(exitDate) ? exitDate.format('YYYY-MM-DD') : exitDate;
+    if (!dateStr) return;
+    const timer = setTimeout(async () => {
+      const ohlc = await fetchDailyOHLC(code, dateStr);
+      setExitDayOHLC(ohlc);
+      // OHLC 加载后，若已填出场价则重新校验超范围
+      const ep = form.getFieldValue('exit_price');
+      if (ep != null) form.validateFields(['exit_price']).catch(() => {});
+    }, 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, code, exitDate, form]);
+
+  // 出场价校验：超出当日最高/低于最低时阻止保存
+  const validateExitPrice = (_: unknown, value: number | null) => {
+    if (value == null || exitDayOHLC == null) return Promise.resolve();
+    const v = Number(value);
+    if (v > exitDayOHLC.high || v < exitDayOHLC.low) {
+      return Promise.reject(
+        new Error(`出场价 ${v} 超出当日范围 [${exitDayOHLC.low}, ${exitDayOHLC.high}]`),
+      );
+    }
+    return Promise.resolve();
+  };
 
   // 监听出场价和数量变化，自动计算佣金和滑点
   const exitPrice = Form.useWatch('exit_price', form);
@@ -120,7 +158,11 @@ const ExitSlipModal: React.FC<Props> = ({ open, editingSlip, snapshotMaxSellQty,
             </Form.Item>
           </Col>
           <Col span={12}>
-            <Form.Item name="exit_price" label="出场价" rules={[{ required: true, message: '请输入' }]}>
+            <Form.Item
+              name="exit_price"
+              label="出场价"
+              rules={[{ required: true, message: '请输入' }, { validator: validateExitPrice }]}
+            >
               <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={4} />
             </Form.Item>
           </Col>

@@ -14,6 +14,14 @@ from shared.schemas import ApiResponse
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["交易台账"])
 
+# numeric 列：psycopg2 返回 Decimal，FastAPI 泛型响应会序列化为字符串，
+# 前端 Number.isFinite / 数值累加会失效，统一转 float 保证 API 契约返回数字
+_FLOAT_FIELDS = {
+    "entry_price", "exit_price", "commission_entry", "commission_exit",
+    "slip_point", "channel_height", "gross_profit", "entry_score",
+    "exit_score", "trade_score", "actual_stop_loss", "stamp_duty", "transfer_fee",
+}
+
 
 # ============================================================
 # Pydantic 请求/响应模型
@@ -137,7 +145,13 @@ async def list_records(
                 params + [limit, offset],
             )
             columns = [desc[0] for desc in cur.description]
-            items = [dict(zip(columns, row)) for row in cur.fetchall()]
+            items = []
+            for row in cur.fetchall():
+                item = dict(zip(columns, row))
+                for f in _FLOAT_FIELDS:
+                    if item.get(f) is not None:
+                        item[f] = float(item[f])
+                items.append(item)
 
             return ApiResponse(code=200, message="success", data={"items": items, "total": total})
 

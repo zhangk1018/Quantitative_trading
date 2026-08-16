@@ -392,6 +392,12 @@ const TradingRecordTable: React.FC = () => {
     loadData();
   }, [loadData]);
 
+  // 子单删除后：刷新父表数据但不关闭表单，保留其余卖出记录供继续操作
+  const handleSlipDeleted = useCallback(() => {
+    setExitSlipsMap({});
+    loadData();
+  }, [loadData]);
+
   if (initialLoading) {
     return (
       <div className="p-4">
@@ -461,6 +467,7 @@ const TradingRecordTable: React.FC = () => {
         record={editingRecord}
         onClose={() => { setFormOpen(false); setEditingRecord(null); }}
         onSuccess={handleFormSuccess}
+        onSlipDeleted={handleSlipDeleted}
       />
     </div>
   );

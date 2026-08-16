@@ -21,11 +21,15 @@ import type {
   TradingDiaryFormData,
   AccountSnapshot,
   AccountSnapshotFormData,
-  CapitalCurvePoint,
+  EquityCurveAutoPoint,
   SystemConfigItem,
   StockSearchResult,
   PDCACycle,
   BrokerAdapter,
+  TradingPlan,
+  TradingPlanFormData,
+  PlanTemplate,
+  SecurityTag,
   ImportParseResult,
   ExitSlip,
   ExitSlipFormData,
@@ -53,7 +57,10 @@ client.interceptors.response.use(
   (error) => {
     if (axios.isAxiosError(error)) {
       const status = error.response?.status;
-      const serverMsg = error.response?.data?.message;
+      // FastAPI 错误信息在 detail 字段（HTTPException 为字符串），message 为兼容旧接口
+      const rawMsg = error.response?.data?.message;
+      const rawDetail = error.response?.data?.detail;
+      const serverMsg = rawMsg || (typeof rawDetail === 'string' ? rawDetail : undefined);
 
       if (status === HTTP_STATUS.UNAUTHORIZED) {
         // 未授权：清除本地 token，可考虑跳转登录页
@@ -113,19 +120,10 @@ export async function deleteRecord(id: number): Promise<ApiResponse<null>> {
 }
 
 // ============================================================
-// 资金快照 & 资金曲线
+// 资金记录 & 资金曲线
 // ============================================================
 
-/** 获取资金快照列表 */
-export async function fetchSnapshots(params: {
-  date_from?: string;
-  date_to?: string;
-}): Promise<ApiResponse<AccountSnapshot[]>> {
-  const { data } = await client.get(`${BASE}/snapshots`, { params });
-  return data;
-}
-
-/** 新增/更新资金快照 */
+/** 新增资金记录 */
 export async function saveSnapshot(
   snapshot: AccountSnapshotFormData,
 ): Promise<ApiResponse<AccountSnapshot>> {
@@ -133,12 +131,33 @@ export async function saveSnapshot(
   return data;
 }
 
-/** 获取资金曲线数据 */
-export async function fetchCapitalCurve(params?: {
+/** 获取资金记录列表 */
+export async function fetchSnapshots(params?: {
   date_from?: string;
   date_to?: string;
-}): Promise<ApiResponse<ListData<CapitalCurvePoint>>> {
-  const { data } = await client.get(`${BASE}/snapshots/curve`, { params });
+}): Promise<ApiResponse<ListData<AccountSnapshot>>> {
+  const { data } = await client.get(`${BASE}/snapshots`, { params });
+  return data;
+}
+
+/** 修改资金记录 */
+export async function updateSnapshot(
+  id: number,
+  snapshot: AccountSnapshotFormData,
+): Promise<ApiResponse<unknown>> {
+  const { data } = await client.put(`${BASE}/snapshots/${id}`, snapshot);
+  return data;
+}
+
+/** 删除资金记录 */
+export async function deleteSnapshot(id: number): Promise<ApiResponse<unknown>> {
+  const { data } = await client.delete(`${BASE}/snapshots/${id}`);
+  return data;
+}
+
+/** 获取自动计算净值曲线（基于股票买卖 + 未平仓浮盈） */
+export async function fetchEquityAutoCurve(): Promise<ApiResponse<ListData<EquityCurveAutoPoint>>> {
+  const { data } = await client.get(`${BASE}/snapshots/curve-auto`);
   return data;
 }
 
@@ -328,6 +347,92 @@ export async function transitionCycle(
 }
 
 // ============================================================
+// 交易计划（阶段A：Plan 模块）
+// ============================================================
+
+/** 获取交易计划模板列表（FR-P07） */
+export async function fetchPlanTemplates(): Promise<
+  ApiResponse<ListData<PlanTemplate>>
+> {
+  const { data } = await client.get(`${BASE}/plans/templates`);
+  return data;
+}
+
+/** 获取交易计划列表（可按周期/标的筛选） */
+export async function fetchPlans(params?: {
+  cycle_id?: number;
+  code?: string;
+}): Promise<ApiResponse<ListData<TradingPlan>>> {
+  const { data } = await client.get(`${BASE}/plans`, { params });
+  return data;
+}
+
+/** 新建交易计划 */
+export async function createPlan(
+  payload: TradingPlanFormData,
+): Promise<ApiResponse<{ id: number }>> {
+  const { data } = await client.post(`${BASE}/plans`, payload);
+  return data;
+}
+
+/** 更新交易计划（仅 PLAN 状态周期） */
+export async function updatePlan(
+  id: number,
+  payload: Partial<TradingPlanFormData>,
+): Promise<ApiResponse<{ id: number }>> {
+  const { data } = await client.put(`${BASE}/plans/${id}`, payload);
+  return data;
+}
+
+/** 删除交易计划（软删除，仅 PLAN 状态周期） */
+export async function deletePlan(id: number): Promise<ApiResponse<{ id: number }>> {
+  const { data } = await client.delete(`${BASE}/plans/${id}`);
+  return data;
+}
+
+// ============================================================
+// 标的 ABC 分类（阶段A：PL-003 前置）
+// ============================================================
+
+/** 获取 ABC 分类列表 */
+export async function fetchSecurities(params?: {
+  tag?: string;
+}): Promise<ApiResponse<ListData<SecurityTag>>> {
+  const { data } = await client.get(`${BASE}/securities`, { params });
+  return data;
+}
+
+/** 新增或覆盖 ABC 分类 */
+export async function upsertSecurity(payload: {
+  code: string;
+  security_name?: string | null;
+  tag: string;
+  note?: string | null;
+}): Promise<ApiResponse<{ id: number }>> {
+  const { data } = await client.post(`${BASE}/securities`, payload);
+  return data;
+}
+
+/** 更新 ABC 分类 */
+export async function updateSecurity(
+  id: number,
+  payload: {
+    security_name?: string | null;
+    tag: string;
+    note?: string | null;
+  },
+): Promise<ApiResponse<{ id: number }>> {
+  const { data } = await client.put(`${BASE}/securities/${id}`, payload);
+  return data;
+}
+
+/** 删除 ABC 分类 */
+export async function deleteSecurity(id: number): Promise<ApiResponse<{ id: number }>> {
+  const { data } = await client.delete(`${BASE}/securities/${id}`);
+  return data;
+}
+
+// ============================================================
 // 卖出子单（一买多卖）
 // ============================================================
 
@@ -385,7 +490,7 @@ export async function fetchDailyOHLC(
   date: string,
 ): Promise<DailyOHLC | null> {
   try {
-    const { data } = await client.get(`kline/${code}`, {
+    const { data } = await client.get(`${BASE}/kline/${code}`, {
       params: {
         period: 'daily',
         start_date: date,

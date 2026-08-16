@@ -14,6 +14,13 @@ from shared.schemas import ApiResponse
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["退出子单"])
 
+# numeric 列：psycopg2 返回 Decimal，FastAPI 泛型响应会序列化为字符串，
+# 前端 Number.isFinite / 累加会失效，统一转 float 保证 API 契约返回数字
+_FLOAT_FIELDS = {
+    "exit_price", "commission", "stamp_duty", "transfer_fee",
+    "slip_point", "exit_score", "actual_stop_loss",
+}
+
 
 class ExitSlipCreate(BaseModel):
     exit_date: date
@@ -55,7 +62,13 @@ async def list_exit_slips(record_id: int):
                 (record_id,),
             )
             columns = [desc[0] for desc in cur.description]
-            items = [dict(zip(columns, row)) for row in cur.fetchall()]
+            items = []
+            for row in cur.fetchall():
+                item = dict(zip(columns, row))
+                for f in _FLOAT_FIELDS:
+                    if item.get(f) is not None:
+                        item[f] = float(item[f])
+                items.append(item)
             return ApiResponse(code=200, message="success", data={"items": items})
 
 

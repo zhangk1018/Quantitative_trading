@@ -11,22 +11,16 @@
  */
 
 import React, { useState } from 'react';
-import { Tabs, Typography } from 'antd';
-import {
-  TableOutlined,
-  EditOutlined,
-  LineChartOutlined,
-  ImportOutlined,
-  RadarChartOutlined,
-} from '@ant-design/icons';
+import { Tabs } from 'antd';
+import { TableOutlined, EditOutlined, LineChartOutlined, FundOutlined, ImportOutlined, RadarChartOutlined, FileTextOutlined } from '@ant-design/icons';
 import TradingRecordTable from './components/TradingRecordTable';
 import TradingDiaryEditor from './components/TradingDiaryEditor';
 import EquityCurve from './components/EquityCurve';
+import EquityAutoCurve from './components/EquityAutoCurve';
 import ImportExcel from './components/ImportExcel';
 import CycleOverview from './components/CycleOverview';
+import TradingPlanEditor from './components/TradingPlanEditor';
 
-
-const { Text } = Typography;
 
 const PDCADashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState('records');
@@ -57,10 +51,20 @@ const PDCADashboard: React.FC = () => {
       label: (
         <span className="flex items-center gap-2">
           <LineChartOutlined />
-          <span>资金曲线</span>
+          <span>资金记录</span>
         </span>
       ),
       children: <EquityCurve />,
+    },
+    {
+      key: 'equity-curve',
+      label: (
+        <span className="flex items-center gap-2">
+          <FundOutlined />
+          <span>资金曲线</span>
+        </span>
+      ),
+      children: <EquityAutoCurve />,
     },
     {
       key: 'cycles',
@@ -71,6 +75,16 @@ const PDCADashboard: React.FC = () => {
         </span>
       ),
       children: <CycleOverview />,
+    },
+    {
+      key: 'plans',
+      label: (
+        <span className="flex items-center gap-2">
+          <FileTextOutlined />
+          <span>交易计划</span>
+        </span>
+      ),
+      children: <TradingPlanEditor />,
     },
     {
       key: 'import',
@@ -86,12 +100,6 @@ const PDCADashboard: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col bg-bg-base">
-      {/* 顶部标题栏 */}
-      <div className="h-12 px-4 flex items-center border-b border-border-color bg-bg-panel flex-shrink-0">
-        <Text className="text-text-primary font-semibold">PDCA 交易自律</Text>
-        <Text className="text-text-secondary text-xs ml-3">一期 · 基础台账 MVP</Text>
-      </div>
-
       {/* Tab 内容区 */}
       <div className="flex-1 min-h-0 overflow-hidden">
         <Tabs

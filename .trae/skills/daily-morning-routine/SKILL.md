@@ -11,10 +11,10 @@ description: "每日数据管道晨检：运行自动化晨检脚本 + 检查协
 
 ### 阶段 1: 运行自动化晨检脚本
 
-先执行自动化脚本，快速完成 9 项标准化检查：
+先执行自动化脚本，快速完成 11 项标准化检查：
 
 ```bash
-cd /Users/zhangk/workspace/Quantitative_trading
+cd /Volumes/MyData/Quantitative_trading
 venv/bin/python backend/scripts/daily_check.py --no-color
 ```
 
@@ -24,11 +24,13 @@ venv/bin/python backend/scripts/daily_check.py --no-color
 |------|--------|------|
 | 基础设施 | PostgreSQL 服务状态 | pg_isready 检查进程 |
 | 基础设施 | 数据库连接 | 数据库连接测试 |
-| 数据下载 | 行情数据新鲜度 | 最新交易日距今是否超过阈值 |
-| 数据下载 | 行情数据量 | 每日数据量是否 ≥4500 条 |
+| 数据下载 | 日线行情新鲜度 | 最新交易日距今是否超过阈值 |
+| 数据下载 | 日线行情数据量 | 每日数据量是否 ≥4500 条 |
 | 数据下载 | 缺失股票数 | 最新交易日缺失股票数 |
+| 数据下载 | 周K线新鲜度 | 周K线最新日期距今是否超过阈值（14 天） |
+| 数据下载 | 月K线新鲜度 | 月K线最新日期距今是否超过阈值（45 天） |
 | 宽表同步 | 宽表同步状态 | stock_daily_snapshot 同步 |
-| 数据补全 | 字段完整性 | 关键字段填充率 |
+| 数据补全 | 字段完整性 | 技术指标关键字段填充率 |
 | 任务日志 | 任务执行日志 | 最近是否有失败任务 |
 | 日志文件 | 日志文件错误 | 日志错误计数 |
 
@@ -60,13 +62,13 @@ venv/bin/python backend/scripts/daily_check.py --skip log_file_errors
 
 查看以下两个文件的待办任务：
 
-1. **[docs/协作单.md](file:///Users/zhangk/workspace/Quantitative_trading/docs/协作单.md)** — 活动工单区：
+1. **[docs/协作单.md](file:///Volumes/MyData/Quantitative_trading/docs/协作单.md)** — 活动工单区：
    - 查找状态为 `NEW`（待认领）或 `REOPENED`（需重新处理）的工单
    - 优先认领属于量量职责范围（backend）的 `NEW` 工单
    - 优先跟进自己上次处理的 `REOPENED` 工单
    - 关注 P0（紧急）任务
 
-2. **[.trae/topics.md](file:///Users/zhangk/workspace/Quantitative_trading/.trae/topics.md)** — 跨会话通知：
+2. **[.trae/topics.md](file:///Volumes/MyData/Quantitative_trading/.trae/topics.md)** — 跨会话通知：
    - 读取最新通知，确认是否有新的状态变更需要响应
    - 特别关注 `→量量` 标记的通知（明确由量量接单）
 
@@ -101,12 +103,12 @@ venv/bin/python backend/scripts/daily_check.py --skip log_file_errors
    - **数据库连接失败**：检查 PostgreSQL 服务状态，尝试 `pg_ctl -D /usr/local/var/postgresql@18 start`
    - **数据下载异常**：尝试手动触发增量导入：
      ```bash
-     cd /Users/zhangk/workspace/Quantitative_trading && \
+     cd /Volumes/MyData/Quantitative_trading && \
      PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/collector/etl/import_daily_data.py --incremental
      ```
    - **宽表同步异常**：尝试手动触发宽表同步：
      ```bash
-     cd /Users/zhangk/workspace/Quantitative_trading && \
+     cd /Volumes/MyData/Quantitative_trading && \
      PG_PASSWORD=$PG_PASSWORD venv/bin/python backend/collector/etl/daily_snapshot_sync.py --latest
      ```
    - **任务执行失败**：查看 `task_run_log` 表的具体失败任务和错误信息

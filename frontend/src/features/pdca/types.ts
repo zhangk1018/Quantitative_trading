@@ -153,13 +153,12 @@ export interface AccountSnapshotFormData {
 }
 
 // --- 资金曲线 ---
-export interface CapitalCurvePoint {
+/** 自动计算净值曲线点（基于股票买卖 + 未平仓浮盈） */
+export interface EquityCurveAutoPoint {
   date: string;
-  total_asset: number;
-  adjusted_nav: number | null;
-  deposit: number;
-  withdrawal: number;
-  realized_pnl: number;
+  equity: number;
+  realized: number;
+  unrealized: number;
 }
 
 // --- 系统配置 ---
@@ -209,6 +208,91 @@ export interface PDCACycle {
   created_at: string;
   updated_at: string;
 }
+
+// --- 交易计划 ---
+export type PlanStatus = 'draft' | 'active' | 'executed' | 'cancelled';
+export type PlanTemplateType = 'short_term' | 'mid_term' | 'long_term';
+
+export interface PlanTemplate {
+  id: number;
+  template_name: string;
+  template_type: PlanTemplateType;
+  required_fields: string[];
+  default_values: Record<string, unknown> | null;
+  is_system: boolean;
+}
+
+export interface TradingPlan {
+  id: number;
+  account_id: number;
+  pdca_cycle_id: number;
+  template_id: number | null;
+  code: string;
+  security_name: string | null;
+  instrument_type: InstrumentType;
+  long_short: LongShort;
+  plan_status: PlanStatus;
+  weekly_view: string;
+  daily_view: string;
+  entry_price: number;
+  stop_loss_price: number;
+  target_price: number | null;
+  max_risk_rate: number;
+  plan_quantity: number;
+  abort_condition: string | null;
+  is_valid: boolean;
+  cycle_name?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TradingPlanFormData {
+  pdca_cycle_id: number;
+  template_id?: number | null;
+  code: string;
+  security_name?: string | null;
+  long_short: LongShort;
+  weekly_view: string;
+  daily_view: string;
+  entry_price: number;
+  stop_loss_price: number;
+  target_price?: number | null;
+  max_risk_rate: number;
+  plan_quantity: number;
+  abort_condition?: string | null;
+}
+
+export const PLAN_TEMPLATE_TYPE_LABELS: Record<PlanTemplateType, string> = {
+  short_term: '短线模板',
+  mid_term: '中线模板',
+  long_term: '长线模板',
+};
+
+export const PLAN_TEMPLATE_TYPE_OPTIONS = Object.entries(PLAN_TEMPLATE_TYPE_LABELS).map(([value, label]) => ({ value, label }));
+
+// --- 标的 ABC 分类 ---
+export type SecurityTagValue = 'A' | 'B' | 'C';
+
+export interface SecurityTag {
+  id: number;
+  account_id: number;
+  code: string;
+  security_name: string | null;
+  tag: SecurityTagValue;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const SECURITY_TAG_LABELS: Record<SecurityTagValue, string> = {
+  A: 'A类（熟悉且验证）',
+  B: 'B类（一般熟悉）',
+  C: 'C类（不熟悉或验证失败）',
+};
+
+export const SECURITY_TAG_OPTIONS = (
+  Object.entries(SECURITY_TAG_LABELS) as [SecurityTagValue, string][]
+).map(([value, label]) => ({ value, label }));
 
 // --- 券商适配器 ---
 export interface BrokerAdapter {

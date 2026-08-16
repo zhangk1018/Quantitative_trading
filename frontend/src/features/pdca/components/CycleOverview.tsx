@@ -21,13 +21,67 @@ import {
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, ReloadOutlined, RightCircleOutlined, CheckCircleOutlined,
-  AuditOutlined, SyncOutlined,
+  AuditOutlined, SyncOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons';
 import type { PDCACycle, CycleStatus, CycleType } from '../types';
 import { CYCLE_TYPE_LABELS, CYCLE_TYPE_OPTIONS } from '../types';
 import { fetchCycles, createCycle, deleteCycle, transitionCycle } from '../api';
 
 const { Text, Title } = Typography;
+
+// ── CycleCard 组件（外部定义，支持 memo 有效比较） ──
+interface CycleCardProps {
+  cycle: PDCACycle;
+  transitioning: number | null;
+  onTransition: (id: number, target: CycleStatus) => void;
+  onDelete: (id: number) => void;
+}
+
+const CycleCard = memo<CycleCardProps>(({ cycle, transitioning, onTransition, onDelete }) => {
+  const statusConfig = STATUS_CONFIG[cycle.status as CycleStatus] || STATUS_CONFIG.PLAN;
+  const transition = TRANSITION_BUTTONS[cycle.status as CycleStatus];
+  const canDelete = cycle.status === 'PLAN';
+
+  return (
+    <Card className="mb-3" size="small" styles={{ body: { padding: '16px 20px' } }}>
+      <div className="flex items-start justify-between">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3 mb-2">
+            <Text strong className="text-base">{cycle.cycle_name}</Text>
+            <Tag color={statusConfig.color} icon={statusConfig.icon}>{statusConfig.label}</Tag>
+            <Text className="text-text-secondary text-xs">
+              {CYCLE_TYPE_LABELS[cycle.cycle_type as CycleType] || cycle.cycle_type}
+            </Text>
+          </div>
+          <div className="text-text-secondary text-sm mb-1">
+            {cycle.start_date} ~ {cycle.end_date}
+          </div>
+          {cycle.goal_text && (
+            <div className="text-text-secondary text-sm mt-1">
+              <Text type="secondary">目标：{cycle.goal_text}</Text>
+            </div>
+          )}
+        </div>
+        <Space className="flex-shrink-0 ml-4">
+          {transition && (
+            <Button type="primary" size="small" icon={<RightCircleOutlined />}
+              loading={transitioning === cycle.id}
+              onClick={() => onTransition(cycle.id, transition.target)}>
+              {transition.label}
+            </Button>
+          )}
+          {canDelete && (
+            <Popconfirm title="确定删除此周期？" description="删除后不可恢复"
+              onConfirm={() => onDelete(cycle.id)} okText="确定" cancelText="取消">
+              <Button danger size="small" icon={<DeleteOutlined />} />
+            </Popconfirm>
+          )}
+        </Space>
+      </div>
+    </Card>
+  );
+});
+
 const { RangePicker } = DatePicker;
 
 // ── 状态标签配置 ──
@@ -101,8 +155,9 @@ const CycleOverview: React.FC = () => {
     }
   };
 
-  // ── 状态流转 ──
-  const handleTransition = async (cycleId: number, targetStatus: CycleStatus) => {
+  // ── 状态流转（useCallback 确保 memo 比较有效） ──
+  const [transitionError, setTransitionError] = useState<string | null>(null);
+  const handleTransition = useCallback(async (cycleId: number, targetStatus: CycleStatus) => {
     setTransitioning(cycleId);
     try {
       const res = await transitionCycle(cycleId, targetStatus);
@@ -110,17 +165,17 @@ const CycleOverview: React.FC = () => {
         message.success(`状态已变更为 ${STATUS_CONFIG[targetStatus].label}`);
         loadCycles();
       } else {
-        message.error(res.message || '状态流转失败');
+        setTransitionError(res.message || '状态流转失败');
       }
     } catch (err: unknown) {
-      message.error('状态流转失败: ' + (err instanceof Error ? err.message : '未知错误'));
+      setTransitionError(err instanceof Error ? err.message : '状态流转失败');
     } finally {
       setTransitioning(null);
     }
-  };
+  }, [loadCycles]);
 
-  // ── 删除周期 ──
-  const handleDelete = async (cycleId: number) => {
+  // ── 删除周期（useCallback 确保 memo 比较有效） ──
+  const handleDelete = useCallback(async (cycleId: number) => {
     try {
       const res = await deleteCycle(cycleId);
       if (res.code === 200) {
@@ -132,58 +187,7 @@ const CycleOverview: React.FC = () => {
     } catch (err: unknown) {
       message.error('删除失败: ' + (err instanceof Error ? err.message : '未知错误'));
     }
-  };
-
-  // ── 渲染单个周期卡片（React.memo 优化） ──
-  const CycleCard = memo(({ cycle, transitioning, onTransition, onDelete }: {
-    cycle: PDCACycle;
-    transitioning: number | null;
-    onTransition: (id: number, target: CycleStatus) => void;
-    onDelete: (id: number) => void;
-  }) => {
-    const statusConfig = STATUS_CONFIG[cycle.status as CycleStatus] || STATUS_CONFIG.PLAN;
-    const transition = TRANSITION_BUTTONS[cycle.status as CycleStatus];
-    const canDelete = cycle.status === 'PLAN';
-
-    return (
-      <Card className="mb-3" size="small" styles={{ body: { padding: '16px 20px' } }}>
-        <div className="flex items-start justify-between">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-3 mb-2">
-              <Text strong className="text-base">{cycle.cycle_name}</Text>
-              <Tag color={statusConfig.color} icon={statusConfig.icon}>{statusConfig.label}</Tag>
-              <Text className="text-text-secondary text-xs">
-                {CYCLE_TYPE_LABELS[cycle.cycle_type as CycleType] || cycle.cycle_type}
-              </Text>
-            </div>
-            <div className="text-text-secondary text-sm mb-1">
-              {cycle.start_date} ~ {cycle.end_date}
-            </div>
-            {cycle.goal_text && (
-              <div className="text-text-secondary text-sm mt-1">
-                <Text type="secondary">目标：{cycle.goal_text}</Text>
-              </div>
-            )}
-          </div>
-          <Space className="flex-shrink-0 ml-4">
-            {transition && (
-              <Button type="primary" size="small" icon={<RightCircleOutlined />}
-                loading={transitioning === cycle.id}
-                onClick={() => onTransition(cycle.id, transition.target)}>
-                {transition.label}
-              </Button>
-            )}
-            {canDelete && (
-              <Popconfirm title="确定删除此周期？" description="删除后不可恢复"
-                onConfirm={() => onDelete(cycle.id)} okText="确定" cancelText="取消">
-                <Button danger size="small" icon={<DeleteOutlined />} />
-              </Popconfirm>
-            )}
-          </Space>
-        </div>
-      </Card>
-    );
-  });
+  }, [loadCycles]);
 
   return (
     <div className="p-4">
@@ -268,6 +272,34 @@ const CycleOverview: React.FC = () => {
             <Input.TextArea rows={3} placeholder="输入本周期目标（可选）" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 状态流转失败提示弹窗 */}
+      <Modal
+        open={!!transitionError}
+        onCancel={() => setTransitionError(null)}
+        footer={[
+          <Button key="ok" type="primary" onClick={() => setTransitionError(null)}>
+            知道了
+          </Button>,
+        ]}
+        closable={false}
+        maskClosable
+      >
+        <div className="flex flex-col gap-3 py-2">
+          <div className="flex items-start gap-3">
+            <div
+              className="flex items-center justify-center w-8 h-8 rounded-full flex-shrink-0"
+              style={{ background: 'rgba(255,77,79,0.12)' }}
+            >
+              <ExclamationCircleOutlined style={{ color: '#ff4d4f', fontSize: 18 }} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-base font-semibold">无法进入复盘</span>
+              <span className="text-text-secondary text-sm leading-6">{transitionError}</span>
+            </div>
+          </div>
+        </div>
       </Modal>
     </div>
   );

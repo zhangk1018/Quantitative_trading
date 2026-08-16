@@ -34,9 +34,11 @@ interface Props {
   record: TradingRecord | null;
   onClose: () => void;
   onSuccess: () => void;
+  /** 子单删除后刷新父表数据（不关闭表单），保持 remain_qty / gross_profit 同步 */
+  onSlipDeleted?: () => void;
 }
 
-const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }) => {
+const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, onSlipDeleted }) => {
   const { message } = App.useApp();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
@@ -123,6 +125,9 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
         setEntryDayOHLC(ohlc);
         const ch = calcChannelHeight(ohlc.high, ohlc.low);
         form.setFieldsValue({ channel_height: ch });
+        // 入场价已填写时，重新校验是否超出当日最高/最低价
+        const ep = form.getFieldValue('entry_price');
+        if (ep != null) form.validateFields(['entry_price']).catch(() => {});
       }
     }, 400);
     return () => clearTimeout(timer);
@@ -157,7 +162,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     form.setFieldsValue({ stamp_duty: Math.round(aggStampDuty * 100) / 100 });
 
     // 过户费 = 入场过户费 + 出场过户费汇总
-    const entryTransfer = form.getFieldValue('transfer_fee') || 0;
+    const entryTransfer = Number(form.getFieldValue('transfer_fee')) || 0;
     form.setFieldsValue({ transfer_fee: Math.round((entryTransfer + aggExitTransfer) * 100) / 100 });
   }, [exitSlips, form]);
 
@@ -357,12 +362,12 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
     if (res.code === 200) {
       setExitSlips(prev => prev.filter(s => s.id !== id));
       message.success('删除成功');
-      // 删除后刷新父表数据，保持 remain_qty / gross_profit 同步，并关闭表单
-      onSuccess();
+      // 仅刷新父表数据（remain_qty / gross_profit），不关闭表单，保留其余卖出记录
+      onSlipDeleted?.();
     } else {
       message.error(res.message || '删除失败');
     }
-  }, [message, onSuccess]);
+  }, [message, onSlipDeleted]);
 
   // --- 价格合规校验（入场价/出场价在当日最高最低价范围内） ---
   const validatePriceAgainstOHLC = useCallback(async (): Promise<string | null> => {
@@ -595,7 +600,25 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="entry_price" label="入场价" rules={[{ required: true, message: '请输入' }]}>
+              <Form.Item
+                name="entry_price"
+                label="入场价"
+                rules={[
+                  { required: true, message: '请输入' },
+                  {
+                    validator: (_, value) => {
+                      if (value == null || !entryDayOHLC) return Promise.resolve();
+                      const v = Number(value);
+                      if (v > entryDayOHLC.high || v < entryDayOHLC.low) {
+                        return Promise.reject(
+                          new Error(`入场价 ${v} 超出当日范围 [${entryDayOHLC.low}, ${entryDayOHLC.high}]`),
+                        );
+                      }
+                      return Promise.resolve();
+                    },
+                  },
+                ]}
+              >
                 <InputNumber style={{ width: '100%' }} min={0} step={0.01} precision={4} />
               </Form.Item>
             </Col>
@@ -745,6 +768,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess }
         open={exitSlipModalOpen}
         editingSlip={editingSlip}
         snapshotMaxSellQty={snapshotMaxSellQty}
+        code={code || ''}
         onSave={saveExitSlip}
         onCancel={() => setExitSlipModalOpen(false)}
       />
