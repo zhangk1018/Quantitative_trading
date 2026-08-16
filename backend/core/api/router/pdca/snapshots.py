@@ -316,6 +316,7 @@ async def get_auto_equity_curve():
                     latest_close[c] = float(close)
 
         # 4. 未平仓持仓的 unrealized 贡献（按事件日 sweep-line 计算，避免 O(D×T) 嵌套循环）
+        # 注意：部分平仓场景（exit_date 非空且 held_qty > 0）需按原始数量建仓、按平仓数量扣减
         open_trades = [t for t in trades if t["held_qty"] > 0]
         unrealized_events = {}  # date -> delta
         for t in open_trades:
@@ -323,10 +324,16 @@ async def get_auto_equity_curve():
             if close is None:
                 logger.warning("get_auto_equity_curve: 缺失 %s 最新收盘价，浮盈计算忽略该持仓", t["code"])
                 continue
-            contrib = (close - t["entry_price"]) * t["held_qty"]
-            unrealized_events[t["entry_date"]] = unrealized_events.get(t["entry_date"], 0.0) + contrib
             if t["exit_date"]:
-                unrealized_events[t["exit_date"]] = unrealized_events.get(t["exit_date"], 0.0) - contrib
+                # 部分平仓：入场时按原始数量建仓，出场时按平仓数量扣减
+                full_contrib = (close - t["entry_price"]) * t["quantity"]
+                closed_contrib = (close - t["entry_price"]) * (t["quantity"] - t["held_qty"])
+                unrealized_events[t["entry_date"]] = unrealized_events.get(t["entry_date"], 0.0) + full_contrib
+                unrealized_events[t["exit_date"]] = unrealized_events.get(t["exit_date"], 0.0) - closed_contrib
+            else:
+                # 全仓未平仓：入场时建仓，浮盈持续到当前
+                contrib = (close - t["entry_price"]) * t["held_qty"]
+                unrealized_events[t["entry_date"]] = unrealized_events.get(t["entry_date"], 0.0) + contrib
 
         # 5. 事件日期集合（初始本金日期 + 各交易的进出场日）
         dates = set()
