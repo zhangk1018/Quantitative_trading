@@ -4,7 +4,7 @@ pdca 路由模块
 """
 from fastapi import APIRouter
 
-from . import records, snapshots, diaries, config, import_export, stocks, cycles, brokers, exit_slips
+from . import records, snapshots, diaries, config, import_export, stocks, cycles, brokers, exit_slips, plans, securities
 
 router = APIRouter(prefix="/api/pdca", tags=["PDCA交易自律系统"])
 
@@ -18,3 +18,5 @@ router.include_router(import_export.router, prefix="", tags=["导入导出"])
 router.include_router(stocks.router, prefix="/stocks", tags=["股票搜索"])
 router.include_router(cycles.router, prefix="/cycles", tags=["PDCA周期"])
 router.include_router(brokers.router, prefix="/import/brokers", tags=["券商适配器"])
+router.include_router(plans.router, prefix="/plans", tags=["交易计划"])
+router.include_router(securities.router, prefix="/securities", tags=["ABC分类"])
