@@ -17,8 +17,9 @@
 [量量 2026-08-16] 协作单 [14.0-DAILY-CHECK-WEEKLY-MONTHLY-20260816] 状态变更: NEW→VERIFY（创建 backend/scripts/daily_check.py，含周K线/月K线检查，请方舟验证）
 [量量 2026-08-16] 代码审查修复: 方舟违规修改的后台代码（pdca/plans.py/securities.py/snapshots.py/__init__.py）已审查并修复 10 项问题（竞态条件/O(n²)性能/N+1查询/事务缺失/异常捕获/假值吞没），已提交 commit dacf28b
 [方舟 2026-08-16] 回测分析页签批量回测完成：股票选择支持整组自选股（"🎯 回测整个分组"），逐股回测汇总对比（盈亏/胜率/最大回撤/交易次数）+单股明细切换，TypeScript编译通过 + Playwright 端到端自测通过（18股票全组回测，17成功1无数据）
+[量量 2026-08-16] 三次审阅修复: 提交 10ff362 — 修复部分平仓场景下 sweep-line 浮盈计算错误（按原始数量建仓、按平仓数量扣减，剩余持仓浮盈继续保留）
 
 ## 会话信息
 - 日期：2026-08-16
-- 负责角色：方舟
-- 修改范围：阶段A交易计划模块（前端TradingPlanEditor+ABC分类管理+后端协作单）、资金曲线改造（EquityAutoCurve+后端/curve-auto）、交易台账Decimal修复+OHLC校验、批量回测整组回测、CycleCard memo优化、前端代码审核修复
+- 负责角色：量量
+- 修改范围：晨检自动化脚本创建（daily_check.py）、PDCA 后台代码三轮审阅修复（12项，含竞态条件/O(n²)性能/N+1查询/deleted_at过滤/输入校验/部分平仓浮盈计算）、技能文档同步更新、协作单状态处理
