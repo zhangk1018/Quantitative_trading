@@ -263,45 +263,151 @@ async def update_cycle(cycle_id: int, body: CycleUpdate):
 
 @router.delete("/{cycle_id}", response_model=ApiResponse)
 async def delete_cycle(cycle_id: int):
-    """删除 PDCA 周期（仅 PLAN 状态，且无关联记录时可删除）"""
+    """删除 PDCA 周期（级联删除关联记录、计划、日记，解除引用约束）"""
     with get_db() as conn:
-        cycle = _get_cycle_or_404(conn, cycle_id)
-
-        if cycle["status"] != "PLAN":
-            raise HTTPException(
-                status_code=400,
-                detail=f"不允许删除：当前状态为 {cycle['status']}，仅 PLAN 状态可删除",
-            )
-
-        # 检查是否有关联交易记录
         with conn.cursor() as cur:
+            # 1. 删除关联交易记录（exit_slip 自动级联删除，diary/log 的 record_id 自动 SET NULL）
+            #    trading_record.pdca_cycle_id 为 NOT NULL，不能 SET NULL，只能 DELETE
             cur.execute(
                 "SELECT COUNT(*) FROM pdca.trading_record WHERE pdca_cycle_id = %s AND deleted_at IS NULL",
                 (cycle_id,),
             )
-            trade_count = cur.fetchone()[0]
-            if trade_count > 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"不允许删除：周期下有 {trade_count} 条关联交易记录",
-                )
-
-            # 检查是否有关联交易计划
+            record_count = cur.fetchone()[0]
             cur.execute(
-                "SELECT COUNT(*) FROM pdca.trading_plan WHERE pdca_cycle_id = %s AND deleted_at IS NULL",
+                "DELETE FROM pdca.trading_record WHERE pdca_cycle_id = %s",
                 (cycle_id,),
             )
-            plan_count = cur.fetchone()[0]
-            if plan_count > 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"不允许删除：周期下有 {plan_count} 条关联交易计划",
-                )
+            logger.info("从周期 id=%s 删除 %s 条交易记录", cycle_id, record_count)
 
-            # 物理删除
+            # 2. 删除关联的交易计划（物理删除）
+            cur.execute("DELETE FROM pdca.trading_plan WHERE pdca_cycle_id = %s", (cycle_id,))
+            plan_deleted = cur.rowcount
+            logger.info("从周期 id=%s 删除 %s 条交易计划", cycle_id, plan_deleted)
+
+            # 3. 物理删除周期（trading_diary 的 fk_diary_cycle 为 ON DELETE CASCADE，自动级联删除）
             cur.execute("DELETE FROM pdca.pdca_cycle WHERE id = %s", (cycle_id,))
-            logger.info("删除 PDCA 周期 id=%s, name=%s", cycle_id, cycle.get("cycle_name"))
-            return ApiResponse(code=200, message="success", data={"id": cycle_id})
+            logger.info("删除 PDCA 周期 id=%s", cycle_id)
+            return ApiResponse(code=200, message="success", data={
+                "id": cycle_id,
+                "records_deleted": record_count,
+                "plans_deleted": plan_deleted,
+            })
+
+
+@router.get("/{cycle_id}/execution-summary", response_model=ApiResponse)
+async def execution_summary(cycle_id: int):
+    """获取周期执行跟踪摘要（Do 模块增强）：对比交易计划 vs 实际执行情况"""
+    with get_db() as conn:
+        cycle = _get_cycle_or_404(conn, cycle_id)
+
+        with conn.cursor() as cur:
+            # 获取周期内所有交易计划（含软删除和已取消的）
+            cur.execute(
+                "SELECT * FROM pdca.trading_plan "
+                "WHERE pdca_cycle_id = %s AND deleted_at IS NULL AND plan_status != 'cancelled' "
+                "ORDER BY created_at",
+                (cycle_id,),
+            )
+            plan_columns = [desc[0] for desc in cur.description]
+            plan_rows = cur.fetchall()
+
+            # 获取周期内所有交易记录（含关联 trading_plan_id）
+            cur.execute(
+                "SELECT * FROM pdca.trading_record "
+                "WHERE pdca_cycle_id = %s AND deleted_at IS NULL "
+                "ORDER BY entry_date",
+                (cycle_id,),
+            )
+            record_columns = [desc[0] for desc in cur.description]
+            record_rows = cur.fetchall()
+            records = [dict(zip(record_columns, r)) for r in record_rows]
+
+            # 按 trading_plan_id 建立索引
+            records_by_plan_id: dict[int, list[dict]] = {}
+            for rec in records:
+                pid = rec.get("trading_plan_id")
+                if pid is not None:
+                    records_by_plan_id.setdefault(pid, []).append(rec)
+
+            # 按 code 索引未关联计划的记录
+            records_no_plan = [r for r in records if r.get("trading_plan_id") is None]
+
+            # 构建计划执行明细
+            details = []
+            executed_count = 0
+            for row in plan_rows:
+                plan = dict(zip(plan_columns, row))
+                plan_id = plan["id"]
+                matched_records = records_by_plan_id.get(plan_id, [])
+
+                # 计算执行状态
+                total_planned_qty = plan["plan_quantity"]
+                total_executed_qty = sum(r["quantity"] for r in matched_records)
+                fill_rate = min(total_executed_qty / total_planned_qty, 1.0) if total_planned_qty > 0 else 0.0
+
+                # 实际平均入场价
+                if matched_records:
+                    avg_entry = sum(r["entry_price"] * r["quantity"] for r in matched_records) / total_executed_qty
+                    first_entry_date = matched_records[0]["entry_date"]
+                else:
+                    avg_entry = None
+                    first_entry_date = None
+
+                # 计划盈亏状态
+                is_executed = len(matched_records) > 0
+                if is_executed:
+                    executed_count += 1
+
+                status = "executed" if is_executed else "pending"
+
+                details.append({
+                    "plan_id": plan_id,
+                    "code": plan["code"],
+                    "security_name": plan.get("security_name"),
+                    "long_short": plan["long_short"],
+                    "plan_entry_price": float(plan["entry_price"]),
+                    "plan_stop_loss": float(plan["stop_loss_price"]),
+                    "plan_quantity": plan["plan_quantity"],
+                    "plan_status": plan["plan_status"],
+                    "execution_status": status,
+                    "actual_entry_price": float(avg_entry) if avg_entry else None,
+                    "actual_quantity": total_executed_qty,
+                    "fill_rate": round(fill_rate, 4),
+                    "matched_records": len(matched_records),
+                    "first_entry_date": str(first_entry_date) if first_entry_date else None,
+                    "price_deviation": round(float(avg_entry) - float(plan["entry_price"]), 4)
+                    if avg_entry else None,
+                })
+
+            # 无计划裸交易
+            naked_trades = []
+            for rec in records_no_plan:
+                naked_trades.append({
+                    "record_id": rec["id"],
+                    "code": rec["code"],
+                    "security_name": rec.get("security_name"),
+                    "entry_date": str(rec["entry_date"]),
+                    "entry_price": float(rec["entry_price"]),
+                    "quantity": rec["quantity"],
+                    "trigger_source": rec.get("trigger_source"),
+                })
+
+            total_plans = len(details)
+            pending_plans = total_plans - executed_count
+
+            return ApiResponse(code=200, message="success", data={
+                "cycle_id": cycle_id,
+                "cycle_name": cycle["cycle_name"],
+                "cycle_status": cycle["status"],
+                "total_plans": total_plans,
+                "executed_plans": executed_count,
+                "pending_plans": pending_plans,
+                "total_trades": len(records),
+                "naked_trades": len(naked_trades),
+                "fill_rate": round(executed_count / total_plans, 4) if total_plans > 0 else 0,
+                "details": details,
+                "naked_trade_details": naked_trades,
+            })
 
 
 @router.put("/{cycle_id}/transition", response_model=ApiResponse)

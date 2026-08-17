@@ -48,6 +48,8 @@ const BacktestView: React.FC = () => {
   const abortRef = useRef<AbortController | null>(null);
   /** 批量回测中存活的一次性 Worker 集合（取消/卸载时统一终止） */
   const universeWorkersRef = useRef<Set<Worker>>(new Set());
+  /** 批量回测是否正在运行 */
+  const [isBatchRunning, setIsBatchRunning] = useState(false);
 
   // Worker 回调
   const handleWorkerProgress = useCallback((info: ProgressInfo) => {
@@ -76,11 +78,14 @@ const BacktestView: React.FC = () => {
     message.error(`回测失败: ${errorMsg}`);
   }, []);
 
-  const { start: startWorker, cancel: cancelWorker, isRunning } = useBacktestWorker({
+  const { start: startWorker, cancel: cancelWorker, isRunning: isSingleRunning } = useBacktestWorker({
     onProgress: handleWorkerProgress,
     onResult: handleWorkerResult,
     onError: handleWorkerError,
   });
+
+  /** 合并单股回测和批量回测的运行状态 */
+  const isRunning = isSingleRunning || isBatchRunning;
 
   /** 终止批量回测中所有存活 Worker */
   const terminateUniverseWorkers = useCallback(() => {
@@ -100,6 +105,7 @@ const BacktestView: React.FC = () => {
     cancelWorker();
     terminateUniverseWorkers();
     abortRef.current?.abort();
+    setIsBatchRunning(false);
     setProgress(null);
     setOutput(null);
     setBars([]);
@@ -251,50 +257,55 @@ const BacktestView: React.FC = () => {
       }
 
       // 批量回测：逐股拉取 K 线 + 逐股回测，收集结果
+      setIsBatchRunning(true);
       const results: UniverseResult[] = [];
-      for (let i = 0; i < stocks.length; i++) {
-        const stock = stocks[i];
-        if (controller.signal.aborted) break;
-        setProgress({
-          stage: 'fetching',
-          percent: Math.round((i / stocks.length) * 100),
-          message: `正在回测 (${i + 1}/${stocks.length}) ${stock.stockName || stock.stockCode}`,
-        });
+      try {
+        for (let i = 0; i < stocks.length; i++) {
+          const stock = stocks[i];
+          if (controller.signal.aborted) break;
+          setProgress({
+            stage: 'fetching',
+            percent: Math.round((i / stocks.length) * 100),
+            message: `正在回测 (${i + 1}/${stocks.length}) ${stock.stockName || stock.stockCode}`,
+          });
 
-        const klineBars = await fetchAndBuildBars(stock.stockCode, config, controller.signal);
-        if (klineBars === null || klineBars.length === 0) {
+          const klineBars = await fetchAndBuildBars(stock.stockCode, config, controller.signal);
+          if (klineBars === null || klineBars.length === 0) {
+            results.push({
+              stockCode: stock.stockCode,
+              stockName: stock.stockName,
+              bars: [],
+              output: {
+                trades: [],
+                equityCurve: [],
+                summary: {
+                  totalReturn: 0, annualizedReturn: 0, winRate: 0, profitLossRatio: 0,
+                  maxDrawdown: 0, maxConsecutiveLoss: 0, avgHoldDays: 0, sharpeRatio: 0,
+                  totalTrades: 0, forcedCloseCount: 0, benchmarkReturn: 0, tradingDays: 0, warmupDays: 0,
+                },
+                warnings: ['未获取到K线数据'],
+                diagnostics: [],
+              },
+              error: '未获取到K线数据',
+            });
+            continue;
+          }
+
+          const input: BacktestInput = {
+            bars: klineBars,
+            buyCondition: config.buyCondition,
+            config: buildEngineConfig(config, stock.stockCode),
+          };
+          const stockOutput = await runStockInWorker(input);
           results.push({
             stockCode: stock.stockCode,
             stockName: stock.stockName,
-            bars: [],
-            output: {
-              trades: [],
-              equityCurve: [],
-              summary: {
-                totalReturn: 0, annualizedReturn: 0, winRate: 0, profitLossRatio: 0,
-                maxDrawdown: 0, maxConsecutiveLoss: 0, avgHoldDays: 0, sharpeRatio: 0,
-                totalTrades: 0, forcedCloseCount: 0, benchmarkReturn: 0, tradingDays: 0, warmupDays: 0,
-              },
-              warnings: ['未获取到K线数据'],
-              diagnostics: [],
-            },
-            error: '未获取到K线数据',
+            bars: klineBars,
+            output: stockOutput,
           });
-          continue;
         }
-
-        const input: BacktestInput = {
-          bars: klineBars,
-          buyCondition: config.buyCondition,
-          config: buildEngineConfig(config, stock.stockCode),
-        };
-        const stockOutput = await runStockInWorker(input);
-        results.push({
-          stockCode: stock.stockCode,
-          stockName: stock.stockName,
-          bars: klineBars,
-          output: stockOutput,
-        });
+      } finally {
+        setIsBatchRunning(false);
       }
 
       setUniverseResults(results);
@@ -304,7 +315,7 @@ const BacktestView: React.FC = () => {
       const msg = err instanceof Error ? err.message : String(err);
       message.error(`回测失败: ${msg}`);
     }
-  }, [startWorker, fetchAndBuildBars, buildEngineConfig, runStockInWorker, terminateUniverseWorkers]);
+  }, [startWorker, fetchAndBuildBars, buildEngineConfig, runStockInWorker, terminateUniverseWorkers, setIsBatchRunning]);
 
   // 浏览器自测用：暴露 form 和 handleStart 到 window
   useEffect(() => {
@@ -322,8 +333,10 @@ const BacktestView: React.FC = () => {
   const handleCancel = useCallback(() => {
     cancelWorker();
     abortRef.current?.abort();
+    terminateUniverseWorkers();
+    setIsBatchRunning(false);
     setProgress(null);
-  }, [cancelWorker]);
+  }, [cancelWorker, terminateUniverseWorkers]);
 
   const handleClearCache = useCallback(async () => {
     await clearAllResults();

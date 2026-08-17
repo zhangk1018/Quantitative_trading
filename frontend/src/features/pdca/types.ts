@@ -270,6 +270,49 @@ export const PLAN_TEMPLATE_TYPE_LABELS: Record<PlanTemplateType, string> = {
 
 export const PLAN_TEMPLATE_TYPE_OPTIONS = Object.entries(PLAN_TEMPLATE_TYPE_LABELS).map(([value, label]) => ({ value, label }));
 
+// --- 执行跟踪（Do 模块增强） ---
+export interface ExecutionPlanDetail {
+  plan_id: number;
+  code: string;
+  security_name: string | null;
+  long_short: string;
+  plan_entry_price: number;
+  plan_stop_loss: number;
+  plan_quantity: number;
+  plan_status: string;
+  execution_status: 'executed' | 'pending';
+  actual_entry_price: number | null;
+  actual_quantity: number;
+  fill_rate: number;
+  matched_records: number;
+  first_entry_date: string | null;
+  price_deviation: number | null;
+}
+
+export interface NakedTradeDetail {
+  record_id: number;
+  code: string;
+  security_name: string | null;
+  entry_date: string;
+  entry_price: number;
+  quantity: number;
+  trigger_source: string | null;
+}
+
+export interface ExecutionSummary {
+  cycle_id: number;
+  cycle_name: string;
+  cycle_status: string;
+  total_plans: number;
+  executed_plans: number;
+  pending_plans: number;
+  total_trades: number;
+  naked_trades: number;
+  fill_rate: number;
+  details: ExecutionPlanDetail[];
+  naked_trade_details: NakedTradeDetail[];
+}
+
 // --- 标的 ABC 分类 ---
 export type SecurityTagValue = 'A' | 'B' | 'C';
 

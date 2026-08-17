@@ -78,7 +78,7 @@ def _get_plan_or_404(conn, plan_id: int) -> dict:
 def _get_cycle(conn, cycle_id: int) -> dict:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT * FROM pdca.pdca_cycle WHERE id = %s AND deleted_at IS NULL",
+            "SELECT * FROM pdca.pdca_cycle WHERE id = %s",
             (cycle_id,),
         )
         columns = [desc[0] for desc in cur.description]
@@ -117,7 +117,7 @@ def _check_risk(conn, max_risk_rate: float):
     with conn.cursor() as cur:
         cur.execute(
             "SELECT numeric_value FROM pdca.system_config "
-            "WHERE config_key = 'risk_per_trade' AND deleted_at IS NULL "
+            "WHERE config_key = 'risk_per_trade' "
             "ORDER BY id DESC LIMIT 1"
         )
         row = cur.fetchone()

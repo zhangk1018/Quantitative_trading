@@ -33,6 +33,7 @@ import type {
   ImportParseResult,
   ExitSlip,
   ExitSlipFormData,
+  ExecutionSummary,
 } from './types';
 
 // Axios 实例（统一配置）
@@ -332,6 +333,14 @@ export async function createCycle(payload: {
 /** 删除 PDCA 周期（仅 PLAN 状态） */
 export async function deleteCycle(id: number): Promise<ApiResponse<null>> {
   const { data } = await client.delete(`${BASE}/cycles/${id}`);
+  return data;
+}
+
+/** 获取周期执行跟踪摘要（Do 模块增强） */
+export async function fetchExecutionSummary(
+  cycleId: number,
+): Promise<ApiResponse<ExecutionSummary>> {
+  const { data } = await client.get(`${BASE}/cycles/${cycleId}/execution-summary`);
   return data;
 }
 

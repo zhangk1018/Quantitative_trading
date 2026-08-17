@@ -5,7 +5,8 @@
  * - 展示 PDCA 周期列表（卡片形式）
  * - 状态流转按钮（PLAN→DO→CHECK→ACT）
  * - 新建周期（弹窗表单）
- * - 删除周期（仅 PLAN 状态可删除）
+ * - 删除周期（所有状态均可删除，非PLAN状态解除关联记录并删除交易计划）
+ * - Do 模块增强：执行跟踪（DO 状态卡片可展开查看计划 vs 实际执行对比）
  *
  * 依赖后端 API（由量量实现 8.1/8.2）：
  * - GET  /api/pdca/cycles          — 列表现有
@@ -13,6 +14,7 @@
  * - PUT  /api/pdca/cycles/{id}     — 更新
  * - DELETE /api/pdca/cycles/{id}   — 删除
  * - PUT  /api/pdca/cycles/{id}/transition — 状态流转
+ * - GET  /api/pdca/cycles/{id}/execution-summary — 执行跟踪（Phase B）
  */
 
 import React, { memo, useEffect, useState, useCallback } from 'react';
@@ -21,11 +23,12 @@ import {
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, ReloadOutlined, RightCircleOutlined, CheckCircleOutlined,
-  AuditOutlined, SyncOutlined, ExclamationCircleOutlined,
+  AuditOutlined, SyncOutlined, ExclamationCircleOutlined, BarChartOutlined,
 } from '@ant-design/icons';
 import type { PDCACycle, CycleStatus, CycleType } from '../types';
 import { CYCLE_TYPE_LABELS, CYCLE_TYPE_OPTIONS } from '../types';
 import { fetchCycles, createCycle, deleteCycle, transitionCycle } from '../api';
+import DoExecutionTracker from './DoExecutionTracker';
 
 const { Text, Title } = Typography;
 
@@ -33,52 +36,75 @@ const { Text, Title } = Typography;
 interface CycleCardProps {
   cycle: PDCACycle;
   transitioning: number | null;
+  expandedTracker: number | null;
   onTransition: (id: number, target: CycleStatus) => void;
   onDelete: (id: number) => void;
+  onToggleTracker: (id: number | null) => void;
 }
 
-const CycleCard = memo<CycleCardProps>(({ cycle, transitioning, onTransition, onDelete }) => {
+const CycleCard = memo<CycleCardProps>(({ cycle, transitioning, expandedTracker, onTransition, onDelete, onToggleTracker }) => {
   const statusConfig = STATUS_CONFIG[cycle.status as CycleStatus] || STATUS_CONFIG.PLAN;
   const transition = TRANSITION_BUTTONS[cycle.status as CycleStatus];
-  const canDelete = cycle.status === 'PLAN';
+  const isDo = cycle.status === 'DO';
+  const trackerExpanded = expandedTracker === cycle.id;
 
   return (
-    <Card className="mb-3" size="small" styles={{ body: { padding: '16px 20px' } }}>
-      <div className="flex items-start justify-between">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-3 mb-2">
-            <Text strong className="text-base">{cycle.cycle_name}</Text>
-            <Tag color={statusConfig.color} icon={statusConfig.icon}>{statusConfig.label}</Tag>
-            <Text className="text-text-secondary text-xs">
-              {CYCLE_TYPE_LABELS[cycle.cycle_type as CycleType] || cycle.cycle_type}
-            </Text>
-          </div>
-          <div className="text-text-secondary text-sm mb-1">
-            {cycle.start_date} ~ {cycle.end_date}
-          </div>
-          {cycle.goal_text && (
-            <div className="text-text-secondary text-sm mt-1">
-              <Text type="secondary">目标：{cycle.goal_text}</Text>
+    <div className="mb-3">
+      <Card className={trackerExpanded ? '!rounded-b-none' : ''} size="small" styles={{ body: { padding: '16px 20px' } }}>
+        <div className="flex items-start justify-between">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-3 mb-2">
+              <Text strong className="text-base">{cycle.cycle_name}</Text>
+              <Tag color={statusConfig.color} icon={statusConfig.icon}>{statusConfig.label}</Tag>
+              <Text className="text-text-secondary text-xs">
+                {CYCLE_TYPE_LABELS[cycle.cycle_type as CycleType] || cycle.cycle_type}
+              </Text>
             </div>
-          )}
-        </div>
-        <Space className="flex-shrink-0 ml-4">
-          {transition && (
-            <Button type="primary" size="small" icon={<RightCircleOutlined />}
-              loading={transitioning === cycle.id}
-              onClick={() => onTransition(cycle.id, transition.target)}>
-              {transition.label}
-            </Button>
-          )}
-          {canDelete && (
-            <Popconfirm title="确定删除此周期？" description="删除后不可恢复"
-              onConfirm={() => onDelete(cycle.id)} okText="确定" cancelText="取消">
+            <div className="text-text-secondary text-sm mb-1">
+              {cycle.start_date} ~ {cycle.end_date}
+            </div>
+            {cycle.goal_text && (
+              <div className="text-text-secondary text-sm mt-1">
+                <Text type="secondary">目标：{cycle.goal_text}</Text>
+              </div>
+            )}
+          </div>
+          <Space className="flex-shrink-0 ml-4">
+            {isDo && (
+              <Button
+                size="small"
+                icon={<BarChartOutlined />}
+                type={trackerExpanded ? 'primary' : 'default'}
+                onClick={() => onToggleTracker(trackerExpanded ? null : cycle.id)}
+              >
+                {trackerExpanded ? '收起跟踪' : '执行跟踪'}
+              </Button>
+            )}
+            {transition && (
+              <Button type="primary" size="small" icon={<RightCircleOutlined />}
+                loading={transitioning === cycle.id}
+                onClick={() => onTransition(cycle.id, transition.target)}>
+                {transition.label}
+              </Button>
+            )}
+            <Popconfirm
+              title="确定删除此周期？"
+              description={cycle.status === 'PLAN'
+                ? '删除后不可恢复（关联交易计划将一并删除）'
+                : `周期处于「${statusConfig.label}」状态，删除后关联交易记录将解除绑定，交易计划将一并删除`}
+              onConfirm={() => onDelete(cycle.id)} okText="确定" cancelText="取消"
+            >
               <Button danger size="small" icon={<DeleteOutlined />} />
             </Popconfirm>
-          )}
-        </Space>
-      </div>
-    </Card>
+          </Space>
+        </div>
+      </Card>
+      {trackerExpanded && (
+        <div className="border border-t-0 border-border-color rounded-b-lg p-4 bg-bg-secondary">
+          <DoExecutionTracker cycleId={cycle.id} cycleName={cycle.cycle_name} />
+        </div>
+      )}
+    </div>
   );
 });
 
@@ -105,6 +131,7 @@ const CycleOverview: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [transitioning, setTransitioning] = useState<number | null>(null);
+  const [expandedTracker, setExpandedTracker] = useState<number | null>(null);
   const [form] = Form.useForm();
 
   // ── 加载周期列表 ──
@@ -174,6 +201,11 @@ const CycleOverview: React.FC = () => {
     }
   }, [loadCycles]);
 
+  // ── 切换执行跟踪展开/收起 ──
+  const handleToggleTracker = useCallback((cycleId: number | null) => {
+    setExpandedTracker(cycleId);
+  }, []);
+
   // ── 删除周期（useCallback 确保 memo 比较有效） ──
   const handleDelete = useCallback(async (cycleId: number) => {
     try {
@@ -222,8 +254,10 @@ const CycleOverview: React.FC = () => {
               key={cycle.id}
               cycle={cycle}
               transitioning={transitioning}
+              expandedTracker={expandedTracker}
               onTransition={handleTransition}
               onDelete={handleDelete}
+              onToggleTracker={handleToggleTracker}
             />
           ))}
         </div>
