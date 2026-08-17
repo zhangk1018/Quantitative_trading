@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quant.backend</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd /Volumes/MyData/Quantitative_trading &amp;&amp; PYTHONPATH=/Volumes/MyData/Quantitative_trading /Volumes/MyData/Quantitative_trading/venv/bin/python -m uvicorn core.api.main:app --host 0.0.0.0 --port 8000</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Volumes/MyData/Quantitative_trading/logs/quant_backend.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Volumes/MyData/Quantitative_trading/logs/quant_backend.err.log</string>
+</dict>
+</plist>

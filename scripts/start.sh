@@ -180,42 +180,45 @@ load_env() {
     fi
 }
 
-# ---- 后端启动 ----
+# ---- 后端启动（watchdog 监督模式） ----
+WATCHDOG_SCRIPT="$SCRIPT_DIR/scripts/backend_watchdog.sh"
+
 dev_start_backend() {
-    log_info "启动后端服务..."
-    if check_pid "$BACKEND_PID_FILE" "$BACKEND_PORT" >/dev/null; then
-        log_ok "后端服务已在运行 (端口: $BACKEND_PORT)"
-        return 0
+    log_info "启动后端服务（watchdog 监督模式，崩溃自动重启）..."
+
+    # 检查 watchdog 是否已在运行
+    if [ -f "/tmp/quant_backend_watchdog.pid" ]; then
+        local wpid=$(cat "/tmp/quant_backend_watchdog.pid")
+        if kill -0 "$wpid" 2>/dev/null; then
+            log_ok "watchdog 已在运行 (PID: $wpid)"
+            if wait_for_port "$BACKEND_PORT" "$BACKEND_START_TIMEOUT" "后端"; then
+                wait_for_health "http://localhost:$BACKEND_PORT/health" "$BACKEND_HEALTH_TIMEOUT" "后端" || true
+                log_ok "后端服务已就绪（watchdog 监督中，崩溃自动重启）"
+                return 0
+            fi
+        fi
+        rm -f "/tmp/quant_backend_watchdog.pid"
     fi
-    clean_port "$BACKEND_PORT" "$BACKEND_PID_FILE" || return 1
+
+    clean_port "$BACKEND_PORT" || true
     rm -f "$BACKEND_PID_FILE"
 
-    if [ ! -d "$VENV_DIR" ]; then
-        log_err "虚拟环境不存在，请先执行 ./start.sh install"; return 1
-    fi
-    if [ ! -f "$BACKEND_DIR/core/api/main.py" ]; then
-        log_err "后端入口文件不存在"; return 1
+    if [ ! -f "$WATCHDOG_SCRIPT" ]; then
+        log_err "watchdog 脚本不存在"; return 1
     fi
 
-    cd "$BACKEND_DIR"
-    export PYTHONPATH="$SCRIPT_DIR"
-    load_env "$SCRIPT_DIR/.env"
-
-    nohup "$VENV_DIR/bin/python" -m uvicorn core.api.main:app \
-        --host 0.0.0.0 --port "$BACKEND_PORT" < /dev/null > "$BACKEND_LOG" 2>&1 &
-    local new_pid=$!
-    echo "$new_pid" > "$BACKEND_PID_FILE"
+    # 启动 watchdog
+    bash "$WATCHDOG_SCRIPT" start
+    sleep 2
 
     if ! wait_for_port "$BACKEND_PORT" "$BACKEND_START_TIMEOUT" "后端"; then
-        if ps -p "$new_pid" >/dev/null 2>&1; then
-            log_info "后端进程仍在运行，可能数据加载较慢"
-        else
-            log_err "后端进程已退出，查看日志"; tail -n 20 "$BACKEND_LOG"; rm -f "$BACKEND_PID_FILE"; return 1
-        fi
+        log_err "后端启动超时，查看日志: $BACKEND_LOG"
+        tail -n 20 "$BACKEND_LOG"
+        return 1
     fi
 
     if wait_for_health "http://localhost:$BACKEND_PORT/health" "$BACKEND_HEALTH_TIMEOUT" "后端"; then
-        log_ok "后端服务完全就绪"
+        log_ok "后端服务完全就绪（watchdog 监督中，崩溃自动重启）"
     else
         log_warn "健康检查未通过，但进程仍在运行，请手动检查"
     fi
@@ -225,18 +228,12 @@ dev_start_backend() {
 dev_stop_backend() {
     log_info "停止后端服务..."
     local stopped=0
-    if [ -f "$BACKEND_PID_FILE" ]; then
-        local pid=$(cat "$BACKEND_PID_FILE")
-        if kill -0 "$pid" 2>/dev/null; then
-            if kill_safely "$pid" "$BACKEND_PID_FILE"; then
-                stopped=1
-            fi
-        fi
-        rm -f "$BACKEND_PID_FILE"
+
+    # 通过 watchdog 停止
+    if [ -f "$WATCHDOG_SCRIPT" ]; then
+        bash "$WATCHDOG_SCRIPT" stop && stopped=1
     fi
-    if is_port_in_use "$BACKEND_PORT"; then
-        clean_port "$BACKEND_PORT" "$BACKEND_PID_FILE" && stopped=1
-    fi
+
     [ $stopped -eq 1 ] && log_ok "后端服务已停止" || log_warn "后端服务未运行"
 }
 
@@ -297,8 +294,17 @@ dev_status() {
     echo -n "后端服务: "
     if [ -n "$bp" ]; then
         echo -e "${GREEN}✅ 运行中 (PID: $bp, 端口: $BACKEND_PORT)${NC}"
+        # 检查是否在 watchdog 监督下
+        if [ -f "/tmp/quant_backend_watchdog.pid" ]; then
+            echo -e "       ${BLUE}ℹ️  由 watchdog 监督，崩溃自动重启${NC}"
+        fi
     else
-        echo -e "${RED}❌ 未运行${NC}"
+        # 检查 watchdog 是否在运行
+        if [ -f "/tmp/quant_backend_watchdog.pid" ]; then
+            echo -e "${YELLOW}⚠️  watchdog 运行中但后端未就绪${NC}"
+        else
+            echo -e "${RED}❌ 未运行${NC}"
+        fi
     fi
     local fp=$(check_pid "$FRONTEND_PID_FILE" "$FRONTEND_PORT")
     echo -n "前端服务: "

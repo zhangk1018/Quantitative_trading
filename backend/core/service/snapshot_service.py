@@ -10,6 +10,7 @@ snapshot_service.py - 全量快照数据服务（最终优化版）
 - 精细化状态监控与进度日志
 """
 
+import gc
 import hashlib
 import hmac
 import json
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 # 常量配置（集中管理）
 # ================================================================
 HISTORY_DAYS = 300
-FETCH_BATCH_SIZE = 20000
+FETCH_BATCH_SIZE = 10000
 CACHE_CHECK_INTERVAL = 10 * 60          # 缓存检查防抖：10分钟
 RELOAD_RETRY_COUNT = 3                  # 数据库重试次数
 RELOAD_RETRY_BACKOFF = 2                # 重试退避基数（秒）
@@ -65,6 +66,11 @@ OHLCV_VOLUME = 5
 
 # 板块枚举（统一管理）
 BOARD_VALUES = ("main_board", "gem", "beijing")
+
+# ETL 窗口避让（工作日 15:00-20:00 为 ETL 管道执行时段）
+# 在此期间避免触发后台刷新，减少内存争抢
+ETL_AVOID_START_HOUR = 15
+ETL_AVOID_END_HOUR = 20
 
 
 class ServiceNotReadyError(Exception):
@@ -186,16 +192,16 @@ class SnapshotService:
     def _load_from_cache(self) -> None:
         t0 = time.time()
         logger.info("📦 从安全缓存加载...")
-        # 直接读取 pickle（已验签）
-        with open(OHLCV_CACHE_FILE, "rb") as f:
-            ohlcv = pd.read_pickle(f)
+        # 先加载快照（轻量级，2MB，启动必需）
         with open(SNAPSHOT_CACHE_FILE, "rb") as f:
             snapshot = pd.read_pickle(f)
+        # 延迟加载 OHLCV：仅加载快照，OHLCV 在首次 API 请求时按需加载
+        # 启动时跳过 OHLCV 加载，可降低峰值内存 ~700MB，避免被 Jetsam 杀死
+        logger.info("  OHLCV 数据将在首次 API 请求时延迟加载")
         with open(CACHE_META_FILE) as f:
             meta = json.load(f)
 
         with self._state_lock:
-            self._ohlcv_cache = ohlcv
             self._snapshot_cache = snapshot
             self._latest_trade_date = meta["latest_trade_date"]
             self._cached_row_hash = meta["row_count_hash"]
@@ -203,8 +209,33 @@ class SnapshotService:
             self._ready = True
             self._load_error = None
         elapsed = time.time() - t0
-        logger.info("✅ 缓存加载完成：%d 只股票 OHLCV，%d 条快照，耗时 %.2fs",
-                    len(ohlcv), len(snapshot), elapsed)
+        logger.info("✅ 缓存加载完成：%d 条快照，耗时 %.2fs",
+                    len(snapshot), elapsed)
+
+    # ================================================================
+    # OHLCV 延迟加载（首次 API 请求时按需加载，避免启动内存峰值）
+    # ================================================================
+    def _ensure_ohlcv_loaded(self) -> None:
+        """确保 OHLCV 数据已加载，未加载时从缓存文件按需加载"""
+        with self._state_lock:
+            if self._ohlcv_cache:
+                return  # 已加载
+        # 检查缓存文件是否存在
+        if not os.path.exists(OHLCV_CACHE_FILE):
+            logger.warning("OHLCV 缓存文件不存在，跳过延迟加载")
+            return
+        if not self._verify_signature(OHLCV_CACHE_FILE):
+            logger.warning("OHLCV 缓存文件签名无效，跳过延迟加载")
+            return
+        t0 = time.time()
+        logger.info("📊 延迟加载 OHLCV 数据...")
+        with open(OHLCV_CACHE_FILE, "rb") as f:
+            ohlcv = pd.read_pickle(f)
+        with self._state_lock:
+            self._ohlcv_cache = ohlcv
+        elapsed = time.time() - t0
+        logger.info("✅ OHLCV 延迟加载完成：%d 只股票，耗时 %.2fs",
+                    len(ohlcv), elapsed)
 
     def _save_cache(self, count: int) -> None:
         os.makedirs(CACHE_DIR, exist_ok=True)
@@ -253,10 +284,9 @@ class SnapshotService:
                         ORDER BY code, trade_date
                     """
                     params = (self._latest_trade_date, f'{HISTORY_DAYS} days', self._latest_trade_date)
-                    # 使用服务端游标 + chunksize 分批读取
+                    # 使用服务端游标 + chunksize 分批读取，直接建 dict 避免中间列表
                     cur.execute(query, params)
-                    # 向量化分组聚合：将每个 code 的数据转为列表的列表
-                    all_chunks = []
+                    ohlcv_dict: Dict[str, List[List[float]]] = {}
                     total_bars = 0
                     while True:
                         batch = cur.fetchmany(FETCH_BATCH_SIZE)
@@ -267,20 +297,17 @@ class SnapshotService:
                             batch,
                             columns=["code", "ts", "open", "high", "low", "close", "volume", "pre_close"],
                         )
-                        grouped = batch_df.groupby("code").apply(
-                            lambda g: g[["ts", "open", "high", "low", "close", "volume", "pre_close"]]
-                            .fillna(0).values.tolist()
-                        )
-                        for code, bars in grouped.items():
-                            all_chunks.append((code, bars))
+                        # 直接合并到 ohlcv_dict，避免 all_chunks 中间列表
+                        for code, group in batch_df.groupby("code"):
+                            bars = group[["ts", "open", "high", "low", "close", "volume", "pre_close"]].fillna(0).values.tolist()
+                            if code in ohlcv_dict:
+                                ohlcv_dict[code].extend(bars)
+                            else:
+                                ohlcv_dict[code] = bars
                             total_bars += len(bars)
-                    # 合并字典（注意：同一 code 可能分布在多个 chunk 中，需合并）
-                    ohlcv_dict: Dict[str, List[List[float]]] = {}
-                    for code, bars in all_chunks:
-                        if code in ohlcv_dict:
-                            ohlcv_dict[code].extend(bars)
-                        else:
-                            ohlcv_dict[code] = bars
+                        # 每批后主动释放中间 DataFrame 内存
+                        del batch_df
+                        gc.collect()
                     # 由于查询已按 code, trade_date 排序，每个 code 的列表已有序
                     self._ohlcv_cache = ohlcv_dict
                     logger.info("📊 OHLCV 加载完成：%d 只股票，%d 条K线", len(ohlcv_dict), total_bars)
@@ -379,6 +406,8 @@ class SnapshotService:
                 self._load_error = None
                 self._load_time = time.time()
                 self._loading = False
+            # 主动 GC 释放数据库加载中间数据
+            gc.collect()
             logger.info("✅ 快照数据就绪 (加载耗时 %.2fs)", time.time() - self._load_time)
         except Exception as e:
             with self._state_lock:
@@ -388,10 +417,26 @@ class SnapshotService:
             raise
 
     # ================================================================
-    # 智能刷新检查（防抖 + 锁定）
+    # 智能刷新检查（防抖 + 锁定 + ETL 窗口避让）
     # ================================================================
+    @staticmethod
+    def _is_etl_window() -> bool:
+        """检查是否处于 ETL 管道执行窗口（工作日 15:00-20:00）
+
+        ETL 期间避免触发后台刷新，减少内存争抢，降低被 Jetsam 杀死的风险。
+        """
+        now = datetime.now()
+        # 周一=0, 周日=6 → 0-4 为工作日
+        if now.weekday() >= 5:
+            return False  # 周末无 ETL
+        return ETL_AVOID_START_HOUR <= now.hour < ETL_AVOID_END_HOUR
+
     def _refresh_if_needed(self) -> None:
         """检查是否需要刷新，使用防抖和互斥锁防止并发刷新"""
+        # ETL 窗口避让：不检查也不刷新，防止内存争抢
+        if self._is_etl_window():
+            return
+
         now = time.time()
         # 防抖：检查间隔内不重复检查
         with self._state_lock:
@@ -526,6 +571,9 @@ class SnapshotService:
                             ohlcv_dict[code].extend(bars)
                         else:
                             ohlcv_dict[code] = bars
+                    # 每批后释放中间 DataFrame 内存
+                    del batch_df
+                    gc.collect()
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
                     SELECT
@@ -606,6 +654,8 @@ class SnapshotService:
 
         self._refresh_if_needed()
         self._ensure_ready()
+        # 延迟加载 OHLCV（首次 API 请求时按需加载，避免启动内存峰值）
+        self._ensure_ohlcv_loaded()
 
         with self._state_lock:
             snapshot_cache = self._snapshot_cache
@@ -653,6 +703,8 @@ class SnapshotService:
 
         self._refresh_if_needed()
         self._ensure_ready()
+        # 延迟加载 OHLCV（首次 API 请求时按需加载，避免启动内存峰值）
+        self._ensure_ohlcv_loaded()
 
         with self._state_lock:
             snapshot_cache = self._snapshot_cache
