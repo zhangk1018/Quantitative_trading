@@ -2,16 +2,15 @@
 """
 日线数据导入脚本
 功能：
-- 从数据源拉取日线K线（优先前复权源：Baostock，兜底不复权源：Tushare→pytdx）
-- 不复权数据源（Tushare/pytdx）自动通过 stock_adj_factor 转换为前复权
+- 从数据源拉取日线K线（优先前复权源：Baostock，兜底不复权源：Tushare）
+- 不复权数据源（Tushare）自动通过 stock_adj_factor 转换为前复权
 - 写入 stock_quotes 表
 - 利用 task_progress 记录状态
 - 支持全量导入和增量导入
 - 完整度熔断机制：防止数据拉取中断后产生"假成功"
 
 数据源优先级链（全量导入直连模式）：
-  Baostock (前复权, 主) → Tushare (不复权→转换, 备1)
-  注：pytdx 仅通过 DataSourceManager 在增量/单只模式兜底，全量模式不启用（速度过慢）。
+  Baostock (前复权, 主) → Tushare (不复权→转换, 备)
 """
 import sys
 import os
@@ -27,7 +26,6 @@ from typing import List, Tuple, Optional
 from collector.datasource.base import DataSourceManager, SwitchStrategy
 from collector.datasource.baostock import BaostockDataSource
 from collector.datasource.tushare import TushareDataSource
-from collector.datasource.pytdx import PytdxDataSource
 from clean.processor.base_importer import BaseDataImporter
 from utils.logger import setup_logger
 from utils.stock_code_utils import normalize_code
@@ -35,7 +33,7 @@ from utils.stock_code_utils import normalize_code
 logger = setup_logger('daily_import')
 
 # 不复权数据源列表（需要转换为前复权）
-NON_ADJUSTED_SOURCES = ('tushare', 'pytdx')
+NON_ADJUSTED_SOURCES = ('tushare',)
 
 
 class DailyDataImporter(BaseDataImporter):
@@ -56,8 +54,7 @@ class DailyDataImporter(BaseDataImporter):
         self.datasource_manager = DataSourceManager(
             sources=[
                 {'source': BaostockDataSource(), 'weight': 1, 'priority': 0},    # 主: 前复权
-                {'source': TushareDataSource(), 'weight': 1, 'priority': 1},     # 备1: 不复权→需转换
-                {'source': PytdxDataSource(), 'weight': 1, 'priority': 2}        # 备2: 不复权→需转换
+                {'source': TushareDataSource(), 'weight': 1, 'priority': 1},     # 备: 不复权→需转换
             ],
             strategy=SwitchStrategy.FAILOVER,
             auto_recovery=True
@@ -66,7 +63,7 @@ class DailyDataImporter(BaseDataImporter):
         self._interrupted = False
         self._dry_run = False  # dry-run 模式
 
-        # 全量导入时直接使用 Baostock → Tushare，避免 Failover 循环降级到 pytdx 导致极慢。
+        # 全量导入时直接使用 Baostock → Tushare，避免 Failover 循环降级导致极慢。
         # 复用 DataSourceManager 中已连接的实例，避免重复登录导致 Baostock 连接冲突。
         self.baostock_source = None
         self.tushare_source = None
@@ -203,7 +200,7 @@ class DailyDataImporter(BaseDataImporter):
 
     @property
     def _current_source_needs_conversion(self) -> bool:
-        """当前数据源是否返回不复权数据（Tushare/pytdx 需要转换）"""
+        """当前数据源是否返回不复权数据（Tushare 需要转换）"""
         name = self.datasource_manager.current_source_name
         return name in NON_ADJUSTED_SOURCES
 
@@ -506,7 +503,7 @@ class DailyDataImporter(BaseDataImporter):
 
     def close(self):
         """关闭连接"""
-        # DataSourceManager 已包含 Baostock/Tushare/pytdx 实例，统一断开即可，
+        # DataSourceManager 已包含 Baostock/Tushare 实例，统一断开即可，
         # 避免对同一 Baostock 连接重复 logout 触发 Bad file descriptor 错误。
         try:
             self.datasource_manager.disconnect()
@@ -746,7 +743,7 @@ class DailyDataImporter(BaseDataImporter):
             logger.info(f"[{i}/{total_stocks}] 正在导入 {code} (从 {current_start} 到 {effective_end_date})")
 
             # 全量导入直连优先级：Baostock(前复权) → Tushare(不复权→转换)
-            # 均失败后跳过。pytdx 不在全量模式使用（速度过慢）。
+            # 均失败后跳过。
             # 若某数据源连续失败超过阈值，则自动禁用，避免无意义重试耗时。
             # 注：数据源返回空数据视为正常（停牌/退市），不累计失败计数。
             df_bs = None
@@ -819,7 +816,7 @@ class DailyDataImporter(BaseDataImporter):
         """增量导入（带完整度熔断机制）
 
         优先使用 Tushare 批量接口（速度快），自动转换为前复权后存储。
-        批量失败时回退到 DataSourceManager 单线程逐个导入（Baostock→Tushare→pytdx）。
+        批量失败时回退到 DataSourceManager 单线程逐个导入（Baostock→Tushare）。
 
         Returns:
             dict: 包含 rows_affected / extra_metrics 的运行统计
@@ -905,7 +902,7 @@ class DailyDataImporter(BaseDataImporter):
 
             if need_fallback:
                 logger.warning("⚠️  Tushare 批量接口未获取到完整数据，"
-                             f"回退到单线程逐个导入 (Baostock→Tushare→pytdx, 最近 {self.FALLBACK_LOOKBACK_DAYS} 天)")
+                             f"回退到单线程逐个导入 (Baostock→Tushare, 最近 {self.FALLBACK_LOOKBACK_DAYS} 天)")
                 fallback_start = (datetime.now() -
                                  timedelta(days=self.FALLBACK_LOOKBACK_DAYS)).strftime('%Y-%m-%d')
                 sc, fc, tr = self._single_thread_incremental(codes, today, min_start_date=fallback_start)

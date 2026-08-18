@@ -32,7 +32,7 @@
 ## 会话信息
 - 日期：2026-08-18
 - 负责角色：量量
-- 修改范围：调查后台进程频繁停止根因（macOS jetsam 内存压力杀死进程），修复方案：SnapshotService OHLCV 延迟加载（稳定内存 1.6GB→167MB，降低87%）、内存优化（batch_size/GC/消除中间列表）、双重守护机制（watchdog + launchd 健康检查）、清理废弃脚本和临时文件
+- 修改范围：调查后台进程频繁停止根因（macOS jetsam 内存压力杀死进程），修复方案：SnapshotService OHLCV 延迟加载（稳定内存 1.6GB→167MB，降低87%）、内存优化（batch_size/GC/消除中间列表）、双重守护机制（watchdog + launchd 健康检查）、清理废弃脚本和临时文件；每日晨检 Pipeline 健康检查（9 OK / 2 WARN）；协作单 #17.0 复核（Check+Act 后端代码审阅通过 + 3 项修复：索引+account_id+String长度，V005迁移）；daily_basic_sync 超时配置修复（3600s→7200s）
 
 ## 会话信息
 - 日期：2026-08-18

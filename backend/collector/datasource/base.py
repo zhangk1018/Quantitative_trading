@@ -200,14 +200,12 @@ class DataSourceManager:
         """
         # 处理旧的初始化方式（兼容原有代码）
         if sources is None or len(sources) == 0:
-            # 使用默认配置：Baostock 主，Tushare 备，pytdx 兜底
+            # 使用默认配置：Baostock 主，Tushare 备
             from collector.datasource.baostock import BaostockDataSource
             from collector.datasource.tushare import TushareDataSource
-            from collector.datasource.pytdx import PytdxDataSource
             sources = [
                 {'source': BaostockDataSource(), 'weight': 1, 'priority': 0},   # 主: 前复权
-                {'source': TushareDataSource(), 'weight': 1, 'priority': 1},    # 备1: 不复权→转换
-                {'source': PytdxDataSource(), 'weight': 1, 'priority': 2}       # 备2: 不复权→转换
+                {'source': TushareDataSource(), 'weight': 1, 'priority': 1},    # 备: 不复权→转换
             ]
         
         self.sources = sorted(sources, key=lambda x: x.get('priority', 0))
@@ -629,14 +627,12 @@ def create_dsm(
     """
     from collector.datasource.baostock import BaostockDataSource
     from collector.datasource.tushare import TushareDataSource
-    from collector.datasource.pytdx import PytdxDataSource
 
-    # 配置多数据源：Baostock 主（前复权），Tushare 备1（不复权→转换），pytdx 备2（不复权→转换）
+    # 配置多数据源：Baostock 主（前复权），Tushare 备（不复权→需转换）
     # weight 仅 WEIGHTED 策略使用，Failover 模式下仅 priority 决定回退顺序
     sources = [
         {'source': BaostockDataSource(), 'weight': 1, 'priority': 0},   # 主: 前复权
-        {'source': TushareDataSource(), 'weight': 1, 'priority': 1},    # 备1: 不复权→需转换
-        {'source': PytdxDataSource(), 'weight': 1, 'priority': 2}       # 备2: 不复权→需转换
+        {'source': TushareDataSource(), 'weight': 1, 'priority': 1},    # 备: 不复权→需转换
     ]
     
     strategy_enum = {

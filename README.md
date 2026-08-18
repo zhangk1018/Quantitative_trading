@@ -42,7 +42,7 @@
 Quantitative_trading/
 ├── backend/
 │   ├── collector/                 # 数据采集
-│   │   ├── datasource/            #   Baostock / Tushare / pytdx
+│   │   ├── datasource/            #   Baostock / Tushare
 │   │   ├── etl/                   #   ETL 脚本（导入/同步/快照/补全）
 │   │   ├── db/                    #   数据库模型与迁移
 │   │   ├── config/                #   数据源配置

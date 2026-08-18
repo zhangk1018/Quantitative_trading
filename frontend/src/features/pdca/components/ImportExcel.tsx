@@ -14,7 +14,8 @@ import {
 } from 'antd';
 import { UploadOutlined, InboxOutlined } from '@ant-design/icons';
 import type { BrokerAdapter, ImportParseResult } from '../types';
-import { parseImportExcel, confirmImport, fetchBrokerAdapters } from '../api';
+import { parseImportExcel, confirmImport } from '../services/import';
+import { fetchBrokerAdapters } from '../services/stock';
 import { MAX_FILE_SIZE, VALID_FILE_EXTENSIONS, VALID_EXCEL_MAGICS } from '@/config/constants';
 
 const { Dragger } = Upload;
@@ -34,11 +35,9 @@ const ImportExcel: React.FC = () => {
   const loadBrokers = useCallback(async () => {
     if (brokersLoaded) return;
     try {
-      const res = await fetchBrokerAdapters();
-      if (res.code === 200) {
-        setBrokers(res.data.items || []);
-        setBrokersLoaded(true);
-      }
+      const brokers = await fetchBrokerAdapters();
+      setBrokers(brokers);
+      setBrokersLoaded(true);
     } catch (err) { message.error(err instanceof Error ? err.message : '加载券商列表失败'); }
   }, [brokersLoaded]);
 
@@ -89,13 +88,9 @@ const ImportExcel: React.FC = () => {
     setParsing(true);
     setParseResult(null);
     try {
-      const res = await parseImportExcel(file, selectedBroker);
-      if (res.code === 200) {
-        setParseResult(res.data);
-        message.success(`解析完成：${res.data.valid_rows} 条有效，${res.data.error_rows} 条错误`);
-      } else {
-        message.error(res.message || '解析失败');
-      }
+      const result = await parseImportExcel(file, selectedBroker);
+      setParseResult(result);
+      message.success(`解析完成：${result.valid_rows} 条有效，${result.error_rows} 条错误`);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '解析失败，请检查网络连接');
     } finally {
@@ -110,14 +105,10 @@ const ImportExcel: React.FC = () => {
     }
     setImporting(true);
     try {
-      const res = await confirmImport(parseResult.records);
-      if (res.code === 200) {
-        message.success(`成功导入 ${res.data.imported} 条交易记录`);
-        setParseResult(null);
-        setFile(null);
-      } else {
-        message.error(res.message || '导入失败');
-      }
+      const result = await confirmImport(parseResult.records);
+      message.success(`成功导入 ${result.imported} 条交易记录`);
+      setParseResult(null);
+      setFile(null);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '导入失败');
     } finally {

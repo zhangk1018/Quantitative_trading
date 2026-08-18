@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import argparse
 import pandas as pd
+import baostock as bs
 from typing import Optional, List
 
 from collector.datasource.base import DataSourceManager, SwitchStrategy
@@ -130,7 +131,11 @@ class DailyBasicSync:
             return 0
 
     def _fill_pe_ttm_gaps(self, trade_date: str) -> int:
-        """用 Baostock 逐只补全 Tushare 返回中 pe_ttm 为 NULL 的股票"""
+        """用 Baostock 逐只补全 Tushare 返回中 pe_ttm 为 NULL 的股票
+
+        优化：使用独立的 Baostock 连接 + 自定义快速限速（0.2s/只），
+        避免被 DataSource 的全局速率限制器（20只/分钟）拖慢。
+        """
 
         with self.storage.transaction() as conn:
             with conn.cursor() as cur:
@@ -144,64 +149,93 @@ class DailyBasicSync:
         if not missing_codes:
             return 0
 
-        logger.info(f"  🔍 发现 {len(missing_codes)} 只股票 pe_ttm 缺失，尝试 Baostock 补全")
+        logger.info(f"  🔍 发现 {len(missing_codes)} 只股票 pe_ttm 缺失，尝试 Baostock 快速补全（0.2s/只）")
 
-        # 使用 DataSourceManager 中已连接的 Baostock 数据源
-        baostock_source = None
-        for src_info in self.dsm.sources:
-            if src_info['source'].name == 'Baostock':
-                baostock_source = src_info['source']
-                break
-
-        if baostock_source is None:
-            logger.warning("  未找到 Baostock 数据源，跳过 pe_ttm 补全")
-            return 0
-
-        # 检查 Baostock 是否已连接，若不可用则跳过（避免 "you don't login" 反复刷屏）
-        if not hasattr(baostock_source, '_ensure_connected') or not baostock_source._ensure_connected():
-            logger.warning("  ⚠️ Baostock 未连接或不可用，跳过 pe_ttm 补全（Tushare 主数据已保存，不影响核心字段）")
+        # 直接使用 Baostock 库，绕过 DataSource 的速率限制（20只/分钟）
+        lg = bs.login()
+        if lg.error_code != '0':
+            logger.warning(f"  ⚠️ Baostock 登录失败: {lg.error_msg}，跳过 pe_ttm 补全")
             return 0
 
         filled = 0
         failed = 0
         consecutive_failures = 0
-        max_consecutive_failures = 5  # 连续失败5次后放弃补全
+        max_consecutive_failures = 10  # 加重连容忍，避免 Baostock 波动中断
+        retried = False
         updates = []
+        bs_date = trade_date.replace('-', '')  # YYYY-MM-DD → YYYYMMDD
+        t0 = time.time()
+
+        logger.info(f"  🚀 开始快速补全，目标 {len(missing_codes)} 只，预计 {(len(missing_codes) * 0.2) / 60:.0f} 分钟")
 
         for i, code in enumerate(missing_codes):
             try:
-                time.sleep(0.05)  # Baostock 频率控制
-                df = baostock_source.get_daily_basic_for_code(code, trade_date)
-                if df is not None and not df.empty and 'pe_ttm' in df.columns:
-                    pe_ttm_val = df['pe_ttm'].iloc[0]
-                    if pd.notna(pe_ttm_val):
-                        updates.append((float(pe_ttm_val), code, trade_date))
+                time.sleep(0.18)  # 自定义快速限速（0.18s/只，≈ 5.5只/秒）
+                # Baostock 要求 code 格式为 sh.600000 或 sz.000001
+                bs_code = f"sh.{code}" if code.startswith('6') else f"sz.{code}"
+                rs = bs.query_history_k_data_plus(
+                    bs_code, "date,code,peTTM",
+                    start_date=bs_date, end_date=bs_date,
+                    frequency="d", adjustflag="3"
+                )
+                if rs is None or rs.error_code != '0':
+                    failed += 1
+                    consecutive_failures += 1
+                else:
+                    rows = []
+                    while rs.error_code == '0' and rs.next():
+                        rows.append(rs.get_row_data())
+                    if rows and len(rows[0]) >= 3 and rows[0][2]:
+                        pe_ttm_val = float(rows[0][2])
+                        updates.append((pe_ttm_val, code, trade_date))
                         filled += 1
                         consecutive_failures = 0
                     else:
                         failed += 1
                         consecutive_failures += 1
-                else:
-                    failed += 1
-                    consecutive_failures += 1
             except Exception as e:
                 failed += 1
                 consecutive_failures += 1
-                # 只记录前3次失败详情，避免日志刷屏
                 if consecutive_failures <= 3:
                     logger.debug(f"  pe_ttm 补全 {code} 失败: {type(e).__name__}: {e}")
-                continue
 
-            # 连续失败过多，大概率 Baostock 已不可用
+            # 连续失败过多，重连一次再试
             if consecutive_failures >= max_consecutive_failures:
+                if not retried:
+                    logger.warning(f"  ⚠️ 连续失败 {consecutive_failures} 次，尝试重新连接 Baostock...")
+                    try:
+                        bs.logout()
+                    except Exception:
+                        pass
+                    time.sleep(1)
+                    lg = bs.login()
+                    if lg.error_code == '0':
+                        retried = True
+                        consecutive_failures = 0
+                        logger.info("  ✅ Baostock 重连成功，继续补全")
+                        continue
+                    else:
+                        logger.warning(f"  ❌ Baostock 重连失败: {lg.error_msg}")
                 logger.warning(
                     f"  ⚠️ Baostock pe_ttm 补全连续失败 {consecutive_failures} 次，"
                     f"停止补全（已补 {filled}/{len(missing_codes)}，剩余 {len(missing_codes) - i - 1} 只跳过）"
                 )
                 break
 
-            if (i + 1) % 200 == 0:
-                logger.info(f"  pe_ttm 补全进度: {i+1}/{len(missing_codes)} (已补:{filled} 失败:{failed})")
+            if (i + 1) % 500 == 0:
+                elapsed = time.time() - t0
+                rate = (i + 1) / (elapsed if elapsed else 1)
+                eta = (len(missing_codes) - i - 1) / rate if rate else 0
+                logger.info(f"  pe_ttm 补全进度: {i+1}/{len(missing_codes)} "
+                            f"(已补:{filled} 失败:{failed}) "
+                            f"速率:{rate:.1f}只/秒 "
+                            f"预计剩余:{eta/60:.0f}分钟")
+
+        # 登出 Baostock
+        try:
+            bs.logout()
+        except Exception:
+            pass
 
         # 批量更新数据库
         if updates:

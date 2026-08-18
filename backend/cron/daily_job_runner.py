@@ -73,7 +73,7 @@ STAGE2_TASKS = [
 
 STAGE3_TASKS = [
     {"name": "fill_missing_data", "script": os.path.join("backend", "collector", "etl", "fill_missing_data.py"), "args": []},
-    {"name": "daily_basic_sync", "script": os.path.join("backend", "collector", "etl", "sync_daily_basic.py"), "args": ["--latest"]},
+    {"name": "daily_basic_sync", "script": os.path.join("backend", "collector", "etl", "sync_daily_basic.py"), "args": ["--latest"], "timeout": 7200},  # Tushare 限速，需更长时间
     {"name": "indicators_compute", "script": os.path.join("backend", "clean", "etl", "compute_indicators_daily.py"), "args": []},
     {"name": "pattern_precompute", "script": os.path.join("backend", "clean", "etl", "pattern_precompute.py"), "args": ["--latest"]},
     {"name": "signal_precompute", "script": os.path.join("backend", "clean", "etl", "signal_precompute.py"), "args": []},

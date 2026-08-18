@@ -1239,7 +1239,7 @@ class DataService:
         更新快照数据
 
         当前仅支持从历史数据生成快照（已移除 Akshare/腾讯/新浪等实时数据源，
-        保持数据源仅 Baostock/Tushare/pytdx）。
+        保持数据源仅 Baostock/Tushare）。
 
         Returns:
             是否成功

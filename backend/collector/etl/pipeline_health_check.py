@@ -6,10 +6,10 @@ pipeline_health_check.py - 数据管道前置条件检查器
 - 数据库连接
 - stock_basic 表是否有数据（避免下载无股票代码的数据）
 - 数据库分区是否覆盖目标日期
-- 数据源（Baostock/Tushare/pytdx）是否可用
+- 数据源（Baostock/Tushare）是否可用
 - 必需目录是否存在
 
-数据源优先级：Baostock(前复权,主) → Tushare(不复权,备1) → pytdx(不复权,备2)
+数据源优先级：Baostock(前复权,主) → Tushare(不复权,备)
 
 用法：
     python pipeline_health_check.py                      # 完整检查
@@ -177,7 +177,7 @@ def check_partitions(result: HealthCheckResult, target_date: str = None):
 
 
 def check_data_sources(result: HealthCheckResult):
-    """检查数据源可用性（按优先级顺序：Baostock → Tushare → pytdx）"""
+    """检查数据源可用性（按优先级顺序：Baostock → Tushare）"""
     print('\n[4/6] 🔌 数据源连接检查')
 
     # Baostock（主数据源，前复权）
@@ -192,33 +192,20 @@ def check_data_sources(result: HealthCheckResult):
     except Exception as e:
         result.warn('Baostock (主)', f'连接异常: {str(e)[:80]}')
 
-    # Tushare（备1，不复权→自动转换）
+    # Tushare（备，不复权→自动转换）
     try:
         tushare_token = os.getenv('TUSHARE_TOKEN')
         if not tushare_token:
-            result.warn('Tushare (备1)', '未配置 TUSHARE_TOKEN，跳过')
+            result.warn('Tushare (备)', '未配置 TUSHARE_TOKEN，跳过')
         else:
             import tushare as ts
             pro = ts.pro_api(tushare_token)
-            # 仅验证 pro_api 对象创建成功，避免调用 trade_cal 等受限接口消耗配额
             if pro is not None:
-                result.ok('Tushare (备1)', '已配置 TOKEN（不复权→自动转换）')
+                result.ok('Tushare (备)', '已配置 TOKEN（不复权→自动转换）')
             else:
-                result.warn('Tushare (备1)', 'pro_api 初始化失败')
+                result.warn('Tushare (备)', 'pro_api 初始化失败')
     except Exception as e:
-        result.warn('Tushare (备1)', f'连接异常: {str(e)[:80]}')
-
-    # pytdx（备2，不复权→自动转换）
-    try:
-        from collector.datasource.pytdx import PytdxDataSource
-        pdx = PytdxDataSource()
-        if pdx.connect():
-            result.ok('pytdx/通达信 (备2)', '可用（不复权→自动转换）')
-            pdx.disconnect()
-        else:
-            result.warn('pytdx/通达信 (备2)', '连接失败')
-    except Exception as e:
-        result.warn('pytdx/通达信 (备2)', f'连接异常: {str(e)[:80]}')
+        result.warn('Tushare (备)', f'连接异常: {str(e)[:80]}')
 
 
 def check_directories(result: HealthCheckResult):

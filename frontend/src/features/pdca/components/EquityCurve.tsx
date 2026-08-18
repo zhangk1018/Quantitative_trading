@@ -15,7 +15,7 @@ import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import type { AccountSnapshot, AccountSnapshotFormData } from '../types';
-import { saveSnapshot, updateSnapshot, deleteSnapshot, fetchSnapshots } from '../api';
+import { saveSnapshot, updateSnapshot, deleteSnapshot, fetchSnapshots } from '../services/snapshot';
 
 const fmtMoney = (v: number | null | undefined) => (v == null ? '-' : `¥${Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 
@@ -31,8 +31,8 @@ const EquityCurve: React.FC = () => {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const snapRes = await fetchSnapshots();
-      if (snapRes.code === 200) setSnapshots(snapRes.data.items || []);
+      const items = await fetchSnapshots();
+      setSnapshots(items);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '加载资金记录失败');
     } finally {
@@ -76,17 +76,15 @@ const EquityCurve: React.FC = () => {
         withdrawal: values.withdrawal || 0,
         realized_pnl: values.realized_pnl || 0,
       };
-      const res = editing
-        ? await updateSnapshot(editing.id, data)
-        : await saveSnapshot(data);
-      if (res.code === 200) {
-        message.success(editing ? '修改成功' : '保存成功');
-        setFormOpen(false);
-        form.resetFields();
-        loadData();
+      if (editing) {
+        await updateSnapshot(editing.id, data);
       } else {
-        message.error(res.message || '保存失败');
+        await saveSnapshot(data);
       }
+      message.success(editing ? '修改成功' : '保存成功');
+      setFormOpen(false);
+      form.resetFields();
+      loadData();
     } catch (err) {
       if (err instanceof Error) {
         message.error(err.message);
@@ -99,13 +97,9 @@ const EquityCurve: React.FC = () => {
 
   const handleDelete = useCallback(async (id: number) => {
     try {
-      const res = await deleteSnapshot(id);
-      if (res.code === 200) {
-        message.success('删除成功');
-        loadData();
-      } else {
-        message.error(res.message || '删除失败');
-      }
+      await deleteSnapshot(id);
+      message.success('删除成功');
+      loadData();
     } catch (err) {
       message.error(err instanceof Error ? err.message : '删除失败');
     }

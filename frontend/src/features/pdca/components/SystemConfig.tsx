@@ -13,7 +13,8 @@ import {
 } from 'antd';
 import { ExportOutlined, DownloadOutlined, SaveOutlined } from '@ant-design/icons';
 import type { SystemConfigItem } from '../types';
-import { fetchConfig, updateConfig, exportRecords, backupDatabase, downloadExcel, downloadBackup } from '../api';
+import { fetchConfig, updateConfig } from '../services/config';
+import { exportRecords, downloadExcel, backupDatabase, downloadBackup } from '../services/import';
 
 const { Text, Title } = Typography;
 
@@ -36,8 +37,8 @@ const SystemConfig: React.FC = () => {
   const loadConfig = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetchConfig();
-      if (res.code === 200) setConfigs(res.data.items || []);
+      const items = await fetchConfig();
+      setConfigs(items);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '加载配置失败');
     } finally {
@@ -63,17 +64,13 @@ const SystemConfig: React.FC = () => {
     setSavingKey(configKey);
     setReasonModalVisible(false);
     try {
-      const res = await updateConfig(configKey, {
+      await updateConfig(configKey, {
         numeric_value: numericValue ?? undefined,
         bool_value: boolValue ?? undefined,
         modify_reason: reason,
       });
-      if (res.code === 200) {
-        message.success('配置已保存');
-        loadConfig();
-      } else {
-        message.error(res.message || '保存失败');
-      }
+      message.success('配置已保存');
+      loadConfig();
     } catch (err) {
       if (err instanceof Error) {
         message.error(err.message);

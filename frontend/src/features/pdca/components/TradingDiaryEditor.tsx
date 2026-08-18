@@ -15,8 +15,9 @@ import {
 import { UploadOutlined, FileImageOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { TradingDiary, TradingDiaryFormData, TradingRecord, PDCACycle } from '../types';
-import { fetchDiaries, createDiary, updateDiary, uploadDiaryAttachment, fetchCycles } from '../api';
-import { fetchRecords } from '../api';
+import { fetchDiaries, createDiary, updateDiary, uploadDiaryAttachment } from '../services/diary';
+import { fetchRecords } from '../services/record';
+import { fetchCycles } from '../services/cycle';
 import { DEFAULT_PAGE_SIZE } from '@/config/constants';
 
 const { TextArea } = Input;
@@ -39,12 +40,9 @@ const TradingDiaryEditor: React.FC = () => {
   // 获取当前活跃周期（DO 状态），用于日记关联
   const loadActiveCycle = useCallback(async () => {
     try {
-      const res = await fetchCycles({ status: 'DO' });
+      const items = await fetchCycles({ status: 'DO' });
       if (!mountedRef.current) return;
-      if (res.code === 200) {
-        const items = res.data.items || [];
-        if (items.length > 0) setActiveCycle(items[0]);
-      }
+      if (items.length > 0) setActiveCycle(items[0]);
     } catch (err) {
       if (!mountedRef.current) return;
       message.error(err instanceof Error ? err.message : '获取当前周期失败');
@@ -54,9 +52,9 @@ const TradingDiaryEditor: React.FC = () => {
   // 加载交易记录列表（用于下拉选择）
   const loadRecords = useCallback(async () => {
     try {
-      const res = await fetchRecords({ page_size: DEFAULT_PAGE_SIZE, sort_by: 'entry_date', sort_asc: false });
+      const result = await fetchRecords({ page_size: DEFAULT_PAGE_SIZE, sort_by: 'entry_date', sort_asc: false });
       if (!mountedRef.current) return;
-      if (res.code === 200) setRecords(res.data.items || []);
+      setRecords(result.items || []);
     } catch (err) {
       if (!mountedRef.current) return;
       message.error(err instanceof Error ? err.message : '加载交易记录失败');
@@ -67,9 +65,9 @@ const TradingDiaryEditor: React.FC = () => {
   const loadDiaries = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetchDiaries({});
+      const result = await fetchDiaries({});
       if (!mountedRef.current) return;
-      if (res.code === 200) setDiaries(res.data.items || []);
+      setDiaries(result.items || []);
     } catch (err) {
       if (!mountedRef.current) return;
       message.error(err instanceof Error ? err.message : '加载日记列表失败');
@@ -100,23 +98,17 @@ const TradingDiaryEditor: React.FC = () => {
       if (selectedRecordId) data.trading_record_id = selectedRecordId;
       if (emotionNote.trim()) data.emotion_note = emotionNote.trim();
 
-      let res;
       if (editingDiaryId) {
-        res = await updateDiary(editingDiaryId, data);
+        await updateDiary(editingDiaryId, data);
       } else {
-        res = await createDiary(data);
+        await createDiary(data);
       }
-
-      if (res.code === 200) {
-        message.success(editingDiaryId ? '更新成功' : '保存成功');
-        setReviewText('');
-        setEmotionNote('');
-        setSelectedRecordId(null);
-        setEditingDiaryId(null);
-        loadDiaries();
-      } else {
-        message.error(res.message || '保存失败');
-      }
+      message.success(editingDiaryId ? '更新成功' : '保存成功');
+      setReviewText('');
+      setEmotionNote('');
+      setSelectedRecordId(null);
+      setEditingDiaryId(null);
+      loadDiaries();
     } catch (err) {
       message.error(err instanceof Error ? err.message : '保存失败');
     } finally {
@@ -141,13 +133,9 @@ const TradingDiaryEditor: React.FC = () => {
   const handleUpload = useCallback(async (diaryId: number, file: File) => {
     setUploading(true);
     try {
-      const res = await uploadDiaryAttachment(diaryId, file);
-      if (res.code === 200) {
-        message.success('上传成功');
-        loadDiaries();
-      } else {
-        message.error(res.message || '上传失败');
-      }
+      await uploadDiaryAttachment(diaryId, file);
+      message.success('上传成功');
+      loadDiaries();
     } catch (err) {
       message.error(err instanceof Error ? err.message : '上传失败');
     } finally {

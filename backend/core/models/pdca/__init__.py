@@ -13,6 +13,8 @@ from .trading_record import TradingRecord
 from .trading_diary import TradingDiary
 from .broker_adapter import BrokerAdapter
 from .behavior_log import BehaviorLog
+from .check_report import CheckReport
+from .act_record import ActRecord
 
 __all__ = [
     'Base',
@@ -24,4 +26,6 @@ __all__ = [
     'TradingDiary',
     'BrokerAdapter',
     'BehaviorLog',
+    'CheckReport',
+    'ActRecord',
 ]

@@ -13,7 +13,7 @@ import dayjs from 'dayjs';
 import { createChart, ColorType, CrosshairMode, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts';
 import { CHART_THEME } from '@/lib/indicators/chart-config';
 import type { EquityCurveAutoPoint } from '../types';
-import { fetchEquityAutoCurve } from '../api';
+import { fetchEquityAutoCurve } from '../services/snapshot';
 
 // ── 时间段筛选选项 ──
 type RangeKey = '1m' | '3m' | '6m' | '1y';
@@ -148,8 +148,8 @@ const EquityAutoCurve: React.FC = () => {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetchEquityAutoCurve();
-      if (res.code === 200) setData(res.data.items || []);
+      const items = await fetchEquityAutoCurve();
+      setData(items);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '加载资金曲线失败');
     } finally {
