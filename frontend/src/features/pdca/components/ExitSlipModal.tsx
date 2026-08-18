@@ -10,7 +10,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Modal, Form, InputNumber, DatePicker, Select, Row, Col } from 'antd';
 import dayjs from 'dayjs';
 import type { ExitSlip, ExitSlipFormData } from '../types';
-import { EXIT_REASON_OPTIONS } from '../types';
+import { EXIT_REASON_OPTIONS } from '../constants';
 import { calcCommission, calcStampDuty, calcTransferFee, calcSlippageCost } from '../utils/tradingCostUtils';
 import { fetchDailyOHLC, type DailyOHLC } from '../api';
 

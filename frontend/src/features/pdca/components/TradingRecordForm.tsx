@@ -21,9 +21,10 @@ import type { TradingRecord, TradingRecordFormData, StockSearchResult, ExitSlip,
 import {
   INSTRUMENT_TYPE_OPTIONS, LONG_SHORT_OPTIONS, ORDER_TYPE_OPTIONS,
   TRADE_GRADE_OPTIONS, TRIGGER_SOURCE_OPTIONS,
-} from '../types';
-import { createRecord, updateRecord, searchStocks, fetchExitSlips, updateExitSlip, deleteExitSlip, batchCreateExitSlips, fetchDailyOHLC } from '../api';
-import type { DailyOHLC } from '../api';
+} from '../constants';
+import { createRecord, updateRecord, fetchExitSlips, updateExitSlip, deleteExitSlip, batchCreateExitSlips, fetchDailyOHLC } from '../services/record';
+import { searchStocks } from '../services/stock';
+import type { DailyOHLC } from '../services/record';
 import { calcEntryScore, calcExitScore, calcChannelHeight, calcTradeScore, calcTradeGrade } from '../utils/scoreCalculator';
 import { calcCommission, calcTransferFee, calcSlippageCost } from '../utils/tradingCostUtils';
 import ExitSlipList from './ExitSlipList';
@@ -225,12 +226,8 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
     if (open && record) {
       setLoadingExitSlips(true);
       fetchExitSlips(record.id)
-        .then(res => {
-          if (res.code === 200) {
-            setExitSlips(res.data.items || []);
-          } else {
-            message.warning(res.message || '加载卖出记录失败');
-          }
+        .then(slips => {
+          setExitSlips(slips);
         })
         .catch(() => {
           message.warning('加载卖出记录失败，请检查网络连接');
@@ -282,16 +279,14 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
     }
     debounceTimer.current = setTimeout(async () => {
       try {
-        const res = await searchStocks(q);
-        if (res.code === 200) {
-          setStockOptions(
-            res.data.map((s: StockSearchResult) => ({
-              value: s.code,
-              label: `${s.code} ${s.name}`,
-              code: s.code,
-            })),
-          );
-        }
+        const results = await searchStocks(q);
+        setStockOptions(
+          results.map((s: StockSearchResult) => ({
+            value: s.code,
+            label: `${s.code} ${s.name}`,
+            code: s.code,
+          })),
+        );
       } catch {
         message.warning('股票搜索失败，请检查网络连接');
       }
@@ -326,14 +321,10 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
   const saveExitSlip = useCallback(async (data: ExitSlipFormData, editing: ExitSlip | null) => {
     if (editing) {
       // 编辑已有子单 → 实时保存到后端
-      const res = await updateExitSlip(editing.id, data);
-      if (res.code === 200) {
-        setExitSlips(prev => prev.map(s => s.id === editing.id ? { ...s, ...data, id: s.id } : s));
-        message.success('更新成功');
-        setExitSlipModalOpen(false);
-      } else {
-        message.error(res.message || '更新失败');
-      }
+      await updateExitSlip(editing.id, data);
+      setExitSlips(prev => prev.map(s => s.id === editing.id ? { ...s, ...data, id: s.id } : s));
+      message.success('更新成功');
+      setExitSlipModalOpen(false);
     } else {
       // 新增临时子单 → 暂存本地，主单保存后批量提交
       tempIdCounterRef.current -= 1;
@@ -358,15 +349,11 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
       return;
     }
     // 已保存到后端的记录，调用删除接口
-    const res = await deleteExitSlip(id);
-    if (res.code === 200) {
-      setExitSlips(prev => prev.filter(s => s.id !== id));
-      message.success('删除成功');
-      // 仅刷新父表数据（remain_qty / gross_profit），不关闭表单，保留其余卖出记录
-      onSlipDeleted?.();
-    } else {
-      message.error(res.message || '删除失败');
-    }
+    await deleteExitSlip(id);
+    setExitSlips(prev => prev.filter(s => s.id !== id));
+    message.success('删除成功');
+    // 仅刷新父表数据（remain_qty / gross_profit），不关闭表单，保留其余卖出记录
+    onSlipDeleted?.();
   }, [message, onSlipDeleted]);
 
   // --- 价格合规校验（入场价/出场价在当日最高最低价范围内） ---
@@ -448,84 +435,72 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
         slip_point: s.slip_point,
       }));
 
-      let res;
+      let recordId: number;
       if (isEdit) {
-        res = await updateRecord(record!.id, data);
+        await updateRecord(record!.id, data);
+        recordId = record!.id;
       } else {
-        res = await createRecord(data);
+        recordId = await createRecord(data);
       }
 
-      if (res.code === 200) {
-        const recordData = res.data;
-        const recordId = isEdit
-          ? record!.id
-          : (recordData && typeof recordData === 'object' && 'id' in recordData)
-            ? (recordData as { id: number }).id
-            : 0;
+      if (!recordId) {
+        message.error('创建记录失败：返回数据异常');
+        return;
+      }
 
-        if (!recordId) {
-          message.error('创建记录失败：返回数据异常');
-          return;
-        }
-
-        // 批量提交本地新增的子单（仅针对新增的临时子单）
-        if (localSlips.length > 0) {
-          const batchRes = await batchCreateExitSlips(recordId, localSlips);
-          if (batchRes.code !== 200) {
-            setExitSlips(prev => prev.filter(s => s.id >= 0));
-            message.warning(
-              `主记录已保存，但 ${localSlips.length} 条卖出记录同步失败：${batchRes.message || '未知错误'}。请重新编辑该记录并添加卖出记录。`,
-            );
-          } else {
-            // 全部卖出时，后端已更新 remain_qty 和 gross_profit，但需要更新得分
-            if (isFullySold && derivedExitPrice != null && entryPrice != null && entryDayOHLC) {
-              const ls = longShort || 'long';
-              const ch = entryDayOHLC.high - entryDayOHLC.low;
-              // 全量重算进场得分、出场得分、总得分、等级
-              const es = calcEntryScore(Number(entryPrice), entryDayOHLC.high, entryDayOHLC.low, ls);
-              let xs: number | null = null;
-              if (exitDayOHLC) {
-                xs = calcExitScore(Number(derivedExitPrice), exitDayOHLC.high, exitDayOHLC.low, ls);
-              }
-              const scoreData: Partial<TradingRecordFormData> = {
-                entry_score: Math.round(es * 10) / 10,
-                exit_score: xs != null ? Math.round(xs * 10) / 10 : undefined,
-              };
-              if (ch > 0) {
-                const ts = calcTradeScore(Number(entryPrice), derivedExitPrice, ch, ls);
-                scoreData.trade_score = Math.round(ts * 10) / 10;
-                scoreData.trade_grade = calcTradeGrade(ts);
-              }
-              await updateRecord(recordId, scoreData);
+      // 批量提交本地新增的子单（仅针对新增的临时子单）
+      if (localSlips.length > 0) {
+        try {
+          await batchCreateExitSlips(recordId, localSlips);
+          // 全部卖出时，后端已更新 remain_qty 和 gross_profit，但需要更新得分
+          if (isFullySold && derivedExitPrice != null && entryPrice != null && entryDayOHLC) {
+            const ls = longShort || 'long';
+            const ch = entryDayOHLC.high - entryDayOHLC.low;
+            const es = calcEntryScore(Number(entryPrice), entryDayOHLC.high, entryDayOHLC.low, ls);
+            let xs: number | null = null;
+            if (exitDayOHLC) {
+              xs = calcExitScore(Number(derivedExitPrice), exitDayOHLC.high, exitDayOHLC.low, ls);
             }
+            const scoreData: Partial<TradingRecordFormData> = {
+              entry_score: Math.round(es * 10) / 10,
+              exit_score: xs != null ? Math.round(xs * 10) / 10 : undefined,
+            };
+            if (ch > 0) {
+              const ts = calcTradeScore(Number(entryPrice), derivedExitPrice, ch, ls);
+              scoreData.trade_score = Math.round(ts * 10) / 10;
+              scoreData.trade_grade = calcTradeGrade(ts);
+            }
+            await updateRecord(recordId, scoreData);
           }
-        } else if (isFullySold && derivedExitPrice != null && entryPrice != null && entryDayOHLC) {
-          // 没有新增子单但已全部卖出（编辑场景），也更新得分
-          const ls = longShort || 'long';
-          const ch = entryDayOHLC.high - entryDayOHLC.low;
-          // 全量重算进场得分、出场得分、总得分、等级
-          const es = calcEntryScore(Number(entryPrice), entryDayOHLC.high, entryDayOHLC.low, ls);
-          let xs: number | null = null;
-          if (exitDayOHLC) {
-            xs = calcExitScore(Number(derivedExitPrice), exitDayOHLC.high, exitDayOHLC.low, ls);
-          }
-          const scoreData: Partial<TradingRecordFormData> = {
-            entry_score: Math.round(es * 10) / 10,
-            exit_score: xs != null ? Math.round(xs * 10) / 10 : undefined,
-          };
-          if (ch > 0) {
-            const ts = calcTradeScore(Number(entryPrice), derivedExitPrice, ch, ls);
-            scoreData.trade_score = Math.round(ts * 10) / 10;
-            scoreData.trade_grade = calcTradeGrade(ts);
-          }
-          await updateRecord(recordId, scoreData);
+        } catch {
+          setExitSlips(prev => prev.filter(s => s.id >= 0));
+          message.warning(
+            `主记录已保存，但 ${localSlips.length} 条卖出记录同步失败。请重新编辑该记录并添加卖出记录。`,
+          );
         }
-
-        message.success(isEdit ? '更新成功' : '新增成功');
-        onSuccess();
-      } else {
-        message.error(res.message || '保存失败');
+      } else if (isFullySold && derivedExitPrice != null && entryPrice != null && entryDayOHLC) {
+        // 没有新增子单但已全部卖出（编辑场景），也更新得分
+        const ls = longShort || 'long';
+        const ch = entryDayOHLC.high - entryDayOHLC.low;
+        const es = calcEntryScore(Number(entryPrice), entryDayOHLC.high, entryDayOHLC.low, ls);
+        let xs: number | null = null;
+        if (exitDayOHLC) {
+          xs = calcExitScore(Number(derivedExitPrice), exitDayOHLC.high, exitDayOHLC.low, ls);
+        }
+        const scoreData: Partial<TradingRecordFormData> = {
+          entry_score: Math.round(es * 10) / 10,
+          exit_score: xs != null ? Math.round(xs * 10) / 10 : undefined,
+        };
+        if (ch > 0) {
+          const ts = calcTradeScore(Number(entryPrice), derivedExitPrice, ch, ls);
+          scoreData.trade_score = Math.round(ts * 10) / 10;
+          scoreData.trade_grade = calcTradeGrade(ts);
+        }
+        await updateRecord(recordId, scoreData);
       }
+
+      message.success(isEdit ? '更新成功' : '新增成功');
+      onSuccess();
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) {
         return;

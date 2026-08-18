@@ -16,8 +16,8 @@ import { Card, Table, Tag, Progress, Spin, Empty, Typography, Alert, Tooltip } f
 import { CheckCircleOutlined, ClockCircleOutlined, ExclamationCircleOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { ExecutionSummary, ExecutionPlanDetail, NakedTradeDetail } from '../types';
-import { LONG_SHORT_LABELS, TRIGGER_SOURCE_LABELS } from '../types';
-import { fetchExecutionSummary } from '../api';
+import { LONG_SHORT_LABELS, TRIGGER_SOURCE_LABELS } from '../constants';
+import { fetchExecutionSummary } from '../services/cycle';
 
 const { Text } = Typography;
 
@@ -35,12 +35,8 @@ const DoExecutionTracker: React.FC<DoExecutionTrackerProps> = ({ cycleId, cycleN
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchExecutionSummary(cycleId);
-      if (res.code === 200) {
-        setSummary(res.data);
-      } else {
-        setError(res.message || '加载执行摘要失败');
-      }
+      const data = await fetchExecutionSummary(cycleId);
+      setSummary(data);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '加载执行摘要失败');
     } finally {

@@ -28,11 +28,15 @@ import type {
 } from '../types';
 import {
   LONG_SHORT_LABELS, PLAN_TEMPLATE_TYPE_LABELS, SECURITY_TAG_LABELS, SECURITY_TAG_OPTIONS,
-} from '../types';
+} from '../constants';
 import {
-  fetchCycles, fetchPlans, createPlan, updatePlan, deletePlan, fetchPlanTemplates,
-  fetchSecurities, upsertSecurity, updateSecurity, deleteSecurity, searchStocks,
-} from '../api';
+  fetchCycles,
+} from '../services/cycle';
+import {
+  fetchPlans, createPlan, updatePlan, deletePlan, fetchPlanTemplates,
+  fetchSecurities, upsertSecurity, updateSecurity, deleteSecurity,
+} from '../services/plan';
+import { searchStocks } from '../services/stock';
 
 const { Text, Title } = Typography;
 
@@ -101,9 +105,9 @@ const PlanManager: React.FC = () => {
   // ── 加载周期与模板 ──
   const loadMeta = useCallback(async () => {
     try {
-      const [cycRes, tplRes] = await Promise.all([fetchCycles(), fetchPlanTemplates()]);
-      if (cycRes.code === 200) setCycles(cycRes.data.items || []);
-      if (tplRes.code === 200) setTemplates(tplRes.data.items || []);
+      const [cycItems, tplItems] = await Promise.all([fetchCycles(), fetchPlanTemplates()]);
+      setCycles(cycItems);
+      setTemplates(tplItems);
     } catch (err: unknown) {
       appMessage.error('加载基础数据失败: ' + (err instanceof Error ? err.message : '未知错误'));
     }
@@ -113,9 +117,8 @@ const PlanManager: React.FC = () => {
   const loadPlans = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetchPlans({ cycle_id: selectedCycle });
-      if (res.code === 200) setPlans(res.data.items || []);
-      else appMessage.error(res.message || '加载交易计划失败');
+      const result = await fetchPlans({ cycle_id: selectedCycle });
+      setPlans(result.items || []);
     } catch (err: unknown) {
       appMessage.error('加载交易计划失败: ' + (err instanceof Error ? err.message : '未知错误'));
     } finally {
@@ -141,15 +144,13 @@ const PlanManager: React.FC = () => {
     }
     debounceTimer.current = setTimeout(async () => {
       try {
-        const res = await searchStocks(q);
-        if (res.code === 200) {
-          setStockOptions(
-            res.data.map((s: StockSearchResult) => ({
-              value: s.code,
-              label: `${s.code} ${s.name}`,
-            })),
-          );
-        }
+        const results = await searchStocks(q);
+        setStockOptions(
+          results.map((s: StockSearchResult) => ({
+            value: s.code,
+            label: `${s.code} ${s.name}`,
+          })),
+        );
       } catch {
         appMessage.warning('股票搜索失败，请检查网络连接');
       }
@@ -225,17 +226,15 @@ const PlanManager: React.FC = () => {
         abort_condition: values.abort_condition ?? null,
       };
       setSubmitting(true);
-      const res = editing
-        ? await updatePlan(editing.id, payload)
-        : await createPlan(payload);
-      if (res.code === 200) {
-        appMessage.success(editing ? '交易计划已更新' : '交易计划已创建');
-        setModalOpen(false);
-        form.resetFields();
-        loadPlans();
+      if (editing) {
+        await updatePlan(editing.id, payload);
       } else {
-        setRiskError(res.message || '保存失败');
+        await createPlan(payload);
       }
+      appMessage.success(editing ? '交易计划已更新' : '交易计划已创建');
+      setModalOpen(false);
+      form.resetFields();
+      loadPlans();
     } catch (err: unknown) {
       if (err instanceof Error) setRiskError(err.message);
     } finally {
@@ -246,13 +245,9 @@ const PlanManager: React.FC = () => {
   // ── 删除 ──
   const handleDelete = async (planId: number) => {
     try {
-      const res = await deletePlan(planId);
-      if (res.code === 200) {
-        appMessage.success('交易计划已删除');
-        loadPlans();
-      } else {
-        setRiskError(res.message || '删除失败');
-      }
+      await deletePlan(planId);
+      appMessage.success('交易计划已删除');
+      loadPlans();
     } catch (err: unknown) {
       setRiskError(err instanceof Error ? err.message : '删除失败');
     }
@@ -511,9 +506,8 @@ const SecurityManager: React.FC = () => {
   const loadSecurities = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetchSecurities();
-      if (res.code === 200) setSecurities(res.data.items || []);
-      else appMessage.error('加载 ABC 分类失败');
+      const items = await fetchSecurities();
+      setSecurities(items);
     } catch (err: unknown) {
       appMessage.error('加载 ABC 分类失败: ' + (err instanceof Error ? err.message : '未知错误'));
     } finally {
@@ -552,17 +546,15 @@ const SecurityManager: React.FC = () => {
         note: values.note ?? null,
       };
       setSubmitting(true);
-      const res = editing
-        ? await updateSecurity(editing.id, payload)
-        : await upsertSecurity(payload);
-      if (res.code === 200) {
-        appMessage.success(editing ? '分类已更新' : '分类已保存');
-        setModalOpen(false);
-        form.resetFields();
-        loadSecurities();
+      if (editing) {
+        await updateSecurity(editing.id, payload);
       } else {
-        appMessage.error(res.message || '保存失败');
+        await upsertSecurity(payload);
       }
+      appMessage.success(editing ? '分类已更新' : '分类已保存');
+      setModalOpen(false);
+      form.resetFields();
+      loadSecurities();
     } catch (err: unknown) {
       if (err instanceof Error) appMessage.error(err.message);
     } finally {
@@ -572,13 +564,9 @@ const SecurityManager: React.FC = () => {
 
   const handleDelete = async (id: number) => {
     try {
-      const res = await deleteSecurity(id);
-      if (res.code === 200) {
-        appMessage.success('分类已删除');
-        loadSecurities();
-      } else {
-        appMessage.error(res.message || '删除失败');
-      }
+      await deleteSecurity(id);
+      appMessage.success('分类已删除');
+      loadSecurities();
     } catch (err: unknown) {
       appMessage.error('删除失败: ' + (err instanceof Error ? err.message : '未知错误'));
     }
@@ -592,15 +580,13 @@ const SecurityManager: React.FC = () => {
     }
     debounceTimer.current = setTimeout(async () => {
       try {
-        const res = await searchStocks(q);
-        if (res.code === 200) {
-          setStockOptions(
-            res.data.map((s: StockSearchResult) => ({
-              value: s.code,
-              label: `${s.code} ${s.name}`,
-            })),
-          );
-        }
+        const results = await searchStocks(q);
+        setStockOptions(
+          results.map((s: StockSearchResult) => ({
+            value: s.code,
+            label: `${s.code} ${s.name}`,
+          })),
+        );
       } catch {
         appMessage.warning('股票搜索失败，请检查网络连接');
       }

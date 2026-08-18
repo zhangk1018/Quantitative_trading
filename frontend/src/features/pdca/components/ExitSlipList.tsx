@@ -9,7 +9,7 @@ import React, { useMemo } from 'react';
 import { Button, Card, Space, Table, Popconfirm } from 'antd';
 import { PlusOutlined, EditOutlined } from '@ant-design/icons';
 import type { ExitSlip } from '../types';
-import { EXIT_REASON_OPTIONS } from '../types';
+import { EXIT_REASON_OPTIONS } from '../constants';
 
 interface Props {
   exitSlips: ExitSlip[];

@@ -377,51 +377,102 @@ export interface ListData<T> {
   items: T[];
 }
 
-// --- 枚举标签映射 ---
-export const INSTRUMENT_TYPE_LABELS: Record<InstrumentType, string> = {
-  stock: '股票',
-  futures: '期货',
-  forex: '外汇',
-  option: '期权',
-};
+// ============================================================
+// Check 模块 — 复盘报告
+// ============================================================
 
-export const LONG_SHORT_LABELS: Record<LongShort, string> = {
-  long: '做多',
-  short: '做空',
-};
+export type ReportStatus = 'draft' | 'published';
 
-export const ORDER_TYPE_LABELS: Record<OrderType, string> = {
-  limit: '限价',
-  market: '市价',
-  stop: '止损',
-};
+export interface CheckReport {
+  id: number;
+  account_id: number;
+  pdca_cycle_id: number;
+  report_status: ReportStatus;
+  total_trade_count: number | null;
+  complete_by_plan_count: number | null;
+  execution_rate: number | null;
+  win_rate: number | null;
+  profit_loss_ratio: number | null;
+  avg_entry_score: number | null;
+  avg_exit_score: number | null;
+  avg_trade_score: number | null;
+  max_drawdown: number | null;
+  violation_total: number | null;
+  report_content: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
-export const TRADE_GRADE_LABELS: Record<TradeGrade, string> = {
-  A: 'A级',
-  B: 'B级',
-  C: 'C级',
-};
+export interface CheckReportFormData {
+  pdca_cycle_id: number;
+  report_status?: string | null;
+  total_trade_count?: number | null;
+  complete_by_plan_count?: number | null;
+  execution_rate?: number | null;
+  win_rate?: number | null;
+  profit_loss_ratio?: number | null;
+  avg_entry_score?: number | null;
+  avg_exit_score?: number | null;
+  avg_trade_score?: number | null;
+  max_drawdown?: number | null;
+  violation_total?: number | null;
+  report_content?: string | null;
+}
 
-export const EXIT_REASON_LABELS: Record<ExitReason, string> = {
-  take_profit: '止盈出场',
-  stop_loss: '止损出场',
-  impulsive: '冲动出场',
-  plan_expired: '计划到期',
-  others: '其他',
-};
+// ============================================================
+// Act 模块 — 迭代处理记录
+// ============================================================
 
-export const TRIGGER_SOURCE_LABELS: Record<TriggerSource, string> = {
-  system_plan: '系统计划',
-  news: '新闻驱动',
-  impulse: '盘中冲动',
-  scanner: '选股器',
-  manual: '手动',
-};
+export interface ActRecord {
+  id: number;
+  account_id: number;
+  pdca_cycle_id: number;
+  problem_list: string[] | null;
+  rectify_plan: string;
+  bind_next_cycle_goal: string | null;
+  is_freeze_experience: boolean;
+  new_config_version: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
-// --- 预计算 Select options 数组，避免组件内重复 Object.entries 转换 ---
-export const INSTRUMENT_TYPE_OPTIONS = Object.entries(INSTRUMENT_TYPE_LABELS).map(([value, label]) => ({ value, label }));
-export const LONG_SHORT_OPTIONS = Object.entries(LONG_SHORT_LABELS).map(([value, label]) => ({ value, label }));
-export const ORDER_TYPE_OPTIONS = Object.entries(ORDER_TYPE_LABELS).map(([value, label]) => ({ value, label }));
-export const TRADE_GRADE_OPTIONS = Object.entries(TRADE_GRADE_LABELS).map(([value, label]) => ({ value, label }));
-export const EXIT_REASON_OPTIONS = Object.entries(EXIT_REASON_LABELS).map(([value, label]) => ({ value, label }));
-export const TRIGGER_SOURCE_OPTIONS = Object.entries(TRIGGER_SOURCE_LABELS).map(([value, label]) => ({ value, label }));
+export interface ActRecordFormData {
+  pdca_cycle_id: number;
+  problem_list?: string[];
+  rectify_plan: string;
+  bind_next_cycle_goal?: string | null;
+  is_freeze_experience?: boolean;
+  new_config_version?: string | null;
+}
+
+// ============================================================
+// Behavior Log — 行为 & 违规日志
+// ============================================================
+
+export type LogType = 'normal' | 'violation';
+
+export interface BehaviorLog {
+  id: number;
+  account_id: number;
+  pdca_cycle_id: number;
+  trading_record_id: number | null;
+  log_type: LogType;
+  violation_type: ViolationType | null;
+  severity: string;
+  log_content: string;
+  happened_at: string;
+  created_at: string;
+}
+
+export interface BehaviorLogFormData {
+  pdca_cycle_id: number;
+  trading_record_id?: number | null;
+  log_type: LogType;
+  violation_type?: ViolationType | null;
+  severity?: string;
+  log_content: string;
+  happened_at?: string;
+}
+
+// --- 常量（标签映射、下拉选项）已迁移至 constants.ts ---
+// 向后兼容导入：import { INSTRUMENT_TYPE_OPTIONS } from '../constants';

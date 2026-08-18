@@ -26,8 +26,8 @@ import {
   AuditOutlined, SyncOutlined, ExclamationCircleOutlined, BarChartOutlined,
 } from '@ant-design/icons';
 import type { PDCACycle, CycleStatus, CycleType } from '../types';
-import { CYCLE_TYPE_LABELS, CYCLE_TYPE_OPTIONS } from '../types';
-import { fetchCycles, createCycle, deleteCycle, transitionCycle } from '../api';
+import { CYCLE_TYPE_LABELS, CYCLE_TYPE_OPTIONS } from '../constants';
+import { fetchCycles, createCycle, deleteCycle, transitionCycle } from '../services/cycle';
 import DoExecutionTracker from './DoExecutionTracker';
 
 const { Text, Title } = Typography;
@@ -138,13 +138,8 @@ const CycleOverview: React.FC = () => {
   const loadCycles = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetchCycles();
-      if (res.code === 200) {
-        const items = res.data.items || [];
-        setCycles(items);
-      } else {
-        message.error(res.message || '加载周期列表失败');
-      }
+      const items = await fetchCycles();
+      setCycles(items);
     } catch (err: unknown) {
       message.error('加载周期列表失败: ' + (err instanceof Error ? err.message : '未知错误'));
     } finally {
@@ -168,15 +163,11 @@ const CycleOverview: React.FC = () => {
         end_date: end.format('YYYY-MM-DD'),
         goal_text: values.goal_text || null,
       };
-      const res = await createCycle(payload);
-      if (res.code === 200) {
-        message.success('周期创建成功');
-        setCreateModalOpen(false);
-        form.resetFields();
-        loadCycles();
-      } else {
-        message.error(res.message || '创建失败');
-      }
+      await createCycle(payload);
+      message.success('周期创建成功');
+      setCreateModalOpen(false);
+      form.resetFields();
+      loadCycles();
     } catch (err: unknown) {
       if (err instanceof Error) message.error('创建失败: ' + err.message);
     }
@@ -187,13 +178,9 @@ const CycleOverview: React.FC = () => {
   const handleTransition = useCallback(async (cycleId: number, targetStatus: CycleStatus) => {
     setTransitioning(cycleId);
     try {
-      const res = await transitionCycle(cycleId, targetStatus);
-      if (res.code === 200) {
-        message.success(`状态已变更为 ${STATUS_CONFIG[targetStatus].label}`);
-        loadCycles();
-      } else {
-        setTransitionError(res.message || '状态流转失败');
-      }
+      await transitionCycle(cycleId, targetStatus);
+      message.success(`状态已变更为 ${STATUS_CONFIG[targetStatus].label}`);
+      loadCycles();
     } catch (err: unknown) {
       setTransitionError(err instanceof Error ? err.message : '状态流转失败');
     } finally {
@@ -209,13 +196,9 @@ const CycleOverview: React.FC = () => {
   // ── 删除周期（useCallback 确保 memo 比较有效） ──
   const handleDelete = useCallback(async (cycleId: number) => {
     try {
-      const res = await deleteCycle(cycleId);
-      if (res.code === 200) {
-        message.success('周期已删除');
-        loadCycles();
-      } else {
-        message.error(res.message || '删除失败');
-      }
+      await deleteCycle(cycleId);
+      message.success('周期已删除');
+      loadCycles();
     } catch (err: unknown) {
       message.error('删除失败: ' + (err instanceof Error ? err.message : '未知错误'));
     }

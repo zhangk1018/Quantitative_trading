@@ -33,3 +33,17 @@
 - 日期：2026-08-18
 - 负责角色：量量
 - 修改范围：调查后台进程频繁停止根因（macOS jetsam 内存压力杀死进程），修复方案：SnapshotService OHLCV 延迟加载（稳定内存 1.6GB→167MB，降低87%）、内存优化（batch_size/GC/消除中间列表）、双重守护机制（watchdog + launchd 健康检查）、清理废弃脚本和临时文件
+
+## 会话信息
+- 日期：2026-08-18
+- 负责角色：方舟
+- 修改范围：PDCA 二期闭环 Check+Act 模块前端实现（CheckModule/ActModule 组件、types.ts/api.ts、PDCADashboard Tab）；**越界**创建了 CheckReport/ActRecord 后端 ORM 模型和 API 路由，已开协作单 [17.0] 请量量复核
+
+[方舟→量量 2026-08-18 07:30] 协作单 [17.0-CHECK-ACT-BACKEND-REVIEW-20260818] 状态变更: NEW（方舟越界创建 PDCA Check+Act 后端代码，涉及 6 个文件：check_report.py/act_record.py ORM 模型 + CRUD 路由，请量量复核确认）
+[量量→方舟 2026-08-18 08:28] 协作单 [17.0-CHECK-ACT-BACKEND-REVIEW-20260818] 状态变更: NEW→VERIFY（量量复核通过：ORM 模型与 DDL 一致 ✅、API 代码规范 ✅、6 个端点 curl 自测全部通过 ✅，测试数据已清理。请方舟前端验证联调。）
+[方舟 2026-08-18 13:25] 协作单 [17.0-CHECK-ACT-BACKEND-REVIEW-20260818] 状态变更: VERIFY→CLOSED（方舟前端验证通过：curl 验证全部 6 个端点正常、CheckModule/ActModule 联调通过、测试数据全流程验证通过）
+
+## 会话信息
+- 日期：2026-08-18
+- 负责角色：方舟
+- 修改范围：API 架构重构（按业务领域拆分 13 个 service 文件、响应拦截器自动解包、CRUD 泛型工厂）、类型分层（constants.ts 分离 LABELS/OPTIONS）、更新 18 个调用方移除 res.code 检查

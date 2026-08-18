@@ -22,8 +22,10 @@ import type { TradingRecord, ExitSlip } from '../types';
 import {
   LONG_SHORT_LABELS, TRADE_GRADE_LABELS, EXIT_REASON_LABELS,
   INSTRUMENT_TYPE_LABELS,
-} from '../types';
-import { fetchRecords, deleteRecord, exportRecords, downloadExcel, fetchExitSlips } from '../api';
+} from '../constants';
+import { fetchRecords, fetchExitSlips } from '../services/record';
+import { exportRecords, downloadExcel } from '../services/import';
+import { recordApi } from '../services/record';
 import TradingRecordForm from './TradingRecordForm';
 
 const { RangePicker } = DatePicker;
@@ -62,13 +64,9 @@ const TradingRecordTable: React.FC = () => {
       params.entry_date_to = dr[1].format('YYYY-MM-DD');
     }
     try {
-      const res = await fetchRecords(params);
-      if (res.code === 200) {
-        setRecords(res.data.items || []);
-        setTotal(res.data.total);
-      } else {
-        message.error(res.message || '加载失败');
-      }
+      const result = await fetchRecords(params);
+      setRecords(result.items || []);
+      setTotal(result.total);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '网络错误，请稍后重试');
     } finally {
@@ -94,17 +92,10 @@ const TradingRecordTable: React.FC = () => {
     setRecords((prev) => prev.filter((r) => r.id !== id));
     setTotal((prev) => prev - 1);
     try {
-      const res = await deleteRecord(id);
-      if (res.code !== 200) {
-        // 回滚
-        setRecords(prevRecords);
-        setTotal(prevTotal);
-        message.error(res.message || '删除失败');
-      } else {
-        message.success('已删除');
-        // 删除成功后刷新后端数据，确保分页和排序一致
-        loadDataRef.current(false);
-      }
+      await recordApi.delete(id);
+      message.success('已删除');
+      // 删除成功后刷新后端数据，确保分页和排序一致
+      loadDataRef.current(false);
     } catch (err) {
       setRecords(prevRecords);
       setTotal(prevTotal);
@@ -121,12 +112,8 @@ const TradingRecordTable: React.FC = () => {
     if (expanded && !exitSlipsMap[record.id] && !loadingRecords[record.id]) {
       setLoadingRecords(prev => ({ ...prev, [record.id]: true }));
       try {
-        const res = await fetchExitSlips(record.id);
-        if (res.code === 200) {
-          setExitSlipsMap(prev => ({ ...prev, [record.id]: res.data.items || [] }));
-        } else {
-          message.warning(res.message || '加载卖出记录失败');
-        }
+        const slips = await fetchExitSlips(record.id);
+        setExitSlipsMap(prev => ({ ...prev, [record.id]: slips }));
       } catch {
         message.warning('加载卖出记录失败，请检查网络连接');
       } finally {
