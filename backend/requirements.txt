@@ -16,6 +16,7 @@ uvicorn[standard]>=0.23.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 saffier>=0.3.0
+python-jose[cryptography]>=3.3.0
 
 # 数据处理
 scipy>=1.11.0

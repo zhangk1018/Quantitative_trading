@@ -5,7 +5,7 @@ import os
 import sys
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -23,8 +23,8 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(_project_root, ".env"))
 
 from core.api.config import settings
-from core.api.dependencies import init_pg_pool, close_pg_pool, get_loader, get_screener_service, get_snapshot_service
-from core.api.router import meta, stocks, kline, signals, monitor, watchlist, snapshot
+from core.api.dependencies import init_pg_pool, close_pg_pool, get_loader, get_screener_service, get_snapshot_service, get_current_user
+from core.api.router import auth, meta, stocks, kline, signals, monitor, watchlist, snapshot
 from core.api.router.pdca import router as pdca_router
 
 logger = logging.getLogger(__name__)
@@ -84,15 +84,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 认证路由（免认证：登录/登出/探活）
+app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
+
+# 业务路由统一挂载认证依赖（单密钥门禁 + Cookie 会话）
+_auth_deps = [Depends(get_current_user)]
+
 # 路由注册
-app.include_router(meta.router, prefix="/api/meta", tags=["元数据"])
-app.include_router(stocks.router, prefix="/api/stocks", tags=["股票筛选"])
-app.include_router(kline.router, prefix="/api/kline", tags=["K线数据"])
-app.include_router(signals.router, prefix="/api/signals", tags=["买卖信号"])
-app.include_router(monitor.router, prefix="/api", tags=["数据监控"])
-app.include_router(watchlist.router, prefix="/api/watchlist", tags=["自选股管理"])
-app.include_router(snapshot.router, prefix="/api/snapshot", tags=["全量快照"])
-app.include_router(pdca_router)
+app.include_router(meta.router, prefix="/api/meta", tags=["元数据"], dependencies=_auth_deps)
+app.include_router(stocks.router, prefix="/api/stocks", tags=["股票筛选"], dependencies=_auth_deps)
+app.include_router(kline.router, prefix="/api/kline", tags=["K线数据"], dependencies=_auth_deps)
+app.include_router(signals.router, prefix="/api/signals", tags=["买卖信号"], dependencies=_auth_deps)
+app.include_router(monitor.router, prefix="/api", tags=["数据监控"], dependencies=_auth_deps)
+app.include_router(watchlist.router, prefix="/api/watchlist", tags=["自选股管理"], dependencies=_auth_deps)
+app.include_router(snapshot.router, prefix="/api/snapshot", tags=["全量快照"], dependencies=_auth_deps)
+app.include_router(pdca_router, dependencies=_auth_deps)
 
 # 挂载静态资源
 app.mount("/static", StaticFiles(directory=_STATIC_DIR, html=True), name="static")

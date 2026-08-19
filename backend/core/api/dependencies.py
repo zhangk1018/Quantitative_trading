@@ -12,8 +12,11 @@ from functools import lru_cache
 from typing import Annotated, Generator, Optional
 import psycopg2
 from psycopg2 import pool as pg_pool
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
+from jose import JWTError
 from collector.db.loader import DataLoader
+from core.api.config import settings
+from core.api.security import decode_session_token
 from core.service.snapshot_service import SnapshotService
 from core.service.screener_service import ScreenerService
 
@@ -211,3 +214,23 @@ def validate_board(board: Optional[str]) -> Optional[str]:
     if b not in VALID_BOARDS:
         raise HTTPException(400, f"板块仅支持：{','.join(VALID_BOARDS)}")
     return b
+
+# ============================================
+# 认证依赖（单密钥门禁 + HttpOnly Cookie）
+# ============================================
+def get_current_user(request: Request) -> None:
+    """校验会话 Cookie，未认证抛 401。
+
+    通过 FastAPI 依赖注入挂载到业务路由；登录/登出/探活接口不挂载。
+    auth_enabled=False 时门禁关闭，直接放行。
+    """
+    if not settings.auth_enabled:
+        return None
+    token = request.cookies.get(settings.auth_cookie_name)
+    if not token:
+        raise HTTPException(status_code=401, detail="未认证，请先登录")
+    try:
+        decode_session_token(token)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="会话无效或已过期")
+    return None

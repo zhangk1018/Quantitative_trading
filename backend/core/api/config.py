@@ -46,6 +46,14 @@ class APISettings(BaseSettings):
         description="日志格式"
     )
     
+    # 认证配置（单密钥门禁 + HttpOnly Cookie）
+    auth_enabled: bool = Field(default=True, description="是否启用认证门禁")
+    access_key: str = Field(default="", description="登录访问密钥（API_ACCESS_KEY）")
+    session_secret: str = Field(default="", description="JWT 签名密钥（API_SESSION_SECRET）")
+    auth_cookie_name: str = Field(default="access_token", description="会话 Cookie 名")
+    auth_cookie_max_age: int = Field(default=2592000, description="会话有效期（秒，默认 30 天）")
+    auth_cookie_secure: bool = Field(default=False, description="Cookie Secure 属性（生产 HTTPS 置 True）")
+    
     class Config:
         env_file = ".env"
         env_prefix = "API_"
