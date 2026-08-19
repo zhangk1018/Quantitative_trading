@@ -1,7 +1,7 @@
 /**
  * behavior-log.ts — 行为 & 违规日志 API
  */
-import client from './client';
+import { apiGet, apiPost, apiPut, apiDelete } from './client';
 import { API_PREFIX } from '@/config/constants';
 import type { BehaviorLog, BehaviorLogFormData, ListData } from '../types';
 
@@ -12,13 +12,13 @@ export async function fetchBehaviorLogs(
   cycleId: number,
   params?: { log_type?: string; violation_type?: string; date_from?: string; date_to?: string },
 ): Promise<BehaviorLog[]> {
-  const { data } = await client.get<ListData<BehaviorLog>>(`${BASE}/behavior-logs/${cycleId}`, { params });
-  return data.items;
+  const result = await apiGet<ListData<BehaviorLog>>(`${BASE}/behavior-logs/${cycleId}`, { params });
+  return result.items;
 }
 
 /** 创建行为日志 */
 export async function createBehaviorLog(payload: BehaviorLogFormData): Promise<{ id: number }> {
-  return client.post(`${BASE}/behavior-logs`, payload);
+  return apiPost<{ id: number }>(`${BASE}/behavior-logs`, payload);
 }
 
 /** 更新行为日志 */
@@ -26,12 +26,12 @@ export async function updateBehaviorLog(
   id: number,
   payload: Partial<Pick<BehaviorLogFormData, 'log_content' | 'violation_type' | 'severity'>>,
 ): Promise<{ id: number }> {
-  return client.put(`${BASE}/behavior-logs/${id}`, payload);
+  return apiPut<{ id: number }>(`${BASE}/behavior-logs/${id}`, payload);
 }
 
 /** 删除行为日志 */
 export async function deleteBehaviorLog(id: number): Promise<void> {
-  await client.delete(`${BASE}/behavior-logs/${id}`);
+  await apiDelete(`${BASE}/behavior-logs/${id}`);
 }
 
 /** 获取行为日志支持的枚举类型值 */
@@ -40,5 +40,5 @@ export async function fetchBehaviorLogTypes(): Promise<{
   violation_types: string[];
   severities: string[];
 }> {
-  return client.get(`${BASE}/behavior-logs/types`);
+  return apiGet(`${BASE}/behavior-logs/types`);
 }

@@ -13,8 +13,9 @@
  *
  * 变更历史：
  * - 2026-08-18: 新增，替代 api.ts 中大量重复的 CRUD 函数
+ * - 2026-08-19: 使用 apiGet/apiPost 消除 as unknown as 断言；listAll 委托 list 消除重复
  */
-import client from './client';
+import { apiGet, apiPost, apiPut, apiDelete } from './client';
 import { API_PREFIX } from '@/config/constants';
 
 const BASE = API_PREFIX;
@@ -72,30 +73,29 @@ export function createEntityService<T, TForm = T>(
 ): EntityService<T, TForm> {
   return {
     async list(params) {
-      const { data } = await client.get(`${BASE}${endpoint}`, { params });
-      return (data as { items: T[] }).items;
+      const result = await apiGet<{ items: T[] }>(`${BASE}${endpoint}`, { params });
+      return result.items;
     },
 
-    async listAll(params) {
-      const { data } = await client.get(`${BASE}${endpoint}`, { params });
-      return (data as { items: T[] }).items;
+    listAll(params) {
+      return this.list(params);
     },
 
     async get(id) {
-      return client.get(`${BASE}${endpoint}/${id}`);
+      return apiGet<T>(`${BASE}${endpoint}/${id}`);
     },
 
     async create(payload) {
-      const result = await client.post(`${BASE}${endpoint}`, payload);
-      return (result as unknown as Record<string, number>)[idField];
+      const result = await apiPost<Record<string, number>>(`${BASE}${endpoint}`, payload);
+      return result[idField];
     },
 
     async update(id, payload) {
-      await client.put(`${BASE}${endpoint}/${id}`, payload);
+      await apiPut(`${BASE}${endpoint}/${id}`, payload);
     },
 
     async delete(id) {
-      await client.delete(`${BASE}${endpoint}/${id}`);
+      await apiDelete(`${BASE}${endpoint}/${id}`);
     },
   };
 }
@@ -106,8 +106,8 @@ export function createEntityService<T, TForm = T>(
 export function createReadonlyService<T>(endpoint: string) {
   return {
     async list(params?: ListParams) {
-      const { data } = await client.get(`${BASE}${endpoint}`, { params });
-      return (data as { items: T[] }).items;
+      const result = await apiGet<{ items: T[] }>(`${BASE}${endpoint}`, { params });
+      return result.items;
     },
   };
 }

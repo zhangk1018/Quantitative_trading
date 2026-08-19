@@ -158,7 +158,7 @@ export interface StockDetailInfo {
 }
 
 // ==================== 3. API 封装 ====================
-const api = axios.create({ baseURL: '/api' });
+const api = axios.create({ baseURL: '/api', withCredentials: true });
 
 export const fetchStocks = async (
   params: StockListParams = {},

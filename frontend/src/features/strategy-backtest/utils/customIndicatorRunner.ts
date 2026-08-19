@@ -35,6 +35,8 @@ export interface ScriptResult {
 const BATCH_SIZE = 100;
 // 默认超时（毫秒）
 const DEFAULT_TIMEOUT = 30_000;
+// Worker 单次返回的最大元素数（防止恶意脚本产出巨量数据撑爆内存）
+const MAX_OUTPUT_ELEMENTS = 500_000;
 
 export class CustomIndicatorRunner {
   private worker: Worker | null = null;
@@ -211,18 +213,17 @@ export class CustomIndicatorRunner {
       const errors: string[] = [];
       let batchId = `batch_${this.batchIdCounter++}`;
 
-      // 全局最大天数（所有股票），确保跨批次填充长度一致
-      let globalMaxDays = 0;
-      for (const code of stockCodes) {
-        const bars = allOhlcv.get(code);
-        if (bars && bars.length > globalMaxDays) {
-          globalMaxDays = bars.length;
-        }
-      }
-
+      // 每批按自身最大天数补齐，避免全量全局最大天数导致内存膨胀
       for (let bi = 0; bi < stockBatches.length; bi++) {
         const batchCodes = stockBatches[bi];
-        const batchData = this.prepareBatchData(batchCodes, allOhlcv, globalMaxDays);
+        let batchMaxDays = 0;
+        for (const code of batchCodes) {
+          const bars = allOhlcv.get(code);
+          if (bars && bars.length > batchMaxDays) {
+            batchMaxDays = bars.length;
+          }
+        }
+        const batchData = this.prepareBatchData(batchCodes, allOhlcv, batchMaxDays);
         const daysCount = batchData.close[0]?.length ?? 0;
 
         const scriptResult = await this.executeSingleBatch(
@@ -408,6 +409,14 @@ export class CustomIndicatorRunner {
           if (result?.error) {
             resolve({ error: result.error });
           } else if (result?.values) {
+            // S2: 校验输出规模（全批次元素总数），防止恶意脚本产出巨量数据撑爆内存
+            const totalElements = result.values.reduce((sum: number, arr: unknown) => sum + (Array.isArray(arr) ? arr.length : 1), 0);
+            if (totalElements > MAX_OUTPUT_ELEMENTS) {
+              this.cleanup();
+              this.init().catch(() => {});
+              resolve({ error: `脚本输出超出上限（${totalElements} > ${MAX_OUTPUT_ELEMENTS}），Worker 已重建` });
+              return;
+            }
             resolve({ values: result.values });
           } else {
             resolve({ error: '脚本未返回有效结果' });

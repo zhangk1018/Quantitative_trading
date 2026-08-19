@@ -1,5 +1,5 @@
-import React, { Suspense } from 'react';
-import { createBrowserRouter, Navigate } from 'react-router-dom';
+import React, { Suspense, useEffect, useState } from 'react';
+import { createBrowserRouter, Navigate, useLocation } from 'react-router-dom';
 import AppLayout from './layout/AppLayout';
 
 // ✅ 懒加载组件
@@ -10,6 +10,7 @@ const Watchlist = React.lazy(() => import('@/features/watchlist'));
 const Config = React.lazy(() => import('@/features/config'));
 const StrategyBacktest = React.lazy(() => import('@/features/strategy-backtest'));
 const PDCA = React.lazy(() => import('@/features/pdca'));
+const Login = React.lazy(() => import('@/features/auth/Login'));
 
 // 加载中组件
 const Loading = () => (
@@ -18,10 +19,55 @@ const Loading = () => (
   </div>
 );
 
+// ── 路由守卫：检查认证状态，未认证则重定向到 /login ──
+const AuthGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [status, setStatus] = useState<'loading' | 'authenticated' | 'unauthenticated'>('loading');
+  const location = useLocation();
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const res = await fetch('/api/auth/verify', { credentials: 'include' });
+        const body = await res.json();
+        if (!cancelled) {
+          setStatus(body?.data?.authenticated ? 'authenticated' : 'unauthenticated');
+        }
+      } catch {
+        if (!cancelled) setStatus('unauthenticated');
+      }
+    };
+    check();
+    return () => { cancelled = true; };
+  }, [location.pathname]);
+
+  if (status === 'loading') {
+    return <Loading />;
+  }
+
+  if (status === 'unauthenticated') {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <>{children}</>;
+};
+
 export const router = createBrowserRouter([
   {
+    path: '/login',
+    element: (
+      <Suspense fallback={<Loading />}>
+        <Login />
+      </Suspense>
+    ),
+  },
+  {
     path: '/',
-    element: <AppLayout />,
+    element: (
+      <AuthGuard>
+        <AppLayout />
+      </AuthGuard>
+    ),
     children: [
       { index: true, element: <Navigate to="/picker" replace /> },
       { 

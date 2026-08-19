@@ -8,7 +8,7 @@
  * - 绑定下一周期目标
  * - 冻结经验标记
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Select, Spin, Empty, message, Tag, Input, Space, Typography,
   List, Modal, Form, Switch, Descriptions, Popconfirm,
@@ -19,16 +19,20 @@ import {
 } from '@ant-design/icons';
 import type { ActRecord, ActRecordFormData } from '../types';
 import { fetchActRecords, createActRecord, updateActRecord, deleteActRecord } from '../services/act-record';
+import { extractErrorMessage } from '../services/client';
 import TagInput from './TagInput';
 import { usePDCACycle } from '../hooks/usePDCACycle';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
 
+// 模块级常量，保证引用稳定，避免内联对象字面量导致 usePDCACycle 依赖变化引发无限循环
+const ACT_STATUS_ORDER = { ACT: 0, CHECK: 1, DO: 2, PLAN: 3 };
+
 const ActModule: React.FC = () => {
   const {
     cycles, loading, selectedCycleId, selectedCycle, setSelectedCycleId, refresh: refreshCycles,
-  } = usePDCACycle({ statusOrder: { ACT: 0, CHECK: 1, DO: 2, PLAN: 3 } });
+  } = usePDCACycle({ statusOrder: ACT_STATUS_ORDER });
 
   const [records, setRecords] = useState<ActRecord[]>([]);
   const [recordsLoading, setRecordsLoading] = useState(false);
@@ -39,24 +43,35 @@ const ActModule: React.FC = () => {
   const [editingRecord, setEditingRecord] = useState<ActRecord | null>(null);
   const [editForm] = Form.useForm();
 
+  // 竞态防护：标记当前请求是否已被取消
+  const fetchingRef = useRef(false);
+
   // 选择周期时加载记录
   useEffect(() => {
     if (!selectedCycleId) {
       setRecords([]);
       return;
     }
+
+    fetchingRef.current = true;
     const loadRecords = async () => {
       setRecordsLoading(true);
       try {
         const items = await fetchActRecords(selectedCycleId);
+        if (!fetchingRef.current) return;  // 请求已过期，忽略结果
         setRecords(items);
       } catch (err: unknown) {
-        message.error('加载改进记录失败: ' + (err instanceof Error ? err.message : ''));
+        if (!fetchingRef.current) return;  // 请求已过期，忽略错误
+        message.error('加载改进记录失败: ' + extractErrorMessage(err));
       } finally {
-        setRecordsLoading(false);
+        if (fetchingRef.current) setRecordsLoading(false);
       }
     };
     loadRecords();
+
+    return () => {
+      fetchingRef.current = false;  // 清理时标记为过期
+    };
   }, [selectedCycleId]);
 
   // 打开新建弹窗
@@ -77,20 +92,20 @@ const ActModule: React.FC = () => {
     setEditModalOpen(true);
   };
 
-  // 保存记录（乐观更新）
+  // 保存记录（带快照回滚的乐观更新）
   const handleSave = async () => {
     try {
       const values = await editForm.validateFields();
       setSaving(true);
 
       if (editingRecord) {
-        await updateActRecord(editingRecord.id, values);
-        message.success('改进记录已更新');
-        setEditModalOpen(false);
-        // 乐观更新：直接修改本地记录
+        // 乐观更新：立即在本地应用变更（接口失败时回滚）
         setRecords((prev) =>
           prev.map((r) => (r.id === editingRecord.id ? { ...r, ...values } : r)),
         );
+        await updateActRecord(editingRecord.id, values);
+        message.success('改进记录已更新');
+        setEditModalOpen(false);
       } else {
         await createActRecord(values as ActRecordFormData);
         message.success('改进记录已创建');
@@ -100,21 +115,39 @@ const ActModule: React.FC = () => {
         setRecords(items);
       }
     } catch (err: unknown) {
-      if (err instanceof Error) message.error('保存失败: ' + err.message);
+      // Ant Design 表单验证错误：不显示全局错误提示，表单内已展示红色提示
+      if (err && typeof err === 'object' && 'errorFields' in err) {
+        return;
+      }
+      // 后端请求失败：回滚乐观更新
+      if (editingRecord) {
+        // 回滚由 setRecords 引发的本地变更（重新拉取全量数据确保一致性）
+        try {
+          const items = await fetchActRecords(selectedCycleId!);
+          setRecords(items);
+        } catch {
+          // 回滚拉取失败时，保持当前状态不变
+        }
+      }
+      message.error('保存失败: ' + extractErrorMessage(err));
     } finally {
       setSaving(false);
     }
   };
 
-  // 删除记录（乐观更新）
+  // 删除记录（带快照回滚的乐观更新）
   const handleDelete = async (recordId: number) => {
+    // 保存当前快照用于回滚
+    const snapshot = records;
+    // 乐观更新：立即从本地删除
+    setRecords((prev) => prev.filter((r) => r.id !== recordId));
     try {
       await deleteActRecord(recordId);
       message.success('改进记录已删除');
-      // 乐观更新：直接从本地删除
-      setRecords((prev) => prev.filter((r) => r.id !== recordId));
     } catch (err: unknown) {
-      message.error('删除失败: ' + (err instanceof Error ? err.message : ''));
+      // 接口失败 → 从快照恢复
+      setRecords(snapshot);
+      message.error('删除失败: ' + extractErrorMessage(err));
     }
   };
 

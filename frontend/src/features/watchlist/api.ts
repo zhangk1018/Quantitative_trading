@@ -16,7 +16,7 @@ interface ApiResponse<T> {
   data: T;
 }
 
-const api = axios.create({ baseURL: '/api' });
+const api = axios.create({ baseURL: '/api', withCredentials: true });
 
 const unwrap = <T>(response: ApiResponse<T>): T => {
   if (response.data !== undefined) return response.data;

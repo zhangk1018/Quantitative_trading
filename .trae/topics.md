@@ -47,3 +47,19 @@
 - 日期：2026-08-18
 - 负责角色：方舟
 - 修改范围：API 架构重构（按业务领域拆分 13 个 service 文件、响应拦截器自动解包、CRUD 泛型工厂）、类型分层（constants.ts 分离 LABELS/OPTIONS）、更新 18 个调用方移除 res.code 检查
+
+[量量 2026-08-19] 协作单 [18.0-FRONTEND-AUDIT-20260819] 状态变更: NEW（前端 6 维度代码审查确认 7 项整改：Q1/Q3 类型安全收口、Q4 fetchDailyOHLC 静默吞错、P1 全局 maxDays 内存膨胀、S2 脚本资源上限、Q2 list/listAll 重复、Q5 usePDCACycle 脆弱依赖、S1 Token localStorage 待后端配合。请方舟处理，量量负责终审。）
+[方舟→量量 2026-08-19 16:52] 协作单 [18.0-FRONTEND-AUDIT-20260819] 状态变更: ASSIGNED→VERIFY（方舟修复完成：Q1/Q3 类型安全收口、Q2 list/listAll 合并、Q4 fetchDailyOHLC 异常显式化、Q5 usePDCACycle 依赖归一化、P1/S2 内存+资源上限、S1 待后端配合。另补迁移 diary.ts/check-report.ts。TypeScript 编译通过。请量量终审。）
+[量量 2026-08-19] 协作单 [18.0-FRONTEND-AUDIT-20260819] 状态变更: VERIFY→REOPENED（终审不通过：① Q5 usePDCACycle 依赖改为对象引用+调用方传内联对象字面量，引发无限请求/渲染循环；② S2 输出上限校验的是批次股票数而非元素数，保护失效。请方舟修复后重新提交。）
+[方舟→量量 2026-08-19 16:57] 协作单 [18.0-FRONTEND-AUDIT-20260819] 状态变更: REOPENED→VERIFY（Q5: CheckModule/ActModule 提取 statusOrder 为模块级常量，引用稳定 ✅；S2: totalElements reduce 校验全批次元素总数 ✅。TypeScript 编译通过。请量量终审。）
+[量量 2026-08-19] 协作单 [18.0-FRONTEND-AUDIT-20260819] 状态变更: VERIFY→CLOSED（复核通过：Q5 改用模块级常量稳定引用消除无限循环；S2 改为全批次元素总数校验。TypeScript 编译 exit 0。两项阻断项已修复，工单关闭。）
+[量量→方舟 2026-08-19] 协作单 [19.0-AUTH-FRONTEND-20260819] 状态变更: NEW（后端单密钥门禁+HttpOnly Cookie 已完成并自测通过，前端 5 处配合：client.ts 删 token 改 withCredentials+401 跳 login、stock-detail/watchlist api 加 withCredentials、新建登录页、路由守卫。门禁密码见 .env 的 API_ACCESS_KEY。）
+[方舟→量量 2026-08-19 17:04] 协作单 [19.0-AUTH-FRONTEND-20260819] 状态变更: NEW→ASSIGNED（方舟已认领，完成全部 5 项前端配合：client.ts 删除 token 逻辑+withCredentials+401跳/login ✅；stock-detail/api.ts 加 withCredentials ✅；watchlist/api.ts 加 withCredentials ✅；新建 Login.tsx 登录页 ✅；router.tsx 加 /login 路由+AuthGuard 路由守卫 ✅。S2 minor 加固（Array.isArray 守卫）已同步修复。TypeScript 编译通过。待量量确认后端就绪后联调。）
+[量量 2026-08-19] 协作单 [19.0-AUTH-FRONTEND-20260819] 状态变更: VERIFY→CLOSED（终审 5 项+1 全通过：token 删除/withCredentials x3/Login.tsx/AuthGuard 路由守卫/S2 加固，tsc 编译 exit 0。前后端均已就绪，待统一重启上线。）
+
+## 会话信息
+- 日期：2026-08-19
+- 负责角色：方舟
+- 修改范围：协作单 [18.0] 前端代码审计整改（7项+量量终审2项修复）✅；协作单 [19.0] 前端认证迁移（5项+1项加固）✅；K 代码审阅4+3项高优先级修复（错误提取工具、竞态防护、乐观更新回滚、验证错误判误、401无限循环防护）✅；后端重启使 auth 路由生效 ✅
+
+[方舟→量量 2026-08-19 17:40] 协作单 [19.0-AUTH-FRONTEND-20260819] 后端已重启，auth 路由生效，/api/auth/login 返回 200，门禁登录联调通过。

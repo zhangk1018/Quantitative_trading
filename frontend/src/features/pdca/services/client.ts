@@ -46,15 +46,7 @@ const client = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: API_TIMEOUT,
   headers: { 'Content-Type': 'application/json' },
-});
-
-// ── 请求拦截器：注入认证头 ──
-client.interceptors.request.use((config) => {
-  const token = localStorage.getItem('auth_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
+  withCredentials: true,  // 认证载体为 HttpOnly Cookie，浏览器自动携带
 });
 
 // ── 响应拦截器：自动解包 + 统一错误处理 ──
@@ -113,9 +105,14 @@ client.interceptors.response.use(
       serverMsg = responseData.message || (typeof responseData.detail === 'string' ? responseData.detail : undefined);
     }
 
-    // 401 时清除失效 token
-    if (status === HTTP_STATUS.UNAUTHORIZED) {
-      localStorage.removeItem('auth_token');
+    // 401 时跳转登录页（HttpOnly Cookie 过期或未认证）
+    // 防护：已在登录页时不再跳转，防止无限循环
+    if (status === HTTP_STATUS.UNAUTHORIZED && window.location.pathname !== '/login') {
+      // 支持按请求配置跳过自动跳转（如登录页面的公共接口调用）
+      const config = error.config as (typeof error.config & { skipAuthRedirect?: boolean }) | undefined;
+      if (!config?.skipAuthRedirect) {
+        window.location.href = '/login';
+      }
     }
 
     throw new NetworkError(
@@ -126,3 +123,47 @@ client.interceptors.response.use(
 );
 
 export default client;
+
+// ============================================================
+// 类型安全的 API 调用包装
+// 拦截器已自动解包 body.data，此处标注正确返回类型
+// ============================================================
+
+/** 类型安全的 GET 请求，返回已解包的数据 */
+export async function apiGet<T>(url: string, config?: any): Promise<T> {
+  return client.get(url, config) as unknown as T;
+}
+
+/** 类型安全的 POST 请求，返回已解包的数据 */
+export async function apiPost<T>(url: string, data?: any, config?: any): Promise<T> {
+  return client.post(url, data, config) as unknown as T;
+}
+
+/** 类型安全的 PUT 请求，返回已解包的数据 */
+export async function apiPut<T>(url: string, data?: any, config?: any): Promise<T> {
+  return client.put(url, data, config) as unknown as T;
+}
+
+/** 类型安全的 DELETE 请求，返回已解包的数据 */
+export async function apiDelete<T>(url: string, config?: any): Promise<T> {
+  return client.delete(url, config) as unknown as T;
+}
+
+// ============================================================
+// 错误提取工具函数
+// 优先级：BusinessError.serverMessage → NetworkError.message → Error.message → 默认文案
+// ============================================================
+
+/** 从 catch 块中提取可读的错误消息 */
+export function extractErrorMessage(err: unknown, fallback = '操作失败'): string {
+  if (err instanceof BusinessError) {
+    return err.serverMessage;
+  }
+  if (err instanceof NetworkError) {
+    return err.message;
+  }
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return fallback;
+}

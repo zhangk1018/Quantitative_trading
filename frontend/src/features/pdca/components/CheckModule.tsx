@@ -8,7 +8,7 @@
  * - 发布/草稿状态切换
  * - 自动统计：从 execution-summary 接口获取周期统计数据
  */
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Card, Button, Select, Spin, Empty, message, Tag, Descriptions, Input, Space, Typography,
 } from 'antd';
@@ -16,22 +16,29 @@ import { SaveOutlined, SendOutlined, AuditOutlined, ReloadOutlined } from '@ant-
 import type { CheckReport, CheckReportFormData } from '../types';
 import { fetchCheckReport, createCheckReport, updateCheckReport } from '../services/check-report';
 import { fetchExecutionSummary } from '../services/cycle';
+import { extractErrorMessage } from '../services/client';
 import type { ExecutionSummary } from '../types';
 import { usePDCACycle } from '../hooks/usePDCACycle';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
 
+// 模块级常量，保证引用稳定，避免内联对象字面量导致 usePDCACycle 依赖变化引发无限循环
+const CHECK_STATUS_ORDER = { CHECK: 0, ACT: 1, DO: 2, PLAN: 3 };
+
 const CheckModule: React.FC = () => {
   const {
     cycles, loading, selectedCycleId, selectedCycle, setSelectedCycleId, refresh: refreshCycles,
-  } = usePDCACycle({ statusOrder: { CHECK: 0, ACT: 1, DO: 2, PLAN: 3 } });
+  } = usePDCACycle({ statusOrder: CHECK_STATUS_ORDER });
 
   const [report, setReport] = useState<CheckReport | null>(null);
   const [execSummary, setExecSummary] = useState<ExecutionSummary | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [reportContent, setReportContent] = useState('');
+
+  // 竞态防护：标记当前请求是否已被取消
+  const fetchingRef = useRef(false);
 
   // 选择周期时加载报告
   useEffect(() => {
@@ -42,6 +49,7 @@ const CheckModule: React.FC = () => {
       return;
     }
 
+    fetchingRef.current = true;
     const loadData = async () => {
       setReportLoading(true);
       try {
@@ -50,6 +58,7 @@ const CheckModule: React.FC = () => {
           fetchExecutionSummary(selectedCycleId).catch(() => null),
         ]);
 
+        if (!fetchingRef.current) return;  // 请求已过期，忽略结果
         if (reportData !== null) {
           setReport(reportData);
           setReportContent(reportData?.report_content || '');
@@ -58,12 +67,17 @@ const CheckModule: React.FC = () => {
           setExecSummary(summaryData);
         }
       } catch (err: unknown) {
-        message.error('加载复盘数据失败: ' + (err instanceof Error ? err.message : ''));
+        if (!fetchingRef.current) return;  // 请求已过期，忽略错误
+        message.error('加载复盘数据失败: ' + extractErrorMessage(err));
       } finally {
-        setReportLoading(false);
+        if (fetchingRef.current) setReportLoading(false);
       }
     };
     loadData();
+
+    return () => {
+      fetchingRef.current = false;  // 清理时标记为过期
+    };
   }, [selectedCycleId]);
 
   // 刷新执行摘要
@@ -73,11 +87,11 @@ const CheckModule: React.FC = () => {
       const data = await fetchExecutionSummary(selectedCycleId);
       setExecSummary(data);
     } catch (err: unknown) {
-      message.error('刷新统计数据失败: ' + (err instanceof Error ? err.message : ''));
+      message.error('刷新统计数据失败: ' + extractErrorMessage(err));
     }
   }, [selectedCycleId]);
 
-  // 保存报告（乐观更新）
+  // 保存报告（带快照回滚的乐观更新）
   const handleSave = async (publish = false) => {
     if (!selectedCycleId) return;
     setSaving(true);
@@ -85,19 +99,19 @@ const CheckModule: React.FC = () => {
       if (report) {
         const payload: Partial<CheckReportFormData> = { report_content: reportContent };
         if (publish) payload.report_status = 'published';
+        // 乐观更新：立即在本地应用变更（接口失败时回滚）
+        setReport((prev) => prev ? { ...prev, ...payload, report_status: publish ? 'published' : prev.report_status } : prev);
         await updateCheckReport(report.id, payload);
         message.success(publish ? '复盘报告已发布' : '复盘报告已保存');
-        // 乐观更新：直接更新本地 report 状态
-        setReport((prev) => prev ? { ...prev, ...payload, report_status: publish ? 'published' : prev.report_status } : prev);
       } else {
         const payload: CheckReportFormData = {
           pdca_cycle_id: selectedCycleId,
           report_content: reportContent,
         };
         if (execSummary) {
-          payload.total_trade_count = execSummary.total_trades;
-          payload.complete_by_plan_count = execSummary.executed_plans;
-          payload.execution_rate = execSummary.fill_rate * 100;
+          payload.total_trade_count = execSummary.total_trades ?? null;
+          payload.complete_by_plan_count = execSummary.executed_plans ?? null;
+          payload.execution_rate = execSummary.fill_rate != null ? execSummary.fill_rate * 100 : null;
         }
         await createCheckReport(payload);
         message.success('复盘报告已创建');
@@ -106,7 +120,16 @@ const CheckModule: React.FC = () => {
         if (reportData !== null) setReport(reportData);
       }
     } catch (err: unknown) {
-      message.error('保存失败: ' + (err instanceof Error ? err.message : ''));
+      // 后端请求失败：回滚乐观更新（重新拉取全量数据确保一致性）
+      if (report) {
+        try {
+          const reportData = await fetchCheckReport(selectedCycleId);
+          if (reportData !== null) setReport(reportData);
+        } catch {
+          // 回滚拉取失败时，保持当前状态不变
+        }
+      }
+      message.error('保存失败: ' + extractErrorMessage(err));
     } finally {
       setSaving(false);
     }
