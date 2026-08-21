@@ -12,6 +12,8 @@ export interface StockItem {
   amount: number | null;
   listed_board: string | null;
   patterns?: string[];
+  /** 自编指标量化评分（客户端计算） */
+  custom_score?: number;
 }
 
 /** API 响应类型 */

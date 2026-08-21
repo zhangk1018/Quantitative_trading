@@ -75,20 +75,11 @@ const TableRow = memo(({ stock, index, selected, onToggle, onDoubleClick }: Tabl
           </span>
         )}
       </td>
-      <td className="px-3 py-2 text-center">
-        {stock.patterns && stock.patterns.length > 0 ? (
-          <div className="flex gap-1 justify-center flex-wrap">
-            {stock.patterns.slice(0, 2).map((p, i) => (
-              <span key={i} className="text-xs px-1.5 py-0.5 bg-color-accent/20 text-color-accent rounded">
-                {p}
-              </span>
-            ))}
-            {stock.patterns.length > 2 && (
-              <span className="text-xs text-text-secondary">+{stock.patterns.length - 2}</span>
-            )}
-          </div>
+      <td className="px-3 py-2 text-right font-mono">
+        {stock.custom_score != null ? (
+          <span className="text-color-accent font-semibold">{stock.custom_score.toFixed(1)}</span>
         ) : (
-          <span className="text-text-secondary text-xs">-</span>
+          <span className="text-text-secondary">-</span>
         )}
       </td>
     </tr>
@@ -268,7 +259,7 @@ export const StockPickerTable: React.FC<StockPickerTableProps> = React.memo(({
             <SortableHeader label="总市值" column="market_cap" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} />
             <SortableHeader label="成交额" column="amount" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} />
             <th className="px-3 py-2 text-center">板块</th>
-            <th className="px-3 py-2 text-center" style={{ minWidth: 100 }}>K线形态</th>
+            <th className="px-3 py-2 text-right" style={{ minWidth: 80 }}>量化评分</th>
           </tr>
         </thead>
         <tbody>

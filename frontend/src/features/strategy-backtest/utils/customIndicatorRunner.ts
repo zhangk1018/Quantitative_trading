@@ -41,6 +41,7 @@ const MAX_OUTPUT_ELEMENTS = 500_000;
 export class CustomIndicatorRunner {
   private worker: Worker | null = null;
   private ready = false;
+  private initPromise: Promise<void> | null = null;
   private batchIdCounter = 0;
 
   /** Worker 是否已就绪 */
@@ -50,13 +51,18 @@ export class CustomIndicatorRunner {
 
   /** 初始化 Worker（加载 Pyodide） */
   async init(): Promise<void> {
-    if (this.worker) return;
+    if (this.ready) return;
+    if (this.initPromise) return this.initPromise;
 
-    return new Promise((resolve, reject) => {
+    this.initPromise = new Promise<void>((resolve, reject) => {
       try {
-        this.worker = new Worker('/pyodide-worker.js', { type: 'classic' });
+        if (!this.worker) {
+          this.worker = new Worker('/pyodide-worker.js', { type: 'classic' });
+        }
+
         const timeout = setTimeout(() => {
           this.cleanup();
+          this.initPromise = null;
           reject(new Error('Pyodide Worker 初始化超时（60s），请检查网络连接'));
         }, 60_000);
 
@@ -65,10 +71,12 @@ export class CustomIndicatorRunner {
           if (type === 'ready') {
             clearTimeout(timeout);
             this.ready = true;
+            this.initPromise = null;
             resolve();
           } else if (type === 'error') {
             clearTimeout(timeout);
             this.cleanup();
+            this.initPromise = null;
             reject(new Error(error || 'Pyodide Worker 初始化失败'));
           }
         };
@@ -76,13 +84,17 @@ export class CustomIndicatorRunner {
         this.worker.onerror = (err) => {
           clearTimeout(timeout);
           this.cleanup();
+          this.initPromise = null;
           reject(new Error('Worker 加载错误: ' + err.message));
         };
       } catch (err) {
         this.cleanup();
+        this.initPromise = null;
         reject(err);
       }
     });
+
+    return this.initPromise;
   }
 
   /** 获取初始化进度（用于 UI 展示） */
@@ -448,6 +460,7 @@ export class CustomIndicatorRunner {
       this.worker = null;
     }
     this.ready = false;
+    this.initPromise = null;
   }
 
   private chunkArray<T>(arr: T[], size: number): T[][] {

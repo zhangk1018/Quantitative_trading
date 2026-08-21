@@ -512,7 +512,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
         setProgress(Math.round(computeBaseProgress));
         setProgressText('正在计算自编指标...');
 
-        const passedCodes = await service.computeAndFilter(
+        const { passedCodes, scores } = await service.computeAndFilter(
           customConditions,
           codes,
           slicedOhlcv,
@@ -531,7 +531,12 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
         cache.customHash = customHash;
 
         const resultItems = sortItems(
-          candidates.filter((c) => passedCodes.has(c.stock_code)),
+          candidates
+            .filter((c) => passedCodes.has(c.stock_code))
+            .map((c) => ({
+              ...c,
+              custom_score: scores.get(c.stock_code),
+            })),
           sortByParam,
           sortAscParam,
         );

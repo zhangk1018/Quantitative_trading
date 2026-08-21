@@ -175,14 +175,14 @@ function ensureTimeOrder(ohlcv: OHLCVArray[], strict = false): OHLCVArray[] {
  * 检测所有形态（纯函数）
  * @param ohlcv - OHLCV 数组（建议按时间升序，若非升序则会自动排序并警告）
  * @param config - 检测配置（覆盖默认值，非法值将自动修正）
- * @param targetPatterns - 仅检测指定形态（可选，用于提前终止）
+ * @param _targetPatterns - 仅检测指定形态（可选，用于提前终止）
  * @returns 包含命中形态和对应索引的结果
  * @throws {ChartError} 当入参严重无效时（如非数组、元素不足）
  */
 export function detectAllPatterns(
   ohlcv: OHLCVArray[],
   config: Partial<typeof DETECTION_CONFIG> = {},
-  targetPatterns?: PatternType[],
+  _targetPatterns?: PatternType[],
 ): PatternDetectionResult {
   // 1. 入参基础校验
   if (!Array.isArray(ohlcv) || ohlcv.length < 2) {
@@ -224,7 +224,6 @@ export function detectAllPatterns(
     },
   };
 
-  const targetSet = targetPatterns ? new Set(targetPatterns) : null;
   const hitSet = new Set<PatternType>();
 
   // 6. 遍历预计算数组

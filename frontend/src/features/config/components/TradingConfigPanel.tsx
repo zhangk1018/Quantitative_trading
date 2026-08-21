@@ -12,7 +12,7 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import {
-  InputNumber, Button, App, Space, Typography, Card, Switch, Skeleton, Input, Modal,
+  InputNumber, Button, App, Space, Typography, Card, Switch, Input, Modal,
 } from 'antd';
 import { SaveOutlined } from '@ant-design/icons';
 import { fetchConfig, updateConfig } from '@/features/pdca/api';
@@ -31,7 +31,6 @@ const DEFAULTS = {
 const TradingConfigPanel: React.FC = () => {
   const { message } = App.useApp();
   const [configs, setConfigs] = useState<SystemConfigItem[]>([]);
-  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [modifyReason, setModifyReason] = useState('');
@@ -49,26 +48,20 @@ const TradingConfigPanel: React.FC = () => {
   const [stopLossHardLimitValue, setStopLossHardLimitValue] = useState<number | null>(null);
 
   const loadConfig = useCallback(async () => {
-    setLoading(true);
     try {
-      const res = await fetchConfig();
-      if (res.code === 200) {
-        const items = Array.isArray(res.data) ? res.data : (res.data?.items || []);
-        setConfigs(items);
-        // 同步本地编辑值（数据库存储 0.02=2% → 前端显示 2）
-        const getNum = (key: string) => {
-          const val = items.find((c: { config_key: string }) => c.config_key === key)?.numeric_value ?? null;
-          return val !== null ? val * 100 : null;
-        };
-        setRiskPerTradeValue(getNum('risk_per_trade'));
-        setRiskPerMonthValue(getNum('risk_per_month'));
-        setMaxPositionFundsValue(getNum('max_position_funds'));
-        setStopLossHardLimitValue(getNum('stop_loss_hard_limit'));
-      }
+      const items = await fetchConfig();
+      setConfigs(items);
+      // 同步本地编辑值（数据库存储 0.02=2% → 前端显示 2）
+      const getNum = (key: string) => {
+        const val = items.find((c: { config_key: string }) => c.config_key === key)?.numeric_value ?? null;
+        return val !== null ? val * 100 : null;
+      };
+      setRiskPerTradeValue(getNum('risk_per_trade'));
+      setRiskPerMonthValue(getNum('risk_per_month'));
+      setMaxPositionFundsValue(getNum('max_position_funds'));
+      setStopLossHardLimitValue(getNum('stop_loss_hard_limit'));
     } catch (err) {
       message.error(err instanceof Error ? err.message : '加载配置失败');
-    } finally {
-      setLoading(false);
     }
   }, [message]);
 
@@ -88,17 +81,13 @@ const TradingConfigPanel: React.FC = () => {
     setSavingKey(configKey);
     setReasonModalVisible(false);
     try {
-      const res = await updateConfig(configKey, {
+      await updateConfig(configKey, {
         numeric_value: numericValue ?? undefined,
         bool_value: boolValue ?? undefined,
         modify_reason: reason,
       });
-      if (res.code === 200) {
-        message.success('配置已保存');
-        loadConfig();
-      } else {
-        message.error(res.message || '保存失败');
-      }
+      message.success('配置已保存');
+      loadConfig();
     } catch (err) {
       message.error(err instanceof Error ? err.message : '保存失败，请检查网络连接');
     } finally {

@@ -269,7 +269,7 @@ export class CustomIndicatorService {
    * @param ohlcvMap OHLCV 数据
    * @param signal 取消信号
    * @param onProgress 进度回调
-   * @returns 通过筛选的股票代码集合
+   * @returns 通过筛选的股票代码集合及每只股票的最后有效评分
    */
   async computeAndFilter(
     conditions: CustomCondition[],
@@ -277,14 +277,17 @@ export class CustomIndicatorService {
     ohlcvMap: Map<string, number[][]>,
     signal?: AbortSignal,
     onProgress?: (progress: ComputeProgress) => void,
-  ): Promise<Set<string>> {
+  ): Promise<{ passedCodes: Set<string>; scores: Map<string, number> }> {
+    const emptyResult = { passedCodes: new Set<string>(), scores: new Map<string, number>() };
     if (conditions.length === 0 || stockCodes.length === 0) {
-      return new Set(stockCodes);
+      emptyResult.passedCodes = new Set(stockCodes);
+      return emptyResult;
     }
 
     const validScripts = conditions.filter((c) => c.formula && c.formula.trim());
     if (validScripts.length === 0) {
-      return new Set(stockCodes);
+      emptyResult.passedCodes = new Set(stockCodes);
+      return emptyResult;
     }
 
     const runner = getCustomIndicatorRunner();
@@ -293,6 +296,8 @@ export class CustomIndicatorService {
     }
 
     let passed = new Set(stockCodes);
+    // 全局评分：每只股票的最后有效评分
+    const scores = new Map<string, number>();
 
     for (let idx = 0; idx < validScripts.length; idx++) {
       if (signal?.aborted) throw new Error('已取消');
@@ -329,6 +334,8 @@ export class CustomIndicatorService {
         const values = scriptResult.values.get(code);
         const lastVal = this.getLastValidValue(values);
         if (lastVal === null) continue;
+        // 记录评分（后续指标覆盖前面的评分）
+        scores.set(code, lastVal);
         if (meetsThreshold(lastVal, cond.operator, cond.threshold)) {
           nextPassed.add(code);
         }
@@ -348,7 +355,7 @@ export class CustomIndicatorService {
       message: '自编指标计算完成',
     });
 
-    return passed;
+    return { passedCodes: passed, scores };
   }
 
   /**
@@ -397,7 +404,7 @@ export class CustomIndicatorService {
         }),
       );
 
-      const passedCodes = await this.computeAndFilter(
+      const { passedCodes } = await this.computeAndFilter(
         conditions,
         stockCodes,
         ohlcvMap,

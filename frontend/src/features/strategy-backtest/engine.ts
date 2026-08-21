@@ -507,6 +507,65 @@ export function evaluateFilter(
   }
 }
 
+// ==================== 过滤器评分（用于动态评分检查） ====================
+
+/**
+ * 统计 AST 中叶子节点的总数（用于计算评分阈值）
+ * 叶子节点包括：range, pattern, kline, market, custom_indicator
+ */
+function countLeafConditions(node: FilterNode): number {
+  switch (node.type) {
+    case 'and':
+    case 'or':
+      return node.children.reduce((sum, c) => sum + countLeafConditions(c), 0);
+    case 'not':
+      return countLeafConditions(node.child);
+    default:
+      return 1;
+  }
+}
+
+/**
+ * AST 过滤器评分（返回满足条件的个数，用于动态评分检查）
+ *
+ * 和 evaluateFilter 的区别：
+ * - evaluateFilter 返回布尔值（AND 全部满足才 true）
+ * - evaluateFilterScore 返回满足条件的个数（0~N），允许阈值比较
+ *
+ * 评分规则：
+ * - and：子节点得分之和
+ * - or：子节点得分的最大值
+ * - not：子节点不满足时得1分，满足时得0分
+ * - 叶子节点（range/pattern/kline/market/custom_indicator）：满足得1分，不满足得0分
+ */
+export function evaluateFilterScore(
+  node: FilterNode,
+  snapshot: StockSnapshot,
+  bars: number[][],
+  cache: IndicatorCache,
+  idx: number,
+  /** 自编指标预计算值: Map<scriptId, Map<stockCode, values[]>> */
+  customIndicatorValues?: Map<string, Map<string, (number | null)[]>>,
+): number {
+  switch (node.type) {
+    case 'and':
+      return node.children.reduce((sum, c) => sum + evaluateFilterScore(c, snapshot, bars, cache, idx, customIndicatorValues), 0);
+    case 'or':
+      return Math.max(0, ...node.children.map(c => evaluateFilterScore(c, snapshot, bars, cache, idx, customIndicatorValues)));
+    case 'not':
+      // 用布尔值判定：子节点满足 → not 得0分；子节点不满足 → not 得1分
+      return evaluateFilter(node.child, snapshot, bars, cache, idx, customIndicatorValues) ? 0 : 1;
+    case 'range':
+    case 'pattern':
+    case 'kline':
+    case 'market':
+    case 'custom_indicator':
+      return evaluateFilter(node, snapshot, bars, cache, idx, customIndicatorValues) ? 1 : 0;
+    default:
+      return 0;
+  }
+}
+
 // ==================== 仓位计算 ====================
 
 /**
@@ -984,25 +1043,26 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
         if (!tpState || tpState.phase === 'closed') continue;
 
         const lp = layeredTPParams ?? {
-          initialStopLossPct: -0.08,
-          firstProfitPct: 0.08,
-          firstSellPct: 0.25,
-          secondProfitPct: 0.15,
-          secondSellPct: 0.25,
-          breakevenStopPct: 0.00,
-          lockProfitPct: 0.06,
-          hardFloorPct: 0.03,
-          trailingDrawdownPct: 0.05,
-          maPeriod: 20,
-          maConfirmDays: 2,
-          maExceptionDropPct: 0.07,
-          maxHoldDays: 20,
-          stopSlippagePct: 0.02,
+          initialStopLossPct: -0.05,         // 收紧（原-0.06）
+          firstProfitPct: 0.05,              // 调低（原0.08）
+          firstSellPct: 0.25,                // 保持不变
+          secondProfitPct: 0.12,             // 跟随调低（原0.15）
+          secondSellPct: 0.25,               // 保持不变
+          breakevenStopPct: 0.00,            // 保持不变
+          lockProfitPct: 0.04,               // 跟随调低（原0.06）
+          hardFloorPct: 0.02,                // 跟随调低（原0.03）
+          trailingDrawdownPct: 0.04,         // 跟随调低（原0.05）
+          maPeriod: 20,                      // 保持不变
+          maConfirmDays: 2,                  // 保持不变
+          maExceptionDropPct: 0.06,          // 收紧（原0.07）
+          maxHoldDays: 10,                   // 大幅缩短（原20）
+          stopSlippagePct: 0.005,            // 收紧（原0.02）
         };
 
         const highPrice = bar[OHLCV_HIGH];
         const lowPrice = bar[OHLCV_LOW];
         const closePrice = bar[OHLCV_CLOSE];
+        const openPrice = bar[OHLCV_OPEN];
 
         // 更新峰值（用当日最高价）
         if (highPrice > tpState.peakPrice) {
@@ -1018,8 +1078,22 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
         const effectiveRemaining = pos.shares - committedSellShares;
 
         // ========== 优先级 1：初始硬止损（仅建仓期，最低价 ≤ 止损价）==========
+        // 1a. 开盘跳空保护：开盘价已低于止损线，直接以开盘价成交，避免等待盘中低价
+        // 1b. 盘中触及止损：最低价触及止损线，以止损价扣滑点成交
         if (tpState.phase === 'initial') {
           const stopLossPrice = entryPrice * (1 + lp.initialStopLossPct);
+
+          // 1a. 开盘跳空保护：开盘即破止损，以开盘价成交（不等待盘中）
+          if (openPrice <= stopLossPrice) {
+            const execPrice = openPrice * (1 - lp.stopSlippagePct);
+            intradayActions.push({
+              code, reason: 'stop_loss', shares: pos.shares, execPrice,
+            });
+            tpState.phase = 'closed';
+            continue;
+          }
+
+          // 1b. 盘中触及止损
           if (lowPrice <= stopLossPrice) {
             const execPrice = Math.max(stopLossPrice * (1 - lp.stopSlippagePct), lowPrice);
             intradayActions.push({
@@ -1027,6 +1101,56 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
             });
             tpState.phase = 'closed';
             continue;
+          }
+        }
+
+        // ========== 【新增】买入逻辑失效止损（3-5天不涨即走）==========
+        // 仅在建仓期（initial）且持有天数在 3~5 天时生效
+        if (tpState.phase === 'initial' && pos.holdDays >= 3 && pos.holdDays <= 5) {
+          // 如果累计涨幅不足 0%（不赚钱），说明买点动能衰竭，立即清仓
+          if (pnlPct < 0.00) {
+            const execPrice = closePrice;
+            intradayActions.push({
+              code, reason: 'timeout', shares: pos.shares, execPrice,
+            });
+            tpState.phase = 'closed';
+            continue;
+          }
+        }
+
+        // ========== 【新增】持仓期间动态评分检查 ==========
+        // 每5天重新评估一次，如果当前得分低于阈值，说明条件已衰减，主动离场
+        // 使用 evaluateFilterScore 返回满足条件的个数，阈值取总条件数的一半（至少 3）
+        if (tpState.phase === 'initial' && pos.holdDays > 0 && pos.holdDays % 5 === 0) {
+          const cache = indicatorCaches.get(code);
+          if (cache && filterTree) {
+            const totalConditions = countLeafConditions(filterTree);
+            const scoreThreshold = Math.max(2, Math.ceil(totalConditions / 3));
+            const currentScore = evaluateFilterScore(filterTree, snapshot, bars, cache, barIdx, customIndicatorValues);
+            if (currentScore < scoreThreshold) {
+              intradayActions.push({
+                code, reason: 'rebalance', shares: pos.shares, execPrice: closePrice,
+              });
+              tpState.phase = 'closed';
+              continue;
+            }
+          }
+        }
+
+        // ========== 【新增】期末提前离场：结束前5天主动检查，避免集中清仓亏损 ==========
+        if (tpState.phase === 'initial' && i >= actualEndIdx - 5) {
+          const cache = indicatorCaches.get(code);
+          if (cache && filterTree) {
+            const totalConditions = countLeafConditions(filterTree);
+            const scoreThreshold = Math.max(2, Math.ceil(totalConditions / 3));
+            const currentScore = evaluateFilterScore(filterTree, snapshot, bars, cache, barIdx, customIndicatorValues);
+            if (currentScore < scoreThreshold) {
+              intradayActions.push({
+                code, reason: 'rebalance', shares: pos.shares, execPrice: closePrice,
+              });
+              tpState.phase = 'closed';
+              continue;
+            }
           }
         }
 

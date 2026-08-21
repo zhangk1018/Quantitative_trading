@@ -9,8 +9,8 @@ const BASE = API_PREFIX;
 
 /** 搜索股票代码 */
 export async function searchStocks(q: string): Promise<StockSearchResult[]> {
-  const result = await apiGet<ListData<StockSearchResult>>(`${BASE}/stocks/search`, { params: { q } });
-  return result.items;
+  // 后端返回 data=纯数组（非 {items: [...]}），Axios 拦截器已自动解包 body.data
+  return apiGet<StockSearchResult[]>(`${BASE}/stocks/search`, { params: { q } });
 }
 
 /** 获取可用券商适配器列表 */

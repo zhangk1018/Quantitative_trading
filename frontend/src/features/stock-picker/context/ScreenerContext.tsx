@@ -18,6 +18,7 @@ import {
 import { FilterOp, FilterCondition, FilterGroup, genConditionId } from '../types/filterTree';
 import { CustomIndicator } from '../types/customIndicator';
 import { listCustomIndicators as loadFromStorage } from '../utils/customIndicatorStorage';
+import { seed8ConditionIndicator } from '../utils/customIndicatorSeed';
 
 // ==================== 浅比较工具（避免引入 react-redux） ====================
 function shallowEqual<T>(a: T, b: T): boolean {
@@ -753,6 +754,9 @@ export function ScreenerProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     const load = async () => {
       try {
+        // 种子默认指标（幂等，已存在时跳过）
+        seed8ConditionIndicator();
+
         const indicators = loadCustomIndicatorsSafe();
         if (!cancelled) {
           store.dispatch({ type: 'LOAD_CUSTOM_INDICATORS', payload: indicators });

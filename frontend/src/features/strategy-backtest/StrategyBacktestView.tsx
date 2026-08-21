@@ -102,20 +102,20 @@ const StrategyBacktestView: React.FC = () => {
   const [benchmarkMissingRate, setBenchmarkMissingRate] = useState<number | undefined>(undefined);
   const [strategyType, setStrategyType] = useState<'filterTree' | 'filterTreeLayeredTP'>('filterTree');
   const [layeredTPParams, setLayeredTPParams] = useState({
-    initialStopLossPct: -0.08,
-    firstProfitPct: 0.08,
+    initialStopLossPct: -0.05,
+    firstProfitPct: 0.05,
     firstSellPct: 0.25,
-    secondProfitPct: 0.15,
+    secondProfitPct: 0.12,
     secondSellPct: 0.25,
     breakevenStopPct: 0.00,
-    lockProfitPct: 0.06,
-    hardFloorPct: 0.03,
-    trailingDrawdownPct: 0.05,
+    lockProfitPct: 0.04,
+    hardFloorPct: 0.02,
+    trailingDrawdownPct: 0.04,
     maPeriod: 20,
     maConfirmDays: 2,
-    maExceptionDropPct: 0.07,
-    maxHoldDays: 20,
-    stopSlippagePct: 0.02,
+    maExceptionDropPct: 0.06,
+    maxHoldDays: 10,
+    stopSlippagePct: 0.005,
   });
 
   // 解析 URL 参数

@@ -31,37 +31,37 @@ import {
 } from '../storage';
 
 interface LayeredTPParams {
-  initialStopLossPct: number;     // 初始止损比例（-0.08 = -8%）
-  firstProfitPct: number;         // 第一止盈目标（0.08 = +8%）
+  initialStopLossPct: number;     // 初始止损比例（-0.05 = -5%）
+  firstProfitPct: number;         // 第一止盈目标（0.05 = +5%）
   firstSellPct: number;           // 第一止盈卖出比例（0.25 = 25%）
-  secondProfitPct: number;        // 第二止盈目标（0.15 = +15%）
+  secondProfitPct: number;        // 第二止盈目标（0.12 = +12%）
   secondSellPct: number;          // 第二止盈卖出比例（0.25 = 25%）
   breakevenStopPct: number;       // TP1后保本止损比例（0.00 = 成本价，固定）
-  lockProfitPct: number;          // TP2后锁定利润比例（0.06 = +6%）
-  hardFloorPct: number;           // TP2后硬性底线安全阀（0.03 = +3%）
-  trailingDrawdownPct: number;    // TP2后峰值回撤阈值（0.05 = 5%）
+  lockProfitPct: number;          // TP2后锁定利润比例（0.04 = +4%）
+  hardFloorPct: number;           // TP2后硬性底线安全阀（0.02 = +2%）
+  trailingDrawdownPct: number;    // TP2后峰值回撤阈值（0.04 = 4%）
   maPeriod: number;               // 均线兜底周期（20）
   maConfirmDays: number;          // 均线破位确认天数（2）
-  maExceptionDropPct: number;     // 均线例外单日跌幅（0.07 = 7%）
-  maxHoldDays: number;            // 建仓期时间止损天数（20）
-  stopSlippagePct: number;        // 止损成交价滑点（0.02 = 2%）
+  maExceptionDropPct: number;     // 均线例外单日跌幅（0.06 = 6%）
+  maxHoldDays: number;            // 建仓期时间止损天数（10）
+  stopSlippagePct: number;        // 止损成交价滑点（0.005 = 0.5%）
 }
 
 const DEFAULT_LAYERED_TP_PARAMS: LayeredTPParams = {
-  initialStopLossPct: -0.08,
-  firstProfitPct: 0.08,
+  initialStopLossPct: -0.05,
+  firstProfitPct: 0.05,
   firstSellPct: 0.25,
-  secondProfitPct: 0.15,
+  secondProfitPct: 0.12,
   secondSellPct: 0.25,
   breakevenStopPct: 0.00,
-  lockProfitPct: 0.06,
-  hardFloorPct: 0.03,
-  trailingDrawdownPct: 0.05,
+  lockProfitPct: 0.04,
+  hardFloorPct: 0.02,
+  trailingDrawdownPct: 0.04,
   maPeriod: 20,
   maConfirmDays: 2,
-  maExceptionDropPct: 0.07,
-  maxHoldDays: 20,
-  stopSlippagePct: 0.02,
+  maExceptionDropPct: 0.06,
+  maxHoldDays: 10,
+  stopSlippagePct: 0.005,
 };
 
 interface BacktestPanelProps {

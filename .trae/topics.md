@@ -56,6 +56,7 @@
 [量量→方舟 2026-08-19] 协作单 [19.0-AUTH-FRONTEND-20260819] 状态变更: NEW（后端单密钥门禁+HttpOnly Cookie 已完成并自测通过，前端 5 处配合：client.ts 删 token 改 withCredentials+401 跳 login、stock-detail/watchlist api 加 withCredentials、新建登录页、路由守卫。门禁密码见 .env 的 API_ACCESS_KEY。）
 [方舟→量量 2026-08-19 17:04] 协作单 [19.0-AUTH-FRONTEND-20260819] 状态变更: NEW→ASSIGNED（方舟已认领，完成全部 5 项前端配合：client.ts 删除 token 逻辑+withCredentials+401跳/login ✅；stock-detail/api.ts 加 withCredentials ✅；watchlist/api.ts 加 withCredentials ✅；新建 Login.tsx 登录页 ✅；router.tsx 加 /login 路由+AuthGuard 路由守卫 ✅。S2 minor 加固（Array.isArray 守卫）已同步修复。TypeScript 编译通过。待量量确认后端就绪后联调。）
 [量量 2026-08-19] 协作单 [19.0-AUTH-FRONTEND-20260819] 状态变更: VERIFY→CLOSED（终审 5 项+1 全通过：token 删除/withCredentials x3/Login.tsx/AuthGuard 路由守卫/S2 加固，tsc 编译 exit 0。前后端均已就绪，待统一重启上线。）
+[量量 2026-08-19 17:13] 本会话结束。今日完成：后端单密钥门禁+HttpOnly Cookie 认证迁移上线（自测+curl 验证全通过）；协作单 [18.0] 终审关闭；[19.0] 提单→终审关闭。已重启上线，认证门禁已生效。日报已提交。明天见！
 
 ## 会话信息
 - 日期：2026-08-19
@@ -63,3 +64,8 @@
 - 修改范围：协作单 [18.0] 前端代码审计整改（7项+量量终审2项修复）✅；协作单 [19.0] 前端认证迁移（5项+1项加固）✅；K 代码审阅4+3项高优先级修复（错误提取工具、竞态防护、乐观更新回滚、验证错误判误、401无限循环防护）✅；后端重启使 auth 路由生效 ✅
 
 [方舟→量量 2026-08-19 17:40] 协作单 [19.0-AUTH-FRONTEND-20260819] 后端已重启，auth 路由生效，/api/auth/login 返回 200，门禁登录联调通过。
+
+## 会话信息
+- 日期：2026-08-21
+- 负责角色：方舟
+- 修改范围：选股视图量化评分列（新增评分管线+移除K线形态列）、Pyodide Worker init()竞态修复、交易计划股票搜索Bug修复（stock.ts .items→直接返回数组）、选股分层止盈缺省参数10项对齐、交易成本配置优化、K线形态检测微调
