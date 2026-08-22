@@ -74,3 +74,8 @@
 - 日期：2026-08-22
 - 负责角色：量量
 - 修改范围：修复日线增量导入周末误触发 fallback（import_daily_data.py + _is_trade_day + 7项单测）；修复 daily_check.py missing_stocks 北交所口径误报；修复后端被 healthcheck 循环 kill（healthcheck.plist 加 AbandonProcessGroup=true）；增强 load_launchd_plists.sh 卸载逻辑。会话交互对象：K
+
+## 会话信息
+- 日期：2026-08-22
+- 负责角色：方舟
+- 修改范围：macOS 重装后开发环境重建（Homebrew/Python 3.11/Node/PostgreSQL 18/TA-Lib 0.7.1 + venv 重建依赖安装 + PG 复用原数据 + 前后端自测通过）；装载 launchd 定时任务 7 个 plist + backend 守护；编写 ~/.zprofile 自动加载；触发阶段1 ETL，安装 akshare+tushare，诊断 adj_factor_sync 卡在 WARP IPv6 SYN_SENT 网络问题。会话交互对象：K
