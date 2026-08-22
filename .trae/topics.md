@@ -79,3 +79,8 @@
 - 日期：2026-08-22
 - 负责角色：方舟
 - 修改范围：macOS 重装后开发环境重建（Homebrew/Python 3.11/Node/PostgreSQL 18/TA-Lib 0.7.1 + venv 重建依赖安装 + PG 复用原数据 + 前后端自测通过）；装载 launchd 定时任务 7 个 plist + backend 守护；编写 ~/.zprofile 自动加载；触发阶段1 ETL，安装 akshare+tushare，诊断 adj_factor_sync 卡在 WARP IPv6 SYN_SENT 网络问题。会话交互对象：K
+
+## 会话信息
+- 日期：2026-08-22
+- 负责角色：方舟
+- 修改范围：交易台账「裸交易记录」处置（清空交易室业务数据 + 重建 2026-08W4 周期/3计划/3记录/3卖出子单，temp/pdca_cleanup.sql+pdca_demo_seed.sql）；records.py 新增 auto_match_plan_id 自动匹配交易计划(+test)；TradingRecordForm 无活跃周期一键激活引导；record.ts 修复 /pdca/kline 404 → /kline；选股视图排序/成交额单位/本地排序；PDCA使用说明书更新 V1.1（按PDCA闭环重构+录入示例）。会话交互对象：K

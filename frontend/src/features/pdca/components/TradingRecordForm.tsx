@@ -14,7 +14,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
-  Modal, Form, Input, InputNumber, DatePicker, Select, App, Row, Col, AutoComplete,
+  Modal, Form, Input, InputNumber, DatePicker, Select, App, Row, Col, AutoComplete, Button,
 } from 'antd';
 import dayjs from 'dayjs';
 import type { TradingRecord, TradingRecordFormData, StockSearchResult, ExitSlip, ExitSlipFormData } from '../types';
@@ -24,7 +24,9 @@ import {
 } from '../constants';
 import { createRecord, updateRecord, fetchExitSlips, updateExitSlip, deleteExitSlip, batchCreateExitSlips, fetchDailyOHLC } from '../services/record';
 import { searchStocks } from '../services/stock';
+import { fetchCycles, transitionCycle } from '../services/cycle';
 import type { DailyOHLC } from '../services/record';
+import type { PDCACycle } from '../types';
 import { calcEntryScore, calcExitScore, calcChannelHeight, calcTradeScore, calcTradeGrade } from '../utils/scoreCalculator';
 import { calcCommission, calcTransferFee, calcSlippageCost } from '../utils/tradingCostUtils';
 import ExitSlipList from './ExitSlipList';
@@ -65,6 +67,13 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
   const [entryDayOHLC, setEntryDayOHLC] = useState<DailyOHLC | null>(null);
   const [exitDayOHLC, setExitDayOHLC] = useState<DailyOHLC | null>(null);
   const initialLoadRef = useRef(true);
+
+  // 无活跃周期引导弹窗：保存时发现没有「执行中(DO)」周期时弹出
+  const [cycleGuide, setCycleGuide] = useState<{ open: boolean; cycle: PDCACycle | null }>({
+    open: false,
+    cycle: null,
+  });
+  const [activatingCycle, setActivatingCycle] = useState(false);
 
   // --- 从卖出记录推导有效出场数据（加权平均出场价 + 末笔子单日期） ---
   const slipDerivedData = useMemo(() => {
@@ -386,6 +395,25 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
     return null;
   }, [code, entryDate, entryDayOHLC, exitSlips, form]);
 
+  // --- 无活跃周期引导：查询覆盖入场日期、处于 PLAN 的周期供一键激活 ---
+  const handleOpenCycleGuide = useCallback(async (entryDate: string | null) => {
+    try {
+      const cycles = await fetchCycles();
+      let covering: PDCACycle | null = null;
+      if (entryDate) {
+        const candidates = cycles
+          .filter((c) => c.status === 'PLAN' && c.start_date <= entryDate && entryDate <= c.end_date)
+          .sort((a, b) => b.id - a.id);
+        covering = candidates[0] || null;
+      }
+      // 始终弹出引导：有可激活周期则优先展示一键激活，否则引导去创建
+      setCycleGuide({ open: true, cycle: covering });
+    } catch {
+      // 无法获取周期列表时，回退为通用提示，不阻塞主流程
+      message.warning('无法获取 PDCA 周期，请先在「周期总览」创建并开始执行一个周期后再保存');
+    }
+  }, [message]);
+
   // --- 主表单提交 ---
   const handleSubmit = useCallback(async () => {
     try {
@@ -505,11 +533,36 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
       if (err && typeof err === 'object' && 'errorFields' in err) {
         return;
       }
+      const msg = err instanceof Error ? err.message : '';
+      // 无活跃 PDCA 周期（40012）：改用友好引导弹窗，提示用户先开始执行周期
+      if (/40012|没有活跃的 PDCA 周期/.test(msg)) {
+        const entry = form.getFieldValue('entry_date');
+        const entryDate = entry?.format ? entry.format('YYYY-MM-DD') : null;
+        void handleOpenCycleGuide(entryDate);
+        return;
+      }
       message.error(err instanceof Error ? err.message : '保存失败，请检查网络连接');
     } finally {
       setLoading(false);
     }
-  }, [form, isEdit, record, exitSlips, message, onSuccess, slipDerivedData, isFullySold, entryPrice, entryDayOHLC, longShort, validatePriceAgainstOHLC]);
+  }, [form, isEdit, record, exitSlips, message, onSuccess, slipDerivedData, isFullySold, entryPrice, entryDayOHLC, longShort, validatePriceAgainstOHLC, handleOpenCycleGuide]);
+
+  // --- 一键激活覆盖周期的 PLAN 周期并重试保存 ---
+  const handleActivateAndRetry = useCallback(async () => {
+    const cycle = cycleGuide.cycle;
+    if (!cycle) return;
+    setActivatingCycle(true);
+    try {
+      await transitionCycle(cycle.id, 'DO');
+      message.success(`周期「${cycle.cycle_name}」已开始执行，正在重新保存…`);
+      setCycleGuide({ open: false, cycle: null });
+      void handleSubmit();
+    } catch (err: unknown) {
+      message.error('周期激活失败：' + (err instanceof Error ? err.message : '请稍后重试'));
+    } finally {
+      setActivatingCycle(false);
+    }
+  }, [cycleGuide.cycle, message, handleSubmit]);
 
   return (
     <>
@@ -747,6 +800,49 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
         onSave={saveExitSlip}
         onCancel={() => setExitSlipModalOpen(false)}
       />
+
+      {/* ---- 无活跃周期友好引导弹窗 ---- */}
+      <Modal
+        open={cycleGuide.open}
+        onCancel={() => setCycleGuide({ open: false, cycle: null })}
+        footer={cycleGuide.cycle ? [
+          <Button key="cancel" onClick={() => setCycleGuide({ open: false, cycle: null })}>暂不保存</Button>,
+          <Button key="activate" type="primary" loading={activatingCycle} onClick={handleActivateAndRetry}>
+            开始执行并重试保存
+          </Button>,
+        ] : [
+          <Button key="ok" type="primary" onClick={() => setCycleGuide({ open: false, cycle: null })}>知道了</Button>,
+        ]}
+        closable={false}
+        maskClosable
+      >
+        {cycleGuide.cycle ? (
+          <div className="flex flex-col gap-2">
+            <div className="text-base font-semibold">当前没有处于「执行中」的周期</div>
+            <div className="text-text-secondary text-sm leading-6">
+              保存交易记录需要所属周期处于「执行中（DO）」状态。检测到周期已处于「计划中」：
+            </div>
+            <div className="rounded-md border border-border-color bg-bg-secondary px-3 py-2 text-sm">
+              <span className="mr-2 font-medium">{cycleGuide.cycle.cycle_name}</span>
+              <span className="text-text-secondary">
+                {cycleGuide.cycle.start_date} ~ {cycleGuide.cycle.end_date}
+              </span>
+            </div>
+            <div className="text-text-secondary text-sm leading-6">
+              点击「开始执行」将自动激活该周期并重新提交保存，无需手动跳转。
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <div className="text-base font-semibold">无法保存：没有可用的交易周期</div>
+            <div className="text-text-secondary text-sm leading-6">
+              保存交易记录需要一个处于「执行中（DO）」的 PDCA 周期，但当前没有可用的周期。
+              <br />
+              请先前往「周期总览」新建周期，并点击「开始执行」后再回来保存。
+            </div>
+          </div>
+        )}
+      </Modal>
     </>
   );
 };

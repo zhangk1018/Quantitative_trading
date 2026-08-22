@@ -156,7 +156,6 @@ case "${1:-check}" in
         ;;
     stop)
         if [ -f "$WATCHDOG_PID_FILE" ]; then
-            local wpid
             wpid=$(cat "$WATCHDOG_PID_FILE")
             kill "$wpid" 2>/dev/null || true
             rm -f "$WATCHDOG_PID_FILE"

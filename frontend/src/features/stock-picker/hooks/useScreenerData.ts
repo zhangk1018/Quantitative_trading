@@ -620,6 +620,21 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
     }, CONFIG.DEBOUNCE_DELAY);
   }, [fetchScreeningData, sortBy, sortAsc, offset, PAGE_SIZE]);
 
+  /**
+   * 本地排序：仅对当前已加载的 items 排序，不重新触发后端选股查询。
+   * 排序是纯展示交互，改变顺序不应导致 loading / 进度条 / 重新请求。
+   */
+  const applyLocalSort = useCallback(
+    (column: string) => {
+      const defaultAsc = CONFIG.DEFAULT_SORT_DIR[column] ?? false;
+      const newAsc = sortBy === column ? !sortAsc : defaultAsc;
+      setItems((prev) => sortItems(prev, column, newAsc));
+      setSortBy(column);
+      setSortAsc(newAsc);
+    },
+    [sortBy, sortAsc],
+  );
+
   const cancelScreening = useCallback(() => {
     cancelledRef.current = true;
     if (abortRef.current) {
@@ -685,6 +700,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
     phase, progress, progressText,
     fetchFirstPage, fetchNextPage, clearResults, retry, retryLoadMore,
     cancelScreening,
+    applyLocalSort,
     candidateTotal: cacheRef.current?.candidateTotal ?? 0,
   };
 }

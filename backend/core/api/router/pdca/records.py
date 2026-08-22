@@ -23,6 +23,31 @@ _FLOAT_FIELDS = {
 }
 
 
+def auto_match_plan_id(cur, pdca_cycle_id: int, code: str) -> Optional[int]:
+    """在指定周期内按股票代码自动匹配未删除的交易计划。
+
+    用于新增交易记录时未手动指定 trading_plan_id 的场景：自动关联到
+    同一周期、同一股票的最新一条未删除计划，避免产生「裸交易记录」。
+    若没有可匹配的计划则返回 None（不报错，仍允许记录裸交易）。
+
+    Args:
+        cur: 可用的数据库游标（psycopg2）。
+        pdca_cycle_id: 交易记录所属周期 ID。
+        code: 股票代码。
+
+    Returns:
+        匹配到的计划 ID；无匹配时返回 None。
+    """
+    cur.execute(
+        "SELECT id FROM pdca.trading_plan "
+        "WHERE pdca_cycle_id = %s AND code = %s AND deleted_at IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (pdca_cycle_id, code),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 # ============================================================
 # Pydantic 请求/响应模型
 # ============================================================
@@ -178,6 +203,18 @@ async def create_record(record: TradingRecordCreate):
                         record.pdca_cycle_id = row[0]
                     else:
                         raise HTTPException(status_code=400, detail="40012: 没有活跃的 PDCA 周期，请先创建周期")
+
+                # 未指定交易计划时，自动按股票代码匹配当前周期内的交易计划
+                if record.trading_plan_id is None:
+                    matched_plan_id = auto_match_plan_id(
+                        cur, record.pdca_cycle_id, record.code
+                    )
+                    if matched_plan_id:
+                        record.trading_plan_id = matched_plan_id
+                        logger.info(
+                            "交易记录 %s(%s) 周期 %s 自动关联交易计划 id=%s",
+                            record.code, record.security_name, record.pdca_cycle_id, matched_plan_id,
+                        )
 
                 cur.execute(
                     """

@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo } from 'react';
 import { App } from 'antd';
 import { useScreenerDispatch, useScreenerSelector } from '../context/ScreenerContext';
-import { exportToCsv, exportToTxt, CONFIG } from '../utils/screener';
+import { exportToCsv, exportToTxt } from '../utils/screener';
 import { useSelection } from './useSelection';
 import { useWatchlistAdd } from './useWatchlistAdd';
 import { useStrategyUI } from './useStrategyUI';
@@ -18,12 +18,13 @@ import type { StockItem, FetchStocksResponse } from '../types';
 export function useStockPickerActions(
   items: StockItem[],
   _total: number,
-  sortBy: string,
-  sortAsc: boolean,
+  _sortBy: string,
+  _sortAsc: boolean,
   _loading: boolean,
   fetchFirstPage: (newSortBy?: string, newSortAsc?: boolean) => Promise<FetchStocksResponse | null>,
   clearResults: () => void,
   tableContainerRef: React.RefObject<HTMLDivElement | null>,
+  onSortLocal: (column: string) => void,
 ) {
   const { message } = App.useApp();
   const dispatch = useScreenerDispatch();
@@ -38,15 +39,12 @@ export function useStockPickerActions(
   // ========== 排序 ==========
   const handleSort = useCallback(
     (column: string) => {
-      const defaultAsc = CONFIG.DEFAULT_SORT_DIR[column] ?? false;
-      const newAsc = sortBy === column ? !sortAsc : defaultAsc;
-      fetchFirstPage(column, newAsc).then(() => {
-        if (tableContainerRef.current) {
-          tableContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
-        }
-      });
+      onSortLocal(column);
+      if (tableContainerRef.current) {
+        tableContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      }
     },
-    [sortBy, sortAsc, fetchFirstPage, tableContainerRef],
+    [onSortLocal, tableContainerRef],
   );
 
   // ========== 导出 ==========

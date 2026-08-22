@@ -94,14 +94,16 @@ interface SortableHeaderProps {
   sortBy: string;
   sortAsc: boolean;
   onSort: (column: string) => void;
+  className?: string;
 }
 
-const SortableHeader = memo(({ label, column, sortBy, sortAsc, onSort }: SortableHeaderProps) => {
+const SortableHeader = memo(({ label, column, sortBy, sortAsc, onSort, className }: SortableHeaderProps) => {
   const isActive = sortBy === column;
+  const alignClass = className || 'text-right';
   return (
     <th
       data-testid={`sort-${column}`}
-      className={`px-3 py-2 text-right cursor-pointer select-none hover:text-text-primary transition-colors ${
+      className={`px-3 py-2 cursor-pointer select-none hover:text-text-primary transition-colors ${alignClass} ${
         isActive ? 'text-color-accent' : ''
       }`}
       onClick={() => onSort(column)}
@@ -249,17 +251,17 @@ export const StockPickerTable: React.FC<StockPickerTableProps> = React.memo(({
               />
             </th>
             <th className="px-3 py-2 text-center text-text-secondary text-xs">#</th>
-            <th className="px-3 py-2 text-left">代码</th>
-            <th className="px-3 py-2 text-left">名称</th>
-            <th className="px-3 py-2 text-right">收盘价</th>
+            <SortableHeader label="代码" column="stock_code" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} className="text-left" />
+            <SortableHeader label="名称" column="stock_name" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} className="text-left" />
+            <SortableHeader label="收盘价" column="close" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} />
             <SortableHeader label="涨跌幅" column="change_pct" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} />
             <SortableHeader label="换手率" column="turnover_rate" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} />
             <SortableHeader label="市盈率" column="pe" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} />
-            <th className="px-3 py-2 text-right">市净率</th>
+            <SortableHeader label="市净率" column="pb" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} />
             <SortableHeader label="总市值" column="market_cap" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} />
             <SortableHeader label="成交额" column="amount" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} />
             <th className="px-3 py-2 text-center">板块</th>
-            <th className="px-3 py-2 text-right" style={{ minWidth: 80 }}>量化评分</th>
+            <SortableHeader label="量化评分" column="custom_score" sortBy={sortBy} sortAsc={sortAsc} onSort={onSort} />
           </tr>
         </thead>
         <tbody>

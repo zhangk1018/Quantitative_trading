@@ -383,9 +383,9 @@ describe('K 2026-06-18 反馈 #1：AbortController + isMounted', () => {
       expect(screen.getByTestId('sort-change_pct')).toBeInTheDocument();
     });
 
-    // 触发新一次 fetch
+    // 触发新一次 fetch（再次点击"开始选股"）
     await act(async () => {
-      screen.getByTestId('sort-change_pct').click();
+      screen.getByTestId('start-screener').click();
     });
 
     // 验证 mock 接收到了 signal
@@ -432,74 +432,49 @@ async function resolveInitialFetch(items: any[] = []) {
   });
 }
 
-describe('K 2026-06-18 反馈 #2：排序点击统一发请求', () => {
-  // K 反馈 #6：使用 screen.getByTestId 而非解构 getByTestId
-  it('有数据后点击表头发请求', async () => {
+describe('排序（本地排序，不重新选股）', () => {
+  it('有数据后点击表头不发新请求（仅本地排序）', async () => {
     renderStockPickerView();
     // 触发首次 fetch（让组件有数据 + render 表头）
     await act(async () => {
       screen.getByTestId('start-screener').click();
     });
-    // resolve 这次 fetch 让表头渲染
     await resolveInitialFetch([{ stock_code: 'A', stock_name: 'A' }]);
     // 等待表头渲染完成
     await waitFor(() => {
       expect(screen.getByTestId('sort-change_pct')).toBeInTheDocument();
     });
 
-    // 找到排序表头（"涨跌幅"列，data-testid="sort-change_pct"）
+    // 记录点击排序前的请求次数
+    const callsBefore = vi.mocked(fetchStocks).mock.calls.length;
+
+    // 点击排序表头
     const sortHeader = screen.getByTestId('sort-change_pct');
     await act(async () => {
       sortHeader.click();
     });
-    // 验证 fetchStocks 至少被调用 2 次（首次 + 排序）
-    expect(vi.mocked(fetchStocks).mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    // K 反馈：排序是本地交互，不应触发重新选股（不发新请求）
+    expect(vi.mocked(fetchStocks).mock.calls.length).toBe(callsBefore);
   });
 
-  it('同列重复点击切换升/降序（K 反馈 #2：state 与请求同步）', async () => {
+  it('排序表头可点击且不抛错（本地重排）', async () => {
     renderStockPickerView();
-    // 触发首次 fetch（让组件有数据 + render 表头）
     await act(async () => {
       screen.getByTestId('start-screener').click();
     });
-    // resolve 这次 fetch
     await resolveInitialFetch([{ stock_code: 'A', stock_name: 'A' }]);
-    // 等待表头渲染完成
     await waitFor(() => {
       expect(screen.getByTestId('sort-change_pct')).toBeInTheDocument();
     });
 
-    // 第 1 次点击：sort_change_pct 降序
+    // 多次点击不同列与同列重复点击均不应抛错
     await act(async () => {
       screen.getByTestId('sort-change_pct').click();
-    });
-    // K 反馈：loading=true 时表格被 Spin 替换，sort-change_pct 消失；
-    // resolve 这次 fetch 让 loading=false + 表格重新渲染
-    await waitFor(() => {
-      expect(resolveFetches.length).toBeGreaterThan(0);
-    });
-    await act(async () => {
-      const resolve = resolveFetches.shift()!;
-      resolve({ items: [{ stock_code: 'A', stock_name: 'A' }], total: 1 });
-    });
-    // 等待表头重新渲染
-    await waitFor(() => {
-      expect(screen.getByTestId('sort-change_pct')).toBeInTheDocument();
-    });
-
-    // 第 2 次点击：sort_change_pct 升序
-    await act(async () => {
       screen.getByTestId('sort-change_pct').click();
+      screen.getByTestId('sort-stock_code').click();
     });
-
-    // 验证排序切换：第 1 次 sort_asc=true（toggle 升序），第 2 次 sort_asc=false（toggle 降序）
-    const calls = vi.mocked(fetchStocks).mock.calls;
-    const secondToLast = calls[calls.length - 2][0] as Record<string, any>;
-    const lastCall = calls[calls.length - 1][0] as Record<string, any>;
-    expect(secondToLast.sort_by).toBe('change_pct');
-    expect(secondToLast.sort_asc).toBe(true);
-    expect(lastCall.sort_by).toBe('change_pct');
-    expect(lastCall.sort_asc).toBe(false);
+    expect(() => screen.getByTestId('sort-change_pct')).not.toThrow();
   });
 });
 

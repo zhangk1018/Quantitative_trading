@@ -78,7 +78,8 @@ export interface DailyOHLC {
  * @throws 网络/后端异常时抛出（不再静默吞没）
  */
 export async function fetchDailyOHLC(code: string, date: string): Promise<DailyOHLC | null> {
-  const data = await apiGet<{ data?: unknown[] }>(`${BASE}/kline/${code}`, {
+  // kline 接口挂载在 /api/kline（见 backend core/api/main.py），非 /api/pdca/kline
+  const data = await apiGet<{ data?: unknown[] }>(`/kline/${code}`, {
     params: { period: 'daily', start_date: date, end_date: date, limit: 1, adj: 'none' },
   });
   const arr = data.data;

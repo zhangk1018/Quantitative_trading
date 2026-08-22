@@ -74,7 +74,7 @@ const StockPickerContent: React.FC = () => {
     sortBy, sortAsc, PAGE_SIZE,
     phase, progress, progressText,
     fetchFirstPage, fetchNextPage, clearResults, retry, retryLoadMore,
-    cancelScreening,
+    cancelScreening, applyLocalSort,
   } = useScreenerData(message);
 
   const showProgressBar = phase !== 'idle' && phase !== 'ready' && phase !== ('' as any);
@@ -82,7 +82,7 @@ const StockPickerContent: React.FC = () => {
   // 操作层
   const actions = useStockPickerActions(
     items, total, sortBy, sortAsc, loading,
-    fetchFirstPage, clearResults, tableContainerRef,
+    fetchFirstPage, clearResults, tableContainerRef, applyLocalSort,
   );
 
   return (

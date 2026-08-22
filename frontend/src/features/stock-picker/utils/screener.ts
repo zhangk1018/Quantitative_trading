@@ -46,12 +46,16 @@ export const CONFIG = {
   DEBOUNCE_DELAY: 300,
   /** 字段默认排序方向：true=升序，false=降序 */
   DEFAULT_SORT_DIR: {
-    change_pct: false,
     stock_code: true,
+    stock_name: true,
+    close: false,
+    change_pct: false,
     market_cap: false,
     turnover_rate: false,
     pe: false,
+    pb: false,
     amount: false,
+    custom_score: false,
   } as Record<string, boolean>,
   /** 分批拉取候选股的每批大小（受后端 limit<=200 限制） */
   CANDIDATE_BATCH_SIZE: 200,
