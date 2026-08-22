@@ -860,6 +860,7 @@ class DailyDataImporter(BaseDataImporter):
                     logger.info(f"📅 清理后最新数据日期回退至: {latest_date or '无数据'}")
 
             batch_success = False
+            attempted_trade_day = False
             if latest_date:
                 logger.info(f"📤 从 {latest_date} 之后开始批量导入...")
                 cursor_date = latest_date
@@ -868,6 +869,13 @@ class DailyDataImporter(BaseDataImporter):
                     if not next_date or next_date > today:
                         break
 
+                    # 修复：跳过非交易日（周末/节假日），避免"无数据"被误判为导入失败而触发 fallback
+                    if not self._is_trade_day(next_date):
+                        logger.info(f"⏭️  {next_date} 非交易日（周末/节假日），跳过")
+                        cursor_date = next_date
+                        continue
+
+                    attempted_trade_day = True
                     logger.info(f"📥 批量导入 {next_date}...")
                     success, fail = self.import_by_trade_date(next_date)
                     if success > 0:
@@ -876,27 +884,35 @@ class DailyDataImporter(BaseDataImporter):
                         stats["batch_days"] += 1
                         logger.info(f"✅ {next_date} 导入 {success} 条")
                     else:
-                        logger.info(f"⏭️  {next_date} 无数据（非交易日或已收盘）")
+                        logger.info(f"⏭️  {next_date} 无数据（接口未返回）")
 
                     cursor_date = next_date
             else:
                 logger.info("📥 无历史数据，尝试导入今日数据...")
-                success, fail = self.import_by_trade_date(today)
-                if success > 0:
-                    batch_success = True
-                    stats["rows_affected"] += success
-                    stats["batch_days"] += 1
+                if not self._is_trade_day(today):
+                    logger.info(f"⏭️  {today} 非交易日（周末/节假日），跳过导入")
+                else:
+                    attempted_trade_day = True
+                    success, fail = self.import_by_trade_date(today)
+                    if success > 0:
+                        batch_success = True
+                        stats["rows_affected"] += success
+                        stats["batch_days"] += 1
 
-            # 批量导入后校验今日数据完整度：Tushare 批量接口可能只返回部分股票
-            # （如仅新股），完整度不足时自动触发 fallback 单线程补全
-            need_fallback = not batch_success
+            # 批量导入后校验最近交易日数据完整度：Tushare 批量接口可能只返回部分股票
+            # （如仅新股），完整度不足时自动触发 fallback 单线程补全。
+            # 注意：周末时 today 非交易日，需以最近的交易日作为校验目标；
+            # 且仅当确实存在待导入的交易日时才可能触发 fallback（避免周末误触发）。
+            check_date = self._get_last_trade_day(today)
+            need_fallback = attempted_trade_day and not batch_success
             if batch_success:
-                check_result = self._check_data_completeness(today)
-                logger.info(f"📊 批量导入后今日数据完整度: {check_result['existing_count']}/"
+                check_result = self._check_data_completeness(check_date)
+                logger.info(f"📊 批量导入后最近交易日 {check_date} 数据完整度: "
+                           f"{check_result['existing_count']}/"
                            f"{check_result['total_stocks']} "
                            f"({check_result['completeness']:.1%})")
                 if not check_result['is_complete']:
-                    logger.warning(f"⚠️ 批量导入后今日完整度仅 {check_result['completeness']:.1%}，"
+                    logger.warning(f"⚠️ 批量导入后完整度仅 {check_result['completeness']:.1%}，"
                                  f"低于阈值 {self.MIN_COMPLETENESS_THRESHOLD:.0%}，触发 fallback 补全")
                     need_fallback = True
 
@@ -936,6 +952,38 @@ class DailyDataImporter(BaseDataImporter):
         except Exception as e:
             logger.warning(f"查询最新交易日失败: {e}")
             return None
+
+    def _is_trade_day(self, date_str: str) -> bool:
+        """判断指定日期是否为交易日（优先查 trade_calendar 表，无记录时按周末兜底）"""
+        try:
+            with self.storage.transaction() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT is_open FROM trade_calendar WHERE cal_date = %s",
+                                   (date_str,))
+                    row = cursor.fetchone()
+                    if row:
+                        return bool(row[0])
+        except Exception as e:
+            logger.warning(f"查询交易日历失败: {e}")
+        # 表中无记录或查询失败：按周末判断兜底（工作日保守视为交易日，避免漏导入）
+        dt = datetime.strptime(date_str, '%Y-%m-%d')
+        return dt.weekday() < 5
+
+    def _get_last_trade_day(self, end_date: str) -> str:
+        """获取 end_date（含）之前最近的交易日；表无数据时返回 end_date 本身"""
+        try:
+            with self.storage.transaction() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT MAX(cal_date)::text FROM trade_calendar
+                        WHERE is_open = 1 AND cal_date <= %s
+                    """, (end_date,))
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        return row[0]
+        except Exception as e:
+            logger.warning(f"查询最近交易日失败: {e}")
+        return end_date
 
     def _increment_date(self, date_str: str) -> str:
         dt = datetime.strptime(date_str, '%Y-%m-%d') + timedelta(days=1)

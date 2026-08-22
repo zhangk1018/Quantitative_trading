@@ -225,9 +225,21 @@ def check_missing_stocks(result):
             cur.close()
             conn.close()
             return
-        cur.execute("SELECT COUNT(*) FROM stock_basic WHERE delist_date IS NULL OR delist_date > %s", (latest,))
+        # 排除北交所（8/920 开头），与日线导入逻辑保持一致，
+        # 避免北交所股票被误计为"缺失"产生误报
+        cur.execute("""
+            SELECT COUNT(*) FROM stock_basic
+            WHERE (delist_date IS NULL OR delist_date > %s)
+            AND code NOT LIKE '8%%'
+            AND code NOT LIKE '920%%'
+        """, (latest,))
         total_active = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1d'", (latest,))
+        cur.execute("""
+            SELECT COUNT(DISTINCT code) FROM stock_quotes
+            WHERE trade_date = %s AND cycle='1d'
+            AND code NOT LIKE '8%%'
+            AND code NOT LIKE '920%%'
+        """, (latest,))
         have_data = cur.fetchone()[0]
         cur.close()
         conn.close()

@@ -32,6 +32,11 @@
     <key>KeepAlive</key>
     <false/>
 
+    <!-- 关键：脚本退出时允许长驻子进程脱离 launchd 进程组，
+         否则 launchd 会在脚本退出后 kill 掉 nohup 启动的后端进程 -->
+    <key>AbandonProcessGroup</key>
+    <true/>
+
     <!-- 运行后立即退出，不等超时 -->
     <key>ThrottleInterval</key>
     <integer>10</integer>

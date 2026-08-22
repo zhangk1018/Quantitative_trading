@@ -7,11 +7,15 @@ set -e
 PLIST_DIR="/Volumes/MyData/Quantitative_trading/scripts/launchctl"
 
 echo "=== 卸载旧任务（如有）==="
-for f in "$PLIST_DIR"/com.quant.daily_job_runner.stage*.plist; do
+for f in "$PLIST_DIR"/com.quant.daily_job_runner.stage*.plist \
+         "$PLIST_DIR"/com.quant.bar_aggregation.*.plist \
+         "$PLIST_DIR"/com.quant.backend.healthcheck.plist; do
     launchctl unload "$f" 2>/dev/null || true
 done
-# 清理旧版遗留条目
-for label in com.quant.daily_job.stage1 com.quant.daily_job.stage2 com.quant.backend; do
+# 清理旧版遗留条目（含 bar_aggregation 旧命名 weekly_kline/monthly_kline）
+for label in com.quant.daily_job.stage1 com.quant.daily_job.stage2 com.quant.backend \
+             com.quant.bar-aggregation.weekly com.quant.bar-aggregation.monthly \
+             com.quant.weekly_kline com.quant.monthly_kline com.quant.bar_aggregation; do
     launchctl remove "$label" 2>/dev/null || true
 done
 

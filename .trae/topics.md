@@ -69,3 +69,8 @@
 - 日期：2026-08-21
 - 负责角色：方舟
 - 修改范围：选股视图量化评分列（新增评分管线+移除K线形态列）、Pyodide Worker init()竞态修复、交易计划股票搜索Bug修复（stock.ts .items→直接返回数组）、选股分层止盈缺省参数10项对齐、交易成本配置优化、K线形态检测微调
+
+## 会话信息
+- 日期：2026-08-22
+- 负责角色：量量
+- 修改范围：修复日线增量导入周末误触发 fallback（import_daily_data.py + _is_trade_day + 7项单测）；修复 daily_check.py missing_stocks 北交所口径误报；修复后端被 healthcheck 循环 kill（healthcheck.plist 加 AbandonProcessGroup=true）；增强 load_launchd_plists.sh 卸载逻辑。会话交互对象：K
