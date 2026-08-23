@@ -180,11 +180,64 @@ load_env() {
     fi
 }
 
+# ---- PostgreSQL 管理 ----
+PG_DATA="$SCRIPT_DIR/postgresql_data"
+PG_LOG="$SCRIPT_DIR/logs/postgres.log"
+PG_PORT="${PG_PORT:-5432}"
+
+# 检测 PostgreSQL 是否就绪
+pg_is_ready() {
+    if command -v pg_isready >/dev/null 2>&1; then
+        pg_isready -h localhost -p "$PG_PORT" >/dev/null 2>&1
+    else
+        nc -z localhost "$PG_PORT" >/dev/null 2>&1
+    fi
+}
+
+# 确保数据库可用：未运行则自动启动
+start_database() {
+    if pg_is_ready; then
+        log_ok "PostgreSQL 运行正常 (端口: $PG_PORT)"
+        return 0
+    fi
+    log_info "PostgreSQL 未运行，正在启动..."
+    if [ ! -d "$PG_DATA" ]; then
+        log_err "数据库目录不存在: $PG_DATA"
+        return 1
+    fi
+    mkdir -p "$SCRIPT_DIR/logs"
+    if pg_ctl -D "$PG_DATA" -l "$PG_LOG" -w -t 30 start >/dev/null 2>&1; then
+        log_ok "PostgreSQL 启动成功"
+        return 0
+    fi
+    log_err "PostgreSQL 启动失败，查看日志: $PG_LOG"
+    tail -n 20 "$PG_LOG" 2>/dev/null || true
+    return 1
+}
+
+# 停止数据库
+stop_database() {
+    if ! pg_is_ready; then
+        log_info "PostgreSQL 未运行，无需停止"
+        return 0
+    fi
+    log_info "停止 PostgreSQL..."
+    if pg_ctl -D "$PG_DATA" stop -m fast -w -t 30 >/dev/null 2>&1; then
+        log_ok "PostgreSQL 已停止"
+        return 0
+    fi
+    log_warn "PostgreSQL 停止失败（可能仍有连接占用）"
+    return 1
+}
+
 # ---- 后端启动（watchdog 监督模式） ----
 WATCHDOG_SCRIPT="$SCRIPT_DIR/scripts/backend_watchdog.sh"
 
 dev_start_backend() {
     log_info "启动后端服务（watchdog 监督模式，崩溃自动重启）..."
+
+    # 启动前确保数据库可用
+    start_database || return 1
 
     # 检查 watchdog 是否已在运行
     if [ -f "/tmp/quant_backend_watchdog.pid" ]; then
@@ -318,12 +371,20 @@ dev_status() {
 }
 
 dev_start() { dev_start_backend && dev_start_frontend; echo ""; dev_status; }
-dev_stop() { dev_stop_backend; dev_stop_frontend; }
-dev_restart() { dev_stop; sleep 1; dev_start; }
+# 仅停止前后台（不触碰数据库），供 restart 使用
+dev_stop_app() { dev_stop_backend; dev_stop_frontend; }
+# stop 命令：停止前后台 + 数据库
+dev_stop() { dev_stop_app; stop_database; }
+# restart 命令：仅重启前后台，数据库保持运行
+dev_restart() { dev_stop_app; sleep 1; dev_start; }
 
 # ---- 前台启动（调试用） ----
 dev_start_backend_fg() {
     log_info "前台启动后端服务（调试模式）..."
+
+    # 启动前确保数据库可用
+    start_database || return 1
+
     if is_port_in_use "$BACKEND_PORT"; then
         clean_port "$BACKEND_PORT" "$BACKEND_PID_FILE" || return 1
     fi

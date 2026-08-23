@@ -84,3 +84,8 @@
 - 日期：2026-08-22
 - 负责角色：方舟
 - 修改范围：交易台账「裸交易记录」处置（清空交易室业务数据 + 重建 2026-08W4 周期/3计划/3记录/3卖出子单，temp/pdca_cleanup.sql+pdca_demo_seed.sql）；records.py 新增 auto_match_plan_id 自动匹配交易计划(+test)；TradingRecordForm 无活跃周期一键激活引导；record.ts 修复 /pdca/kline 404 → /kline；选股视图排序/成交额单位/本地排序；PDCA使用说明书更新 V1.1（按PDCA闭环重构+录入示例）。会话交互对象：K
+
+## 会话信息
+- 日期：2026-08-23
+- 负责角色：量量
+- 修改范围：排查并修复 dev start 前后台启动失败（根因 PostgreSQL@18 未运行，pg_ctl 直接启动绕过 launchd）；改造 start.sh 整合数据库管理——启动前自动检查/拉起数据库（dev_start_backend + fg）、dev stop 连带停库、dev restart 仅重启前后台（数据库保持运行）；start/stop/restart 三种场景实测通过。已在 Terminal.app 建议执行 brew services start postgresql@18 配置开机自启。会话交互对象：K
