@@ -59,12 +59,8 @@ echo "  提交到 GitHub"
 echo "=========================================="
 echo ""
 
-# 2. 检查工作区是否存在变更
+# 2. 获取工作区状态（是否有变更需结合忽略规则与是否 ahead 判断，故延后处理）
 CHANGED=$(git -c core.quotepath=false status --porcelain)
-if [ -z "$CHANGED" ]; then
-    echo "✅ 工作区干净，没有待提交的更改"
-    exit 0
-fi
 
 # 3. 拆分：已跟踪变更、未跟踪文件
 TRACKED_CHANGED=$(git -c core.quotepath=false status --porcelain | grep -v "^??" || true)
@@ -85,6 +81,23 @@ for suffix in "${IGNORE_FILE_SUFFIXES[@]}"; do
     IGNORED_UNTRACKED+="$TMP_SUFFIX"$'\n'
     NON_IGNORED_UNTRACKED=$(echo "$NON_IGNORED_UNTRACKED" | grep -v "$suffix" || true)
 done
+
+# 4.0 判定是否存在真正待提交的文件：已跟踪变更或非忽略的新增文件
+HAVE_COMMIT_CHANGES=false
+[ -n "$TRACKED_CHANGED" ] && HAVE_COMMIT_CHANGES=true
+if [ -n "$(echo "$NON_IGNORED_UNTRACKED" | tr -d '[:space:]')" ]; then
+    HAVE_COMMIT_CHANGES=true
+fi
+
+# 检测本地领先远程的 commit 数（含已提交但未推送的内容）
+AHEAD_COUNT=$(git rev-list --count "@{u}"..HEAD 2>/dev/null || echo 0)
+AHEAD_COUNT="${AHEAD_COUNT//[^0-9]/0}"
+
+# 工作区干净且无领先提交 → 无需任何操作
+if [ "$HAVE_COMMIT_CHANGES" = false ] && [ "$AHEAD_COUNT" -eq 0 ]; then
+    echo "✅ 工作区干净，没有待提交的更改"
+    exit 0
+fi
 
 # 4. 前置安全检测：敏感密钥文件名拦截（word boundary 完整匹配）
 check_sensitive_file() {
@@ -206,17 +219,22 @@ add_files_from_list() {
     done
 }
 # 已跟踪变更（修改/删除/重命名）由 git add -u 一次性处理（V1.1.6 修复 R/D bug）
-git add -u
-# 未跟踪文件（新文件）由 add_files_from_list 处理
-add_files_from_list "$NON_IGNORED_UNTRACKED"
+if [ "$HAVE_COMMIT_CHANGES" = true ]; then
+    git add -u
+    # 未跟踪文件（新文件）由 add_files_from_list 处理
+    add_files_from_list "$NON_IGNORED_UNTRACKED"
 
-# 10. 执行提交，捕获异常退出
-echo ""
-echo "📤 正在提交代码..."
-git -c user.name="K" -c user.email="k@quantitative-trading.local" commit -m "$COMMIT_MSG" || {
-    echo "❌ git commit 执行失败，请检查代码冲突、文件锁定等问题"
-    exit 1
-}
+    # 10. 执行提交，捕获异常退出
+    echo ""
+    echo "📤 正在提交代码..."
+    git -c user.name="K" -c user.email="k@quantitative-trading.local" commit -m "$COMMIT_MSG" || {
+        echo "❌ git commit 执行失败，请检查代码冲突、文件锁定等问题"
+        exit 1
+    }
+else
+    echo ""
+    echo "📭 没有新的待提交文件（仅剩被忽略文件），跳过 commit，直接推送本地已有提交（领先远程 $AHEAD_COUNT 个）"
+fi
 
 # 11. 执行推送，捕获异常退出
 echo "🚀 正在推送到远程 origin/$CURR_BRANCH ..."
