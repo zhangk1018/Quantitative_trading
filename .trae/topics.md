@@ -106,7 +106,7 @@
 ## 会话信息
 - 日期：2026-08-24
 - 负责角色：量量
-- 修改范围：①后端统一用户域 launchd 管理（数据库 com.quant.postgresql/后端 com.quant.backend/ETL 全部迁移 ~/Library/LaunchAgents，停用 watchdog+healthcheck，修复数据库未启动导致后端崩溃循环，重启自愈验证通过）；②冻结经验落库（V006 迁移 + act_record.py _sync_trade_experience，协作单 20.0 已 CLOSED）；③错误码统一（shared/error_codes.py 集中表 + PDCA 10 路由改造，数据源 source 标注）；④日志规范（分层目录 backend/etl/cron/postgres/system/frontend）；⑤日志清理随月K线聚合执行（cleanup_expired_logs 保留60天，删除独立定时任务）；⑥stage2 触发时间 17:45→17:30（与文档一致）；⑦8-24 数据质量核查通过（日线5207只/指标>99%/宽表正常），量量日报已提交。会话交互对象：K
+- 修改范围：①后端统一用户域 launchd 管理（数据库 com.quant.postgresql/后端 com.quant.backend/ETL 全部迁移 ~/Library/LaunchAgents，停用 watchdog+healthcheck，修复数据库未启动导致后端崩溃循环，重启自愈验证通过）；②冻结经验落库（V006 迁移 + act_record.py _sync_trade_experience，协作单 20.0 已 CLOSED）；③错误码统一（shared/error_codes.py 集中表 + PDCA 10 路由改造，数据源 source 标注）；④日志规范（分层目录 backend/etl/cron/postgres/system/frontend）；⑤日志清理随月K线聚合执行（cleanup_expired_logs 保留60天，删除独立定时任务）；⑥stage2 触发时间 17:45→17:30（与文档一致）；⑦8-24 数据质量核查通过（日线5207只/指标>99%/宽表正常）；⑧Pandas DBAPI2 警告修复（postgresql_storage.py 12 处 read_sql 改 SQLAlchemy engine）；⑨Baostock pe_ttm 补全修复（日期格式 YYYYMMDD→YYYY-MM-DD + 10秒 signal.alarm 超时防护，实测 1498/1552 成功，pe_ttm 覆盖率 72%→99%）。量量日报已更新并提交。会话交互对象：K
 
 ## 会话信息
 - 日期：2026-08-24

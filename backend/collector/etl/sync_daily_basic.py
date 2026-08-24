@@ -25,6 +25,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import argparse
+import signal
 import pandas as pd
 import baostock as bs
 from typing import Optional, List
@@ -40,6 +41,19 @@ logger = setup_logger('daily_basic_sync')
 
 # Tushare daily_basic 限频 60次/分钟，每次间隔至少 1.1 秒
 DAILY_BASIC_MIN_INTERVAL = 1.1
+
+# Baostock 单只查询超时（秒）：Baostock 网络阻塞时无内置超时，需 signal 兜底
+BAOSTOCK_QUERY_TIMEOUT = 10
+
+
+class _BaostockTimeout(Exception):
+    """Baostock 单次查询超时"""
+    pass
+
+
+def _timeout_handler(signum, frame):
+    """SIGALRM 处理器：Baostock 查询超时抛出异常"""
+    raise _BaostockTimeout(f"Baostock 查询超过 {BAOSTOCK_QUERY_TIMEOUT} 秒超时")
 
 
 class DailyBasicSync:
@@ -157,13 +171,23 @@ class DailyBasicSync:
             logger.warning(f"  ⚠️ Baostock 登录失败: {lg.error_msg}，跳过 pe_ttm 补全")
             return 0
 
+        # 设置 SIGALRM 超时处理器（仅主线程可用；非主线程则跳过超时防护）
+        try:
+            signal.signal(signal.SIGALRM, _timeout_handler)
+            _use_timeout = True
+        except (ValueError, TypeError):
+            logger.warning("  ⚠️ 非主线程，无法启用 Baostock 查询超时防护")
+            _use_timeout = False
+
         filled = 0
         failed = 0
         consecutive_failures = 0
         max_consecutive_failures = 10  # 加重连容忍，避免 Baostock 波动中断
         retried = False
         updates = []
-        bs_date = trade_date.replace('-', '')  # YYYY-MM-DD → YYYYMMDD
+        # Baostock query_history_k_data_plus 要求日期为 YYYY-MM-DD（带横线），
+        # 不能转成 YYYYMMDD，否则报「日期格式不正确」
+        bs_date = trade_date
         t0 = time.time()
 
         logger.info(f"  🚀 开始快速补全，目标 {len(missing_codes)} 只，预计 {(len(missing_codes) * 0.2) / 60:.0f} 分钟")
@@ -173,11 +197,17 @@ class DailyBasicSync:
                 time.sleep(0.18)  # 自定义快速限速（0.18s/只，≈ 5.5只/秒）
                 # Baostock 要求 code 格式为 sh.600000 或 sz.000001
                 bs_code = f"sh.{code}" if code.startswith('6') else f"sz.{code}"
-                rs = bs.query_history_k_data_plus(
-                    bs_code, "date,code,peTTM",
-                    start_date=bs_date, end_date=bs_date,
-                    frequency="d", adjustflag="3"
-                )
+                if _use_timeout:
+                    signal.alarm(BAOSTOCK_QUERY_TIMEOUT)
+                try:
+                    rs = bs.query_history_k_data_plus(
+                        bs_code, "date,code,peTTM",
+                        start_date=bs_date, end_date=bs_date,
+                        frequency="d", adjustflag="3"
+                    )
+                finally:
+                    if _use_timeout:
+                        signal.alarm(0)
                 if rs is None or rs.error_code != '0':
                     failed += 1
                     consecutive_failures += 1
@@ -193,6 +223,12 @@ class DailyBasicSync:
                     else:
                         failed += 1
                         consecutive_failures += 1
+            except _BaostockTimeout:
+                if _use_timeout:
+                    signal.alarm(0)
+                failed += 1
+                consecutive_failures += 1
+                logger.warning(f"  ⏱️ {code} Baostock 查询超时（>{BAOSTOCK_QUERY_TIMEOUT}s），跳过")
             except Exception as e:
                 failed += 1
                 consecutive_failures += 1

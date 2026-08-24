@@ -23,6 +23,9 @@ import pandas as pd
 import psycopg2
 from psycopg2 import OperationalError, pool, sql, errors
 from psycopg2.extras import execute_batch, execute_values
+from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
+from sqlalchemy.pool import NullPool
 
 from .base_storage import BaseStorage
 
@@ -117,6 +120,18 @@ class PostgreSQLStorage(BaseStorage):
         self._thread_local = threading.local()
         self._conn_acquire_time = threading.local()
         self.engine = _Engine(self)
+
+        # pandas read_sql 专用 SQLAlchemy engine（消除 DBAPI2 连接警告）
+        # NullPool：每次读取独立连接，避免与上方 psycopg2 连接池叠加连接数
+        _pg_url = URL.create(
+            "postgresql+psycopg2",
+            username=self.username,
+            password=self.password,
+            host=self.host,
+            port=self.port,
+            database=self.database,
+        )
+        self._pandas_engine = create_engine(_pg_url, poolclass=NullPool)
 
     @property
     def conn(self):
@@ -1141,7 +1156,7 @@ class PostgreSQLStorage(BaseStorage):
 
         conn = self._get_conn()
         try:
-            df = pd.read_sql(query, conn, params=params)
+            df = pd.read_sql(query, self._pandas_engine, params=params)
             for col in ['list_date', 'delist_date']:
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
@@ -1178,7 +1193,7 @@ class PostgreSQLStorage(BaseStorage):
 
         conn = self._get_conn()
         try:
-            df = pd.read_sql(query, conn, params=params)
+            df = pd.read_sql(query, self._pandas_engine, params=params)
             df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
             return df
         except Exception as e:
@@ -1212,7 +1227,7 @@ class PostgreSQLStorage(BaseStorage):
 
         conn = self._get_conn()
         try:
-            df = pd.read_sql(query, conn, params=params)
+            df = pd.read_sql(query, self._pandas_engine, params=params)
             df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
             return df
         except Exception as e:
@@ -1246,7 +1261,7 @@ class PostgreSQLStorage(BaseStorage):
 
         conn = self._get_conn()
         try:
-            df = pd.read_sql(query, conn, params=params)
+            df = pd.read_sql(query, self._pandas_engine, params=params)
             df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
             return df
         except Exception as e:
@@ -1282,7 +1297,7 @@ class PostgreSQLStorage(BaseStorage):
 
         conn = self._get_conn()
         try:
-            df = pd.read_sql(query, conn, params=params)
+            df = pd.read_sql(query, self._pandas_engine, params=params)
             df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
             return df
         except Exception as e:
@@ -1323,7 +1338,7 @@ class PostgreSQLStorage(BaseStorage):
 
         conn = self._get_conn()
         try:
-            df = pd.read_sql(query, conn, params=params)
+            df = pd.read_sql(query, self._pandas_engine, params=params)
             df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
             return df
         except Exception as e:
@@ -1410,7 +1425,7 @@ class PostgreSQLStorage(BaseStorage):
 
         conn = self._get_conn()
         try:
-            df = pd.read_sql(query, conn, params=params)
+            df = pd.read_sql(query, self._pandas_engine, params=params)
             df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
             return df
         except Exception as e:
@@ -1440,7 +1455,7 @@ class PostgreSQLStorage(BaseStorage):
 
         conn = self._get_conn()
         try:
-            df = pd.read_sql(query, conn, params=params)
+            df = pd.read_sql(query, self._pandas_engine, params=params)
             df['cal_date'] = pd.to_datetime(df['cal_date']).dt.date
             return df
         except Exception as e:
@@ -1476,7 +1491,7 @@ class PostgreSQLStorage(BaseStorage):
 
         conn = self._get_conn()
         try:
-            df = pd.read_sql(query, conn, params=params)
+            df = pd.read_sql(query, self._pandas_engine, params=params)
             df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
             return df
         except Exception as e:
@@ -1490,7 +1505,7 @@ class PostgreSQLStorage(BaseStorage):
         query = "SELECT code, name, exchange, industry FROM stock_basic ORDER BY code"
         conn = self._get_conn()
         try:
-            return pd.read_sql(query, conn)
+            return pd.read_sql(query, self._pandas_engine)
         except Exception as e:
             logger.error(f"❌ 获取股票列表失败: {str(e)}")
             return pd.DataFrame()
@@ -1570,7 +1585,7 @@ class PostgreSQLStorage(BaseStorage):
 
         conn = self._get_conn()
         try:
-            df = pd.read_sql(query, conn, params=params)
+            df = pd.read_sql(query, self._pandas_engine, params=params)
             df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
             return df
         except Exception as e:
@@ -1610,7 +1625,7 @@ class PostgreSQLStorage(BaseStorage):
                 WHERE code = ANY(%s) AND cycle = %s
                 GROUP BY code
             """
-            df = pd.read_sql(query, conn, params=(codes, cycle))
+            df = pd.read_sql(query, self._pandas_engine, params=(codes, cycle))
             result_dict = df.set_index('code')['last_date'].to_dict()
             return {code: result_dict.get(code) for code in codes}
         except Exception as e:
