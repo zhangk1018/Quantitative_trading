@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.api.dependencies import get_db
+from shared.error_codes import PDCAError
 from shared.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -86,7 +87,7 @@ async def create_check_report(body: CheckReportCreate):
             cur.execute("SELECT id, status FROM pdca.pdca_cycle WHERE id = %s", (body.pdca_cycle_id,))
             cycle = cur.fetchone()
             if not cycle:
-                raise HTTPException(status_code=404, detail=f"周期 {body.pdca_cycle_id} 不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.CYCLE_NOT_FOUND.detail())
             if cycle[1] not in ("DO", "CHECK"):
                 logger.warning("周期 %s 当前状态为 %s，非 DO/CHECK 阶段创建复盘报告", body.pdca_cycle_id, cycle[1])
 

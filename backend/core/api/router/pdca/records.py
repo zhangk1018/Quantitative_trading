@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel, Field
 
 from core.api.dependencies import get_db
+from shared.error_codes import CommonError, PDCAError
 from shared.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -189,9 +190,9 @@ async def create_record(record: TradingRecordCreate):
             with conn.cursor() as cur:
                 # 数值校验
                 if record.entry_price <= 0:
-                    raise HTTPException(status_code=400, detail="40004: 入场价必须大于0")
+                    raise HTTPException(status_code=400, detail=PDCAError.ENTRY_PRICE_POSITIVE.detail())
                 if record.exit_date and record.exit_date < record.entry_date:
-                    raise HTTPException(status_code=400, detail="40008: 出场日期不能早于进场日期")
+                    raise HTTPException(status_code=400, detail=PDCAError.ENTRY_EXIT_DATE.detail())
 
                 # pdca_cycle_id 为空时自动获取当前活跃周期
                 if record.pdca_cycle_id is None:
@@ -202,7 +203,7 @@ async def create_record(record: TradingRecordCreate):
                     if row:
                         record.pdca_cycle_id = row[0]
                     else:
-                        raise HTTPException(status_code=400, detail="40012: 没有活跃的 PDCA 周期，请先创建周期")
+                        raise HTTPException(status_code=400, detail=PDCAError.NO_ACTIVE_CYCLE.detail())
 
                 # 未指定交易计划时，自动按股票代码匹配当前周期内的交易计划
                 if record.trading_plan_id is None:
@@ -247,7 +248,7 @@ async def create_record(record: TradingRecordCreate):
         raise
     except Exception as e:
         logger.exception("创建交易记录失败")
-        raise HTTPException(status_code=500, detail=f"50002: {str(e)}")
+        raise HTTPException(status_code=500, detail=CommonError.DB_QUERY.detail(detail=str(e)))
 
 
 @router.put("/{record_id}", response_model=ApiResponse)
@@ -259,9 +260,9 @@ async def update_record(record_id: int, record: TradingRecordUpdate):
             cur.execute("SELECT id, deleted_at FROM pdca.trading_record WHERE id = %s", (record_id,))
             existing = cur.fetchone()
             if not existing:
-                raise HTTPException(status_code=404, detail="40011: 交易记录不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.RECORD_NOT_FOUND.detail())
             if existing[1]:
-                raise HTTPException(status_code=400, detail="40011: 交易记录已被删除")
+                raise HTTPException(status_code=400, detail=PDCAError.RECORD_DELETED.detail())
 
             # 构建动态更新
             updates = {}
@@ -299,7 +300,7 @@ async def delete_record(record_id: int):
             cur.execute("SELECT id, deleted_at FROM pdca.trading_record WHERE id = %s", (record_id,))
             existing = cur.fetchone()
             if not existing:
-                raise HTTPException(status_code=404, detail="40011: 交易记录不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.RECORD_NOT_FOUND.detail())
             if existing[1]:
                 return ApiResponse(code=200, message="success", data={"id": record_id})
 

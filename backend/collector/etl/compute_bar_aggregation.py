@@ -205,6 +205,41 @@ def compute_aggregation(conn, target_date: date, cycle: str) -> int:
         return affected
 
 
+def cleanup_expired_logs(retention_days: int = 60) -> None:
+    """清理超过保留天数的日志文件（随月K线聚合每月执行一次）。
+
+    Args:
+        retention_days: 日志保留天数，默认 60 天
+    """
+    log_root = os.path.join(BASE_DIR, 'logs')
+    if not os.path.isdir(log_root):
+        logger.warning(f"日志目录不存在，跳过清理: {log_root}")
+        return
+
+    now = datetime.now().timestamp()
+    cutoff = retention_days * 86400
+    removed = 0
+    for root, _, files in os.walk(log_root):
+        for name in files:
+            if not (name.endswith('.log') or name.endswith('.gz')
+                    or name.endswith('.err.log') or name.endswith('.stdout.log')
+                    or name.endswith('.stderr.log')):
+                continue
+            path = os.path.join(root, name)
+            try:
+                if now - os.path.getmtime(path) > cutoff:
+                    os.remove(path)
+                    removed += 1
+                    logger.info(f"清理过期日志: {os.path.relpath(path, log_root)}")
+            except OSError as e:
+                logger.warning(f"清理日志失败 {path}: {e}")
+
+    if removed:
+        logger.info(f"✅ 日志清理完成，共删除 {removed} 个过期文件（> {retention_days} 天）")
+    else:
+        logger.info(f"日志清理：无超过 {retention_days} 天的日志文件")
+
+
 def main():
     parser = argparse.ArgumentParser(description='周线/月线 K 线聚合计算')
     parser.add_argument('--cycle', required=True, choices=['1w', '1m'],
@@ -259,6 +294,10 @@ def main():
         # 输出 TASK_RESULT 供 daily_job_runner 解析
         print(f"TASK_RESULT:{{\"rows_affected\":{affected},\"extra_metrics\":{{\"date\":\"{target_date}\",\"cycle\":\"{cycle}\"}}}}")
         logger.info(f"✅ {cycle_label}聚合完成，共 {affected} 条记录")
+
+        # 月线聚合完成后顺带清理过期日志（每月一次）
+        if cycle == '1m':
+            cleanup_expired_logs()
 
     except Exception as e:
         conn.rollback()

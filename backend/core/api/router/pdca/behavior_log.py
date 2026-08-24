@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from core.api.dependencies import get_db
+from shared.error_codes import PDCAError
 from shared.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -98,7 +99,7 @@ async def create_behavior_log(body: BehaviorLogCreate):
             # 检查周期存在
             cur.execute("SELECT id, status FROM pdca.pdca_cycle WHERE id = %s", (body.pdca_cycle_id,))
             if not cur.fetchone():
-                raise HTTPException(status_code=404, detail=f"周期 {body.pdca_cycle_id} 不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.CYCLE_NOT_FOUND.detail())
 
             # 如果有 trading_record_id，检查记录存在
             if body.trading_record_id:

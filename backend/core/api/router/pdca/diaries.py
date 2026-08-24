@@ -10,6 +10,7 @@ from fastapi import APIRouter, Query, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 
 from core.api.dependencies import get_db
+from shared.error_codes import CommonError, PDCAError
 from shared.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ async def create_diary(diary: DiaryCreate):
                 return ApiResponse(code=200, message="success", data={"id": diary_id})
             except Exception as e:
                 logger.exception("创建交易日记失败")
-                raise HTTPException(status_code=500, detail=f"50002: {str(e)}")
+                raise HTTPException(status_code=500, detail=CommonError.DB_QUERY.detail(detail=str(e)))
 
 
 @router.put("/{diary_id}", response_model=ApiResponse)
@@ -122,9 +123,9 @@ async def update_diary(diary_id: int, diary: DiaryUpdate):
             cur.execute("SELECT id, deleted_at FROM pdca.trading_diary WHERE id = %s", (diary_id,))
             existing = cur.fetchone()
             if not existing:
-                raise HTTPException(status_code=404, detail="40011: 交易日记不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.DIARY_NOT_FOUND.detail())
             if existing[1]:
-                raise HTTPException(status_code=400, detail="40011: 交易日记已被删除")
+                raise HTTPException(status_code=400, detail=PDCAError.DIARY_DELETED.detail())
 
             updates = {}
             for field in ("emotion_note", "review_text", "three_month_review_done"):
@@ -156,12 +157,12 @@ async def upload_attachment(diary_id: int, file: UploadFile = File(...)):
     """上传附件（jpg/png/gif ≤10MB）"""
     # 校验文件类型
     if file.content_type not in _ALLOWED_MIME_TYPES:
-        raise HTTPException(status_code=400, detail="40010: 仅支持 jpg/png/gif 格式")
+        raise HTTPException(status_code=400, detail=PDCAError.FILE_FORMAT_UNSUPPORTED.detail())
 
     # 校验文件大小
     contents = await file.read()
     if len(contents) > _MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="40010: 文件大小不能超过 10MB")
+        raise HTTPException(status_code=400, detail=PDCAError.FILE_TOO_LARGE.detail())
 
     # 确保目录存在
     os.makedirs(_ATTACHMENT_DIR, exist_ok=True)
@@ -184,9 +185,9 @@ async def upload_attachment(diary_id: int, file: UploadFile = File(...)):
             )
             existing = cur.fetchone()
             if not existing:
-                raise HTTPException(status_code=404, detail="40011: 交易日记不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.DIARY_NOT_FOUND.detail())
             if existing[1]:
-                raise HTTPException(status_code=400, detail="40011: 交易日记已被删除")
+                raise HTTPException(status_code=400, detail=PDCAError.DIARY_DELETED.detail())
 
             existing_paths = existing[2] or []
             if isinstance(existing_paths, list):

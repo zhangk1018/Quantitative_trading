@@ -31,11 +31,13 @@ import ActModule from './components/ActModule';
 
 const PDCADashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState('cycles');
+  // 每次切到「交易计划」页签时递增，触发 TradingPlanEditor 重新拉取周期列表（见 #PFC 修复）
+  const [planRefreshKey, setPlanRefreshKey] = useState(0);
 
   // 左侧 PDCA 主 Tab + 右侧隐藏 Tab（内容渲染用，tab 栏上的按钮由 tabBarExtraContent 替代）
   const tabItems = [
     { key: 'cycles', label: <span className="flex items-center gap-2"><RadarChartOutlined /><span>周期总览</span></span>, children: <CycleOverview /> },
-    { key: 'plans',  label: <span className="flex items-center gap-2"><FileTextOutlined /><span>交易计划</span></span>, children: <TradingPlanEditor /> },
+    { key: 'plans',  label: <span className="flex items-center gap-2"><FileTextOutlined /><span>交易计划</span></span>, children: <TradingPlanEditor refreshKey={planRefreshKey} /> },
     { key: 'records', label: <span className="flex items-center gap-2"><TableOutlined /><span>交易台账</span></span>, children: <TradingRecordTable /> },
     { key: 'diary',  label: <span className="flex items-center gap-2"><EditOutlined /><span>交易日记</span></span>, children: <TradingDiaryEditor /> },
     { key: 'check',  label: <span className="flex items-center gap-2"><AuditOutlined /><span>复盘报告</span></span>, children: <CheckModule /> },
@@ -72,7 +74,10 @@ const PDCADashboard: React.FC = () => {
       <div className="flex-1 min-h-0 overflow-y-auto">
         <Tabs
           activeKey={activeTab}
-          onChange={setActiveTab}
+          onChange={(key) => {
+            setActiveTab(key);
+            if (key === 'plans') setPlanRefreshKey((k) => k + 1);
+          }}
           items={tabItems}
           tabBarExtraContent={tabBarExtraContent}
           className="h-full pdca-tabs"

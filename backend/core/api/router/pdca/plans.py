@@ -19,6 +19,7 @@ from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel, Field
 
 from core.api.dependencies import get_db
+from shared.error_codes import PDCAError
 from shared.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,7 @@ def _get_cycle(conn, cycle_id: int) -> dict:
         columns = [desc[0] for desc in cur.description]
         row = cur.fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail=f"周期 {cycle_id} 不存在或已删除")
+            raise HTTPException(status_code=404, detail=PDCAError.CYCLE_NOT_FOUND.detail())
         return dict(zip(columns, row))
 
 

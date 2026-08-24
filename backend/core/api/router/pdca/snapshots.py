@@ -14,6 +14,7 @@ from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel, Field
 
 from core.api.dependencies import get_db
+from shared.error_codes import CommonError, PDCAError
 from shared.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -106,14 +107,14 @@ async def create_snapshot(snapshot: SnapshotCreate):
                 )
                 snap_id = cur.fetchone()
                 if not snap_id:
-                    raise HTTPException(status_code=400, detail="40012: 该日期已存在资金快照")
+                    raise HTTPException(status_code=400, detail=PDCAError.SNAPSHOT_EXISTS.detail())
                 conn.commit()
                 return ApiResponse(code=200, message="success", data={"id": snap_id[0]})
             except HTTPException:
                 raise
             except psycopg2.Error as e:
                 logger.exception("创建资金快照失败")
-                raise HTTPException(status_code=500, detail=f"50002: {str(e)}")
+                raise HTTPException(status_code=500, detail=CommonError.DB_QUERY.detail(detail=str(e)))
 
 
 @router.put("/{snapshot_id}", response_model=ApiResponse)
@@ -127,7 +128,7 @@ async def update_snapshot(snapshot_id: int, snapshot: SnapshotUpdate):
             )
             existing = cur.fetchone()
             if not existing:
-                raise HTTPException(status_code=404, detail="40401: 资金记录不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.FUND_RECORD_NOT_FOUND.detail())
 
             # 若修改日期，检查是否与其他记录冲突
             if snapshot.snapshot_date and snapshot.snapshot_date != existing[1]:
@@ -136,7 +137,7 @@ async def update_snapshot(snapshot_id: int, snapshot: SnapshotUpdate):
                     (snapshot.snapshot_date, snapshot_id),
                 )
                 if cur.fetchone():
-                    raise HTTPException(status_code=400, detail="40012: 该日期已存在资金记录")
+                    raise HTTPException(status_code=400, detail=PDCAError.RECORD_EXISTS.detail())
 
             # 判断哪些字段影响 adjusted_nav：资产/出入金相关字段变更时需置 NULL 重算
             nav_affecting_fields = {"total_asset", "available_cash", "position_value", "deposit", "withdrawal"}
@@ -152,7 +153,7 @@ async def update_snapshot(snapshot_id: int, snapshot: SnapshotUpdate):
                     if f in nav_affecting_fields:
                         has_nav_change = True
             if not fields:
-                raise HTTPException(status_code=400, detail="40013: 无更新字段")
+                raise HTTPException(status_code=400, detail=PDCAError.NO_UPDATE_FIELDS.detail())
 
             if has_nav_change:
                 fields.append("adjusted_nav")
@@ -173,7 +174,7 @@ async def delete_snapshot(snapshot_id: int):
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM pdca.account_snapshot WHERE id = %s", (snapshot_id,))
             if not cur.fetchone():
-                raise HTTPException(status_code=404, detail="40401: 资金记录不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.FUND_RECORD_NOT_FOUND.detail())
             cur.execute("DELETE FROM pdca.account_snapshot WHERE id = %s", (snapshot_id,))
             conn.commit()
             return ApiResponse(code=200, message="success", data={"id": snapshot_id})

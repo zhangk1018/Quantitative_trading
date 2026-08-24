@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from core.api.dependencies import get_db
+from shared.error_codes import CommonError, PDCAError
 from shared.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ async def update_config(update: ConfigUpdate):
             )
             current = cur.fetchone()
             if not current:
-                raise HTTPException(status_code=404, detail="40011: 配置项不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.CONFIG_NOT_FOUND.detail())
 
             current_id, _, current_value, current_numeric, current_bool, current_version = current
 
@@ -89,7 +90,7 @@ async def update_config(update: ConfigUpdate):
                 return ApiResponse(code=200, message="success", data={"id": new_id, "version": new_version})
             except Exception as e:
                 logger.exception("更新配置失败")
-                raise HTTPException(status_code=500, detail=f"50002: {str(e)}")
+                raise HTTPException(status_code=500, detail=CommonError.DB_QUERY.detail(detail=str(e)))
 
 
 @router.get("/history/{config_key}", response_model=ApiResponse)

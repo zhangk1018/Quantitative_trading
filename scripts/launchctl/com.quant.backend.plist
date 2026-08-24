@@ -25,9 +25,9 @@
     <integer>30</integer>
     
     <key>StandardOutPath</key>
-    <string>/Volumes/MyData/Quantitative_trading/logs/quant_backend.log</string>
+    <string>/Volumes/MyData/Quantitative_trading/logs/backend/quant_backend.log</string>
     
     <key>StandardErrorPath</key>
-    <string>/Volumes/MyData/Quantitative_trading/logs/quant_backend.err.log</string>
+    <string>/Volumes/MyData/Quantitative_trading/logs/backend/quant_backend.err.log</string>
 </dict>
 </plist>

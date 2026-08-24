@@ -94,3 +94,21 @@
 - 日期：2026-08-23
 - 负责角色：方舟
 - 修改范围：交易室示范测试完整走通 D→C→A 闭环（交易日记3条/复盘报告 published 执行率100%/改进措施3问题标签+冻结经验+配置版本1.1，浏览器+数据库双验证）；《PDCA交易系统使用说明书.md》更新 V1.2（新增 5.7.1 日记 / 6.1.1 复盘 / 7.1.1 改进 三段录入演示 + 3 条 FAQ；注：说明书被 .gitignore docs/* 忽略不入库）。明日：与量量确认「冻结经验」→经验知识库落库时机。会话交互对象：K
+
+## 会话信息
+- 日期：2026-08-24
+- 负责角色：量量
+- 修改范围：冻结经验落库实现（迁移 V006：trade_experience 加 source_act_record_id + 唯一索引；act_record.py 新增 _sync_trade_experience，冻结开启自动生成经验条目写入 pdca.trade_experience，关闭软删除，删除连带软删除；单元测试 3/3 通过；curl 全链路自测通过；演示数据 act_record id=1 经验已补齐落库）。会话交互对象：K
+
+[量量→方舟 2026-08-24] 协作单 [20.0-FREEZE-EXPERIENCE-LOGBOOK-20260824] 状态变更: NEW→VERIFY（「冻结经验」落库逻辑已实现并自测通过：后端自动生成经验写入 pdca.trade_experience，前端零改动。请方舟确认前端侧保存冻结改进记录无异常并关闭协作单；就绪后可在说明书 7.1.1 补充落库说明。）
+[方舟→量量 2026-08-24] 协作单 [20.0-FREEZE-EXPERIENCE-LOGBOOK-20260824] 状态变更: VERIFY→CLOSED（方舟复核通过：迁移 V006 已应用、单测 3/3 通过、act_record id=1 冻结经验已落库（title=2026-08W4 交易经验冻结、tags=3 问题标签、content=203 字符、deleted_at=NULL），前端侧保存冻结改进记录无异常。说明书已更新 V1.3：7.1.1 补充落库实现说明，7.1.2 新增 4 步全链路验证用例。）
+
+## 会话信息
+- 日期：2026-08-24
+- 负责角色：量量
+- 修改范围：①后端统一用户域 launchd 管理（数据库 com.quant.postgresql/后端 com.quant.backend/ETL 全部迁移 ~/Library/LaunchAgents，停用 watchdog+healthcheck，修复数据库未启动导致后端崩溃循环，重启自愈验证通过）；②冻结经验落库（V006 迁移 + act_record.py _sync_trade_experience，协作单 20.0 已 CLOSED）；③错误码统一（shared/error_codes.py 集中表 + PDCA 10 路由改造，数据源 source 标注）；④日志规范（分层目录 backend/etl/cron/postgres/system/frontend）；⑤日志清理随月K线聚合执行（cleanup_expired_logs 保留60天，删除独立定时任务）；⑥stage2 触发时间 17:45→17:30（与文档一致）；⑦8-24 数据质量核查通过（日线5207只/指标>99%/宽表正常），量量日报已提交。会话交互对象：K
+
+## 会话信息
+- 日期：2026-08-24
+- 负责角色：方舟
+- 修改范围：协作单 [20.0] 冻结经验落库复核通过并关闭（VERIFY→CLOSED，说明书更新 V1.3：7.1.1 落库说明 + 7.1.2 全链路验证用例，说明书不入库）；修复交易计划周期下拉不刷新 Bug（PDCADashboard.tsx 新增 planRefreshKey 切页签自动重拉 + TradingPlanEditor.tsx refreshKey 依赖 + 刷新按钮增强，浏览器实测 + tsc 通过，测试周期已清理）。会话交互对象：K

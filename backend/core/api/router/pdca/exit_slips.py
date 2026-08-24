@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.api.dependencies import get_db
+from shared.error_codes import PDCAError
 from shared.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,7 @@ async def batch_create_exit_slips(record_id: int, batch: ExitSlipBatchCreate):
             )
             row = cur.fetchone()
             if not row:
-                raise HTTPException(status_code=404, detail="40011: 交易记录不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.RECORD_NOT_FOUND.detail())
             _, total_qty, remain_qty, entry_price, commission_entry = row
             if remain_qty is None:
                 remain_qty = total_qty
@@ -94,7 +95,7 @@ async def batch_create_exit_slips(record_id: int, batch: ExitSlipBatchCreate):
             if total_sell_qty > remain_qty:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"40013: 卖出数量 {total_sell_qty} 超过剩余持仓 {remain_qty}",
+                    detail=PDCAError.SELL_QTY_EXCEEDED.detail(detail=f"卖出 {total_sell_qty}，剩余持仓 {remain_qty}"),
                 )
 
             # 3. 批量插入子单
@@ -145,7 +146,7 @@ async def update_exit_slip(slip_id: int, slip: ExitSlipUpdate):
             columns = [desc[0] for desc in cur.description]
             row = cur.fetchone()
             if not row:
-                raise HTTPException(status_code=404, detail="40011: 卖出子单不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.SLIP_NOT_FOUND.detail())
             slip_data = dict(zip(columns, row))
             entry_price = slip_data["entry_price"]
             commission_entry = slip_data["commission_entry"]
@@ -220,7 +221,7 @@ async def delete_exit_slip(slip_id: int):
             )
             row = cur.fetchone()
             if not row:
-                raise HTTPException(status_code=404, detail="40011: 卖出子单不存在")
+                raise HTTPException(status_code=404, detail=PDCAError.SLIP_NOT_FOUND.detail())
             _, record_id, qty, entry_price, commission_entry = row
 
             # 2. 软删除

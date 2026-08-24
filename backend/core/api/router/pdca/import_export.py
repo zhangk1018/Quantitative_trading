@@ -12,6 +12,7 @@ from fastapi import APIRouter, Query, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 
 from core.api.dependencies import get_db
+from shared.error_codes import CommonError, PDCAError
 from shared.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ async def export_report(report_id: int):
             row = cur.fetchone()
 
     if not row:
-        raise HTTPException(status_code=404, detail="40011: 复盘报告不存在")
+        raise HTTPException(status_code=404, detail=PDCAError.REPORT_NOT_FOUND.detail())
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -229,7 +230,7 @@ async def parse_import(
             )
             adapter = cur.fetchone()
             if not adapter:
-                raise HTTPException(status_code=400, detail="40009: 不支持的券商格式，请先配置适配器")
+                raise HTTPException(status_code=400, detail=PDCAError.BROKER_NOT_SUPPORTED.detail())
 
             column_mapping, date_format, skip_rows = adapter
 
@@ -239,14 +240,14 @@ async def parse_import(
         wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
         ws = wb.active
     except Exception:
-        raise HTTPException(status_code=400, detail="40009: 无法解析 Excel 文件")
+        raise HTTPException(status_code=400, detail=PDCAError.EXCEL_PARSE_FAILED.detail())
 
     # 跳过表头行
     rows = list(ws.iter_rows(values_only=True))
     data_rows = rows[skip_rows:]
 
     if not data_rows:
-        raise HTTPException(status_code=400, detail="40009: Excel 文件为空")
+        raise HTTPException(status_code=400, detail=PDCAError.EXCEL_EMPTY.detail())
 
     # 获取表头映射
     header_row = rows[skip_rows - 1] if skip_rows > 0 else data_rows[0]
@@ -294,7 +295,7 @@ async def parse_import(
 async def confirm_import(records: list[dict]):
     """确认导入解析后的数据"""
     if not records:
-        raise HTTPException(status_code=400, detail="40003: 导入数据为空")
+        raise HTTPException(status_code=400, detail=PDCAError.IMPORT_EMPTY.detail())
 
     with get_db() as conn:
         with conn.cursor() as cur:

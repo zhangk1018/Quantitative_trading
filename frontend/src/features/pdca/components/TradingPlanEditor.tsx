@@ -54,7 +54,7 @@ const fmtNum = (v: unknown, digits = 2): string => {
   return Number.isFinite(n) ? n.toFixed(digits) : '-';
 };
 
-const TradingPlanEditor: React.FC = () => {
+const TradingPlanEditor: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   return (
     <Tabs
       className="trading-plan-tabs"
@@ -67,7 +67,7 @@ const TradingPlanEditor: React.FC = () => {
               <span>交易计划</span>
             </span>
           ),
-          children: <PlanManager />,
+          children: <PlanManager refreshKey={refreshKey} />,
         },
         {
           key: 'securities',
@@ -87,7 +87,7 @@ const TradingPlanEditor: React.FC = () => {
 /* ============================================================
  * 交易计划管理
  * ============================================================ */
-const PlanManager: React.FC = () => {
+const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   const { message: appMessage } = App.useApp();
   const [cycles, setCycles] = useState<PDCACycle[]>([]);
   const [plans, setPlans] = useState<TradingPlan[]>([]);
@@ -129,7 +129,7 @@ const PlanManager: React.FC = () => {
   useEffect(() => {
     loadMeta();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refreshKey]);
 
   useEffect(() => {
     loadPlans();
@@ -328,7 +328,11 @@ const PlanManager: React.FC = () => {
           />
         </div>
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={loadPlans} size="small">刷新</Button>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => { loadMeta(); loadPlans(); }}
+            size="small"
+          >刷新</Button>
           <Button
             type="primary"
             icon={<PlusOutlined />}

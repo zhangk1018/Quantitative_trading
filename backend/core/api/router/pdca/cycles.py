@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel, Field
 
 from core.api.dependencies import get_db
+from shared.error_codes import PDCAError
 from shared.schemas import ApiResponse
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ def _get_cycle_or_404(conn, cycle_id: int) -> dict:
         columns = [desc[0] for desc in cur.description]
         row = cur.fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail=f"周期 {cycle_id} 不存在")
+            raise HTTPException(status_code=404, detail=PDCAError.CYCLE_NOT_FOUND.detail())
         return dict(zip(columns, row))
 
 
@@ -127,7 +128,7 @@ def _check_act_to_plan(conn, cycle_id: int):
         columns = [desc[0] for desc in cur.description]
         row = cur.fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail=f"周期 {cycle_id} 不存在")
+            raise HTTPException(status_code=404, detail=PDCAError.CYCLE_NOT_FOUND.detail())
         cycle = dict(zip(columns, row))
 
         # 计算下一个周期的起止日期（按周期类型自动推算）

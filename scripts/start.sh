@@ -29,8 +29,8 @@ FRONTEND_PORT=5173
 BACKEND_START_TIMEOUT=30
 BACKEND_HEALTH_TIMEOUT=60
 FRONTEND_START_TIMEOUT=8
-BACKEND_LOG="$SCRIPT_DIR/logs/quant_backend.log"
-FRONTEND_LOG="$SCRIPT_DIR/logs/quant_frontend.log"
+BACKEND_LOG="$SCRIPT_DIR/logs/backend/quant_backend.log"
+FRONTEND_LOG="$SCRIPT_DIR/logs/frontend/quant_frontend.log"
 mkdir -p "$SCRIPT_DIR/logs"
 
 COMPOSE_FILE="docker-compose.yml"
@@ -230,64 +230,38 @@ stop_database() {
     return 1
 }
 
-# ---- 后端启动（watchdog 监督模式） ----
-WATCHDOG_SCRIPT="$SCRIPT_DIR/scripts/backend_watchdog.sh"
+# ---- 后端启动（launchd com.quant.backend 管理，KeepAlive 常驻）----
+BACKEND_PLIST="$HOME/Library/LaunchAgents/com.quant.backend.plist"
 
 dev_start_backend() {
-    log_info "启动后端服务（watchdog 监督模式，崩溃自动重启）..."
+    log_info "启动后端服务（launchd com.quant.backend 管理，KeepAlive 常驻）..."
 
     # 启动前确保数据库可用
     start_database || return 1
 
-    # 检查 watchdog 是否已在运行
-    if [ -f "/tmp/quant_backend_watchdog.pid" ]; then
-        local wpid=$(cat "/tmp/quant_backend_watchdog.pid")
-        if kill -0 "$wpid" 2>/dev/null; then
-            log_ok "watchdog 已在运行 (PID: $wpid)"
-            if wait_for_port "$BACKEND_PORT" "$BACKEND_START_TIMEOUT" "后端"; then
-                wait_for_health "http://localhost:$BACKEND_PORT/health" "$BACKEND_HEALTH_TIMEOUT" "后端" || true
-                log_ok "后端服务已就绪（watchdog 监督中，崩溃自动重启）"
-                return 0
-            fi
-        fi
-        rm -f "/tmp/quant_backend_watchdog.pid"
+    # 后端由 launchd 管理：端口已监听则确认健康
+    if is_port_in_use "$BACKEND_PORT"; then
+        log_ok "后端已在运行（launchd com.quant.backend 管理）"
+        wait_for_health "http://localhost:$BACKEND_PORT/health" "$BACKEND_HEALTH_TIMEOUT" "后端" || true
+        return 0
     fi
 
-    clean_port "$BACKEND_PORT" || true
-    rm -f "$BACKEND_PID_FILE"
-
-    if [ ! -f "$WATCHDOG_SCRIPT" ]; then
-        log_err "watchdog 脚本不存在"; return 1
+    # 端口未监听：等待 launchd KeepAlive 拉起
+    if wait_for_port "$BACKEND_PORT" "$BACKEND_START_TIMEOUT" "后端"; then
+        wait_for_health "http://localhost:$BACKEND_PORT/health" "$BACKEND_HEALTH_TIMEOUT" "后端" || true
+        log_ok "后端服务已就绪（launchd KeepAlive 监督中）"
+        return 0
     fi
 
-    # 启动 watchdog
-    bash "$WATCHDOG_SCRIPT" start
-    sleep 2
-
-    if ! wait_for_port "$BACKEND_PORT" "$BACKEND_START_TIMEOUT" "后端"; then
-        log_err "后端启动超时，查看日志: $BACKEND_LOG"
-        tail -n 20 "$BACKEND_LOG"
-        return 1
-    fi
-
-    if wait_for_health "http://localhost:$BACKEND_PORT/health" "$BACKEND_HEALTH_TIMEOUT" "后端"; then
-        log_ok "后端服务完全就绪（watchdog 监督中，崩溃自动重启）"
-    else
-        log_warn "健康检查未通过，但进程仍在运行，请手动检查"
-    fi
-    return 0
+    log_err "后端未运行。请先加载 launchd 服务:"
+    log_err "  launchctl load -w $BACKEND_PLIST"
+    return 1
 }
 
 dev_stop_backend() {
-    log_info "停止后端服务..."
-    local stopped=0
-
-    # 通过 watchdog 停止
-    if [ -f "$WATCHDOG_SCRIPT" ]; then
-        bash "$WATCHDOG_SCRIPT" stop && stopped=1
-    fi
-
-    [ $stopped -eq 1 ] && log_ok "后端服务已停止" || log_warn "后端服务未运行"
+    log_info "后端由 launchd com.quant.backend 管理（KeepAlive），kill 无法停止。"
+    log_info "如需停止后端，请执行:"
+    echo "  launchctl unload $BACKEND_PLIST"
 }
 
 # ---- 前端启动 ----
@@ -347,17 +321,9 @@ dev_status() {
     echo -n "后端服务: "
     if [ -n "$bp" ]; then
         echo -e "${GREEN}✅ 运行中 (PID: $bp, 端口: $BACKEND_PORT)${NC}"
-        # 检查是否在 watchdog 监督下
-        if [ -f "/tmp/quant_backend_watchdog.pid" ]; then
-            echo -e "       ${BLUE}ℹ️  由 watchdog 监督，崩溃自动重启${NC}"
-        fi
+        echo -e "       ${BLUE}ℹ️  由 launchd com.quant.backend 监督（KeepAlive 常驻）${NC}"
     else
-        # 检查 watchdog 是否在运行
-        if [ -f "/tmp/quant_backend_watchdog.pid" ]; then
-            echo -e "${YELLOW}⚠️  watchdog 运行中但后端未就绪${NC}"
-        else
-            echo -e "${RED}❌ 未运行${NC}"
-        fi
+        echo -e "${RED}❌ 未运行（请先加载: launchctl load -w $BACKEND_PLIST）${NC}"
     fi
     local fp=$(check_pid "$FRONTEND_PID_FILE" "$FRONTEND_PORT")
     echo -n "前端服务: "
@@ -373,14 +339,33 @@ dev_status() {
 dev_start() { dev_start_backend && dev_start_frontend; echo ""; dev_status; }
 # 仅停止前后台（不触碰数据库），供 restart 使用
 dev_stop_app() { dev_stop_backend; dev_stop_frontend; }
-# stop 命令：停止前后台 + 数据库
-dev_stop() { dev_stop_app; stop_database; }
-# restart 命令：仅重启前后台，数据库保持运行
-dev_restart() { dev_stop_app; sleep 1; dev_start; }
+# stop 命令：停止前后台（数据库由 launchd 用户域管理，不在此停）
+dev_stop() {
+    dev_stop_app
+    log_info "数据库由 launchd com.quant.postgresql 管理（用户域 KeepAlive），如需停止请执行:"
+    echo "  launchctl unload $HOME/Library/LaunchAgents/com.quant.postgresql.plist"
+}
+# restart 命令：重启前后台（数据库保持运行）
+dev_restart() {
+    # 后端由 launchd（用户域）管理，通过 kickstart 重启
+    if launchctl kickstart -k "gui/$(id -u)/com.quant.backend" 2>/dev/null; then
+        log_ok "已重启后端（launchd kickstart）"
+    else
+        log_info "后端由 launchd 管理，重启请执行:"
+        echo "  launchctl kickstart -k gui/$(id -u)/com.quant.backend"
+    fi
+    sleep 1
+    dev_stop_frontend
+    dev_start_frontend
+    echo ""
+    dev_status
+}
 
 # ---- 前台启动（调试用） ----
 dev_start_backend_fg() {
     log_info "前台启动后端服务（调试模式）..."
+    log_warn "⚠️ 后端由 launchd com.quant.backend 管理，请先卸载服务避免端口冲突:"
+    echo "  launchctl unload $BACKEND_PLIST"
 
     # 启动前确保数据库可用
     start_database || return 1
