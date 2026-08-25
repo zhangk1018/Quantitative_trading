@@ -8,6 +8,7 @@ snapshots.py - 资金快照 CRUD + 资金曲线
 import logging
 from typing import Optional
 from datetime import date
+from bisect import bisect_right
 
 import psycopg2
 from fastapi import APIRouter, Query, HTTPException
@@ -300,41 +301,43 @@ async def get_auto_equity_curve():
                 for r in rows
             ]
 
-            # 3. 未平仓持仓的最新收盘价
-            open_codes = {t["code"] for t in trades if t["held_qty"] > 0}
-            latest_close = {}
-            if open_codes:
+            # 3. 未平仓持仓的收盘价时间序列（每个事件日按当日/最近收盘价计算浮盈）
+            open_trades = [t for t in trades if t["held_qty"] > 0]
+            close_series: dict[str, list[tuple[date, float]]] = {}
+            for t in open_trades:
+                code = t["code"]
+                if code in close_series:
+                    continue
                 cur.execute(
                     """
-                    SELECT DISTINCT ON (code) code, close
-                    FROM stock_quotes
-                    WHERE cycle = '1d' AND code = ANY(%s)
-                    ORDER BY code, trade_date DESC
+                    SELECT trade_date, close FROM stock_quotes
+                    WHERE cycle = '1d' AND code = %s
+                    ORDER BY trade_date ASC
                     """,
-                    (list(open_codes),),
+                    (code,),
                 )
-                for c, close in cur.fetchall():
-                    latest_close[c] = float(close)
+                close_series[code] = [(td, float(c)) for td, c in cur.fetchall()]
 
-        # 4. 未平仓持仓的 unrealized 贡献（按事件日 sweep-line 计算，避免 O(D×T) 嵌套循环）
-        # 注意：部分平仓场景（exit_date 非空且 held_qty > 0）需按原始数量建仓、按平仓数量扣减
-        open_trades = [t for t in trades if t["held_qty"] > 0]
-        unrealized_events = {}  # date -> delta
+        def _price_on_day(code: str, day: date) -> Optional[float]:
+            """取指定股票在 day 当日或之前最近可用的收盘价（前向填充）；无可用行情返回 None"""
+            series = close_series.get(code)
+            if not series:
+                return None
+            idx = bisect_right(series, day, key=lambda x: x[0]) - 1
+            return series[idx][1] if idx >= 0 else None
+
+        # 4. 未平仓持仓结构：按持仓单管理（部分平仓后剩余持仓仍持有到当前）
+        positions = []
         for t in open_trades:
-            close = latest_close.get(t["code"])
-            if close is None:
-                logger.warning("get_auto_equity_curve: 缺失 %s 最新收盘价，浮盈计算忽略该持仓", t["code"])
-                continue
-            if t["exit_date"]:
-                # 部分平仓：入场时按原始数量建仓，出场时按平仓数量扣减
-                full_contrib = (close - t["entry_price"]) * t["quantity"]
-                closed_contrib = (close - t["entry_price"]) * (t["quantity"] - t["held_qty"])
-                unrealized_events[t["entry_date"]] = unrealized_events.get(t["entry_date"], 0.0) + full_contrib
-                unrealized_events[t["exit_date"]] = unrealized_events.get(t["exit_date"], 0.0) - closed_contrib
-            else:
-                # 全仓未平仓：入场时建仓，浮盈持续到当前
-                contrib = (close - t["entry_price"]) * t["held_qty"]
-                unrealized_events[t["entry_date"]] = unrealized_events.get(t["entry_date"], 0.0) + contrib
+            entry_d, exit_d = t["entry_date"], t["exit_date"]
+            positions.append({
+                "code": t["code"],
+                "entry_price": t["entry_price"],
+                "entry_date": entry_d,
+                "exit_date": exit_d,
+                "qty_full": t["quantity"],      # 建仓数量
+                "qty_remain": t["held_qty"],    # 部分平仓后剩余持仓（exit 后持续持有）
+            })
 
         # 5. 事件日期集合（初始本金日期 + 各交易的进出场日）
         dates = set()
@@ -356,16 +359,33 @@ async def get_auto_equity_curve():
 
         curve_data = []
         cum_realized = 0.0
-        cum_unrealized = 0.0
         for d in dates:
             cum_realized += realized_by_date.get(d, 0.0)
-            cum_unrealized += unrealized_events.get(d, 0.0)
-            equity = initial_capital + cum_realized + cum_unrealized
+
+            # 当日未平仓浮盈：对每笔持仓单用该日收盘价（或最近可用）计算，随行情波动
+            day_unrealized = 0.0
+            for p in positions:
+                if p["entry_date"] > d:
+                    continue  # 尚未建仓，不做错误归因
+                # 建仓日至出场日前用全量持仓；出场日（部分平仓）后用剩余持仓
+                qty = p["qty_full"] if (p["exit_date"] is None or d < p["exit_date"]) else p["qty_remain"]
+                if qty <= 0:
+                    continue
+                close = _price_on_day(p["code"], d)
+                if close is None:
+                    logger.warning(
+                        "get_auto_equity_curve: 缺失 %s 在 %s 的收盘价，该持仓当日浮盈跳过",
+                        p["code"], d,
+                    )
+                    continue
+                day_unrealized += (close - p["entry_price"]) * qty
+
+            equity = initial_capital + cum_realized + day_unrealized
             curve_data.append({
                 "date": d.isoformat(),
                 "equity": round(equity, 2),
                 "realized": round(cum_realized, 2),
-                "unrealized": round(cum_unrealized, 2),
+                "unrealized": round(day_unrealized, 2),
             })
 
         return ApiResponse(code=200, message="success", data={"items": curve_data})
