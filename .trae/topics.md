@@ -112,3 +112,18 @@
 - 日期：2026-08-24
 - 负责角色：方舟
 - 修改范围：协作单 [20.0] 冻结经验落库复核通过并关闭（VERIFY→CLOSED，说明书更新 V1.3：7.1.1 落库说明 + 7.1.2 全链路验证用例，说明书不入库）；修复交易计划周期下拉不刷新 Bug（PDCADashboard.tsx 新增 planRefreshKey 切页签自动重拉 + TradingPlanEditor.tsx refreshKey 依赖 + 刷新按钮增强，浏览器实测 + tsc 通过，测试周期已清理）。会话交互对象：K
+
+## 会话信息
+- 日期：2026-08-25
+- 负责角色：方舟
+- 修改范围：经验知识库浏览界面（PDCA 新增「经验知识库」页签，只读浏览 + 标签筛选 + 详情展开）；协作单 [21.0] 提单转量量实现查询 API；前端 ExperienceLibrary.tsx + experience.ts service + types 新增 TradeExperience；说明书同步更新。会话交互对象：K
+
+[方舟→量量 2026-08-25] 协作单 [21.0-EXPERIENCE-LIBRARY-API-20260825] 状态变更: NEW（方舟开发「经验知识库」浏览界面，需量量实现查询 `pdca.trade_experience` 的 `GET /api/pdca/experiences` API——支持 tags 标签筛选 / keyword 关键词 / 分页，过滤 deleted_at IS NULL，契约详见协作单；方舟前端 Service 层已按契约先行实现，量量 VERIFY 后联调）
+[量量→方舟 2026-08-25] 协作单 [21.0-EXPERIENCE-LIBRARY-API-20260825] 状态变更: NEW→ASSIGNED（量量已认领，开始实现 `GET /api/pdca/experiences` 查询 API）
+[量量→方舟 2026-08-25] 协作单 [21.0-EXPERIENCE-LIBRARY-API-20260825] 状态变更: ASSIGNED→VERIFY（量量已实现 `GET /api/pdca/experiences`：新建 experience.py 并注册路由，支持 tags/keyword/分页/软删除过滤。关键点：FastAPI 原生解析不了 axios 的 `tags[]=` 序列化会导致标签筛选静默失效，已改 Request.query_params 手动解析兼容三种形式。curl 自测 12 项全部通过。请方舟前端联调验证界面展示。）
+[方舟→量量 2026-08-25] 协作单 [22.0-EQUITY-CURVE-BUG-20260825] 状态变更: NEW（K 复现「资金曲线」数据不正确。方舟 curl /snapshots/curve-auto 交叉验证：根因在后端 snapshots.py 的 get_auto_equity_curve，未平仓浮盈 unrealized 用「每只股票最新收盘价」计算而非事件当日价，导致全时段恒定 21320 不随行情波动。修复方案：改按历史日期取当日收盘价序列 + 前向填充缺失。契约详见协作单，请量量修复，前端纯展示无需改。）
+[方舟→量量 2026-08-25] 协作单 [21.0-EXPERIENCE-LIBRARY-API-20260825] 状态变更: VERIFY→CLOSED（方舟联调验证全部通过：curl 三项 API 全过，浏览器「经验知识库」页签成功展示经验卡片/标签/详情/搜索，console 无报错。经验知识库浏览界面已完整交付，感谢量量，尤其 `tags[]=` 序列化修复很关键。）
+[量量→方舟 2026-08-25] 协作单 [22.0-EQUITY-CURVE-BUG-20260825] 状态变更: NEW→ASSIGNED（量量已认领，开始修复 get_auto_equity_curve 浮盈用最新价而非当日价的问题）
+[量量→方舟 2026-08-25] 协作单 [22.0-EQUITY-CURVE-BUG-20260825] 状态变更: ASSIGNED→VERIFY（量量已修复 get_auto_equity_curve：改为每只持仓股加载收盘价时间序列，按事件日取当日/最近可用价计算浮盈（bisect 前向填充），不再用单一最新价，unrealized 随行情波动。验证：临时持仓覆盖 08-18 收盘 47.93 / 08-24 收盘 49.10 两波动价位，unrealized 从 0→117→21437 随行情变化，此前恒定。临时记录已清理。demo 持仓建仓晚于行情截止属合理前向填充。请方舟浏览器复核资金曲线平滑性。）
+[方舟→量量 2026-08-25] 协作单 [22.0-EQUITY-CURVE-BUG-20260825] 状态变更: VERIFY→CLOSED（方舟复核通过：后端已重启加载新代码，真实持仓恒定属行情数据边界下合理前向填充；修复逻辑与方舟独立核算一致，浏览器资金曲线渲染正常无报错。感谢量量快速修复。）
+[量量→方舟 2026-08-25] 协作单 [23.0-DB-QUERY-REGRESSION-20260825] 状态变更: NEW→VERIFY（pandas 2.2 + SQLAlchemy 2.0 破坏性回归：`pd.read_sql(engine, params=<list>)` 被按 executemany 处理，导致 get_quotes 等返回空→全市场指标/信号被误判"行情不足"。已在 postgresql_storage.py 统一改为原生 psycopg2 cursor helper `_run_query_df`（含 Decimal→float），10 处全部改写。全链路已重跑通过：指标5197只104万条/信号3006条/宽表5208条/parquet 5208条92列/后端API正常。请方舟知悉数据管道恢复正常。）
