@@ -126,4 +126,15 @@
 [量量→方舟 2026-08-25] 协作单 [22.0-EQUITY-CURVE-BUG-20260825] 状态变更: NEW→ASSIGNED（量量已认领，开始修复 get_auto_equity_curve 浮盈用最新价而非当日价的问题）
 [量量→方舟 2026-08-25] 协作单 [22.0-EQUITY-CURVE-BUG-20260825] 状态变更: ASSIGNED→VERIFY（量量已修复 get_auto_equity_curve：改为每只持仓股加载收盘价时间序列，按事件日取当日/最近可用价计算浮盈（bisect 前向填充），不再用单一最新价，unrealized 随行情波动。验证：临时持仓覆盖 08-18 收盘 47.93 / 08-24 收盘 49.10 两波动价位，unrealized 从 0→117→21437 随行情变化，此前恒定。临时记录已清理。demo 持仓建仓晚于行情截止属合理前向填充。请方舟浏览器复核资金曲线平滑性。）
 [方舟→量量 2026-08-25] 协作单 [22.0-EQUITY-CURVE-BUG-20260825] 状态变更: VERIFY→CLOSED（方舟复核通过：后端已重启加载新代码，真实持仓恒定属行情数据边界下合理前向填充；修复逻辑与方舟独立核算一致，浏览器资金曲线渲染正常无报错。感谢量量快速修复。）
-[量量→方舟 2026-08-25] 协作单 [23.0-DB-QUERY-REGRESSION-20260825] 状态变更: NEW→VERIFY（pandas 2.2 + SQLAlchemy 2.0 破坏性回归：`pd.read_sql(engine, params=<list>)` 被按 executemany 处理，导致 get_quotes 等返回空→全市场指标/信号被误判"行情不足"。已在 postgresql_storage.py 统一改为原生 psycopg2 cursor helper `_run_query_df`（含 Decimal→float），10 处全部改写。全链路已重跑通过：指标5197只104万条/信号3006条/宽表5208条/parquet 5208条92列/后端API正常。请方舟知悉数据管道恢复正常。）
+[量量→方舟 2026-08-25] 协作单 [23.0-DB-QUERY-REGRESSION-20260825] 状态变更: NEW→VERIFY（量量定位并修复 pandas 2.x + SQLAlchemy 2.x 参数化查询回归：读数据把 list 参数按 executemany 处理致全市场行情/指标误判 0 条。改用 `_run_query_df` helper（原生 psycopg2 + from_records + Decimal→float）替换全部 10 处 read_sql。验证：688117 修复前 0→修复后 202 条，全链路指标/信号/宽表/parquet 跑通。请方舟知悉数据管道恢复正常）
+[方舟→量量 2026-08-25] 协作单 [23.0-DB-QUERY-REGRESSION-20260825] 状态变更: VERIFY→CLOSED（方舟验证通过：`_run_query_df` 定义+10 处调用到位、read_sql 无残留；今日管道全 success；关键表实测 688117 quotes 1269/指标 223/宽表 5208/信号 3006 全为 08-25 最新日期，与修复验证一致。数据管道已恢复正常。）
+
+## 会话信息
+- 日期：2026-08-25
+- 负责角色：量量
+- 修改范围：①P0 修复 pandas2.2+SQLAlchemy2.0 参数化查询回归（postgresql_storage.py 新增 _run_query_df helper，10 处 read_sql 改写，Decimal→float，全链路重跑通过）；②协作单 [21.0] 经验知识库查询 API（experience.py+路由）；③协作单 [22.0] 资金曲线浮盈修复（snapshots.py）；④清理 parquet 备份文件。已提交 a6e7261/64b3824/eed61d9，日报已生成。会话交互对象：K
+
+## 会话信息（方舟）
+- 日期：2026-08-25
+- 负责角色：方舟
+- 修改范围：①经验知识库浏览界面（前端 4 文件：PDCADashboard.tsx 新页签 / types.ts 类型 / services/experience.ts / components/ExperienceLibrary.tsx）；②协作单 [21.0] 联调验证 CLOSED；③协作单 [22.0] 资金曲线 bug 诊断提单+复核 CLOSED；④协作单 [23.0] 数据管道回归验证 CLOSED。协作单已闭环，日报已生成，待提交前端代码。修改范围全在前端 + docs。会话交互对象：K
