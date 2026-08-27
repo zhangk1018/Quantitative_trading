@@ -15,6 +15,7 @@ import gzip
 import logging
 import os
 import sys
+from datetime import datetime
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -29,6 +30,18 @@ LOG_CONFIG_DEFAULTS = {
     'log_encoding': 'utf-8',
     'flush_interval_ms': 2000,
 }
+
+# ==================== 统一日志格式（全项目一致） ====================
+# 字段规范：timestamp(ISO8601 毫秒+时区) - LEVEL - logger(记录器名/模块名) - thread - message
+LOG_FORMAT = '%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s'
+
+
+class IsoFormatter(logging.Formatter):
+    """统一日志格式化器：将 asctime 输出为 ISO8601 时间戳（毫秒 + 时区，如 2026-08-27T17:40:38.123+08:00）。"""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: Optional[str] = None) -> str:
+        dt = datetime.fromtimestamp(record.created).astimezone()
+        return dt.isoformat(timespec='milliseconds')
 
 
 class GzipRotator:
@@ -116,10 +129,7 @@ def setup_logger(
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
-    console_formatter = logging.Formatter(
-        '%(asctime)s - %(levelname)s - %(module)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    console_formatter = IsoFormatter(LOG_FORMAT)
     console_handler.setFormatter(console_formatter)
 
     log_file = os.path.join(log_dir, f"{name}.log")
@@ -149,10 +159,7 @@ def setup_logger(
             file_handler.rotator = GzipRotator()
 
     file_handler.setLevel(level)
-    file_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(module)s - %(funcName)s:%(lineno)d - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    file_formatter = IsoFormatter(LOG_FORMAT)
     file_handler.setFormatter(file_formatter)
 
     logger.addHandler(console_handler)
@@ -177,6 +184,23 @@ def _parse_time_interval(interval: str) -> tuple:
         'weekly': ('W6', 1),
     }
     return interval_map.get(interval, ('midnight', 1))
+
+
+def configure_root_logging(level: int = logging.INFO) -> logging.Logger:
+    """统一配置 root logger 的 stdout handler（格式与全项目一致）。
+
+    供使用 logging.basicConfig / logging.getLogger(__name__) 且无自建轮转 handler
+    的后端服务与监控脚本调用，确保它们也遵循统一的日志格式规范。
+    """
+    root = logging.getLogger()
+    root.setLevel(level)
+    if root.handlers:
+        return root
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(level)
+    handler.setFormatter(IsoFormatter(LOG_FORMAT))
+    root.addHandler(handler)
+    return root
 
 
 def get_logger(name: str) -> logging.Logger:

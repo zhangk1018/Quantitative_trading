@@ -41,10 +41,10 @@ launchctl load -w "$LAUNCH_AGENTS/com.quant.backend.plist" && echo "✅ backend 
 echo "=== 阶段1（15:30 健康检查+股票列表）==="
 launchctl load -w "$LAUNCH_AGENTS/com.quant.daily_job_runner.stage1.plist" && echo "✅ stage1 loaded"
 
-echo "=== 阶段2（17:30 日线行情导入）==="
+echo "=== 阶段2（16:30 日线行情导入）==="
 launchctl load -w "$LAUNCH_AGENTS/com.quant.daily_job_runner.stage2.plist" && echo "✅ stage2 loaded"
 
-echo "=== 阶段3（18:15 复权因子→补全→基本面→指标→形态→信号→宽表→Parquet）==="
+echo "=== 阶段3（17:30 复权因子→补全→基本面→指标→形态→信号→宽表→Parquet）==="
 launchctl load -w "$LAUNCH_AGENTS/com.quant.daily_job_runner.stage3.plist" && echo "✅ stage3 loaded"
 
 echo ""

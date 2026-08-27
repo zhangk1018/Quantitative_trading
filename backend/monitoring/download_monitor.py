@@ -20,6 +20,9 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, Optional, Any
 import logging
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from utils.logger import configure_root_logging
+
 logger = logging.getLogger(__name__)
 
 class DownloadMonitor:
@@ -401,13 +404,7 @@ class ExternalProcessMonitor:
 def main():
     """示例用法"""
     # 配置日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler()
-        ]
-    )
+    configure_root_logging(logging.INFO)
     
     # 示例1: 使用 ExternalProcessMonitor 监控外部脚本
     monitor = ExternalProcessMonitor(

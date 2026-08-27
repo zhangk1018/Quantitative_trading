@@ -13,20 +13,17 @@ import logging
 import sys
 import os
 
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _backend_dir)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
+from utils.logger import configure_root_logging
 from utils.monitor import ExternalProcessMonitor
 
 
 def setup_logging():
     """配置日志"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler()
-        ]
-    )
+    configure_root_logging(logging.INFO)
 
 
 def main():

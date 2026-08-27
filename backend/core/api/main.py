@@ -26,6 +26,10 @@ from core.api.config import settings
 from core.api.dependencies import init_pg_pool, close_pg_pool, get_loader, get_screener_service, get_snapshot_service, get_current_user
 from core.api.router import auth, meta, stocks, kline, signals, monitor, watchlist, snapshot
 from core.api.router.pdca import router as pdca_router
+from utils.logger import configure_root_logging
+
+# 统一后端服务日志格式（时间戳 - LEVEL - logger - thread - message）
+configure_root_logging()
 
 logger = logging.getLogger(__name__)
 

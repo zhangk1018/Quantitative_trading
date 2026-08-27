@@ -36,6 +36,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from collector.db.models import StockDailySnapshot, Base
 from backend.utils.market_classifier import build_listed_board_sql_case
+from utils.logger import configure_root_logging
 
 logger = logging.getLogger(__name__)
 
@@ -511,10 +512,7 @@ def get_latest_trade_date(engine) -> Optional[str]:
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    configure_root_logging(logging.INFO)
 
     parser = argparse.ArgumentParser(description='股票每日快照宽表同步脚本')
     parser.add_argument('--date', type=str, help='同步指定日期')

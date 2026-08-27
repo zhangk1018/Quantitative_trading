@@ -138,3 +138,14 @@
 - 日期：2026-08-25
 - 负责角色：方舟
 - 修改范围：①经验知识库浏览界面（前端 4 文件：PDCADashboard.tsx 新页签 / types.ts 类型 / services/experience.ts / components/ExperienceLibrary.tsx）；②协作单 [21.0] 联调验证 CLOSED；③协作单 [22.0] 资金曲线 bug 诊断提单+复核 CLOSED；④协作单 [23.0] 数据管道回归验证 CLOSED。协作单已闭环，日报已生成，待提交前端代码。修改范围全在前端 + docs。会话交互对象：K
+
+## 会话信息
+- 日期：2026-08-26
+- 负责角色：量量
+- 修改范围：研究确认 pe_ttm 缺失均为亏损股 → 移除 Baostock pe_ttm 补全逻辑（sync_daily_basic.py，删除 _fill_pe_ttm_gaps + 相关常量/import）；估值筛选改为 pe_ttm>0；ETL_PIPELINE.md 文档同步。注意：工作区仍有方舟昨日未提交前端改动（PDCADashboard.tsx/types.ts/ExperienceLibrary.tsx/experience.ts + report_20260825_方舟.md），本次量量只提交自身改动，方舟文件待方舟提交。会话交互对象：K
+
+## 会话信息
+- 日期：2026-08-27
+- 负责角色：量量
+- 修改范围：①复权因子增量「只下载变化部分」优化（sync_adj_factor.py：stock_fhps_em 筛窗口内除权股票，5232→212，约-24倍调次，接口异常自动回退，正确性验证通过）；②定时任务时间调整（阶段2 17:30→16:30、阶段3 18:15→17:30，launchd stage2/3 plist + load_launchd_plists 文案，plutil 通过）；③全项目日志格式统一（logger.py 新增 IsoFormatter+LOG_FORMAT+configure_root_logging，ISO8601 毫秒+时区，5字段，接入调度器/ETL/后端main/监控；修正 basicConfig %f 坑需走 IsoFormatter）；④文档同步（ETL_PIPELINE.md v1.5、量化交易.md 新增第7章日志规范）。注意：工作区仍含方舟未提交前端改动（PDCADashboard.tsx/types.ts/ExperienceLibrary.tsx/experience.ts + report_20260825_方舟.md）及今日 ETL 生成数据产物 latest_quotes.parquet/.bak，本次量量仅提交自身代码改动，方舟文件与数据产物待方舟/另行处理。会话交互对象：K
+[量量→方舟 2026-08-27 17:30+] 协作单 [21.0/22.0/23.0] 均已闭环；今日量量唤起提醒：ask 方舟提交其未提交前端改动（ExperienceLibrary 等）+ 经验知识库口径确认，详见上方会话信息。

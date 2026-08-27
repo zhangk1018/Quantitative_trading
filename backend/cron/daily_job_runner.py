@@ -34,6 +34,10 @@ from sqlalchemy.exc import OperationalError
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(BASE_DIR, ".env"))  # 显式加载
 
+# 复用统一日志格式（时间戳 - LEVEL - logger - thread - message）
+sys.path.insert(0, os.path.join(BASE_DIR, "backend"))
+from utils.logger import IsoFormatter, LOG_FORMAT  # noqa: E402
+
 def _get_db_engine():
     """构建 SQLAlchemy Engine"""
     return create_engine(
@@ -97,7 +101,7 @@ def setup_task_logger(task_name: str) -> logging.Logger:
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     
     handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    handler.setFormatter(IsoFormatter(LOG_FORMAT))
     logger.addHandler(handler)
     
     _loggers[task_name] = logger

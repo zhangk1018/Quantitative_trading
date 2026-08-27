@@ -16,16 +16,15 @@ from datetime import datetime
 # 添加项目路径
 import sys
 import os
+_backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _backend_dir)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
+from utils.logger import configure_root_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
+configure_root_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 

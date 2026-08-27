@@ -27,12 +27,9 @@ import pandas as pd
 import numpy as np
 import talib
 from utils.config import config
+from utils.logger import configure_root_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-)
+configure_root_logging(logging.INFO)
 logger = logging.getLogger('pattern_precompute')
 
 PENETRATION = 0.3

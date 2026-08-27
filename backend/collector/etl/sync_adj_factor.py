@@ -293,6 +293,65 @@ def sync_stock_adj_factor_akshare(storage: PostgreSQLStorage, code: str,
     return count
 
 
+# ==================== 增量"只下载变化部分"辅助 ====================
+
+def _recent_report_periods(count: int = 6) -> List[str]:
+    """取最近 count 个已结束的季度末报告期字符串列表（如 '20260630'）。
+
+    用于增量模式拉取全市场分红事件，需保证报告期回溯范围能覆盖
+    "预案公告到实施"的时间差，故默认回溯约 18 个月（6 个季度）。
+    """
+    today = datetime.now().date()
+    quarter_ends = [(3, 31), (6, 30), (9, 30), (12, 31)]
+    candidates: List[date] = []
+    for year in range(today.year - 3, today.year + 1):
+        for month, day in quarter_ends:
+            d = date(year, month, day)
+            if d <= today:
+                candidates.append(d)
+    candidates.sort(reverse=True)
+    return [d.strftime('%Y%m%d') for d in candidates[:max(count, 1)]]
+
+
+def get_recent_exright_codes(storage: PostgreSQLStorage, start_date: date, end_date: date) -> set:
+    """增量模式下，用全市场分红事件接口筛出窗口内发生过除权除息的股票代码集合。
+
+    仅用于 --incremental：先用 Akshare stock_fhps_em 拉取最近若干报告期的全市场
+    分红预案（含"除权除息日"），筛选"除权除息日"落在 [start_date, end_date] 内的
+    股票，从而把"逐只拉 5200 只"降为"只拉几十到几百只"，实现只下载变化部分。
+
+    Args:
+        storage: 存储实例
+        start_date: 增量窗口起始日期
+        end_date: 增量窗口结束日期
+
+    Returns:
+        窗口内发生过除权除息的股票代码集合（6 位数字字符串，如 {'601186', '000001'}）。
+        若分红事件接口不可用则返回空集合（调用方将回退处理所有已有股票）。
+    """
+    frames: List[pd.DataFrame] = []
+    for rep in _recent_report_periods():
+        try:
+            df = ak.stock_fhps_em(date=rep)
+            if df is not None and not df.empty and '代码' in df.columns and '除权除息日' in df.columns:
+                frames.append(df[['代码', '除权除息日']])
+        except Exception as e:
+            logger.warning(f"  [WARN] 拉取报告期 {rep} 分红事件失败: {e}")
+
+    if not frames:
+        logger.warning("⚠️ 无法获取全市场分红事件，回退为处理所有已有股票")
+        return set()
+
+    raw = pd.concat(frames, ignore_index=True)
+    raw['除权除息日'] = pd.to_datetime(raw['除权除息日'], errors='coerce')
+    sd = pd.to_datetime(start_date)
+    ed = pd.to_datetime(end_date)
+    sel = raw[(raw['除权除息日'] >= sd) & (raw['除权除息日'] <= ed) & (raw['代码'].notna())]
+    codes = set(sel['代码'].astype(str).str.strip())
+    logger.info(f"📊 窗口内({start_date}~{end_date})发生过除权除息的股票: {len(codes)} 只")
+    return codes
+
+
 def sync_adj_factor(incremental: bool = False):
     """同步复权因子数据（主流程）"""
     logger.info("=" * 60)
@@ -356,8 +415,18 @@ def sync_adj_factor(incremental: bool = False):
                     existing_stocks.append(s)
                 else:
                     new_stocks.append(s)
-            stocks_to_process = existing_stocks
-            logger.info(f"  总股票: {len(all_stocks)}, DB 已有记录: {len(existing_stocks)}, 新上市股票: {len(new_stocks)}")
+            # 增量优化：只对窗口内发生过除权除息的已有股票拉取复权因子（只下载变化部分）
+            exright_codes = get_recent_exright_codes(storage, start_date, end_date)
+            if exright_codes:
+                stocks_to_process = [s for s in existing_stocks if s.code in exright_codes]
+            else:
+                # 分红事件接口异常时回退：处理所有已有股票
+                stocks_to_process = existing_stocks
+            changed_only = len(stocks_to_process)
+            unchanged_skipped = len(existing_stocks) - changed_only
+            logger.info(f"  总股票: {len(all_stocks)}, DB 已有记录: {len(existing_stocks)}, "
+                        f"新上市股票: {len(new_stocks)}, 窗口内除权待更新: {changed_only}, "
+                        f"无除权跳过: {unchanged_skipped}")
         else:
             stocks_to_process = list(all_stocks.itertuples())
 

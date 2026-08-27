@@ -23,8 +23,9 @@ import psycopg2
 from psycopg2.extras import execute_values
 import baostock as bs
 import pandas as pd
+from utils.logger import configure_root_logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+configure_root_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
