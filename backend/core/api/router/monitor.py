@@ -2098,3 +2098,122 @@ def get_alerts(
         message="success",
         data={"alerts": rows[-max_lines:], "count": len(rows)},
     )
+
+
+@router.get("/monitor/markets/", summary="各市场数据健康概览（分市场展示）")
+@_cached("monitor_markets", ttl_seconds=60)
+def get_markets():
+    """
+    按 cn/hk/us 分开返回各市场数据健康概览，用于看板定位"哪个市场出问题"
+    （协作单 30.0 V6 / K 2026-09-03 看板分市场要求）：
+      - quotes_latest / quotes_covered：行情最新日与覆盖股票数
+      - basic_count：股票列表家数
+      - indicator_null_pct：技术指标缺失率
+      - alerts_count：alerts.log 中该市场最近事件的告警条数（>0 即需关注）
+    """
+    markets = [
+        {'m': 'cn', 'label': 'A股'},
+        {'m': 'hk', 'label': '港股'},
+        {'m': 'us', 'label': '美股'},
+    ]
+    result = []
+    conn = _get_db_conn()
+    try:
+        cur = conn.cursor()
+        for m in markets:
+            market = m['m']
+            cur.execute("SELECT MAX(trade_date), COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1d' AND market=%s", (market,))
+            latest, covered = cur.fetchone()
+            covered = covered if covered else 0
+            latest_str = latest.isoformat() if latest is not None else None
+            cur.execute("SELECT COUNT(*) FROM stock_basic WHERE market=%s AND delist_date IS NULL", (market,))
+            basic_count = cur.fetchone()[0] or 0
+            null_pct = None
+            if market == 'cn':
+                cur.execute("SELECT COUNT(*) FROM stock_indicators WHERE market=%s", (market,))
+                total = cur.fetchone()[0] or 0
+                if total:
+                    cur.execute("SELECT COUNT(*) FROM stock_indicators WHERE market=%s AND ma5 IS NULL", (market,))
+                    ma5_nulls = cur.fetchone()[0] or 0
+                    cur.execute("SELECT COUNT(*) FROM stock_indicators WHERE market=%s AND macd IS NULL", (market,))
+                    macd_nulls = cur.fetchone()[0] or 0
+                    null_pct = round((ma5_nulls + macd_nulls) / total * 100, 2)
+            result.append({
+                'market': market, 'label': m['label'],
+                'quotes_latest': latest_str, 'quotes_covered': covered,
+                'basic_count': basic_count, 'indicator_null_pct': null_pct,
+            })
+        cur.close()
+    except Exception:
+        pass
+    finally:
+        _put_db_conn(conn)
+    # 从 alerts.log 按市场统计最近告警条数
+    import re
+    pattern = re.compile(r"\[(cn|hk|us)\]")
+    from collections import defaultdict
+    per_mkt = defaultdict(int)
+    for line in tail_alerts(1000):
+        match = pattern.search(line)
+        if match:
+            per_mkt[match.group(1)] += 1
+    for item in result:
+        item['alerts_count'] = per_mkt.get(item['market'], 0)
+    return ApiResponse(code=200, message="success", data={"markets": result})
+
+
+@router.get("/monitor/market-chain/", summary="港/美股任务链状态（分市场）")
+def get_market_chain(market: str = Query('hk', pattern='^(hk|us)$')):
+    """
+    返回某市场当日任务链各进程执行状态（与 A 股 task-chain 同款展示）。
+
+    数据源：hk_job_runner / us_job_runner 每步写入 task_run_log（task_name 以 'hk:'/'us:' 前缀标识，
+    因此无需加列即可区分，且不影响 A 股 task-chain）。
+
+    步骤顺序：股票列表 → 日线 → 基本面 → 指标 → 形态 → 信号 → 宽表 → Parquet。
+    状态：success / running / failed / pending（今日无记录时 pending）。
+    """
+    prefix = f"{market}:%"
+    raw = []
+    conn = _get_db_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT task_name, status, error_message, data_date FROM task_run_log "
+            "WHERE task_name LIKE %s AND data_date = CURRENT_DATE ORDER BY start_time ASC",
+            (prefix,),
+        )
+        raw = [{"task_name": r[0], "status": r[1], "error_message": r[2], "data_date": r[3]} for r in cur.fetchall()]
+        cur.close()
+    except Exception:
+        pass
+    finally:
+        _put_db_conn(conn)
+    tasks = []
+    for r in raw:
+        name = (r["task_name"] or "").split(":", 1)[-1] or r["task_name"]
+        tasks.append({
+            "id": name, "name": name, "status": r["status"] or "pending",
+            "message": (r["error_message"] or "")[:100],
+            "data_date": str(r["data_date"]) if r.get("data_date") else None,
+        })
+    has_failed = any(t["status"] == "failed" for t in tasks)
+    has_partial = any(t["status"] == "partial" for t in tasks)
+    has_pending = any(t["status"] == "pending" for t in tasks)
+    has_running = any(t["status"] == "running" for t in tasks)
+    if has_failed:
+        overall = "failed"
+    elif has_running:
+        overall = "running"
+    elif has_pending:
+        overall = "pending"
+    elif has_partial:
+        overall = "partial"
+    else:
+        overall = "success" if tasks else "pending"
+    return ApiResponse(code=200, message="success", data={
+        "date": _now_beijing().strftime("%Y-%m-%d"),
+        "market": market,
+        "overall": overall,
+        "tasks": tasks,
+    })

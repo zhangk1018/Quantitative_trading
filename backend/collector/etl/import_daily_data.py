@@ -95,7 +95,8 @@ class DailyDataImporter(BaseDataImporter):
             with conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT code, delist_date FROM stock_basic
-                    WHERE (delist_date IS NULL OR delist_date >= CURRENT_DATE OR delist_date > '2099-01-01')
+                    WHERE market = 'cn'
+                      AND (delist_date IS NULL OR delist_date >= CURRENT_DATE OR delist_date > '2099-01-01')
                     ORDER BY code
                 """)
                 result = []
@@ -325,14 +326,15 @@ class DailyDataImporter(BaseDataImporter):
                     cursor.execute("""
                         SELECT COUNT(DISTINCT code) 
                         FROM stock_quotes 
-                        WHERE trade_date = %s AND cycle = %s
+                        WHERE trade_date = %s AND cycle = %s AND market = 'cn'
                     """, (target_date, self.CYCLE))
                     existing_count = cursor.fetchone()[0]
 
                     cursor.execute("""
                         SELECT COUNT(*) 
                         FROM stock_basic 
-                        WHERE delist_date IS NULL
+                        WHERE market = 'cn'
+                        AND delist_date IS NULL
                         AND code NOT LIKE '8%%'
                         AND code NOT LIKE '920%%'
                     """)

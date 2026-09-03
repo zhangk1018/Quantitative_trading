@@ -8,9 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Volumes/MyData/Quantitative_trading/venv/bin/python</string>
-        <string>/Volumes/MyData/Quantitative_trading/backend/cron/market_job_runner.py</string>
-        <string>--market</string>
-        <string>us</string>
+        <string>/Volumes/MyData/Quantitative_trading/backend/cron/us_job_runner.py</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -31,33 +29,33 @@
     <key>StandardErrorPath</key>
     <string>/Volumes/MyData/Quantitative_trading/logs/cron/us_job.stderr.log</string>
 
-    <!-- 美股 ETL：22:00 周一~周五 执行（按 K 确认口径，22:00 北京时间已收盘，拉当日收盘数据） -->
+    <!-- 美股 ETL 全链路：次日 08:30 周二~六（北京时间，届时美东前一交易日已收盘）触发（下载清洗→指标→形态→信号→宽表→Parquet） -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>
-            <key>Weekday</key><integer>1</integer>
-            <key>Hour</key><integer>22</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
             <key>Weekday</key><integer>2</integer>
-            <key>Hour</key><integer>22</integer>
-            <key>Minute</key><integer>0</integer>
+            <key>Hour</key><integer>8</integer>
+            <key>Minute</key><integer>30</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>3</integer>
-            <key>Hour</key><integer>22</integer>
-            <key>Minute</key><integer>0</integer>
+            <key>Hour</key><integer>8</integer>
+            <key>Minute</key><integer>30</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>4</integer>
-            <key>Hour</key><integer>22</integer>
-            <key>Minute</key><integer>0</integer>
+            <key>Hour</key><integer>8</integer>
+            <key>Minute</key><integer>30</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>5</integer>
-            <key>Hour</key><integer>22</integer>
-            <key>Minute</key><integer>0</integer>
+            <key>Hour</key><integer>8</integer>
+            <key>Minute</key><integer>30</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>6</integer>
+            <key>Hour</key><integer>8</integer>
+            <key>Minute</key><integer>30</integer>
         </dict>
     </array>
 

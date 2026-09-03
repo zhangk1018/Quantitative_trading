@@ -63,6 +63,8 @@ def get_missing_stocks(storage: PostgreSQLStorage, min_days: int = 60, market: O
     # 构建市场筛选条件（基于股票代码前缀，排除北交所）
     from backend.utils.market_classifier import build_exclude_bse_filter
     where_conds = build_exclude_bse_filter("sb")
+    # 该脚本仅用于 A 股，排除港股/美股（代码带 .HK / .US 等后缀，market 非 'cn'）
+    where_conds.append("sb.market = 'cn'")
     
     if market == 'kcb':
         where_conds.append("sb.code LIKE '688%%'")

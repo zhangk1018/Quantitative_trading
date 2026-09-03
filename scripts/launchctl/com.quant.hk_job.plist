@@ -8,9 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Volumes/MyData/Quantitative_trading/venv/bin/python</string>
-        <string>/Volumes/MyData/Quantitative_trading/backend/cron/market_job_runner.py</string>
-        <string>--market</string>
-        <string>hk</string>
+        <string>/Volumes/MyData/Quantitative_trading/backend/cron/hk_job_runner.py</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -31,32 +29,32 @@
     <key>StandardErrorPath</key>
     <string>/Volumes/MyData/Quantitative_trading/logs/cron/hk_job.stderr.log</string>
 
-    <!-- 港股 ETL：16:00 周一~周五 执行（列表+日线+基本面串行，与 A 股 stage3 17:30 错开） -->
+    <!-- 港股 ETL 全链路：当日 17:00 周一~周五 触发（下载清洗→指标→形态→信号→宽表→Parquet） -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>
             <key>Weekday</key><integer>1</integer>
-            <key>Hour</key><integer>16</integer>
+            <key>Hour</key><integer>17</integer>
             <key>Minute</key><integer>0</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>2</integer>
-            <key>Hour</key><integer>16</integer>
+            <key>Hour</key><integer>17</integer>
             <key>Minute</key><integer>0</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>3</integer>
-            <key>Hour</key><integer>16</integer>
+            <key>Hour</key><integer>17</integer>
             <key>Minute</key><integer>0</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>4</integer>
-            <key>Hour</key><integer>16</integer>
+            <key>Hour</key><integer>17</integer>
             <key>Minute</key><integer>0</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>5</integer>
-            <key>Hour</key><integer>16</integer>
+            <key>Hour</key><integer>17</integer>
             <key>Minute</key><integer>0</integer>
         </dict>
     </array>

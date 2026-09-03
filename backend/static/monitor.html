@@ -70,6 +70,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .tag.amber { background: rgba(245,158,11,0.15); color: var(--amber); }
 .tag.gray { background: rgba(148,163,184,0.15); color: var(--text-dim); }
 .tag.blue { background: rgba(59,130,246,0.15); color: var(--blue); }
+/* 市场页签 */
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; background: var(--card); padding: 6px; border-radius: 12px; border: 1px solid var(--border); }
+.tab-btn { flex: 1; padding: 10px 16px; border: none; border-radius: 8px; background: transparent; color: var(--text-dim); font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+.tab-btn:hover { color: var(--text); background: rgba(148,163,184,0.15); }
+.tab-btn.active { background: var(--blue); color: #fff; box-shadow: 0 2px 8px rgba(59,130,246,0.3); }
 </style>
 </head>
 <body>
@@ -82,11 +87,18 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   </div>
 </div>
 
+<!-- ===== 市场页签 ===== -->
+<div class="tabs">
+  <button class="tab-btn active" data-market="cn">沪深数据监控</button>
+  <button class="tab-btn" data-market="hk">港股数据监控</button>
+  <button class="tab-btn" data-market="us">美股数据监控</button>
+</div>
+
 <!-- ===== 顶部状态条 ===== -->
 <div id="statusBar" class="status-bar">加载中...</div>
 
 <!-- ===== 板块一：程序运行状态 ===== -->
-<div class="section-title">⏱ 程序运行状态</div>
+<div class="section-title">⏱ 程序运行状态 <span id="taskChainTitle"></span></div>
 <div class="card">
   <div id="taskChain">加载中...</div>
 </div>
@@ -94,6 +106,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 <!-- ===== 板块二：数据质量 ===== -->
 <div class="section-title">📈 数据质量</div>
 <div class="card">
+  <div class="card-title">📋 各市场健康概览（A股 / 港股 / 美股）</div>
+  <div id="marketsSummary">加载中...</div>
+</div>
+<div class="card" style="margin-bottom:12px;">
   <div class="card-title">📋 数据完整性总览</div>
   <div id="dataSummary">加载中...</div>
 </div>
@@ -116,7 +132,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 <script>
 // ===== 状态 =====
-let cacheData = { summary: null, trend: null, taskChain: null, health: null };
+let cacheData = { summary: null, trend: null, health: null };
+let taskChains = { cn: null, hk: null, us: null };
+let marketTab = 'cn';
+const TASK_ENDPOINTS = {
+  cn: '/api/monitor/task-chain/',
+  hk: '/api/monitor/market-chain/?market=hk',
+  us: '/api/monitor/market-chain/?market=us',
+};
+const TAB_LABELS = { cn: '沪深', hk: '港股', us: '美股' };
 let qualityLoaded = false;
 let autoRefreshTimer = null;
 
@@ -137,7 +161,8 @@ async function fetchAPI(endpoint) {
 }
 
 // ===== 渲染顶部状态条 =====
-function renderStatusBar(summary, taskChain, health) {
+function renderStatusBar(summary, taskChain, health, market) {
+  const mkt = TAB_LABELS[market] || '';
   const overall = taskChain?.overall || 'pending';
   const statusMap = {
     success: { dot: 'green', text: '健康', meta: '全部任务正常' },
@@ -152,7 +177,7 @@ function renderStatusBar(summary, taskChain, health) {
 
   $('statusBar').innerHTML = `
     <span class="status-dot ${s.dot}"></span>
-    <span class="status-text" style="color:var(--${s.dot === 'green' ? 'green' : s.dot === 'amber' ? 'amber' : 'red'});">${s.text}</span>
+    <span class="status-text" style="color:var(--${s.dot === 'green' ? 'green' : s.dot === 'amber' ? 'amber' : 'red'});">${mkt} · ${s.text}</span>
     <span style="font-size:12px;color:var(--text-dim);">${s.meta}</span>
     <span class="status-meta">
       数据日期: ${latestDate} &nbsp;|&nbsp; 有效覆盖率: ${effRate}% &nbsp;|&nbsp; 数据库: ${dbOk}
@@ -222,7 +247,8 @@ function renderSummary(summary, trend) {
 }
 
 // ===== 渲染任务链 =====
-function renderTaskChain(chain) {
+function renderTaskChain(chain, market) {
+  const mkt = TAB_LABELS[market] || '';
   const tasks = chain?.tasks || [];
   const overall = chain?.overall || 'pending';
   const date = chain?.date || '--';
@@ -242,6 +268,7 @@ function renderTaskChain(chain) {
   // 统计
   const successCnt = tasks.filter(t => t.status === 'success').length;
   const totalCnt = tasks.length;
+  $('taskChainTitle').textContent = `（${mkt}，${successCnt}/${totalCnt} 完成）`;
 
   let html = `
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;padding:8px 12px;background:var(--bg);border-radius:8px;border-left:3px solid ${overallColor};">
@@ -396,27 +423,72 @@ function collapseQuality() {
   $('dataQualityDeep').classList.remove('visible');
 }
 
+// ===== 各市场健康概览（分市场展示 cn/hk/us）=====
+function renderMarkets(markets) {
+  const box = $('marketsSummary');
+  const list = markets?.markets || markets;
+  if (!Array.isArray(list) || list.length === 0) {
+    box.innerHTML = `<div style="font-size:12px;color:var(--text-dim);">暂无市场数据</div>`;
+    return;
+  }
+  function coverageClass(c, latest) {
+    if (!latest) return 'amber';
+    const expect = c?.market === 'cn' ? 5000 : c?.market === 'hk' ? 2000 : 200;
+    if (c.alerts_count > 0) return 'red';
+    if (c.quotes_covered < expect) return 'amber';
+    return 'green';
+  }
+  let cards = '';
+  for (const m of list) {
+    const cls = coverageClass(m);
+    const latest = m.quotes_latest || '--';
+    const nullPct = m.indicator_null_pct == null ? '--' : m.indicator_null_pct + '%';
+    cards += `
+      <div class="tag ${cls === 'red' ? 'red' : cls === 'amber' ? 'amber' : 'green'}"
+           style="flex:1;display:flex;flex-direction:column;align-items:flex-start;gap:2px;border-radius:10px;padding:10px 12px;">
+        <span style="font-size:12px;font-weight:600;">${m.label}<span style="opacity:.6;"> · ${m.market.toUpperCase()}</span></span>
+        <span style="font-size:16px;font-weight:700;">${m.quotes_covered}</span>
+        <span style="font-size:11px;opacity:.8;">行情 ${latest} · 上市 ${m.basic_count} · 指标缺率 ${nullPct} · 告警 ${m.alerts_count}</span>
+      </div>`;
+  }
+  box.innerHTML = `<div style="display:flex;gap:10px;">${cards}</div>`;
+}
+
+// ===== 渲染当前页签 =====
+function renderCurrent() {
+  const activeChain = taskChains[marketTab] || null;
+  renderStatusBar(cacheData.summary, activeChain, cacheData.health, marketTab);
+  renderTaskChain(activeChain, marketTab);
+  if (cacheData.summary) renderSummary(cacheData.summary, cacheData.trend);
+  if (cacheData.health) renderHealth(cacheData.health);
+  if (cacheData.markets) renderMarkets(cacheData.markets);
+}
+
 // ===== 主刷新 =====
 async function refreshAll() {
   const btn = $('manualRefreshBtn');
   if (btn) { btn.disabled = true; btn.textContent = '🔄 刷新中...'; }
 
   try {
-    // 首屏 3 个核心请求
-    const [summary, trend, taskChain, health] = await Promise.allSettled([
+    // 全局数据（基本盘）
+    const [summary, trend, health, markets] = await Promise.allSettled([
       fetchAPI('/api/monitor/data-summary/'),
       fetchAPI('/api/monitor/coverage-trend/'),
-      fetchAPI('/api/monitor/task-chain/'),
       fetchAPI('/api/monitor/health-check/'),
+      fetchAPI('/api/monitor/markets/'),
     ]).then(results => results.map(r => r.status === 'fulfilled' ? r.value : null));
 
-    cacheData = { summary, trend, taskChain, health };
+    // 三市场任务链（沪深 / 港股 / 美股）
+    const [cnChain, hkChain, usChain] = await Promise.allSettled([
+      fetchAPI(TASK_ENDPOINTS.cn),
+      fetchAPI(TASK_ENDPOINTS.hk),
+      fetchAPI(TASK_ENDPOINTS.us),
+    ]).then(results => results.map(r => r.status === 'fulfilled' ? r.value : null));
 
-    // 渲染
-    renderStatusBar(summary, taskChain, health);
-    renderSummary(summary, trend);
-    renderTaskChain(taskChain);
-    renderHealth(health);
+    taskChains = { cn: cnChain, hk: hkChain, us: usChain };
+    cacheData = { summary, trend, health, markets };
+
+    renderCurrent();
 
     // 如果曾经展开过质量深度，保持展开状态但重新加载
     if (qualityLoaded) {
@@ -428,6 +500,17 @@ async function refreshAll() {
     if (btn) { btn.disabled = false; btn.textContent = '🔄 手动刷新'; }
   }
 }
+
+// ===== 页签切换 =====
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    const mkt = this.dataset.market;
+    if (!mkt) return;
+    marketTab = mkt;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === this));
+    renderCurrent();
+  });
+});
 
 // ===== 切换质量深度展开/收起 =====
 $('toggleQualityBtn')?.addEventListener('click', async function() {

@@ -54,10 +54,12 @@ launchctl load -w "$LAUNCH_AGENTS/com.quant.bar_aggregation.weekly.plist" && ech
 echo "=== 月线聚合（18:45 交易日执行，脚本自动判断月最后交易日）==="
 launchctl load -w "$LAUNCH_AGENTS/com.quant.bar_aggregation.monthly.plist" && echo "✅ monthly loaded"
 
-echo "=== 港股 ETL（16:00，列表+日线+基本面串行）==="
+echo "=== 港股 ETL（当日 17:00，下载清洗→指标→形态→信号→宽表→Parquet）==="
+launchctl unload "$LAUNCH_AGENTS/com.quant.hk_job.plist" 2>/dev/null && sleep 1
 launchctl load -w "$LAUNCH_AGENTS/com.quant.hk_job.plist" && echo "✅ hk_job loaded"
 
-echo "=== 美股 ETL（22:00，列表+日线+基本面串行）==="
+echo "=== 美股 ETL（次日 08:30，下载清洗→指标→形态→信号→宽表→Parquet）==="
+launchctl unload "$LAUNCH_AGENTS/com.quant.us_job.plist" 2>/dev/null && sleep 1
 launchctl load -w "$LAUNCH_AGENTS/com.quant.us_job.plist" && echo "✅ us_job loaded"
 
 echo ""
