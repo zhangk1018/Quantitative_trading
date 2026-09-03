@@ -16,6 +16,7 @@ from core.api.models.schemas import (
     StockResponse, ScreenerRequest, ScreenerResponse,
     FilterGroup, FilterField, ListedBoard
 )
+from utils.stock_code_utils import to_display_code
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,8 @@ class ScreenerService:
 
     def __init__(self, loader: DataLoader):
         self.loader = loader
+        # 所属市场（cn/hk/us），由对应 loader 注入；cn 默认。
+        self.market = getattr(loader, 'market', 'cn')
 
         # 初始化筛选字段配置
         self._init_filter_config()
@@ -57,12 +60,21 @@ class ScreenerService:
         """将 parquet 中旧数据修正为新板块值
         - 60xxx → '上海主板'
         - 000/001/002/003 → '深圳主板'
-        等下次 ETL 重新生成 parquet 后可移除
+        等下次 ETL 重新生成 parquet 后可移除。
+
+        V5（港/美市场）: 仅对 cn 市场修正 A股旧值；hk/us 的 listed_board 由
+        daily_snapshot_sync 的 SQL 分支已正确写为 '港股'/'美股'，不可被 A股前缀误覆盖。
         """
+        if getattr(self, 'market', 'cn') != 'cn':
+            return
         df = self.loader.df
         if 'listed_board' in df.columns and 'code' in df.columns:
             mask_sh = df['code'].str.match(r'^60')
             mask_sz = df['code'].str.match(r'^(000|001|002|003)')
+            # 仅 A股 6 位数字 code 走前缀修正，避免误伤港股 0001.HK（也以 000 开头）
+            is_cn_code = df['code'].str.match(r'^\d{6}$')
+            mask_sh &= is_cn_code
+            mask_sz &= is_cn_code
             df.loc[mask_sh, 'listed_board'] = '上海主板'
             df.loc[mask_sz, 'listed_board'] = '深圳主板'
 
@@ -478,14 +490,18 @@ class ScreenerService:
         stocks = []
         for _, row in df.iterrows():
             raw_date = str(row.get("trade_date", self.trade_date))
+            code_val = str(row.get("code", ""))
             try:
                 parsed_date = datetime.datetime.strptime(raw_date, "%Y%m%d").date()
             except ValueError:
                 parsed_date = datetime.date.today()
             stocks.append(StockResponse(
-                stock_code=str(row.get("code", "")),
+                stock_code=code_val,
                 stock_name=str(row.get("stock_name", "")),
                 listed_board=self._to_listed_board(row.get("listed_board")),
+                market=self.market,
+                # 前端展示用代码：A股6位/港股5位补零/美股原样
+                display_code=to_display_code(code_val, self.market),
                 trade_date=parsed_date,
                 industry=self._str_or_none(row.get("industry")),
                 sub_industry=self._str_or_none(row.get("sub_industry")),
@@ -630,7 +646,12 @@ class ScreenerService:
         return ListedBoard.SH_MAIN
 
     def get_stock_by_code(self, stock_code: str) -> Optional[StockResponse]:
-        """根据股票代码查询单只股票"""
+        """根据股票代码查询单只股票（按当前市场 loader 的 parquet 匹配）。
+
+        Args:
+            stock_code: 库内代码（A股6位 / 港股 `0001.HK` / 美股 `AAPL`）。
+                调用方可用 normalize_db_code() 归一化后传入。
+        """
         df = self.df
         mask = df["code"] == stock_code
         filtered_df = df[mask]

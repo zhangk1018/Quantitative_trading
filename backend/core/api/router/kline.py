@@ -6,20 +6,16 @@ from datetime import datetime
 from shared.schemas import KLineResponse
 from shared.constants import ALLOWED_ADJ_METHODS
 from core.service.kline_service import KlineService
-from core.api.dependencies import get_loader, validate_stock_code_format, validate_date_range
+from core.api.dependencies import get_loader, validate_stock_code_format, validate_date_range, VALID_KLINE_PERIODS
+from utils.stock_code_utils import normalize_db_code
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["K线数据接口"])
 
-# 股票代码校验正则 - 已迁移到 dependencies.py，复用公共常量
-# 见 dependencies.STOCK_CODE_PATTERN
-# 有效K线周期 - 已迁移到 dependencies.VALID_KLINE_PERIODS
-
-# 向后兼容别名（保留本模块的引用，避免破坏旧代码）
-STOCK_CODE_PATTERN = r'^(\d{6}\.(SH|SZ|BJ)|(SH|SZ)\d{6}|\d{6})$'
-VALID_KLINE_PERIODS = {'daily', 'weekly', 'monthly'}
+# 股票代码校验正则 / 有效K线周期：已迁移到 dependencies.py，复用公共常量，
+# 本模块不再重复定义（STOCK_CODE_PATTERN/STOCK_CODE_REGEX/VALID_KLINE_PERIODS）。
 
 
 def validate_stock_code(code: str) -> str:
@@ -94,6 +90,8 @@ async def get_kline_data(
 
     # 参数校验
     code = validate_stock_code(stock_code)
+    # 入库查询用归一化代码（A股剥 .SH/.SZ/.BJ；港股保留 0001.HK、美股保留 AAPL）
+    db_code, _ = normalize_db_code(code)
 
     if period not in VALID_KLINE_PERIODS:
         raise HTTPException(
@@ -113,7 +111,7 @@ async def get_kline_data(
 
     try:
         data = kline_service.get_kline_data(
-            code, validated_start, validated_end, period, limit, adj_method=adj
+            db_code, validated_start, validated_end, period, limit, adj_method=adj
         )
     except Exception as e:
         logger.error(f"K线数据获取失败: {str(e)}", exc_info=True)

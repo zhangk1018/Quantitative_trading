@@ -27,6 +27,7 @@ from shared.schemas import ApiResponse
 # 添加 backend 目录到路径以导入 monitoring 模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from monitoring.system_monitor import SystemMonitor
+from utils.alerting import tail_alerts
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["数据监控"])
@@ -596,6 +597,9 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
         "adj_factor_sync": {        # D: 复权因子同步
             "table": "stock_adj_factor",
             "date_col": "trade_date",
+            # 增量「只下载变化部分」：最新交易日仅除权股写入新记录，
+            # 其余股票保持历史因子不变，不能按全市场股票数判定覆盖率
+            "incremental_delta": True,
         },
         "daily_basic_sync": {       # E: 基本面同步
             "table": "stock_daily_basic",
@@ -719,6 +723,25 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
 
     where_clause = " AND ".join(where_parts)
     count = _query_scalar(f"SELECT COUNT(*) FROM {table} WHERE {where_clause}", tuple(params)) or 0
+
+    # 增量「只下载变化部分」任务（如复权因子同步）：最新交易日仅变化部分
+    # （除权股）写入新记录，其余股票沿用历史因子，属正常设计。此处已通过
+    # 「数据日期新鲜度」检查，只要有变化部分落库（count > 0）即视为成功，
+    # 不再按全市场股票数计算覆盖率（否则增量后仅几百只会被误报 partial）。
+    if cfg.get("incremental_delta"):
+        if count > 0:
+            return {
+                "status": "success",
+                "message": f"增量同步完成，最新日期更新 {count} 只（除权股）",
+                "data_date": latest_str,
+                "data_count": count,
+            }
+        return {
+            "status": "success",
+            "message": "增量同步完成，窗口内无除权股，因子未变化",
+            "data_date": latest_str,
+            "data_count": 0,
+        }
 
     # 动态计算 min_count：
     # - task_run_log 类型（pipeline_health_check, parquet_export）：有记录按 status 判断
@@ -2056,3 +2079,22 @@ def get_data_quality(
         }
 
     return ApiResponse(code=200, message="success", data=result)
+
+
+@router.get("/monitor/alerts/", summary="告警日志（汇总展示）")
+@_cached("monitor_alerts", ttl_seconds=30)
+def get_alerts(
+    max_lines: int = Query(200, ge=1, le=5000, description="返回的告警行数（从新到旧）"),
+):
+    """
+    读取 `logs/monitoring/alerts.log` 汇总展示（协作单 30.0 V6 / P0 告警落点）。
+
+    各监控（check_index_integrity / data_quality_monitor 含复权跳变）把异常统一
+    写入该文件，本端点提供最新若干行供 monitor.html 看板晨检展示。
+    """
+    rows = tail_alerts(max_lines)
+    return ApiResponse(
+        code=200,
+        message="success",
+        data={"alerts": rows[-max_lines:], "count": len(rows)},
+    )

@@ -116,14 +116,17 @@ const STATUS_CONFIG: Record<CycleStatus, { color: string; label: string; icon: R
   DO:    { color: 'orange', label: '执行中',   icon: <SyncOutlined spin /> },
   CHECK: { color: 'purple', label: '复盘中',   icon: <AuditOutlined /> },
   ACT:   { color: 'green',  label: '改进中',   icon: <CheckCircleOutlined /> },
+  DONE:  { color: 'default', label: '已闭环',  icon: <CheckCircleOutlined /> },
 };
 
 // ── 状态流转箭头文案 ──
+// 终态 DONE 无流转按钮（仅可查看/统计）；新周期由「新建周期」手动创建，不自动续期（需求①）
 const TRANSITION_BUTTONS: Record<CycleStatus, { target: CycleStatus; label: string } | null> = {
   PLAN:  { target: 'DO',    label: '开始执行' },
   DO:    { target: 'CHECK', label: '进入复盘' },
   CHECK: { target: 'ACT',   label: '进入改进' },
-  ACT:   { target: 'PLAN',  label: '开始新周期' },
+  ACT:   { target: 'DONE',  label: '闭环' },
+  DONE:  null,
 };
 
 const CycleOverview: React.FC = () => {

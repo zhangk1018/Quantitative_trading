@@ -166,7 +166,7 @@ describe('screenerReducer', () => {
       expect(after.market.selectedBoards).toEqual(['all']);
     });
 
-    it('切换到 hk（disabled 市场）：selectedBoards = []', () => {
+    it('切换到 hk（无板块市场）：selectedBoards = []', () => {
       let state = getInitialState();
       state = screenerReducer(state, { type: 'TOGGLE_MARKET_INDICATOR', payload: 'price' });
       const after = screenerReducer(state, { type: 'SET_MARKET', payload: 'hk' });
@@ -174,7 +174,7 @@ describe('screenerReducer', () => {
       expect(after.market.selectedBoards).toEqual([]);
     });
 
-    it('切换到 us（disabled 市场）：selectedBoards = []', () => {
+    it('切换到 us（无板块市场）：selectedBoards = []', () => {
       let state = getInitialState();
       state = screenerReducer(state, { type: 'TOGGLE_MARKET_INDICATOR', payload: 'volume' });
       const after = screenerReducer(state, { type: 'SET_MARKET', payload: 'us' });

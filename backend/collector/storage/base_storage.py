@@ -27,7 +27,8 @@ class BaseStorage(ABC):
     @abstractmethod
     def get_quotes(self, code: str, cycle: str = 'daily', 
                    start_date: Optional[str] = None, 
-                   end_date: Optional[str] = None) -> pd.DataFrame:
+                   end_date: Optional[str] = None,
+                   market: Optional[str] = None) -> pd.DataFrame:
         """获取行情数据"""
         pass
 
@@ -49,7 +50,8 @@ class BaseStorage(ABC):
     @abstractmethod
     def get_indicators(self, code: str, cycle: str = 'daily',
                        start_date: Optional[str] = None,
-                       end_date: Optional[str] = None) -> pd.DataFrame:
+                       end_date: Optional[str] = None,
+                       market: Optional[str] = None) -> pd.DataFrame:
         """获取技术指标"""
         pass
 
@@ -71,7 +73,7 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
-    def get_latest_trade_date(self) -> Optional[str]:
+    def get_latest_trade_date(self, market: Optional[str] = None) -> Optional[str]:
         """获取最新交易日期"""
         pass
 

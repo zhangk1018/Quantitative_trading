@@ -6,18 +6,15 @@ from datetime import datetime
 from core.api.models.schemas import SignalResponse
 from core.service.signal_service import SignalService
 from core.api.dependencies import get_loader, validate_stock_code_format, validate_date_range, VALID_SIGNAL_TYPES
+from utils.stock_code_utils import normalize_db_code
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["交易信号接口"])
 
-# 股票代码校验正则 - 已迁移到 dependencies.STOCK_CODE_PATTERN
-# 有效信号类型 - 已迁移到 dependencies.VALID_SIGNAL_TYPES
-
-# 向后兼容别名
-STOCK_CODE_PATTERN = r'^(\d{6}\.(SH|SZ|BJ)|(SH|SZ)\d{6}|\d{6})$'
-VALID_SIGNAL_TYPES_LOCAL = VALID_SIGNAL_TYPES  # 向后兼容
+# 股票代码校验正则：已迁移到 dependencies.STOCK_CODE_PATTERN
+# 有效信号类型：已迁移到 dependencies.VALID_SIGNAL_TYPES
 
 
 def validate_stock_code(code: str) -> str:
@@ -85,6 +82,8 @@ async def get_signals(
 
     # 参数校验
     code = validate_stock_code(stock_code)
+    # 入库查询用归一化代码（A股剥 .SH/.SZ/.BJ；港股保留 0001.HK、美股保留 AAPL）
+    db_code, _ = normalize_db_code(code)
 
     # signal_type 默认 'all'
     sig_type = (signal_type or 'all').strip().lower()
@@ -99,7 +98,7 @@ async def get_signals(
     validate_date_range(validated_start, validated_end)
 
     try:
-        data = signal_service.get_signals(code, validated_start, validated_end, sig_type, limit)
+        data = signal_service.get_signals(db_code, validated_start, validated_end, sig_type, limit)
     except Exception as e:
         logger.error(f"信号获取失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"信号服务异常: {str(e)}")

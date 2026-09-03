@@ -8,10 +8,10 @@
 - 使用 ON CONFLICT 实现幂等写入
 
 用法:
-    # 周线计算（每周最后交易日 19:00 执行）
+    # 周线计算（每周最后交易日 18:30 执行）
     ./venv/bin/python backend/collector/etl/compute_bar_aggregation.py --cycle 1w
 
-    # 月线计算（每月最后交易日 20:00 执行）
+    # 月线计算（每月最后交易日 18:45 执行）
     ./venv/bin/python backend/collector/etl/compute_bar_aggregation.py --cycle 1m
 
     # 指定日期回算

@@ -2,6 +2,7 @@
 
 // ==================== 枚举常量 ====================
 export enum RequestParamKeys {
+  Market = 'market',
   ListedBoard = 'listed_board',
   SortBy = 'sort_by',
   SortAsc = 'sort_asc',
@@ -22,6 +23,8 @@ export enum IndicatorType {
 
 // ==================== 类型定义 ====================
 export interface ScreenerFilterPayload {
+  /** 当前选中的市场（cn/hk/us）。M6 T2：非 cn（hk/us）通过 market 参数传导给后端 */
+  selectedMarket?: string;
   selectedBoards?: string[];
   stockRange?: string;
   marketIndicatorRanges?: Record<string, { min?: string; max?: string }>;
@@ -81,6 +84,7 @@ export function buildScreeningParams(
   watchlistCodes?: string[],
 ): Record<string, unknown> {
   const {
+    selectedMarket,
     selectedBoards = [],
     stockRange,
     marketIndicatorRanges = {},
@@ -91,8 +95,15 @@ export function buildScreeningParams(
 
   const params: Record<string, unknown> = {};
 
-  // 上市地
-  if (selectedBoards.length > 0 && !selectedBoards.includes('all')) {
+  // 市场传导（M6 T2）：hk/us 必须携带 market，cn 保持原请求（兼容旧后端）
+  if (selectedMarket && selectedMarket !== 'cn') {
+    params[RequestParamKeys.Market] = selectedMarket;
+  }
+
+  // 上市地（A股特有筛选空间）：仅 cn（未指定 market 视为 cn）时构造 listed_board；
+  // hk/us 无板块概念，即使 selectedBoards 有意外残留也忽略（M6 T3 市场隔离）
+  const isCn = !selectedMarket || selectedMarket === 'cn';
+  if (isCn && selectedBoards.length > 0 && !selectedBoards.includes('all')) {
     const boards = selectedBoards.filter((b) => b !== 'all');
     if (boards.length > 0) {
       if (boards.length === 2 && boards.includes('上海主板') && boards.includes('深圳主板')) {

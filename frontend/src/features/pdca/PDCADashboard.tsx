@@ -18,6 +18,7 @@ import { Tabs } from 'antd';
 import {
   TableOutlined, EditOutlined, ImportOutlined, RadarChartOutlined,
   FileTextOutlined, DollarOutlined, AuditOutlined, CheckCircleOutlined,
+  BulbOutlined,
 } from '@ant-design/icons';
 import TradingRecordTable from './components/TradingRecordTable';
 import TradingDiaryEditor from './components/TradingDiaryEditor';
@@ -27,6 +28,7 @@ import CycleOverview from './components/CycleOverview';
 import TradingPlanEditor from './components/TradingPlanEditor';
 import CheckModule from './components/CheckModule';
 import ActModule from './components/ActModule';
+import ExperienceLibrary from './components/ExperienceLibrary';
 
 
 const PDCADashboard: React.FC = () => {
@@ -42,6 +44,7 @@ const PDCADashboard: React.FC = () => {
     { key: 'diary',  label: <span className="flex items-center gap-2"><EditOutlined /><span>交易日记</span></span>, children: <TradingDiaryEditor /> },
     { key: 'check',  label: <span className="flex items-center gap-2"><AuditOutlined /><span>复盘报告</span></span>, children: <CheckModule /> },
     { key: 'act',    label: <span className="flex items-center gap-2"><CheckCircleOutlined /><span>改进措施</span></span>, children: <ActModule /> },
+    { key: 'experience', label: <span className="flex items-center gap-2"><BulbOutlined /><span>经验知识库</span></span>, children: <ExperienceLibrary /> },
     { key: 'fund',   label: <span className="flex items-center gap-2"><DollarOutlined /><span>资金管理</span></span>, children: <FundManagement /> },
     { key: 'import', label: <span className="flex items-center gap-2"><ImportOutlined /><span>券商导入</span></span>, children: <ImportExcel /> },
   ];

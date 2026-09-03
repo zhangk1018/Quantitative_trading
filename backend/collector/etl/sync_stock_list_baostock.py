@@ -300,7 +300,7 @@ def sync_to_stock_basic(conn, stock_df):
             END as market,
             COUNT(*)
         FROM stock_basic
-        GROUP BY market
+        GROUP BY 1
         ORDER BY count DESC
     """)
     for row in cursor.fetchall():

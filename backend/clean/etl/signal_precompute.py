@@ -29,6 +29,7 @@ from sqlalchemy import text
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
 from utils.logger import setup_logger
+from utils.stock_code_utils import normalize_db_code
 
 logger = setup_logger('signal_precompute')
 
@@ -36,8 +37,9 @@ logger = setup_logger('signal_precompute')
 class SignalPrecompute:
     """信号预计算器"""
     
-    def __init__(self, storage: PostgreSQLStorage):
+    def __init__(self, storage: PostgreSQLStorage, market: str = 'cn'):
         self.storage = storage
+        self.market = market
         self.RSI_OVERSELL_THRESHOLD = 30
         self.RSI_OVERBUY_THRESHOLD = 70
         self.BOLL_WINDOW = 20
@@ -68,6 +70,7 @@ class SignalPrecompute:
         sig_df = pd.DataFrame({
             "code": df_hit["code"],
             "cycle": "1d",
+            "market": self.market,
             "trade_date": df_hit["trade_date"],
             "signal_type": signal_type,
             "signal_direction": direction,
@@ -228,19 +231,24 @@ class SignalPrecompute:
     def precompute_signals_for_stock(self, code: str, start_date: str = None, end_date: str = None) -> int:
         """单股票独立调用（调试用）"""
         logger.debug(f"单股票计算: {code}")
+        db_code, _ = normalize_db_code(code)
         
-        indicators_df = self.storage.get_indicators(code=code, cycle='1d', start_date=start_date, end_date=end_date)
+        indicators_df = self.storage.get_indicators(code=db_code, cycle='1d',
+                                                    start_date=start_date, end_date=end_date,
+                                                    market=self.market)
         if indicators_df.empty:
             logger.warning(f"{code} 无指标数据，跳过")
             return 0
         
-        quotes_df = self.storage.get_quotes(code=code, cycle='daily', start_date=start_date, end_date=end_date)
+        quotes_df = self.storage.get_quotes(code=db_code, cycle='daily',
+                                            start_date=start_date, end_date=end_date,
+                                            market=self.market)
         if quotes_df.empty:
             logger.warning(f"{code} 无行情数据，跳过")
             return 0
         
         combined_df = pd.merge(indicators_df, quotes_df[["trade_date", "close", "volume"]], on="trade_date", how="left")
-        combined_df["code"] = code
+        combined_df["code"] = db_code
         combined_df = combined_df.reset_index(drop=True)
         
         try:
@@ -271,7 +279,7 @@ class SignalPrecompute:
         logger.info(f"计算截止日期: {end_date}")
         logger.info("=============================================")
         
-        stock_base_df = self.storage.get_stock_list()
+        stock_base_df = self.storage.get_stock_list(market=self.market)
         if stock_base_df.empty:
             logger.error("获取股票列表失败，终止任务")
             return {"total_stocks": 0, "success_stocks": 0, "total_signals": 0}
@@ -286,7 +294,7 @@ class SignalPrecompute:
         
         last_calc_watermark = {}
         if incremental:
-            db_std_codes = [c.split(".")[-1] if "." in c else c for c in all_codes]
+            db_std_codes = [normalize_db_code(c)[0] for c in all_codes]
             last_calc_watermark = self.storage.get_last_signal_dates_batch(db_std_codes)
         
         for chunk_idx in range(total_chunk_num):
@@ -294,7 +302,7 @@ class SignalPrecompute:
             chunk_end = min((chunk_idx + 1) * chunk_batch_size, total_stock_cnt)
             
             raw_chunk_codes = all_codes[chunk_start:chunk_end]
-            std_chunk_codes = [c.split(".")[-1] if "." in c else c for c in raw_chunk_codes]
+            std_chunk_codes = [normalize_db_code(c)[0] for c in raw_chunk_codes]
             
             logger.info(f"==== 处理批次 {chunk_idx+1}/{total_chunk_num} | 股票数量:{len(std_chunk_codes)} ====")
             
@@ -305,17 +313,21 @@ class SignalPrecompute:
                     # 【核心修复】：废弃基于 min_last_date 的动态截断。
                     # 因为 MACD、BOLL 等指标需要较长的历史序列（BOLL需20天，MACD需前置diff），
                     # 如果只拉取 last_date 前 5 天的数据，会导致指标计算全为 NaN。
-                    # 正确做法：固定拉取足够长的历史窗口（如 120 天），保证指标计算有效。
+                    # 正确做法：固定拉取足够长的历史窗口，保证指标计算有效。
                     # 真正的增量过滤由下方的 watermark merge 逻辑保证。
-                    batch_start_dt = (pd.Timestamp(end_date) - timedelta(days=120)).strftime("%Y-%m-%d")
+                    # 港股/美股交易日密度较低，回溯窗口适当加大。
+                    inc_back = 120 if self.market == 'cn' else 250
+                    batch_start_dt = (pd.Timestamp(end_date) - timedelta(days=inc_back)).strftime("%Y-%m-%d")
                 else:
-                    batch_start_dt = "2010-01-01"
+                    # 全量起点：港股/美股上市较晚，2010 对它们过早会拉空，改用更近的起点
+                    batch_start_dt = "2010-01-01" if self.market == 'cn' else "2018-01-01"
             
             batch_full_df = self.storage.get_indicators_with_quotes_batch(
                 codes=std_chunk_codes,
                 cycle="1d",
                 start_date=batch_start_dt,
-                end_date=end_date
+                end_date=end_date,
+                market=self.market
             )
             
             if batch_full_df.empty:
@@ -393,6 +405,8 @@ def main():
     parser = argparse.ArgumentParser(description='信号预计算脚本')
     parser.add_argument('--end-date', type=str, help='截止日期 (YYYY-MM-DD)，默认取 stock_indicators 表最新日期')
     parser.add_argument('--force-full', action='store_true', help='全量重新计算（忽略增量过滤）')
+    parser.add_argument('--market', choices=['cn', 'hk', 'us'], default='cn',
+                        help='市场 (默认 cn，仅 A 股)')
     args = parser.parse_args()
 
     db_conf = config.get("database", {})
@@ -413,11 +427,11 @@ def main():
             end_date = args.end_date
             logger.info(f"📅 使用命令行指定的截止日期: {end_date}")
         else:
-            # 从 stock_indicators 表获取最新日期
+            # 从 stock_indicators 表获取最新日期（按市场过滤）
             try:
                 with storage.transaction() as conn:
                     with conn.cursor() as cur:
-                        cur.execute("SELECT MAX(trade_date) FROM stock_indicators")
+                        cur.execute("SELECT MAX(trade_date) FROM stock_indicators WHERE market = %s", (args.market,))
                         result = cur.fetchone()
                         if result and result[0]:
                             end_date = result[0].strftime("%Y-%m-%d")
@@ -430,7 +444,7 @@ def main():
                 logger.error(f"获取指标表最新日期失败: {e}，回退到昨天")
                 end_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         
-        calc_task = SignalPrecompute(storage)
+        calc_task = SignalPrecompute(storage, market=args.market)
         result_stats = calc_task.precompute_all_signals(
             end_date=end_date,
             force_full=args.force_full

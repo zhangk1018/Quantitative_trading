@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 import time
 import random
+import os
 import logging
 logger = logging.getLogger(__name__)
 from collector.db.loader import DataLoader

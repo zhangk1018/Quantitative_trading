@@ -1,245 +1,253 @@
 #!/usr/bin/env python3
 """
-数据质量监控告警系统
+数据质量监控告警系统（协作单 30.0 V6 / ② 监控扩展 market 维度）
 
-监控指标：
-1. 数据完整性：检查各表数据量是否正常
-2. 缺失值比例：监控关键字段缺失情况
-3. 数据新鲜度：检查最近更新时间
-4. 异常值检测：检测价格、成交量等异常
+对 cn / hk / us 三市场分别统计数据完整性、缺失值比例、新鲜度，并按各市场独立门槛校验，
+异常统一走 utils.alerting 落 `logs/monitoring/alerts.log`，供看板与晨检读取。
+
+各市场监控指标：
+1. stock_quotes：最新交易日覆盖股票数 + 新鲜度（最后更新距今周数/天数）
+2. stock_indicators：技术指标缺失率（ma5/macd）
+3. stock_basic：上市公司总数
+4. 触发条件（阈值按市场差异，见 MARKET_SPECS）：
+   - 覆盖数 < min_stocks → WARNING
+   - 新鲜度 > max_freshness_days → CRITICAL/WARNING
+   - 指标缺失率 > max_null_pct → WARNING
+
+用法：
+    ./venv/bin/python backend/monitoring/data_quality_monitor.py               # 全部市场
+    ./venv/bin/python backend/monitoring/data_quality_monitor.py --market cn
 """
-import sys
 import os
-backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, backend_dir)
-
-import time
+import sys
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from collector.storage.postgresql_storage import PostgreSQLStorage
-from utils.config import config
-from utils.logger import setup_logger
+from typing import Dict, List, Optional
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from collector.storage.postgresql_storage import PostgreSQLStorage  # noqa: E402
+from utils.config import config  # noqa: E402
+from utils.logger import setup_logger  # noqa: E402
+from utils.alerting import append_alerts  # noqa: E402
 
 logger = setup_logger('data_quality_monitor')
 
 
-def get_quality_metrics():
-    """获取数据质量指标"""
+@dataclass
+class MarketSpec:
+    """单市场监控阈值与标识。"""
+    market: str
+    label: str
+    min_stocks: int = 0          # 最新交易日最低覆盖股票数
+    max_freshness_days: int = 3  # 数据最多可存续天数
+    max_null_pct: float = 5.0    # 指标缺失率上限(%)
+    enable_indicator_check: bool = True  # 是否启用指标缺失率校验（仅 cn）
+
+
+MARKET_SPECS: Dict[str, MarketSpec] = {
+    'cn': MarketSpec(market='cn', label='A股', min_stocks=5000, max_freshness_days=3, max_null_pct=5.0, enable_indicator_check=True),
+    'hk': MarketSpec(market='hk', label='港股', min_stocks=2000, max_freshness_days=3, max_null_pct=50.0, enable_indicator_check=False),  # 铺全量前指标覆盖率低，仅统计不告警
+    'us': MarketSpec(market='us', label='美股', min_stocks=200, max_freshness_days=7, max_null_pct=50.0, enable_indicator_check=False),    # 美股收盘=北京次日凌晨，7天容忍节假日
+}
+
+
+def _get_storage() -> Optional[PostgreSQLStorage]:
+    """建立数据库连接。"""
     db_config = config.get('database', {})
     storage = PostgreSQLStorage({
         'host': db_config.get('host', 'localhost'),
         'port': db_config.get('port', 5432),
         'database': db_config.get('database', 'quant_trading'),
         'user': db_config.get('user', 'postgres'),
-        'password': db_config.get('password', '')
+        'password': db_config.get('password', ''),
     })
+    return storage if storage.connect() else None
 
-    if not storage.connect():
-        logger.error("❌ 数据库连接失败")
-        return None
 
-    metrics = {}
-
+def _scalar(cursor, sql: str, params: tuple = ()) -> Optional[object]:
+    """执行单值查询（容错返回 None）。"""
     try:
-        # 1. stock_quotes 表监控
-        cursor = storage.conn.cursor()
-        cursor.execute("""
-            SELECT COUNT(*) as total_rows, 
-                   MAX(trade_date) as latest_date,
-                   MIN(trade_date) as earliest_date
-            FROM stock_quotes
-            WHERE cycle = '1d'
-        """)
-        result = cursor.fetchone()
-        if result:
-            latest_date = result[1]
-            data_freshness = None
-            if latest_date:
-                # 修复：统一转换为 datetime 类型进行计算
-                latest_datetime = datetime.combine(latest_date, datetime.min.time())
-                data_freshness = (datetime.now() - latest_datetime).days
-            
-            metrics['stock_quotes'] = {
-                'total_rows': result[0],
-                'latest_date': result[1],
-                'earliest_date': result[2],
-                'data_freshness': data_freshness
-            }
-
-        # 2. stock_indicators 表监控
-        cursor.execute("""
-            SELECT COUNT(*) as total_rows,
-                   SUM(CASE WHEN ma5 IS NULL THEN 1 ELSE 0 END) as ma5_nulls,
-                   SUM(CASE WHEN macd IS NULL THEN 1 ELSE 0 END) as macd_nulls,
-                   MAX(trade_date) as latest_date
-            FROM stock_indicators
-        """)
-        result = cursor.fetchone()
-        if result:
-            metrics['stock_indicators'] = {
-                'total_rows': result[0],
-                'ma5_nulls': result[1],
-                'macd_nulls': result[2],
-                'latest_date': result[3],
-                'null_rate': (result[1] + result[2]) / max(result[0], 1) * 100
-            }
-
-        # 3. stock_basic 表监控
-        cursor.execute("""
-            SELECT COUNT(*) as total_rows,
-                   SUM(CASE WHEN list_date IS NULL THEN 1 ELSE 0 END) as null_list_date
-            FROM stock_basic
-        """)
-        result = cursor.fetchone()
-        if result:
-            metrics['stock_basic'] = {
-                'total_stocks': result[0],
-                'null_list_date': result[1]
-            }
-
-        # 4. trade_signals 表监控
-        cursor.execute("""
-            SELECT COUNT(*) as total_signals,
-                   MAX(trade_date) as latest_signal_date
-            FROM trade_signals
-        """)
-        result = cursor.fetchone()
-        if result:
-            metrics['trade_signals'] = {
-                'total_signals': result[0],
-                'latest_signal_date': result[1]
-            }
-
-        # 5. stock_adj_factor 表监控
-        cursor.execute("""
-            SELECT COUNT(*) as total_records,
-                   MAX(trade_date) as latest_date
-            FROM stock_adj_factor
-        """)
-        result = cursor.fetchone()
-        if result:
-            metrics['stock_adj_factor'] = {
-                'total_records': result[0],
-                'latest_date': result[1]
-            }
-
-        cursor.close()
-
+        cur = cursor
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        return row[0] if row else None
     except Exception as e:
-        logger.error(f"❌ 获取质量指标失败: {e}")
+        logger.error(f"❌ 查询失败: {e} | SQL: {sql[:120]}")
         return None
 
+
+def get_market_metrics(storage, spec: MarketSpec) -> Dict[str, object]:
+    """统计单市场数据质量指标。"""
+    mkt = spec.market
+    metrics: Dict[str, object] = {'market': mkt, 'label': spec.label}
+    cursor = storage.conn.cursor()
+
+    # 1. stock_quotes：最新交易日覆盖数 + 最近更新日期
+    latest_date = _scalar(cursor, "SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market=%s", (mkt,))
+    metrics['quotes_latest'] = str(latest_date) if latest_date else None
+    if latest_date:
+        covered = _scalar(
+            cursor,
+            "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1d' AND market=%s AND trade_date=%s",
+            (mkt, latest_date),
+        )
+        metrics['quotes_covered'] = covered or 0
+        latest_dt = latest_date if isinstance(latest_date, datetime) else datetime.combine(latest_date, datetime.min.time())
+        metrics['quotes_freshness_days'] = (datetime.now() - latest_dt).days
+    else:
+        metrics['quotes_covered'] = 0
+        metrics['quotes_freshness_days'] = None
+
+    # 2. stock_indicators：缺失率（cn 启用）
+    null_pct = None
+    if spec.enable_indicator_check:
+        total = _scalar(cursor, "SELECT COUNT(*) FROM stock_indicators WHERE market=%s", (mkt,)) or 0
+        if total:
+            ma5_nums = _scalar(cursor, "SELECT COUNT(*) FROM stock_indicators WHERE market=%s AND ma5 IS NULL", (mkt,)) or 0
+            macd_nums = _scalar(cursor, "SELECT COUNT(*) FROM stock_indicators WHERE market=%s AND macd IS NULL", (mkt,)) or 0
+            null_pct = (ma5_nums + macd_nums) / total * 100
+    metrics['indicator_null_pct'] = null_pct
+
+    # 3. stock_basic：上市公司总数
+    metrics['basic_count'] = _scalar(cursor, "SELECT COUNT(*) FROM stock_basic WHERE market=%s AND delist_date IS NULL", (mkt,)) or 0
+
+    cursor.close()
     return metrics
 
 
-def check_alerts(metrics):
-    """检查告警条件"""
-    alerts = []
+def check_market_alerts(metrics: Dict[str, object], spec: MarketSpec) -> List[Dict[str, str]]:
+    """对单市场指标执行告警判定。"""
+    alerts: List[Dict[str, str]] = []
+    mkt = metrics['market']
+    label = metrics['label']
 
-    # 数据新鲜度告警（超过3天未更新）
-    if metrics.get('stock_quotes', {}).get('data_freshness') and \
-       metrics['stock_quotes']['data_freshness'] > 3:
-        alerts.append({
-            'level': 'CRITICAL',
-            'message': f"K线数据过时，最新日期: {metrics['stock_quotes']['latest_date']}，已{metrics['stock_quotes']['data_freshness']}天未更新"
-        })
+    def _warn(message: str, level: str = 'WARNING') -> None:
+        alerts.append({'level': level, 'market': mkt, 'message': f"[{label}] {message}"})
 
-    # 缺失值告警
-    if metrics.get('stock_indicators', {}).get('null_rate') and \
-       metrics['stock_indicators']['null_rate'] > 5:
-        alerts.append({
-            'level': 'WARNING',
-            'message': f"技术指标缺失率过高: {metrics['stock_indicators']['null_rate']:.2f}%"
-        })
+    # 覆盖数不足
+    covered = metrics.get('quotes_covered') or 0
+    if metrics.get('quotes_latest') and covered < spec.min_stocks:
+        _warn(f"最新交易日 {metrics['quotes_latest']} 覆盖 {covered} 只 < 阈值 {spec.min_stocks} 只")
 
-    # 数据量异常告警
-    if metrics.get('stock_basic', {}).get('total_stocks') and \
-       metrics['stock_basic']['total_stocks'] < 4000:
-        alerts.append({
-            'level': 'WARNING',
-            'message': f"股票数量异常: {metrics['stock_basic']['total_stocks']} 只（预期>4000）"
-        })
+    # 新鲜度
+    freshness = metrics.get('quotes_freshness_days')
+    if freshness is not None and freshness > spec.max_freshness_days:
+        level = 'CRITICAL' if freshness > spec.max_freshness_days + 1 else 'WARNING'
+        _warn(f"行情数据已 {freshness} 天未更新（最新 {metrics['quotes_latest']}，阈值 {spec.max_freshness_days} 天）", level)
 
-    # 信号数量告警
-    if metrics.get('trade_signals', {}).get('total_signals') and \
-       metrics['trade_signals']['total_signals'] < 1000:
-        alerts.append({
-            'level': 'WARNING',
-            'message': f"交易信号数量不足: {metrics['trade_signals']['total_signals']} 条（预期>1000）"
-        })
+    # 指标缺失率（cn）
+    null_pct = metrics.get('indicator_null_pct')
+    if spec.enable_indicator_check and null_pct is not None and null_pct > spec.max_null_pct:
+        _warn(f"技术指标缺失率过高: {null_pct:.2f}%（阈值 {spec.max_null_pct:.0f}%）")
 
     return alerts
 
 
-def generate_report(metrics, alerts):
-    """生成数据质量报告"""
-    report = []
-    report.append("=" * 70)
-    report.append(f"📊 数据质量监控报告 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    report.append("=" * 70)
+def check_adj_factor_jumps(storage, spec: MarketSpec, max_rows: int = 50) -> List[Dict[str, str]]:
+    """复权跳变告警（③）：同一只股票相邻除权日的 adj_factor 比值 >1.5 或 <0.5 触发告警。
 
-    # 数据概览
-    report.append("\n📈 数据概览:")
-    report.append(f"  📦 stock_quotes: {metrics.get('stock_quotes', {}).get('total_rows', 0):,} 条日线数据")
-    report.append(f"  📊 stock_indicators: {metrics.get('stock_indicators', {}).get('total_rows', 0):,} 条技术指标")
-    report.append(f"  📋 stock_basic: {metrics.get('stock_basic', {}).get('total_stocks', 0):,} 只股票")
-    report.append(f"  🚦 trade_signals: {metrics.get('trade_signals', {}).get('total_signals', 0):,} 条信号")
-    report.append(f"  🔄 stock_adj_factor: {metrics.get('stock_adj_factor', {}).get('total_records', 0):,} 条复权因子")
+    stock_adj_factor 仅在除权日有行，故"较昨日"= 该股票上一个除权日（LAG by trade_date）。
+    正常除息因子变动通常在百分之几；>1.5/<0.5 的跳变多为数据异常或未清洗的巨幅拆送。
+    """
+    alerts: List[Dict[str, str]] = []
+    mkt = spec.market
+    if mkt == 'cn':
+        return alerts  # 仅针对 hk/us（方案 §P0 口径）
+    cursor = storage.conn.cursor()
+    sql = """
+        SELECT t.code, t.trade_date::text, t.prev_date::text,
+               t.adj_factor, t.prev_factor, (t.adj_factor / t.prev_factor) AS ratio
+        FROM (
+            SELECT code, trade_date, adj_factor,
+                   LAG(adj_factor) OVER (PARTITION BY code ORDER BY trade_date) AS prev_factor,
+                   LAG(trade_date)  OVER (PARTITION BY code ORDER BY trade_date) AS prev_date
+            FROM stock_adj_factor
+            WHERE market = %s AND adj_factor IS NOT NULL
+        ) t
+        WHERE t.prev_factor IS NOT NULL
+          AND (t.adj_factor / t.prev_factor > 1.5 OR t.adj_factor / t.prev_factor < 0.5)
+        ORDER BY t.trade_date DESC
+        LIMIT %s
+    """
+    try:
+        cursor.execute(sql, (mkt, max_rows))
+        for code, trade_date, prev_date, factor, prev_factor, ratio in cursor.fetchall():
+            direction = "骤增" if ratio > 1.5 else "骤降"
+            alerts.append({
+                'level': 'WARNING',
+                'market': mkt,
+                'message': (
+                    f"复权因子{direction}异常: {code} 于 {trade_date} "
+                    f"adj_factor={factor} (前值 {prev_factor}@{prev_date})，比值为 {ratio:.3f}（正常除息应接近1）"
+                ),
+            })
+    except Exception as e:
+        logger.error(f"❌ 复权跳变检测失败: {e}")
+    finally:
+        cursor.close()
+    return alerts
 
-    # 数据新鲜度
-    report.append("\n⏱️ 数据新鲜度:")
-    quotes_freshness = metrics.get('stock_quotes', {}).get('data_freshness')
-    if quotes_freshness is not None:
-        status = "✅ 正常" if quotes_freshness <= 1 else "⚠️ 稍旧" if quotes_freshness <= 3 else "❌ 过时"
-        report.append(f"  K线数据: {status}（{quotes_freshness} 天前）")
 
-    # 告警信息
-    if alerts:
-        report.append("\n🔔 告警列表:")
-        for alert in alerts:
-            icon = "🔴" if alert['level'] == 'CRITICAL' else "🟡"
-            report.append(f"  {icon} [{alert['level']}] {alert['message']}")
+def generate_report(metrics_all: List[Dict[str, object]], alerts_all: List[Dict[str, str]]) -> str:
+    """渲染文本报告（终端/日志）。"""
+    lines = ["=" * 70, f"📊 数据质量监控报告 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "=" * 70]
+    for m in metrics_all:
+        lines.append(
+            f"  📦 [{m['market']}] {m['label']}: 最新 {m.get('quotes_latest')} · 覆盖 {m.get('quotes_covered')} 只"
+            f" · 存续 {m.get('quotes_freshness_days')} 天 · 上市 {m.get('basic_count')} 只"
+            + (f" · 指标缺失率 {m.get('indicator_null_pct'):.2f}%" if m.get('indicator_null_pct') is not None else " · 指标缺失率 -")
+        )
+    lines.append("-" * 70)
+    if alerts_all:
+        lines.append(f"🔔 告警列表（{len(alerts_all)} 条）:")
+        for a in alerts_all:
+            icon = '🔴' if a['level'] == 'CRITICAL' else '🟡'
+            lines.append(f"  {icon} [{a['level']}] [{a['market']}] {a['message']}")
     else:
-        report.append("\n✅ 所有指标正常，无告警")
-
-    report.append("\n" + "=" * 70)
-    return "\n".join(report)
-
-
-def main():
-    """主函数"""
+        lines.append("✅ 所有市场数据正常，无告警")
+    lines.append("=" * 70)
     logger.info("=" * 70)
-    logger.info("开始数据质量监控...")
-    logger.info("=" * 70)
+    logger.info("🚀 开始数据质量监控（market 维度）")
+    return "\n".join(lines)
 
-    # 获取质量指标
-    metrics = get_quality_metrics()
-    if not metrics:
-        logger.error("❌ 无法获取质量指标")
+
+def main() -> None:
+    """主函数：遍历市场统计 + 判定告警 + 落 alerts.log。"""
+    import argparse
+    parser = argparse.ArgumentParser(description='数据质量监控（cn/hk/us）')
+    parser.add_argument('--market', default='', help='只检查指定市场(cn/hk/us)，空=全部')
+    args = parser.parse_args()
+
+    markets = [args.market] if args.market else list(MARKET_SPECS.keys())
+    spec_list = [MARKET_SPECS[m] for m in markets if m in MARKET_SPECS]
+
+    storage = _get_storage()
+    if not storage:
+        logger.error("❌ 数据库连接失败")
         return
 
-    # 检查告警
-    alerts = check_alerts(metrics)
+    metrics_all: List[Dict[str, object]] = []
+    alerts_all: List[Dict[str, str]] = []
+    try:
+        for spec in spec_list:
+            metrics = get_market_metrics(storage, spec)
+            metrics_all.append(metrics)
+            alerts_all.extend(check_market_alerts(metrics, spec))
+            # ③ 复权跳变告警（hk/us）
+            alerts_all.extend(check_adj_factor_jumps(storage, spec))
+    finally:
+        storage.disconnect()
 
-    # 生成报告
-    report = generate_report(metrics, alerts)
-    print(report)
+    report = generate_report(metrics_all, alerts_all)
+    print(report, file=sys.stdout)
     logger.info(report)
 
-    # 如果有告警，写入告警日志
-    if alerts:
-        alert_log_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'logs', 'monitoring', 'alerts.log'
-        )
-        os.makedirs(os.path.dirname(alert_log_path), exist_ok=True)
-        
-        with open(alert_log_path, 'a') as f:
-            f.write(f"[{datetime.now().isoformat()}] ALERTS:\n")
-            for alert in alerts:
-                f.write(f"  [{alert['level']}] {alert['message']}\n")
-            f.write("\n")
-
-        logger.warning(f"⚠️ 发现 {len(alerts)} 个告警，已写入告警日志")
+    if alerts_all:
+        append_alerts(alerts_all)
+        logger.warning(f"🌡️ 数据质量监控发现 {len(alerts_all)} 条告警，已写入 alerts.log")
+    else:
+        logger.info("✅ 所有市场数据质量正常，无告警")
 
 
 if __name__ == '__main__':

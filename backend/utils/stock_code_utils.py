@@ -248,7 +248,9 @@ def batch_convert_codes(codes: List[str], target_format: str) -> List[Optional[s
 def is_a_stock(code: str) -> bool:
     """
     判断是否为A股代码（排除B股、基金等）
-    
+
+    （V4 扩展：返回 False 对港股 .HK / 美股字母代码——它们非 A 股，不走 A 股板块分类。）
+
     A股代码范围：
         - 沪市主板：600xxx, 601xxx, 603xxx, 605xxx
         - 深市主板：000xxx, 001xxx
@@ -334,3 +336,73 @@ def filter_out_bse(df, code_column: str = 'code') -> tuple:
         return df[~bse_mask], bse_count
 
     return df, 0
+
+
+# =====================================================================
+# V4（港/美市场改造）新增：市场感知的 DB 代码归一化
+# =====================================================================
+
+def infer_market(code: str) -> str:
+    """判断代码所属市场（用于计算层对港股/美股/A股本的处理）。
+
+    规则：
+      - 含 '.' 且后缀为 HK / SS / SZ / BJ → 非纯 A 股数字，按 market 区
+        （项目港股存 `9988.HK`，A股 stock_quotes 存 6 位数字）
+      - 含 '.' 后缀 .SS/.SZ/.BJ 或 6 位数字 → cn
+      - 纯字母（无点，如 AAPL / MSFT / BRK-B）→ us
+    返回市场标识：'cn' / 'hk' / 'us'。
+    """
+    code = str(code).strip().upper()
+    if '.' in code:
+        suffix = code.rsplit('.', 1)[-1]
+        return 'hk' if suffix == 'HK' else 'cn'
+    # 6 位数字 → A股
+    if code.isdigit() and len(code) == 6:
+        return 'cn'
+    # 含字母无点 → 美股（AAPL / BRK-B 等）
+    if code.isalpha() or ('-' in code and code.replace('-', '').isalpha()):
+        return 'us'
+    return 'cn'
+
+
+def normalize_db_code(code: str) -> Tuple[str, str]:
+    """返回 (db_code, market)。
+
+    - A股：`600519.SH` → (`600519`, `cn`)；纯 6 位直接返回
+    - 港股：`9988.HK` → (`9988.HK`, `hk`)（保留完整代码，stock_quotes 存的就是它）
+    - 美股：`AAPL` → (`AAPL`, `us`)
+    供计算层按市场取行情/写库使用，替代旧 `code.split('.')[-1]`（对港股会错剥成 HK）。
+    """
+    code = str(code).strip()
+    mkt = infer_market(code)
+    if mkt == 'cn':
+        normalized = normalize_code(code)
+        return (normalized or code, mkt)
+    # hk / us：直接返回原代码（stock_quotes/stock_basic 存的就是 Yahoo 代码）
+    return (code, mkt)
+
+
+def to_display_code(code: str, market: Optional[str] = None) -> str:
+    """生成前端展示用代码（display_code）。
+
+    口径（V5 定案）：
+      - A股：原样（6 位数字，如 `600519`）
+      - 港股：数字部分补零到 **5 位**、去 `.HK` 后缀（如 `0001.HK`→`00001`、`0700.HK`→`00700`、
+        `9988.HK`→`09988`），符合港交所 5 位代码展示习惯
+      - 美股：原样大写（`AAPL`）
+    与存储/接口 code（港股 4 位宽 `0001.HK`）分离：接口传 `0001.HK`，前端展示用 `display_code`=`00001`。
+    """
+    code = str(code).strip()
+    mkt = market or infer_market(code)
+    if mkt == 'us':
+        return code.upper()
+    if mkt == 'hk':
+        # 剥 .HK 后缀，取数字部分补零到 5 位
+        num = code[:-3] if code.upper().endswith('.HK') else code
+        try:
+            num_int = int(num)
+        except ValueError:
+            return code.upper()
+        return str(num_int).zfill(5)  # 0001 -> 00001
+    # A股：剥 .SH/.SZ/.BJ 后 6 位
+    return normalize_code(code) or code

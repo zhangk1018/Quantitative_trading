@@ -13,7 +13,8 @@ from fastapi import APIRouter, Query, Path, Depends, Request
 
 from core.api.models.schemas import ScreenerRequest, ApiResponse
 from core.service.screener_service import ScreenerService
-from core.api.dependencies import get_screener_service
+from core.api.dependencies import get_screener_service, get_market_screener_service, validate_market
+from utils.stock_code_utils import infer_market, normalize_db_code
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["股票数据接口"])
@@ -217,9 +218,15 @@ def get_stocks(
     limit: int = Query(100, ge=1, le=200, description="每页数量"),
     as_of_date: str = Query(None, description="数据截止日期（YYYYMMDD），不传则使用最新交易日"),
     stock_codes: str = Query(None, description="股票代码列表（逗号分隔，如 000001.SZ,600000.SH），按 ts_code 精确过滤"),
+    market: str = Query('cn', description="市场筛选：cn/hk/us"),
     screener: ScreenerService = Depends(get_screener_service),
 ) -> ApiResponse:
     try:
+        # 市场校验 + 按市场切换 screener（cn 走默认，hk/us 走对应市场服务）
+        mkt = validate_market(market)
+        if mkt != 'cn':
+            screener = get_market_screener_service(mkt)
+
         # 若未传 as_of_date，使用 screener 内部的最新交易日
         if not as_of_date:
             as_of_date = screener.trade_date
@@ -334,9 +341,13 @@ def get_stocks(
 def get_top_gainers(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(50, ge=1, le=200, description="每页数量"),
+    market: str = Query('cn', description="市场筛选：cn/hk/us"),
     screener: ScreenerService = Depends(get_screener_service),
 ):
     try:
+        mkt = validate_market(market)
+        if mkt != 'cn':
+            screener = get_market_screener_service(mkt)
         request = ScreenerRequest(page=page, page_size=page_size, sort_by="change_pct", sort_order="desc")
         result = screener.screen_stocks(request)
 
@@ -358,9 +369,13 @@ def get_top_gainers(
 def get_top_losers(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(50, ge=1, le=200, description="每页数量"),
+    market: str = Query('cn', description="市场筛选：cn/hk/us"),
     screener: ScreenerService = Depends(get_screener_service),
 ):
     try:
+        mkt = validate_market(market)
+        if mkt != 'cn':
+            screener = get_market_screener_service(mkt)
         request = ScreenerRequest(page=page, page_size=page_size, sort_by="change_pct", sort_order="asc")
         result = screener.screen_stocks(request)
 
@@ -382,9 +397,13 @@ def get_top_losers(
 def get_top_volume(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(50, ge=1, le=200, description="每页数量"),
+    market: str = Query('cn', description="市场筛选：cn/hk/us"),
     screener: ScreenerService = Depends(get_screener_service),
 ):
     try:
+        mkt = validate_market(market)
+        if mkt != 'cn':
+            screener = get_market_screener_service(mkt)
         request = ScreenerRequest(page=page, page_size=page_size, sort_by="volume", sort_order="desc")
         result = screener.screen_stocks(request)
 
@@ -409,9 +428,13 @@ def search_stocks(
     page_size: int = Query(50, ge=1, le=200, description="每页数量"),
     sort_by: str = Query("change_pct", description="排序字段"),
     sort_order: str = Query("desc", description="排序方向"),
+    market: str = Query('cn', description="市场筛选：cn/hk/us"),
     screener: ScreenerService = Depends(get_screener_service),
 ):
     try:
+        mkt = validate_market(market)
+        if mkt != 'cn':
+            screener = get_market_screener_service(mkt)
         start_time = time.time()
         logger.info("股票搜索请求: keyword=%s", keyword)
 
@@ -466,11 +489,16 @@ def search_stocks(
 
 @router.get("/{stock_code}", summary="按股票代码查询详情")
 def get_stock_by_code(
-    stock_code: str = Path(..., description="股票代码"),
+    stock_code: str = Path(..., description="股票代码（A股6位 / 港股0001.HK / 美股AAPL）"),
     screener: ScreenerService = Depends(get_screener_service),
 ):
     try:
-        stock = screener.get_stock_by_code(stock_code)
+        # 按代码推断市场并选择对应市场的 screener/loader
+        market = infer_market(stock_code)
+        target_screener = get_market_screener_service(market) if market != 'cn' else screener
+        # 归一化为库内代码（A股剥 .SH/.SZ/.BJ 后缀，港股/美股原样）
+        db_code, _ = normalize_db_code(stock_code)
+        stock = target_screener.get_stock_by_code(db_code)
         if stock is None:
             return ApiResponse(code=404, message=f"股票代码 {stock_code} 不存在", data=None)
 

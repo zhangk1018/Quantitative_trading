@@ -254,4 +254,51 @@ describe('buildScreeningParams', () => {
     expect(params.offset).toBe(0);
     expect(params.limit).toBe(20);
   });
+
+  // ---------- 市场传导（M6 T2）与 A股特有筛选隔离（M6 T3） ----------
+  it('selectedMarket="hk" → 传 market=hk 参数', () => {
+    const params = buildScreeningParams(basePayload({ selectedMarket: 'hk' }), 'change_pct', false, 20);
+    expect(params.market).toBe('hk');
+  });
+
+  it('selectedMarket="us" → 传 market=us 参数', () => {
+    const params = buildScreeningParams(basePayload({ selectedMarket: 'us' }), 'change_pct', false, 20);
+    expect(params.market).toBe('us');
+  });
+
+  it('不指定 selectedMarket（cn 默认）→ 不传 market 以兼容旧后端', () => {
+    const params = buildScreeningParams(basePayload(), 'change_pct', false, 20);
+    expect(params.market).toBeUndefined();
+  });
+
+  it('selectedMarket="cn" → 不传 market（后端 cn 为默认）', () => {
+    const params = buildScreeningParams(basePayload({ selectedMarket: 'cn' }), 'change_pct', false, 20);
+    expect(params.market).toBeUndefined();
+  });
+
+  it('A股特有隔离：hk 即使 selectedBoards 残留也忽略 listed_board（T3）', () => {
+    const params = buildScreeningParams(
+      basePayload({ selectedMarket: 'hk', selectedBoards: ['创业板'] }),
+      'change_pct', false, 20,
+    );
+    expect(params.market).toBe('hk');
+    expect(params.listed_board).toBeUndefined();
+  });
+
+  it('us 市场不传 listed_board，仅在有上市地时隔离', () => {
+    const params = buildScreeningParams(
+      basePayload({ selectedMarket: 'us', selectedBoards: ['上海主板'] }),
+      'change_pct', false, 20,
+    );
+    expect(params.market).toBe('us');
+    expect(params.listed_board).toBeUndefined();
+  });
+
+  it('cn 仍正常传 listed_board（回归：T3 不破坏 A股上市地筛选）', () => {
+    const params = buildScreeningParams(
+      basePayload({ selectedMarket: 'cn', selectedBoards: ['创业板'] }),
+      'change_pct', false, 20,
+    );
+    expect(params.listed_board).toBe('创业板');
+  });
 });

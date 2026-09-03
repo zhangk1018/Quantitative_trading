@@ -25,6 +25,9 @@ from shared.schemas import ApiResponse
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["交易计划"])
 
+# 周期终态（已闭环）：终态周期不可再新建交易计划（需求②，协作单 [26.0]）
+_CYCLE_DONE = "DONE"
+
 
 # ============================================================
 # Pydantic 模型
@@ -155,6 +158,55 @@ def _validate_plan(conn, body):
 
 
 # ============================================================
+# 辅助函数（计划派生状态，需求④，协作单 [26.0]）
+# ============================================================
+
+def _derive_plan_status(plan: dict, records: list[dict]) -> str:
+    """按关联交易记录派生计划执行状态
+
+    派生规则（供前端「已平仓/持仓中/待执行」展示）：
+    - 手动取消 plan_status=cancelled  → 已取消 cancelled
+    - 草稿 plan_status=draft          → 草稿 draft
+    - 无关联交易记录                  → 待执行 pending
+    - 存在未平仓（remain_qty>0 或 exit_date NULL）→ 持仓中 holding
+    - 全部平仓                        → 已平仓 closed
+    """
+    ps = plan.get("plan_status")
+    if ps == "cancelled":
+        return "cancelled"
+    if ps == "draft":
+        return "draft"
+    if not records:
+        return "pending"
+    has_open = any(
+        (r.get("remain_qty") or 0) > 0 or r.get("exit_date") is None
+        for r in records
+    )
+    return "holding" if has_open else "closed"
+
+
+def _attach_derived_status(conn, items: list[dict]) -> None:
+    """为计划列表批量填充派生状态字段 derived_status（一次查询，避免 N+1）"""
+    if not items:
+        return
+    plan_ids = [p["id"] for p in items]
+    rows_by_plan: dict[int, list[dict]] = {pid: [] for pid in plan_ids}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT trading_plan_id, remain_qty, exit_date "
+            "FROM pdca.trading_record "
+            "WHERE deleted_at IS NULL AND trading_plan_id = ANY(%s)",
+            (plan_ids,),
+        )
+        columns = [desc[0] for desc in cur.description] if cur.description else []
+        for row in cur.fetchall():
+            rec = dict(zip(columns, row))
+            rows_by_plan.setdefault(rec["trading_plan_id"], []).append(rec)
+    for plan in items:
+        plan["derived_status"] = _derive_plan_status(plan, rows_by_plan.get(plan["id"], []))
+
+
+# ============================================================
 # API 端点
 # ============================================================
 
@@ -202,6 +254,7 @@ async def list_plans(
             cur.execute(sql, params)
             columns = [desc[0] for desc in cur.description]
             items = [dict(zip(columns, row)) for row in cur.fetchall()]
+            _attach_derived_status(conn, items)  # 需求④：填充 derived_status 派生状态
             return ApiResponse(code=200, message="success", data={"items": items})
 
 
@@ -209,7 +262,13 @@ async def list_plans(
 async def create_plan(body: PlanCreate):
     """新建交易计划"""
     with get_db() as conn:
-        _get_cycle(conn, body.pdca_cycle_id)  # 校验周期存在
+        cycle = _get_cycle(conn, body.pdca_cycle_id)  # 校验周期存在
+        # 需求②：终态周期（已闭环）不可再加交易计划，跨周买入应在新建周期中规划
+        if cycle["status"] == _CYCLE_DONE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"周期已闭环，不可在此周期新建交易计划（周期 {cycle['cycle_name']}）。跨周/新计划请在新周期中创建",
+            )
         _validate_plan(conn, body)
 
         with conn.cursor() as cur:

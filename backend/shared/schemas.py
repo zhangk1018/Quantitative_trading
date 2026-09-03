@@ -100,6 +100,8 @@ class StockResponse(BaseModel):
     stock_code: str = Field(..., description="股票代码", examples=["000001.SZ", "600000.SH"])
     stock_name: str = Field(..., description="股票名称", examples=["平安银行", "浦发银行"])
     listed_board: ListedBoard = Field(..., description="上市板块")
+    market: Optional[str] = Field(None, description="所属市场（cn/hk/us）", examples=["cn", "hk", "us"])
+    display_code: Optional[str] = Field(None, description="前端展示用代码（A股6位/港股5位补零/美股原样）", examples=["600519", "09988", "AAPL"])
     industry: Optional[str] = Field(None, description="行业分类", examples=["银行", "地产", "医药"])
     sub_industry: Optional[str] = Field(None, description="细分行业")
 

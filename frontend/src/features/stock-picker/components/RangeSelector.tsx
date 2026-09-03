@@ -12,6 +12,8 @@ const RangeSelector: React.FC = () => {
 const dispatch = useScreenerDispatch();
   const currentMarketConfig = MARKET_CONFIG[selectedMarket];
   const availableBoardValues = currentMarketConfig?.boards.map((b) => b.value) || [];
+  // 上市地（板块）是 A股特有筛选空间：hk/us 无板块，隐藏该区（M6 T3 市场隔离）
+  const hasBoards = availableBoardValues.length > 0;
 
   const handleMarketChange = (value: string) => {
     dispatch({ type: 'SET_MARKET', payload: value });
@@ -106,8 +108,9 @@ const dispatch = useScreenerDispatch();
             </Radio.Group>
           </div>
 
-          {/* 上市地 */}
-          <div>
+          {/* 上市地（仅 A股有板块；港股/美股隐藏 — M6 T3） */}
+          {hasBoards && (
+            <div>
             <Text className="text-text-secondary text-sm mb-2 block">上市地</Text>
             <Select
               mode="multiple"
@@ -122,7 +125,8 @@ const dispatch = useScreenerDispatch();
               ]}
               maxTagCount="responsive"
             />
-          </div>
+            </div>
+          )}
 
           {/* 股票范围 */}
           <div>

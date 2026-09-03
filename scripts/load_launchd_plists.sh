@@ -48,11 +48,17 @@ echo "=== 阶段3（17:30 复权因子→补全→基本面→指标→形态→
 launchctl load -w "$LAUNCH_AGENTS/com.quant.daily_job_runner.stage3.plist" && echo "✅ stage3 loaded"
 
 echo ""
-echo "=== 周线聚合（19:00 交易日执行，脚本自动判断周最后交易日）==="
+echo "=== 周线聚合（18:30 交易日执行，脚本自动判断周最后交易日）==="
 launchctl load -w "$LAUNCH_AGENTS/com.quant.bar_aggregation.weekly.plist" && echo "✅ weekly loaded"
 
-echo "=== 月线聚合（20:00 交易日执行，脚本自动判断月最后交易日）==="
+echo "=== 月线聚合（18:45 交易日执行，脚本自动判断月最后交易日）==="
 launchctl load -w "$LAUNCH_AGENTS/com.quant.bar_aggregation.monthly.plist" && echo "✅ monthly loaded"
+
+echo "=== 港股 ETL（16:00，列表+日线+基本面串行）==="
+launchctl load -w "$LAUNCH_AGENTS/com.quant.hk_job.plist" && echo "✅ hk_job loaded"
+
+echo "=== 美股 ETL（22:00，列表+日线+基本面串行）==="
+launchctl load -w "$LAUNCH_AGENTS/com.quant.us_job.plist" && echo "✅ us_job loaded"
 
 echo ""
 echo "=== 验证 ==="

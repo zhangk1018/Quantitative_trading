@@ -8,6 +8,8 @@ export interface MarketConfig {
   label: string
   boards: MarketBoard[]
   disabled: boolean
+  /** 本位币种（CNY/HKD/USD），用于前台币种展示 */
+  currency?: string
 }
 
 export const MARKET_CONFIG: Record<string, MarketConfig> = {
@@ -21,18 +23,21 @@ export const MARKET_CONFIG: Record<string, MarketConfig> = {
       { value: '科创板', label: '科创板' },
     ],
     disabled: false,
+    currency: 'CNY',
   },
   hk: {
     value: 'hk',
     label: '港股',
     boards: [],
-    disabled: true,
+    disabled: false,
+    currency: 'HKD',
   },
   us: {
     value: 'us',
     label: '美股',
     boards: [],
-    disabled: true,
+    disabled: false,
+    currency: 'USD',
   },
 }
 

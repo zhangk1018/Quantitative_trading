@@ -35,6 +35,7 @@ from shared.schemas import (
     SnapshotStock,
     SnapshotIndicators,
 )
+from utils.stock_code_utils import infer_market
 
 logger = logging.getLogger(__name__)
 
@@ -642,7 +643,7 @@ class SnapshotService:
     # ================================================================
     # 公开 API（入参校验完整）
     # ================================================================
-    def get_all_snapshot(self, board: Optional[str] = None, industry: Optional[str] = None,
+    def get_all_snapshot(self, market: Optional[str] = None, board: Optional[str] = None, industry: Optional[str] = None,
                          codes: Optional[List[str]] = None) -> SnapshotAllData:
         if board is not None and board not in BOARD_VALUES:
             raise ValueError(f"board 参数无效，允许值: {BOARD_VALUES}")
@@ -668,6 +669,9 @@ class SnapshotService:
         for code, row in snapshot_cache.items():
             if code_set and code not in code_set:
                 continue
+            # 按市场过滤（A股6位→cn / 港股带.HK→hk / 美股字母→us）
+            if market and infer_market(code) != market:
+                continue
             if board and row.get('listed_board', '') != board:
                 continue
             if industry and row.get('industry', '') != industry:
@@ -687,7 +691,7 @@ class SnapshotService:
             stocks=stocks,
         )
 
-    def get_incremental_snapshot(self, since: str, board: Optional[str] = None, industry: Optional[str] = None,
+    def get_incremental_snapshot(self, since: str, market: Optional[str] = None, board: Optional[str] = None, industry: Optional[str] = None,
                                 codes: Optional[List[str]] = None) -> SnapshotIncrementalData:
         try:
             since_ts = int(datetime.strptime(since, '%Y-%m-%d').timestamp())
@@ -716,6 +720,9 @@ class SnapshotService:
         days_set = set()
         for code, row in snapshot_cache.items():
             if code_set and code not in code_set:
+                continue
+            # 按市场过滤（A股6位→cn / 港股带.HK→hk / 美股字母→us）
+            if market and infer_market(code) != market:
                 continue
             if board and row.get('listed_board', '') != board:
                 continue

@@ -1,0 +1,30 @@
+{
+  "config_version": "1.0",
+  "market": "us",
+  "description": "美股核心池清单（K 批示：核心池 ~600 只，不做全量）。当前为标普500核心成分精选（覆盖科技/金融/健康/消费/能源/工业/通信/材料/公用事业等主要板块的中大型权重股）。",
+  "exchange_note": "代码为 Yahoo 格式（无后缀）。无效代码在 ETL 同步列表时经 Yahoo Ticker.info 校验剔除（方案 §8 宽白名单策略）。",
+  "symbols": [
+    "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "AMZN", "META", "TSLA", "BRK-B",
+    "AVGO", "JPM", "LLY", "V", "XOM", "UNH", "WMT", "MA", "JNJ", "PG", "CRM",
+    "ORCL", "COST", "HD", "NFLX", "ABBV", "BAC", "KO", "CVX", "IBM", "AMD",
+    "PEP", "TMO", "MCD", "ADBE", "CSCO", "WFC", "ABT", "MRK", "QCOM", "GE",
+    "PM", "LIN", "AMGN", "MS", "INTU", "CAT", "GS", "TXN", "VZ", "ISRG",
+    "DIS", "SPGI", "RTX", "UNP", "PGR", "LOW", "NOW", "AMAT", "AXP", "BKNG",
+    "SYK", "BLK", "ACN", "TJX", "COP", "MU", "MDT", "SCHW", "PLD", "UBER",
+    "NEE", "PFE", "VRTX", "BMY", "LMT", "GILD", "ADP", "HON", "SBUX", "REGN",
+    "ADSK", "CMCSA", "FI", "BSX", "PANW", "C", "DE", "CB", "TMUS", "CI",
+    "MMC", "PX", "ANET", "SO", "ELV", "MO", "MDLZ", "DUK", "SHW", "ICE",
+    "BDX", "CL", "APD", "AMT", "WM", "EQT", "ECL", "MCO", "CME", "ZTS",
+    "INTC", "MSI", "APH", "TGT", "ITW", "PH", "CVS", "NKE", "CTAS", "HCA",
+    "AON", "FDX", "USB", "TT", "DHR", "NEM", "ETN", "HLT", "EW", "SNOW",
+    "ABNB", "F", "GM", "CRWD", "ROP", "EMR", "AJG", "GD", "MMM", "FCX",
+    "MAR", "WELL", "ORLY", "KMB", "SYY", "MCK", "AZO", "PSA", "O", "CCI",
+    "ROST", "CTSH", "EA", "GWW", "SNPS", "CDNS", "KLAC", "LRCX",
+    "PAYX", "EFX", "VLO", "JCI", "SWK", "AME", "ROK", "MSCI", "ODFL",
+    "WMB", "OKE", "KMI", "HSY", "KDP", "GIS", "K", "TEL", "IP",
+    "D", "AEP", "EXC", "AWK", "PEG", "XEL", "ED", "EIX", "DTE", "ES",
+    "AEE", "EVRG", "CMS", "ATO", "LNT", "SRE", "WEC", "PPL", "CNP",
+    "EXPE", "LVS", "MGM", "WYNN", "DRI", "YUM", "CMG", "DPZ",
+    "CAG", "CPB", "SJM", "HRL", "TSN", "MNST", "STZ", "TAP"
+  ]
+}

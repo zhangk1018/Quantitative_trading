@@ -62,14 +62,103 @@ LIMIT_THRESHOLDS = {
 }
 
 
-def sync_daily_snapshot(session: Session, target_date: str) -> int:
-    """同步指定日期的宽表数据，返回影响行数"""
+def _build_listed_board_sql(market: str) -> str:
+    """构建 listed_board 的 SQL 片段。
+
+    港股/美股不适用 A 股代码前缀板块分类（build_listed_board_sql_case 会落到 ELSE），
+    因此按 market 分支直接映射到 '港股'/'美股'。
+
+    Args:
+        market: 市场类型（cn/hk/us）
+
+    Returns:
+        生成 listed_board 的 CASE WHEN ... END SQL 表达式
+    """
+    if market == 'cn':
+        return build_listed_board_sql_case()
+    # 港股/美股直接用 market 映射板块名称
+    return """
+        CASE
+            WHEN q.market = 'hk' THEN '港股'
+            WHEN q.market = 'us' THEN '美股'
+            ELSE '其他'
+        END"""
+
+
+def _build_is_st_sql(market: str) -> str:
+    """构建 is_st（是否 ST）的 SQL 片段。
+
+    A 股通过股票名称是否含 'ST' 判断；港股/美股名称可能误含 'ST'
+    （如 "3M Company" 之类），且无 ST 标记约定，因此非 A 股恒为 FALSE。
+
+    Args:
+        market: 市场类型（cn/hk/us）
+
+    Returns:
+        is_st 的布尔 SQL 表达式
+    """
+    if market == 'cn':
+        return "CASE WHEN b.name LIKE '%ST%' THEN TRUE ELSE FALSE END"
+    # 港股/美股无 ST 概念，恒为 FALSE
+    return "FALSE"
+
+
+def _build_limit_threshold_sql(market: str, is_up: bool) -> str:
+    """构建涨跌停判断的 SQL 片段。
+
+    港股/美股无涨跌停限制，limit_up / limit_down 恒为 FALSE。
+    A 股沿用代码前缀（创业板/科创板 20%、北交所 30%、其余主板 10%）分档判断。
+
+    Args:
+        market: 市场类型（cn/hk/us）
+        is_up: True 表示涨停，False 表示跌停
+
+    Returns:
+        涨/跌停判断的布尔 SQL 表达式
+    """
+    if market != 'cn':
+        # 港股/美股无涨跌停，恒为 FALSE（不再使用 code 前缀判断）
+        return "FALSE"
+    op = '>=' if is_up else '<='
+    neg = '' if is_up else '-'
+    return f"""
+        CASE
+          WHEN q.pre_close IS NOT NULL AND q.pre_close > 0
+            AND (b.list_date IS NULL
+                 OR CAST(:target_date AS DATE) - b.list_date > 5) THEN
+            CASE
+              WHEN q.code LIKE '300%' OR q.code LIKE '301%' OR q.code LIKE '302%'
+                   OR q.code LIKE '688%' OR q.code LIKE '689%' THEN
+                (q.close - q.pre_close) / q.pre_close * 100 {op} {neg}:gem_limit
+              WHEN q.code LIKE '92%' OR q.code LIKE '8%' OR q.code LIKE '43%' THEN
+                (q.close - q.pre_close) / q.pre_close * 100 {op} {neg}:bj_limit
+              ELSE
+                (q.close - q.pre_close) / q.pre_close * 100 {op} {neg}:main_limit
+            END
+          ELSE FALSE
+        END"""
+
+
+def sync_daily_snapshot(session: Session, target_date: str, market: str = 'cn') -> int:
+    """同步指定日期的宽表数据，返回影响行数。
+
+    Args:
+        session: SQLAlchemy 会话
+        target_date: 目标交易日（YYYY-MM-DD）
+        market: 市场类型（cn/hk/us），默认 'cn'（原 A 股行为）
+    """
     try:
-        logger.info(f"🔄 开始同步 {target_date} 的宽表数据...")
+        logger.info(f"🔄 开始同步 {market} {target_date} 的宽表数据...")
+
+        # 按 market 分支生成差异 SQL 片段（两种分支结构不同，允许 f-string 选段）
+        listed_board_sql = _build_listed_board_sql(market)
+        is_st_sql = _build_is_st_sql(market)
+        limit_up_sql = _build_limit_threshold_sql(market, is_up=True)
+        limit_down_sql = _build_limit_threshold_sql(market, is_up=False)
 
         upsert_sql = text(f"""
             INSERT INTO stock_daily_snapshot (
-                code, stock_name, listed_board, industry, sub_industry, area,
+                code, market, stock_name, listed_board, industry, sub_industry, area,
                 trade_date, open, high, low, close, pre_close, volume, amount, adjust_type,
                 change, change_pct, pe, pe_ttm, pb, market_cap, circ_mv, turnover_rate, volume_ratio,
                 dv_ratio, dv_ttm, ps, ps_ttm, float_share,
@@ -85,9 +174,9 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
             )
             WITH
             qdata AS (
-                SELECT code, trade_date, open, high, low, close, pre_close, volume, amount, adjust_type
+                SELECT code, market, trade_date, open, high, low, close, pre_close, volume, amount, adjust_type
                 FROM stock_quotes
-                WHERE cycle = '1d' AND trade_date = :target_date
+                WHERE cycle = '1d' AND trade_date = :target_date AND market = :market
             ),
             win AS (
                 SELECT code, trade_date, close, high, volume
@@ -96,6 +185,7 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                   AND trade_date <= :target_date
                   AND trade_date >= CAST(:target_date AS DATE) - INTERVAL '70 days'
                   AND code IN (SELECT code FROM qdata)
+                  AND market = :market
             ),
             ranked AS (
                 SELECT code, trade_date, close, high, volume,
@@ -129,8 +219,9 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
             )
             SELECT
                 q.code,
+                q.market,
                 COALESCE(b.name, '') AS stock_name,
-                {build_listed_board_sql_case()} AS listed_board,
+                {listed_board_sql} AS listed_board,
                 COALESCE(b.industry, '') AS industry,
                 COALESCE(b.industry, '') AS sub_industry,
                 COALESCE(b.area, '') AS area,
@@ -169,41 +260,12 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                 COALESCE(c.consec_up_days, 0) AS consec_up_days,
                 CASE WHEN s.vol_5_avg IS NOT NULL AND s.vol_5_avg > 0
                      THEN ROUND((q.volume / s.vol_5_avg)::numeric, 2) ELSE NULL END AS vol_ratio_5,
-                CASE WHEN b.name LIKE '%ST%' THEN TRUE ELSE FALSE END AS is_st,
+                {is_st_sql} AS is_st,
                 CASE WHEN b.list_date IS NOT NULL 
                      AND b.list_date >= CAST(:target_date AS DATE) - INTERVAL '365 days' 
                      THEN TRUE ELSE FALSE END AS is_new,
-                -- 新股豁免：上市后前5个自然日无涨跌停限制（修复类型错误：使用 > 5）
-                CASE 
-                  WHEN q.pre_close IS NOT NULL AND q.pre_close > 0
-                    AND (b.list_date IS NULL 
-                         OR CAST(:target_date AS DATE) - b.list_date > 5) THEN
-                    CASE
-                      WHEN q.code LIKE '300%' OR q.code LIKE '301%' OR q.code LIKE '302%' 
-                           OR q.code LIKE '688%' OR q.code LIKE '689%' THEN
-                        (q.close - q.pre_close) / q.pre_close * 100 >= :gem_limit
-                      WHEN q.code LIKE '92%' OR q.code LIKE '8%' OR q.code LIKE '43%' THEN
-                        (q.close - q.pre_close) / q.pre_close * 100 >= :bj_limit
-                      ELSE
-                        (q.close - q.pre_close) / q.pre_close * 100 >= :main_limit
-                    END
-                  ELSE FALSE
-                END AS limit_up,
-                CASE 
-                  WHEN q.pre_close IS NOT NULL AND q.pre_close > 0
-                    AND (b.list_date IS NULL 
-                         OR CAST(:target_date AS DATE) - b.list_date > 5) THEN
-                    CASE
-                      WHEN q.code LIKE '300%' OR q.code LIKE '301%' OR q.code LIKE '302%' 
-                           OR q.code LIKE '688%' OR q.code LIKE '689%' THEN
-                        (q.close - q.pre_close) / q.pre_close * 100 <= -:gem_limit
-                      WHEN q.code LIKE '92%' OR q.code LIKE '8%' OR q.code LIKE '43%' THEN
-                        (q.close - q.pre_close) / q.pre_close * 100 <= -:bj_limit
-                      ELSE
-                        (q.close - q.pre_close) / q.pre_close * 100 <= -:main_limit
-                    END
-                  ELSE FALSE
-                END AS limit_down,
+                {limit_up_sql} AS limit_up,
+                {limit_down_sql} AS limit_down,
                 FALSE AS is_macd_golden_cross,
                 FALSE AS is_macd_dead_cross,
                 COALESCE(i.pattern_morning_star != 0, FALSE) AS pattern_morning_star,
@@ -212,13 +274,15 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
                 COALESCE(i.pattern_bearish_engulfing != 0, FALSE) AS pattern_bearish_engulfing,
                 COALESCE(i.pattern_hammer != 0, FALSE) AS pattern_hammer
             FROM qdata q
-            LEFT JOIN stock_basic b ON q.code = b.code
+            LEFT JOIN stock_basic b ON q.code = b.code AND b.market = :market
             LEFT JOIN stats s ON q.code = s.code
             LEFT JOIN consec c ON q.code = c.code
             LEFT JOIN stock_indicators i ON q.code = i.code AND i.cycle = '1d'
-                AND i.trade_date = :target_date
+                AND i.trade_date = :target_date AND i.market = :market
             LEFT JOIN stock_daily_basic db ON q.code = db.code AND db.trade_date = :target_date
-            ON CONFLICT (code, trade_date) DO UPDATE SET
+                AND db.market = :market
+            ON CONFLICT (market, code, trade_date) DO UPDATE SET
+                market = EXCLUDED.market,
                 stock_name = EXCLUDED.stock_name,
                 listed_board = EXCLUDED.listed_board,
                 industry = EXCLUDED.industry,
@@ -288,18 +352,24 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
 
         params = {
             'target_date': target_date,
-            'main_limit': LIMIT_THRESHOLDS['main_board'],
-            'gem_limit': LIMIT_THRESHOLDS['gem'],
-            'bj_limit': LIMIT_THRESHOLDS['beijing'],
+            'market': market,
         }
+        if market == 'cn':
+            # 仅 A 股有涨跌停限制，需要主板/创业板/北交所阈值参数
+            params['main_limit'] = LIMIT_THRESHOLDS['main_board']
+            params['gem_limit'] = LIMIT_THRESHOLDS['gem']
+            params['bj_limit'] = LIMIT_THRESHOLDS['beijing']
 
         session.execute(upsert_sql, params)
-        result = session.execute(text("SELECT COUNT(*) FROM stock_daily_snapshot WHERE trade_date = :d"), {"d": target_date})
+        result = session.execute(
+            text("SELECT COUNT(*) FROM stock_daily_snapshot WHERE trade_date = :d AND market = :m"),
+            {"d": target_date, "m": market}
+        )
         row_count = result.scalar()
-        logger.info(f"✅ {target_date} 基础数据同步完成，共 {row_count} 条")
+        logger.info(f"✅ {market} {target_date} 基础数据同步完成，共 {row_count} 条")
 
         try:
-            _update_tech_patterns(session, target_date)
+            _update_tech_patterns(session, target_date, market)
         except Exception as e:
             logger.warning(f"⚠️ {target_date} 技术形态更新失败（基础数据已保存）: {e}")
             # 技术形态更新失败不阻塞基础数据同步
@@ -314,15 +384,21 @@ def sync_daily_snapshot(session: Session, target_date: str) -> int:
         raise
 
 
-def _update_tech_patterns(session: Session, target_date: str):
-    """更新技术形态 pattern（使用 ROW_NUMBER 仅取最近两日）"""
+def _update_tech_patterns(session: Session, target_date: str, market: str = 'cn'):
+    """更新技术形态 pattern（使用 ROW_NUMBER 仅取最近两日）。
+
+    Args:
+        session: SQLAlchemy 会话
+        target_date: 目标交易日（YYYY-MM-DD）
+        market: 市场类型（cn/hk/us），默认 'cn'
+    """
     logger = logging.getLogger(__name__)
 
     check_sql = text("""
         SELECT COUNT(*) FROM stock_indicators
-        WHERE trade_date = :target_date AND cycle = '1d'
+        WHERE trade_date = :target_date AND cycle = '1d' AND market = :market
     """)
-    cnt = session.execute(check_sql, {'target_date': target_date}).scalar()
+    cnt = session.execute(check_sql, {'target_date': target_date, 'market': market}).scalar()
     if cnt == 0:
         logger.warning(f"⚠️ {target_date} 无当日指标数据，跳过 pattern 更新")
         return
@@ -332,7 +408,7 @@ def _update_tech_patterns(session: Session, target_date: str):
         cur_indicators AS (
             SELECT code, macd, dea, dif, rsi6, rsi24
             FROM stock_indicators
-            WHERE cycle = '1d' AND trade_date = :target_date
+            WHERE cycle = '1d' AND trade_date = :target_date AND market = :market
         ),
         prev_indicators AS (
             SELECT code, macd, dea, dif, rsi6, rsi24
@@ -340,14 +416,14 @@ def _update_tech_patterns(session: Session, target_date: str):
                 SELECT code, macd, dea, dif, rsi6, rsi24,
                        ROW_NUMBER() OVER (PARTITION BY code ORDER BY trade_date DESC) AS rn
                 FROM stock_indicators
-                WHERE cycle = '1d' AND trade_date <= :target_date
+                WHERE cycle = '1d' AND trade_date <= :target_date AND market = :market
             ) ranked
             WHERE rn = 2
         ),
         cur_quotes AS (
             SELECT code, close
             FROM stock_quotes
-            WHERE cycle = '1d' AND trade_date = :target_date
+            WHERE cycle = '1d' AND trade_date = :target_date AND market = :market
         ),
         -- 【已修复】使用 ROW_NUMBER 仅取第二近（前一交易日），避免全表扫描
         prev_close AS (
@@ -356,7 +432,7 @@ def _update_tech_patterns(session: Session, target_date: str):
                 SELECT code, close,
                        ROW_NUMBER() OVER (PARTITION BY code ORDER BY trade_date DESC) AS rn
                 FROM stock_quotes
-                WHERE cycle = '1d' AND trade_date <= :target_date
+                WHERE cycle = '1d' AND trade_date <= :target_date AND market = :market
             ) ranked
             WHERE rn = 2
         ),
@@ -372,6 +448,7 @@ def _update_tech_patterns(session: Session, target_date: str):
                 WHERE cycle = '1d'
                   AND trade_date <= :target_date
                   AND trade_date >= CAST(:target_date AS DATE) - INTERVAL '30 days'
+                  AND market = :market
             ) recent
             WHERE rn <= 20
             GROUP BY code
@@ -462,10 +539,12 @@ def _update_tech_patterns(session: Session, target_date: str):
         LEFT JOIN cur_quotes cq ON ci.code = cq.code
         LEFT JOIN prev_close pc ON ci.code = pc.code
         LEFT JOIN boll_calc bc ON ci.code = bc.code
-        WHERE s.code = ci.code AND s.trade_date = :target_date
+        WHERE s.code = ci.code AND s.trade_date = :target_date AND s.market = :market
     """)
 
-    result = session.execute(all_patterns_sql, {'target_date': target_date})
+    result = session.execute(
+        all_patterns_sql, {'target_date': target_date, 'market': market}
+    )
     logger.info(f"  ✓ 全部 pattern 更新完成，影响 {result.rowcount} 行")
 
 
@@ -473,9 +552,18 @@ def sync_date_range(
     session: Session,
     start_date: str,
     end_date: str,
-    ignore_errors: bool = False
+    ignore_errors: bool = False,
+    market: str = 'cn',
 ) -> int:
-    """同步日期范围，返回总影响行数"""
+    """同步日期范围，返回总影响行数
+
+    Args:
+        session: SQLAlchemy 会话
+        start_date: 开始日期（YYYY-MM-DD）
+        end_date: 结束日期（YYYY-MM-DD）
+        ignore_errors: 是否忽略单日错误
+        market: 市场类型（cn/hk/us），默认 'cn'
+    """
     start = datetime.strptime(start_date, '%Y-%m-%d')
     end = datetime.strptime(end_date, '%Y-%m-%d')
 
@@ -485,7 +573,7 @@ def sync_date_range(
     while current <= end:
         date_str = current.strftime('%Y-%m-%d')
         try:
-            cnt = sync_daily_snapshot(session, date_str)
+            cnt = sync_daily_snapshot(session, date_str, market)
             if cnt is not None:
                 total_count += cnt
         except Exception as e:
@@ -504,9 +592,21 @@ def sync_date_range(
     return total_count
 
 
-def get_latest_trade_date(engine) -> Optional[str]:
+def get_latest_trade_date(engine, market: str = 'cn') -> Optional[str]:
+    """查询指定市场的最新交易日。
+
+    Args:
+        engine: SQLAlchemy 引擎
+        market: 市场类型（cn/hk/us），默认 'cn'
+
+    Returns:
+        最新交易日（YYYY-MM-DD），无数据时返回 None
+    """
     with engine.connect() as conn:
-        result = conn.execute(text("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'"))
+        result = conn.execute(
+            text("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d' AND market = :market"),
+            {"market": market},
+        )
         row = result.fetchone()
         return row[0].strftime('%Y-%m-%d') if row[0] else None
 
@@ -515,6 +615,8 @@ def main():
     configure_root_logging(logging.INFO)
 
     parser = argparse.ArgumentParser(description='股票每日快照宽表同步脚本')
+    parser.add_argument('--market', type=str, choices=['cn', 'hk', 'us'], default='cn',
+                        help='市场类型（cn/hk/us），默认 cn')
     parser.add_argument('--date', type=str, help='同步指定日期')
     parser.add_argument('--start-date', type=str, help='同步开始日期')
     parser.add_argument('--end-date', type=str, help='同步结束日期')
@@ -530,13 +632,14 @@ def main():
     try:
         count = 0
         if args.date:
-            count = sync_daily_snapshot(session, args.date)
+            count = sync_daily_snapshot(session, args.date, args.market)
         elif args.start_date and args.end_date:
-            count = sync_date_range(session, args.start_date, args.end_date, args.ignore_errors)
+            count = sync_date_range(session, args.start_date, args.end_date,
+                                    args.ignore_errors, args.market)
         elif args.latest:
-            latest_date = get_latest_trade_date(engine)
+            latest_date = get_latest_trade_date(engine, args.market)
             if latest_date:
-                count = sync_daily_snapshot(session, latest_date)
+                count = sync_daily_snapshot(session, latest_date, args.market)
             else:
                 logger.error("❌ 未找到最新交易日期")
         else:

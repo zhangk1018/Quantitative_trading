@@ -71,25 +71,31 @@ class TestConstants:
 
     def test_stage_constants(self, mod):
         assert mod.STAGE_PRE_IMPORT == 1
-        assert mod.STAGE_IMPORT == 2
+        assert mod.STAGE_DAILY_IMPORT == 2
+        assert mod.STAGE_DAILY_COMPUTE == 3
         assert mod.PIPELINE_STAGE == 0
 
     def test_stage_definitions_have_expected_tasks(self, mod):
         stage1_names = [t["name"] for t in mod.STAGE1_TASKS]
         stage2_names = [t["name"] for t in mod.STAGE2_TASKS]
+        stage3_names = [t["name"] for t in mod.STAGE3_TASKS]
 
         assert "pipeline_health_check" in stage1_names
         assert "stock_list_sync" in stage1_names
-        assert len(stage1_names) == 2
+        assert "adj_factor_sync" in stage1_names
+        assert len(stage1_names) == 3
 
         assert "daily_import" in stage2_names
-        assert "adj_factor_sync" in stage2_names
-        assert "daily_basic_sync" in stage2_names
-        assert "indicators_compute" in stage2_names
-        assert "signal_precompute" in stage2_names
-        assert "daily_sync" in stage2_names
-        assert "parquet_export" in stage2_names
-        assert len(stage2_names) == 7
+        assert len(stage2_names) == 1
+
+        assert "fill_missing_data" in stage3_names
+        assert "daily_basic_sync" in stage3_names
+        assert "indicators_compute" in stage3_names
+        assert "pattern_precompute" in stage3_names
+        assert "signal_precompute" in stage3_names
+        assert "daily_sync" in stage3_names
+        assert "parquet_export" in stage3_names
+        assert len(stage3_names) == 7
 
 
 # ===================== _parse_task_result 测试 =====================
@@ -205,7 +211,8 @@ class TestGetLastBatchStatus:
 
     def test_all_success(self, mod, mock_engine):
         tasks = [{"name": "task_a"}, {"name": "task_b"}]
-        row = (2, 2, 0)
+        # 真实 SQL 返回两列 (success_count, bad_count)
+        row = (2, 0)
         mock_engine.connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = row
         success_cnt, total, has_bad = mod.get_last_batch_status(mock_engine, "2026-07-09", tasks, 1)
         assert success_cnt == 2
@@ -214,10 +221,11 @@ class TestGetLastBatchStatus:
 
     def test_mixed_status(self, mod, mock_engine):
         tasks = [{"name": "task_a"}, {"name": "task_b"}]
-        row = (2, 1, 1)
+        row = (1, 1)
         mock_engine.connect.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = row
         success_cnt, total, has_bad = mod.get_last_batch_status(mock_engine, "2026-07-09", tasks, 1)
         assert success_cnt == 1
+        assert total == 2
         assert has_bad is True
 
     def test_no_records(self, mod, mock_engine):

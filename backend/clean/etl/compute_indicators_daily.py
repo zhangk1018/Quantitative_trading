@@ -7,6 +7,7 @@
 import sys
 import os
 import json
+from typing import Optional
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, backend_dir)
 import argparse
@@ -18,28 +19,47 @@ from collector.storage.postgresql_storage import PostgreSQLStorage
 from clean.processor.technical_indicator import TechnicalIndicator
 from utils.config import config
 from utils.logger import setup_logger
+from utils.stock_code_utils import normalize_db_code
 
 logger = setup_logger('indicator_compute')
 
 
-def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
-    """为指定股票计算技术指标（全量）"""
-    db_code = code.split('.')[-1] if '.' in code else code
-    logger.info(f"▶️ 开始处理 {code} (DB Code: {db_code})...")
-    
-    # 动态计算起始日期：往前推 300 个自然日，确保长窗口指标有充足历史
-    start_date = (datetime.now() - pd.Timedelta(days=300)).strftime('%Y-%m-%d')
+def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str,
+                                 market: Optional[str] = None) -> int:
+    """为指定股票计算技术指标（全量）
+
+    Args:
+        storage: PostgreSQL 存储层实例
+        code: 股票代码（A股 6 位数字 / 港股 9988.HK / 美股 AAPL）
+        market: 目标市场标识（'cn'/'hk'/'us'），与 normalize_db_code 推断不一致时跳过
+
+    Returns:
+        写入的指标记录数
+    """
+    db_code, db_mkt = normalize_db_code(code)
+    if market and db_mkt != market:
+        logger.debug(f"⏭️ {code} 市场 {db_mkt} 与目标 {market} 不一致，跳过")
+        return 0
+    mkt = market or db_mkt
+    logger.info(f"▶️ 开始处理 {code} (DB Code: {db_code}, Market: {mkt})...")
+
+    # 动态计算起始日期：往前推足够自然日，确保长窗口指标有充足历史。
+    # 港股/美股交易日密度低于 A 股，窗口放宽到 400 个自然日（约 280 个交易日 > MACD/BOLL 60 行需求）
+    lookback_days = 300 if mkt == 'cn' else 400
+    start_date = (datetime.now() - pd.Timedelta(days=lookback_days)).strftime('%Y-%m-%d')
     end_date = datetime.now().strftime('%Y-%m-%d')
-    
-    quotes_df = storage.get_quotes(code=db_code, cycle='daily', start_date=start_date, end_date=end_date)
-    
+
+    quotes_df = storage.get_quotes(code=db_code, cycle='daily', start_date=start_date,
+                                   end_date=end_date, market=market)
+
     if quotes_df.empty or len(quotes_df) < 60:
         logger.warning(f"⚠️ {code} 行情数据不足 (仅获取到 {len(quotes_df)} 条，需至少60条)，跳过计算")
         return 0
-        
+
     logger.info(f"✅ {code} 获取到 {len(quotes_df)} 条行情数据，开始计算指标...")
-    
-    quotes_df['adjust_type'] = 'qfq'
+
+    # A 股为前复权(qfq)，港股/美股为后复权(adj)；require_adjust=False 已绕过复权校验
+    quotes_df['adjust_type'] = 'adj' if mkt != 'cn' else 'qfq'
     quotes_df['adjust_factor'] = 1.0
     
     for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
@@ -63,6 +83,7 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
     save_df = pd.DataFrame()
     save_df['code'] = indicators_df['code'] if 'code' in indicators_df.columns else db_code
     save_df['cycle'] = '1d'
+    save_df['market'] = mkt
     save_df['trade_date'] = indicators_df['trade_date']
     
     # 构建 trade_datetime（带时区）
@@ -117,18 +138,22 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
             save_df[dst_col] = None
 
     # 换手率计算（需要流通股本）
-    try:
-        float_shares = storage.get_float_shares(db_code)
-        turnover_df = TechnicalIndicator.calculate_turnover_rate(
-            quotes_df.copy(), float_shares=float_shares, require_adjust=False
-        )
-        if 'TURNOVER_RATE' in turnover_df.columns:
-            turnover_series = turnover_df.set_index(pd.to_datetime(turnover_df['trade_date']).dt.date)['TURNOVER_RATE']
-            save_df['turnover_rate'] = save_date_index.map(turnover_series)
-        else:
-            save_df['turnover_rate'] = None
-    except Exception:
+    # 港股/美股无流通股本口径，换手率置 None，仅 A 股计算
+    if mkt != 'cn':
         save_df['turnover_rate'] = None
+    else:
+        try:
+            float_shares = storage.get_float_shares(db_code)
+            turnover_df = TechnicalIndicator.calculate_turnover_rate(
+                quotes_df.copy(), float_shares=float_shares, require_adjust=False
+            )
+            if 'TURNOVER_RATE' in turnover_df.columns:
+                turnover_series = turnover_df.set_index(pd.to_datetime(turnover_df['trade_date']).dt.date)['TURNOVER_RATE']
+                save_df['turnover_rate'] = save_date_index.map(turnover_series)
+            else:
+                save_df['turnover_rate'] = None
+        except Exception:
+            save_df['turnover_rate'] = None
 
     if save_df.empty:
         return 0
@@ -138,7 +163,7 @@ def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str) -> int:
     return count
 
 
-def worker_compute(code: str) -> int:
+def worker_compute(code: str, market: Optional[str] = None) -> int:
     """子进程 Worker：每个子进程独立维护数据库连接"""
     db_config = config.get('database', {})
     local_storage = PostgreSQLStorage({
@@ -150,7 +175,7 @@ def worker_compute(code: str) -> int:
     })
     local_storage.connect()
     try:
-        return compute_indicators_for_stock(local_storage, code)
+        return compute_indicators_for_stock(local_storage, code, market=market)
     finally:
         local_storage.disconnect()
 
@@ -158,6 +183,8 @@ def worker_compute(code: str) -> int:
 def main():
     parser = argparse.ArgumentParser(description='全市场日线技术指标计算')
     parser.add_argument('--code', type=str, help='单只股票代码')
+    parser.add_argument('--market', choices=['cn', 'hk', 'us'], default='cn',
+                        help='市场 (默认 cn，仅 A 股)')
     args = parser.parse_args()
 
     db_config = config.get('database', {})
@@ -173,13 +200,13 @@ def main():
 
     if args.code:
         # 单只股票计算（主进程直接执行）
-        count = compute_indicators_for_stock(storage, args.code)
+        count = compute_indicators_for_stock(storage, args.code, market=args.market)
         print(f"\n🎉 单只股票 {args.code} 处理完成，共写入/更新 {count} 条指标记录。")
         storage.disconnect()
         return
 
     # 全市场多进程计算
-    stocks_df = storage.get_stock_list()
+    stocks_df = storage.get_stock_list(market=args.market)
     storage.disconnect()  # 主进程断开，避免连接池冲突
     
     if stocks_df.empty:
@@ -196,7 +223,7 @@ def main():
     success = 0
     total_count = 0
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(worker_compute, code) for code in codes]
+        futures = [executor.submit(worker_compute, code, args.market) for code in codes]
         for i, future in enumerate(futures):
             try:
                 count = future.result()

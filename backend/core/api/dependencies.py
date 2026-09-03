@@ -15,6 +15,8 @@ from psycopg2 import pool as pg_pool
 from fastapi import Depends, HTTPException, Request
 from jose import JWTError
 from collector.db.loader import DataLoader
+from collector.db.loader import get_loader as _collector_get_loader  # 多市场 loader 工厂（避免与下方 cn get_loader 重名）
+from utils.stock_code_utils import normalize_db_code, infer_market, to_display_code
 from core.api.config import settings
 from core.api.security import decode_session_token
 from core.service.snapshot_service import SnapshotService
@@ -62,6 +64,9 @@ def close_pg_pool() -> None:
         get_snapshot_service.cache_clear()
         get_screener_service.cache_clear()
         get_loader.cache_clear()
+        # V5：多市场 loader/screener 单例也要一并清理
+        get_market_loader.cache_clear()
+        get_market_screener_service.cache_clear()
         logger.info("[db_pool] 连接池已全部关闭，服务单例缓存已清理")
 
 @contextmanager
@@ -81,11 +86,14 @@ def get_db() -> Generator:
 # ============================================
 # 公共校验常量
 # ============================================
-STOCK_CODE_PATTERN = r'^(\d{6}\.(SH|SZ|BJ)|(SH|SZ)\d{6}|\d{6})$'
+# 宽白名单：A股6位数字 / 带 .SH/.SZ/.BJ 后缀 / 港股 `0001.HK` / 美股 `AAPL` / `BRK-B`
+STOCK_CODE_PATTERN = r'^[A-Za-z0-9.\-]{1,10}$'
 STOCK_CODE_REGEX = re.compile(STOCK_CODE_PATTERN)
 VALID_KLINE_PERIODS = {'daily', 'weekly', 'monthly'}
 VALID_SIGNAL_TYPES = {'macd_cross', 'rsi_oversold', 'rsi_overbought', 'bollinger_breakout', 'all'}
 VALID_BOARDS = {"main_board", "gem", "beijing"}
+# 支持的市场（与 collector.db.loader.SUPPORTED_MARKETS / stock_daily_snapshot.market 对齐）
+valid_markets = ('cn', 'hk', 'us')
 
 # ============================================
 # 分页/排序数据类
@@ -120,6 +128,39 @@ def get_screener_service() -> ScreenerService:
     loader = get_loader()
     return ScreenerService(loader)
 ScreenerServiceDep = Annotated[ScreenerService, Depends(get_screener_service)]
+
+def validate_market(market: Optional[str]) -> str:
+    """校验市场参数，返回小写 market（缺省时默认 cn）。
+
+    Args:
+        market: 市场标识（cn/hk/us）或 None。
+
+    Returns:
+        归一化小写后的市场标识。
+
+    Raises:
+        HTTPException: market 不在 {cn, hk, us} 内时 400。
+    """
+    m = (market or 'cn').strip().lower()
+    if m not in valid_markets:
+        raise HTTPException(400, f"market 参数无效，可选：{','.join(valid_markets)}")
+    return m
+
+@lru_cache(maxsize=8)
+def get_market_loader(market: str = "cn") -> DataLoader:
+    """按市场获取 DataLoader 单例（cn/hk/us），供港股/美股选股/详情使用。
+
+    cn 复用历史 loader 接口；hk/us 由 collector.db.loader.get_loader(market) 工厂按市场缓存。
+    热重载可调用 get_market_loader.cache_clear() 释放全部市场实例。
+    """
+    m = validate_market(market)
+    return _collector_get_loader(m)
+
+@lru_cache(maxsize=8)
+def get_market_screener_service(market: str = "cn") -> ScreenerService:
+    """按市场获取 ScreenerService 单例（cn 等价 get_screener_service）。"""
+    loader = get_market_loader(market)
+    return ScreenerService(loader)
 
 @lru_cache(maxsize=1)
 def get_snapshot_service() -> SnapshotService:

@@ -7,7 +7,7 @@ export type OrderType = 'limit' | 'market' | 'stop';
 export type TradeGrade = 'A' | 'B' | 'C';
 export type ExitReason = 'take_profit' | 'stop_loss' | 'impulsive' | 'plan_expired' | 'others';
 export type TriggerSource = 'system_plan' | 'news' | 'impulse' | 'scanner' | 'manual';
-export type CycleStatus = 'PLAN' | 'DO' | 'CHECK' | 'ACT';
+export type CycleStatus = 'PLAN' | 'DO' | 'CHECK' | 'ACT' | 'DONE';
 export type ViolationType = 'C_class_trade' | 'over_position' | 'no_plan_trade' | 'cancel_stop_loss';
 export type Severity = 'low' | 'medium' | 'high' | 'critical';
 
@@ -211,6 +211,8 @@ export interface PDCACycle {
 
 // --- 交易计划 ---
 export type PlanStatus = 'draft' | 'active' | 'executed' | 'cancelled';
+/** 计划派生状态（后端 derived_status，需求④）：按关联交易记录自动派生 */
+export type DerivedPlanStatus = 'pending' | 'holding' | 'closed' | 'cancelled' | 'draft';
 export type PlanTemplateType = 'short_term' | 'mid_term' | 'long_term';
 
 export interface PlanTemplate {
@@ -232,6 +234,8 @@ export interface TradingPlan {
   instrument_type: InstrumentType;
   long_short: LongShort;
   plan_status: PlanStatus;
+  /** 派生状态（后端按关联交易记录计算：pending/holding/closed/cancelled/draft） */
+  derived_status?: DerivedPlanStatus;
   weekly_view: string;
   daily_view: string;
   entry_price: number;
@@ -443,6 +447,32 @@ export interface ActRecordFormData {
   bind_next_cycle_goal?: string | null;
   is_freeze_experience?: boolean;
   new_config_version?: string | null;
+}
+
+// ============================================================
+// 经验知识库 — 冻结经验条目
+// ============================================================
+
+export interface TradeExperience {
+  id: number;
+  account_id: number;
+  trading_record_id: number | null;
+  title: string;
+  content: string;
+  tags: string[] | null;
+  source_act_record_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 经验知识库查询参数（对应 GET /pdca/experiences） */
+export interface ExperienceQueryParams {
+  /** 标签筛选（全部命中） */
+  tags?: string[];
+  /** 标题/内容关键词模糊搜索 */
+  keyword?: string;
+  page?: number;
+  page_size?: number;
 }
 
 // ============================================================

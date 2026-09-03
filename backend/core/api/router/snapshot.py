@@ -7,7 +7,7 @@ import time
 import logging
 from fastapi import APIRouter, Query, HTTPException
 from shared.schemas import ApiResponse, SnapshotAllData, SnapshotIncrementalData
-from core.api.dependencies import validate_required_date, validate_board, SnapshotServiceDep, get_snapshot_service
+from core.api.dependencies import validate_required_date, validate_board, validate_market, SnapshotServiceDep, get_snapshot_service
 
 logger = logging.getLogger(__name__)
 # 慢请求阈值支持环境变量配置
@@ -19,14 +19,17 @@ router = APIRouter(tags=["全量快照接口"])
 @router.get("/all", summary="全量快照（300天OHLCV+指标）", response_model=ApiResponse[SnapshotAllData])
 def get_all_snapshot(
     snapshot: SnapshotServiceDep,
+    market: str | None = Query(None, description="市场过滤 cn/hk/us"),
     board: str | None = Query(None, description="板块过滤 main_board/gem/beijing"),
     industry: str | None = Query(None, description="行业名称过滤"),
     codes: str | None = Query(None, description="股票代码过滤，逗号分隔，如 000001,600000")
 ):
-    board = validate_board(board)
+    mkt = validate_market(market)
+    # 港美股无 A 股板块概念，board 过滤直接忽略
+    board = validate_board(board) if mkt in ('cn', None) else None
     code_list = codes.split(",") if codes else None
     start = time.time()
-    result = snapshot.get_all_snapshot(board=board, industry=industry, codes=code_list)
+    result = snapshot.get_all_snapshot(market=mkt, board=board, industry=industry, codes=code_list)
     elapsed = time.time() - start
 
     if elapsed > SLOW_REQUEST_THRESHOLD:
@@ -41,16 +44,18 @@ def get_all_snapshot(
 def get_incremental_snapshot(
     snapshot: SnapshotServiceDep,
     since: str = Query(..., description="起始日期 YYYY-MM-DD", examples=["2026-06-20"]),
+    market: str | None = Query(None, description="市场过滤 cn/hk/us"),
     board: str | None = Query(None, description="板块过滤 main_board/gem/beijing"),
     industry: str | None = Query(None, description="行业名称过滤"),
     codes: str | None = Query(None, description="股票代码过滤，逗号分隔，如 000001,600000")
 ):
     since = validate_required_date(since, label="since")
-    board = validate_board(board)
+    mkt = validate_market(market)
+    board = validate_board(board) if mkt in ('cn', None) else None
     code_list = codes.split(",") if codes else None
     start = time.time()
     try:
-        result = snapshot.get_incremental_snapshot(since=since, board=board, industry=industry, codes=code_list)
+        result = snapshot.get_incremental_snapshot(since=since, market=mkt, board=board, industry=industry, codes=code_list)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     elapsed = time.time() - start

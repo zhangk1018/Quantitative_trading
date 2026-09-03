@@ -869,7 +869,11 @@ class PostgreSQLStorage(BaseStorage):
             else:
                 df[col] = None
 
-        cols = ['code', 'cycle', 'trade_date'] + numeric_cols + ['trade_time', 'trade_datetime']
+        # 兜底 market：A 股既有调用不传 market 时默认 'cn'
+        if 'market' not in df.columns:
+            df['market'] = 'cn'
+
+        cols = ['code', 'market', 'cycle', 'trade_date'] + numeric_cols + ['trade_time', 'trade_datetime']
         for c in cols:
             if c not in df.columns:
                 df[c] = None
@@ -881,7 +885,7 @@ class PostgreSQLStorage(BaseStorage):
             with conn.cursor() as cursor:
                 execute_values(cursor, """
                     INSERT INTO stock_indicators (
-                        code, cycle, trade_date, ma5, ma10, ma20, ma60,
+                        code, market, cycle, trade_date, ma5, ma10, ma20, ma60,
                         macd, dif, dea, rsi6, rsi12, rsi24,
                         boll_upper, boll_mid, boll_lower,
                         ema5, ema10, ema20, ema60, atr, vol_ratio, turnover_rate,
@@ -1083,11 +1087,13 @@ class PostgreSQLStorage(BaseStorage):
         if 'signal_value' in df.columns:
             df['signal_value'] = df['signal_value'].apply(lambda x: Decimal(str(x)) if pd.notnull(x) else None)
 
-        cols = ['code', 'cycle', 'trade_date', 'signal_type', 'signal_direction',
+        cols = ['code', 'market', 'cycle', 'trade_date', 'signal_type', 'signal_direction',
                 'signal_value', 'signal_strength', 'description']
         for c in cols:
             if c not in df.columns:
                 df[c] = None
+        # 兜底 market：A 股既有调用不传 market 时默认 'cn'
+        df['market'] = df['market'].fillna('cn')
         df = df.where(pd.notnull(df), None)
         values = list(df[cols].itertuples(index=False, name=None))
 
@@ -1096,10 +1102,10 @@ class PostgreSQLStorage(BaseStorage):
             with conn.cursor() as cursor:
                 execute_values(cursor, """
                     INSERT INTO trade_signals (
-                        code, cycle, trade_date, signal_type, signal_direction,
+                        code, market, cycle, trade_date, signal_type, signal_direction,
                         signal_value, signal_strength, description
                     ) VALUES %s
-                    ON CONFLICT (code, cycle, trade_date, signal_type, signal_direction) DO UPDATE SET
+                    ON CONFLICT (market, code, cycle, trade_date, signal_type) DO UPDATE SET
                         signal_value = EXCLUDED.signal_value,
                         signal_strength = EXCLUDED.signal_strength,
                         description = EXCLUDED.description
@@ -1131,8 +1137,13 @@ class PostgreSQLStorage(BaseStorage):
             df['cycle'] = df['cycle'].apply(self._normalize_cycle)
         if 'signal_value' in df.columns:
             df['signal_value'] = df['signal_value'].apply(lambda x: Decimal(str(x)) if pd.notnull(x) else None)
+        # 兜底 market：A 股既有调用不传 market 时默认 'cn'
+        if 'market' not in df.columns:
+            df['market'] = 'cn'
         df = df.where(pd.notnull(df), None)
-        values = list(df[required_cols].itertuples(index=False, name=None))
+        # 注意：VALUES 顺序必须与 INSERT 列清单（code, market, cycle, ...）一致
+        select_cols = ['code', 'market'] + required_cols[1:]
+        values = list(df[select_cols].itertuples(index=False, name=None))
 
         total_processed = 0
         batch_size = 100000
@@ -1143,10 +1154,10 @@ class PostgreSQLStorage(BaseStorage):
                     batch = values[i:i+batch_size]
                     execute_values(cursor, """
                         INSERT INTO trade_signals (
-                            code, cycle, trade_date, signal_type, signal_direction,
+                            code, market, cycle, trade_date, signal_type, signal_direction,
                             signal_value, signal_strength, description
                         ) VALUES %s
-                        ON CONFLICT (code, cycle, trade_date, signal_type, signal_direction) DO UPDATE SET
+                        ON CONFLICT (market, code, cycle, trade_date, signal_type) DO UPDATE SET
                             signal_value = EXCLUDED.signal_value,
                             signal_strength = EXCLUDED.signal_strength,
                             description = EXCLUDED.description
@@ -1192,16 +1203,19 @@ class PostgreSQLStorage(BaseStorage):
 
     def get_quotes(self, code: Optional[str] = None, cycle: str = 'daily',
                    start_date: Optional[str] = None, end_date: Optional[str] = None,
-                   limit: int = 10000) -> pd.DataFrame:
+                   limit: int = 10000, market: Optional[str] = None) -> pd.DataFrame:
         self._ensure_connection()
         cycle = self._normalize_cycle(cycle)
         query = """
-            SELECT code, cycle, trade_date, open, high, low, close, pre_close,
+            SELECT code, market, cycle, trade_date, open, high, low, close, pre_close,
                    volume, amount, adjust_type
             FROM stock_quotes
             WHERE cycle = %s
         """
         params = [cycle]
+        if market:
+            query += " AND market = %s"
+            params.append(market)
         if code:
             query += " AND code = %s"
             params.append(code)
@@ -1232,18 +1246,21 @@ class PostgreSQLStorage(BaseStorage):
 
     def get_quotes_batch(self, codes: List[str], cycle: str = 'daily',
                          start_date: Optional[str] = None, end_date: Optional[str] = None,
-                         limit: int = 10000) -> pd.DataFrame:
+                         limit: int = 10000, market: Optional[str] = None) -> pd.DataFrame:
         if not codes:
             return pd.DataFrame()
         self._ensure_connection()
         cycle = self._normalize_cycle(cycle)
         query = """
-            SELECT code, cycle, trade_date, open, high, low, close, pre_close,
+            SELECT code, market, cycle, trade_date, open, high, low, close, pre_close,
                    volume, amount, adjust_type
             FROM stock_quotes
             WHERE cycle = %s AND code = ANY(%s)
         """
         params = [cycle, list(codes)]
+        if market:
+            query += " AND market = %s"
+            params.append(market)
         if start_date:
             query += " AND trade_date >= %s"
             params.append(start_date)
@@ -1269,11 +1286,11 @@ class PostgreSQLStorage(BaseStorage):
 
     def get_indicators(self, code: str, cycle: str = 'daily',
                        start_date: Optional[str] = None, end_date: Optional[str] = None,
-                       limit: int = 10000) -> pd.DataFrame:
+                       limit: int = 10000, market: Optional[str] = None) -> pd.DataFrame:
         self._ensure_connection()
         cycle = self._normalize_cycle(cycle)
         query = """
-            SELECT code, cycle, trade_date, ma5, ma10, ma20, ma60, macd, dif, dea,
+            SELECT code, market, cycle, trade_date, ma5, ma10, ma20, ma60, macd, dif, dea,
                    rsi6, rsi12, rsi24, boll_upper, boll_mid, boll_lower,
                    ema5, ema10, ema20, ema60, atr, vol_ratio, turnover_rate,
                    kdj_k, kdj_d, kdj_j
@@ -1281,6 +1298,9 @@ class PostgreSQLStorage(BaseStorage):
             WHERE code = %s AND cycle = %s
         """
         params = [code, cycle]
+        if market:
+            query += " AND market = %s"
+            params.append(market)
         if start_date:
             query += " AND trade_date >= %s"
             params.append(start_date)
@@ -1303,13 +1323,13 @@ class PostgreSQLStorage(BaseStorage):
 
     def get_indicators_batch(self, codes: List[str], cycle: str = 'daily',
                              start_date: Optional[str] = None, end_date: Optional[str] = None,
-                             limit: int = 10000) -> pd.DataFrame:
+                             limit: int = 10000, market: Optional[str] = None) -> pd.DataFrame:
         if not codes:
             return pd.DataFrame()
         self._ensure_connection()
         cycle = self._normalize_cycle(cycle)
         query = """
-            SELECT code, cycle, trade_date, ma5, ma10, ma20, ma60, macd, dif, dea,
+            SELECT code, market, cycle, trade_date, ma5, ma10, ma20, ma60, macd, dif, dea,
                    rsi6, rsi12, rsi24, boll_upper, boll_mid, boll_lower,
                    ema5, ema10, ema20, ema60, atr, vol_ratio, turnover_rate,
                    kdj_k, kdj_d, kdj_j
@@ -1317,6 +1337,9 @@ class PostgreSQLStorage(BaseStorage):
             WHERE code = ANY(%s) AND cycle = %s
         """
         params = [codes, cycle]
+        if market:
+            query += " AND market = %s"
+            params.append(market)
         if start_date:
             query += " AND trade_date >= %s"
             params.append(start_date)
@@ -1339,13 +1362,14 @@ class PostgreSQLStorage(BaseStorage):
 
     def get_indicators_with_quotes_batch(self, codes: List[str], cycle: str = 'daily',
                                          start_date: Optional[str] = None,
-                                         end_date: Optional[str] = None) -> pd.DataFrame:
+                                         end_date: Optional[str] = None,
+                                         market: Optional[str] = None) -> pd.DataFrame:
         if not codes:
             return pd.DataFrame()
         self._ensure_connection()
         db_cycle = self._normalize_cycle(cycle)
         query = """
-            SELECT i.code, i.cycle, i.trade_date,
+            SELECT i.code, i.market, i.cycle, i.trade_date,
                    i.ma5, i.ma10, i.ma20, i.ma60,
                    i.dif, i.dea, i.macd,
                    i.rsi6, i.rsi12, i.rsi24,
@@ -1356,9 +1380,13 @@ class PostgreSQLStorage(BaseStorage):
                 ON i.code = q.code
                 AND i.trade_date = q.trade_date
                 AND i.cycle = q.cycle
+                AND i.market = q.market
             WHERE i.code = ANY(%s) AND i.cycle = %s
         """
         params = [codes, db_cycle]
+        if market:
+            query += " AND i.market = %s"
+            params.append(market)
         if start_date:
             query += " AND i.trade_date >= %s"
             params.append(start_date)
@@ -1498,16 +1526,20 @@ class PostgreSQLStorage(BaseStorage):
     def get_daily_basic(self, code: Optional[str] = None,
                         start_date: Optional[str] = None,
                         end_date: Optional[str] = None,
-                        limit: int = 10000) -> pd.DataFrame:
+                        limit: int = 10000,
+                        market: Optional[str] = None) -> pd.DataFrame:
         self._ensure_connection()
         query = """
-            SELECT code, trade_date, close, turnover_rate, volume_ratio,
+            SELECT code, market, trade_date, close, turnover_rate, volume_ratio,
                    pe, pe_ttm, pb, total_mv, circ_mv,
                    dv_ratio, dv_ttm, ps, ps_ttm, float_share
             FROM stock_daily_basic
             WHERE 1=1
         """
         params = []
+        if market:
+            query += " AND market = %s"
+            params.append(market)
         if code:
             query += " AND code = %s"
             params.append(code)
@@ -1531,24 +1563,35 @@ class PostgreSQLStorage(BaseStorage):
         finally:
             self._return_conn(conn)
 
-    def get_stock_list(self) -> pd.DataFrame:
+    def get_stock_list(self, market: Optional[str] = None) -> pd.DataFrame:
         self._ensure_connection()
-        query = "SELECT code, name, exchange, industry FROM stock_basic ORDER BY code"
+        query = "SELECT code, market, name, exchange, industry FROM stock_basic"
+        params = []
+        if market:
+            query += " WHERE market = %s"
+            params.append(market)
+        query += " ORDER BY code"
         conn = self._get_conn()
         try:
-            return self._run_query_df(conn, query, [])
+            return self._run_query_df(conn, query, params)
         except Exception as e:
             logger.error(f"❌ 获取股票列表失败: {str(e)}")
             return pd.DataFrame()
         finally:
             self._return_conn(conn)
 
-    def get_latest_trade_date(self) -> Optional[str]:
+    def get_latest_trade_date(self, market: Optional[str] = None) -> Optional[str]:
         self._ensure_connection()
         conn = self._get_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'")
+                if market:
+                    cur.execute(
+                        "SELECT MAX(trade_date) FROM stock_quotes "
+                        "WHERE cycle = '1d' AND market = %s", (market,)
+                    )
+                else:
+                    cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'")
                 result = cur.fetchone()
                 return str(result[0]) if result and result[0] else None
         except Exception as e:

@@ -36,23 +36,26 @@ class CycleUpdate(BaseModel):
 
 
 class CycleTransition(BaseModel):
-    target_status: str = Field(..., pattern="^(PLAN|DO|CHECK|ACT)$")
+    target_status: str = Field(..., pattern="^(PLAN|DO|CHECK|ACT|DONE)$")
 
 
-# 有效状态流转映射
+# 终态（已闭环）：ACT 结束后进入，仅可查看/统计，不可再流转、修改、加计划
+TERMINAL_STATUS = "DONE"
+
+# 有效状态流转映射（终态 DONE 不作为 key，天然不可继续流转）
 VALID_TRANSITIONS = {
     "PLAN": "DO",
     "DO": "CHECK",
     "CHECK": "ACT",
-    "ACT": "PLAN",
+    "ACT": "DONE",
 }
 
 # 每个流转对应的边界条件检查函数名
 TRANSITION_CHECKS = {
     "PLAN": "DO",     # PLAN→DO: 检查交易计划
-    "DO": "CHECK",    # DO→CHECK: 检查所有交易已平仓
+    "DO": "CHECK",    # DO→CHECK: 允许未平仓持仓结转，不强制全平仓
     "CHECK": "ACT",   # CHECK→ACT: 检查复盘报告
-    "ACT": "PLAN",    # ACT→PLAN: 自动创建下一周期
+    "ACT": "DONE",    # ACT→DONE: 进入终态「已闭环」，不再自动创建下一周期
 }
 
 
@@ -87,18 +90,22 @@ def _check_plan_to_do(conn, cycle_id: int):
 
 
 def _check_do_to_check(conn, cycle_id: int):
-    """DO→CHECK: 检查周期内所有交易是否已平仓"""
+    """DO→CHECK: 允许存在未平仓持仓（自动结转下周期），复盘聚焦已了结交易。
+
+    需求③：未平仓持仓不阻塞进入 CHECK。复盘统计口径——未平仓不计入毛盈亏
+    （gross_profit 仅由已落库的卖出子单累计），此处仅提示、不拦截。
+    """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT COUNT(*) FROM pdca.trading_record "
             "WHERE pdca_cycle_id = %s AND deleted_at IS NULL AND exit_date IS NULL",
             (cycle_id,),
         )
-        count = cur.fetchone()[0]
-        if count > 0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"不允许从 DO 流转到 CHECK：还有 {count} 笔交易未平仓（exit_date IS NULL）",
+        open_count = cur.fetchone()[0]
+        if open_count > 0:
+            logger.info(
+                "DO→CHECK：周期 %s 有 %s 笔未平仓持仓，允许结转下周期（不计入已实现盈亏）",
+                cycle_id, open_count,
             )
 
 
@@ -117,66 +124,25 @@ def _check_check_to_act(conn, cycle_id: int):
             )
 
 
-def _check_act_to_plan(conn, cycle_id: int):
-    """ACT→PLAN: 自动创建下一个周期的草稿，链接 prev_cycle_id"""
+def _check_act_to_done(conn, cycle_id: int):
+    """ACT→DONE: 终止当前周期，进入终态「已闭环」。
+
+    需求①：取消自动续期——不再 INSERT 新周期、不再把旧周期重置为 PLAN。
+    旧周期置为 DONE（终态，仅查看/统计），新周期由用户手动 POST /cycles 创建。
+    """
     with conn.cursor() as cur:
-        # 获取当前周期信息
         cur.execute(
-            "SELECT * FROM pdca.pdca_cycle WHERE id = %s",
+            "SELECT status FROM pdca.pdca_cycle WHERE id = %s",
             (cycle_id,),
         )
-        columns = [desc[0] for desc in cur.description]
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail=PDCAError.CYCLE_NOT_FOUND.detail())
-        cycle = dict(zip(columns, row))
-
-        # 计算下一个周期的起止日期（按周期类型自动推算）
-        from datetime import timedelta
-
-        next_start = cycle["end_date"] + timedelta(days=1)
-        cycle_type = cycle["cycle_type"]
-        if cycle_type == "day":
-            next_end = next_start
-        elif cycle_type == "week":
-            next_end = next_start + timedelta(days=6)
-        elif cycle_type == "month":
-            # 下个月的同一天减1天
-            month = next_start.month + 1
-            year = next_start.year
-            if month > 12:
-                month = 1
-                year += 1
-            import calendar
-            last_day = calendar.monthrange(year, month)[1]
-            try:
-                next_end = next_start.replace(year=year, month=month, day=min(next_start.day, last_day))
-            except ValueError:
-                next_end = next_start.replace(year=year, month=month, day=last_day)
-        elif cycle_type == "quarter":
-            next_end = next_start + timedelta(days=89)
-        else:  # year
-            next_end = next_start.replace(year=next_start.year + 1) - timedelta(days=1)
-
-        # 自动生成周期名称
-        next_name = f"{cycle['cycle_name']}-续"
-
-        cur.execute(
-            "INSERT INTO pdca.pdca_cycle "
-            "(account_id, prev_cycle_id, cycle_type, cycle_name, status, start_date, end_date, goal_text) "
-            "VALUES (%s, %s, %s, %s, 'PLAN', %s, %s, %s) RETURNING id",
-            (
-                cycle.get("account_id", 1),
-                cycle_id,
-                cycle_type,
-                next_name,
-                next_start,
-                next_end,
-                cycle.get("goal_text", ""),
-            ),
-        )
-        new_id = cur.fetchone()[0]
-        logger.info("ACT→PLAN 自动创建下一周期 id=%s, name=%s, %s~%s", new_id, next_name, next_start, next_end)
+        if row[0] != "ACT":
+            raise HTTPException(
+                status_code=400,
+                detail=f"仅 ACT（改进中）状态可进入终态，当前为 {row[0]}",
+            )
 
 
 # 边界条件检查映射
@@ -184,7 +150,7 @@ TRANSITION_CHECK_FUNCS = {
     ("PLAN", "DO"): _check_plan_to_do,
     ("DO", "CHECK"): _check_do_to_check,
     ("CHECK", "ACT"): _check_check_to_act,
-    ("ACT", "PLAN"): _check_act_to_plan,
+    ("ACT", "DONE"): _check_act_to_done,
 }
 
 
@@ -419,6 +385,13 @@ async def transition_cycle(cycle_id: int, body: CycleTransition):
     with get_db() as conn:
         cycle = _get_cycle_or_404(conn, cycle_id)
         current = cycle["status"]
+
+        # 终态周期不可再流转（仅查看/统计）
+        if current == TERMINAL_STATUS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"周期已进入终态「已闭环」，仅可查看/统计，不可再流转（id={cycle_id}）",
+            )
 
         # 检查流转是否合法
         expected_target = VALID_TRANSITIONS.get(current)

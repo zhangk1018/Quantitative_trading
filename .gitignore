@@ -94,6 +94,9 @@ ui_dashboard.py.py
 postgresql_data/
 quant_trading.dump
 
+# Third-party source (local study reference, never commit)
+yfinance-main/
+
 # OS files
 .DS_Store
 Thumbs.db

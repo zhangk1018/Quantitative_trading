@@ -107,3 +107,5 @@ class PDCAError:
     CYCLE_NOT_FOUND = ErrorCode("40015", "周期不存在", ErrorCategory.NOT_FOUND)
     ACT_RECORD_NOT_FOUND = ErrorCode("40016", "迭代处理记录不存在", ErrorCategory.NOT_FOUND)
     FUND_RECORD_NOT_FOUND = ErrorCode("40401", "资金记录不存在", ErrorCategory.NOT_FOUND)
+    DIARY_RECORD_REQUIRED = ErrorCode("40017", "日记必须关联交易记录", ErrorCategory.VALIDATION)
+    DIARY_CYCLE_CLOSED = ErrorCode("40018", "周期已闭环，日记仅可查看", ErrorCategory.BUSINESS)

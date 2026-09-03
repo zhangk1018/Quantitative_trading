@@ -309,7 +309,9 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
   }, []);
 
   const handleStockSelect = useCallback((_value: string, option: { label: string }) => {
-    const name = option.label.replace(/^\d+\s*/, '');
+    // label 格式为 `${code} ${name}`；按首个空格切分取名称，
+    // 兼容 A股 `600519 贵州茅台` 与港/美股 `9988.HK 阿里巴巴` / `AAPL Apple Inc.`
+    const name = option.label.split(/\s+/).slice(1).join(' ').trim();
     form.setFieldsValue({ security_name: name });
   }, [form]);
 

@@ -41,11 +41,16 @@ import { searchStocks } from '../services/stock';
 const { Text, Title } = Typography;
 
 // ── 计划状态标签 ──
+// 优先展示后端 derived_status（按关联交易记录自动派生，需求④），plan_status 仅作兜底
 const PLAN_STATUS_CONFIG: Record<string, { color: string; label: string }> = {
   draft: { color: 'default', label: '草稿' },
   active: { color: 'blue', label: '执行中' },
   executed: { color: 'green', label: '已完成' },
   cancelled: { color: 'red', label: '已取消' },
+  // 派生状态（后端 derived_status）
+  pending: { color: 'orange', label: '待执行' },
+  holding: { color: 'blue', label: '持仓中' },
+  closed: { color: 'green', label: '已平仓' },
 };
 
 /** 安全格式化数值：后端 numeric 字段可能以字符串返回，统一转 Number 后再格式化 */
@@ -93,6 +98,9 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   const [plans, setPlans] = useState<TradingPlan[]>([]);
   const [templates, setTemplates] = useState<PlanTemplate[]>([]);
   const [selectedCycle, setSelectedCycle] = useState<number | undefined>();
+  // 选中周期状态：DONE（已闭环）终态仅可查看，不可新建计划（需求：2026-08-28）
+  const selectedCycleStatus = cycles.find((c) => c.id === selectedCycle)?.status;
+  const isCycleClosed = selectedCycleStatus === 'DONE';
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<TradingPlan | null>(null);
@@ -209,6 +217,10 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   // ── 保存（创建/更新） ──
   const handleSubmit = async () => {
     try {
+      if (isCycleClosed) {
+        appMessage.error('周期已闭环，仅可查看/统计，请新建周期后创建交易计划');
+        return;
+      }
       const values = await form.validateFields();
       const payload: TradingPlanFormData = {
         pdca_cycle_id: selectedCycle!,
@@ -287,9 +299,10 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
       title: '数量', dataIndex: 'plan_quantity', key: 'plan_quantity', width: 80, align: 'right',
     },
     {
-      title: '状态', dataIndex: 'plan_status', key: 'plan_status', width: 80,
-      render: (v: string) => {
-        const cfg = PLAN_STATUS_CONFIG[v] || { color: 'default', label: v };
+      title: '状态', key: 'status', width: 80,
+      render: (_: unknown, r: TradingPlan) => {
+        const key = r.derived_status || r.plan_status || 'pending';
+        const cfg = PLAN_STATUS_CONFIG[key] || { color: 'default', label: key };
         return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
@@ -336,7 +349,8 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
           <Button
             type="primary"
             icon={<PlusOutlined />}
-            disabled={!selectedCycle}
+            disabled={!selectedCycle || isCycleClosed}
+            title={isCycleClosed ? '周期已闭环，仅可查看/统计，请新建周期后创建计划' : undefined}
             onClick={openCreate}
           >
             新建计划

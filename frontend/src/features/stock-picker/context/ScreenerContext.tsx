@@ -178,7 +178,8 @@ function marketReducer(state: MarketState, action: MarketAction): MarketState {
       const config = MARKET_CONFIG[action.payload];
       const newState = {
         selectedMarket: action.payload,
-        selectedBoards: config?.disabled ? [] : ['all'],
+        // 有板块（沪深）默认「全部」；无板块市场（港股/美股）清空板块
+        selectedBoards: config && config.boards.length > 0 ? ['all'] : [],
         stockRange: STOCK_RANGE_OPTIONS[0].value,
       };
       return (newState.selectedMarket === state.selectedMarket &&

@@ -1,7 +1,7 @@
 /**
  * diary.ts — 交易日记 API
  */
-import { apiGet, apiPost, apiPut } from './client';
+import { apiGet, apiPost, apiPut, apiDelete } from './client';
 import { API_PREFIX } from '@/config/constants';
 import type { TradingDiary, TradingDiaryFormData } from '../types';
 
@@ -25,6 +25,11 @@ export async function createDiary(diary: TradingDiaryFormData): Promise<TradingD
 /** 更新交易日记 */
 export async function updateDiary(id: number, diary: Partial<TradingDiaryFormData>): Promise<TradingDiary> {
   return apiPut<TradingDiary>(`${BASE}/diaries/${id}`, diary);
+}
+
+/** 删除交易日记（软删除，协作单 [27.0]） */
+export async function deleteDiary(id: number): Promise<void> {
+  return apiDelete<void>(`${BASE}/diaries/${id}`);
 }
 
 /** 上传日记附件 */

@@ -27,7 +27,8 @@ _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 
 class DiaryCreate(BaseModel):
-    trading_record_id: Optional[int] = None
+    # 需求③禁止独立日记：必须关联交易记录（前端可绕过后端仍需强校验）
+    trading_record_id: int
     pdca_cycle_id: int
     emotion_note: Optional[str] = None
     review_text: str = Field(..., min_length=1)
@@ -89,12 +90,56 @@ async def list_diaries(
             return ApiResponse(code=200, message="success", data={"items": items, "total": total})
 
 
+def _cycle_status(conn, cycle_id: int) -> Optional[str]:
+    """查询周期状态；周期不存在返回 None。"""
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM pdca.pdca_cycle WHERE id = %s", (cycle_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def _assert_cycle_not_done(conn, cycle_id: int) -> None:
+    """校验周期未闭环（供新建/改删日记前调用）。
+
+    - 周期不存在 → 404 CYCLE_NOT_FOUND
+    - 周期已闭环（DONE）→ 400 DIARY_CYCLE_CLOSED
+    """
+    status = _cycle_status(conn, cycle_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail=PDCAError.CYCLE_NOT_FOUND.detail())
+    if status == "DONE":
+        raise HTTPException(status_code=400, detail=PDCAError.DIARY_CYCLE_CLOSED.detail())
+
+
+def _diary_cycle_id(conn, diary_id: int) -> Optional[int]:
+    """查询日记关联的周期 id（含软删除，供改删前校验）；不存在返回 None。"""
+    with conn.cursor() as cur:
+        cur.execute("SELECT pdca_cycle_id FROM pdca.trading_diary WHERE id = %s", (diary_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
 @router.post("", response_model=ApiResponse)
 async def create_diary(diary: DiaryCreate):
-    """新增交易日记"""
+    """新增交易日记（必须关联交易记录；仅允许写入未闭环周期）"""
     with get_db() as conn:
         with conn.cursor() as cur:
             try:
+                # ① 交易记录必须存在且未删除
+                cur.execute(
+                    "SELECT id FROM pdca.trading_record WHERE id = %s AND deleted_at IS NULL",
+                    (diary.trading_record_id,),
+                )
+                if not cur.fetchone():
+                    raise HTTPException(status_code=400, detail=PDCAError.RECORD_NOT_FOUND.detail())
+
+                # ③ 仅允许在未闭环周期新建日记
+                status = _cycle_status(conn, diary.pdca_cycle_id)
+                if status is None:
+                    raise HTTPException(status_code=404, detail=PDCAError.CYCLE_NOT_FOUND.detail())
+                if status == "DONE":
+                    raise HTTPException(status_code=400, detail=PDCAError.DIARY_CYCLE_CLOSED.detail())
+
                 cur.execute(
                     """
                     INSERT INTO pdca.trading_diary
@@ -110,14 +155,18 @@ async def create_diary(diary: DiaryCreate):
                 diary_id = cur.fetchone()[0]
                 conn.commit()
                 return ApiResponse(code=200, message="success", data={"id": diary_id})
+            except HTTPException:
+                conn.rollback()
+                raise
             except Exception as e:
+                conn.rollback()
                 logger.exception("创建交易日记失败")
                 raise HTTPException(status_code=500, detail=CommonError.DB_QUERY.detail(detail=str(e)))
 
 
 @router.put("/{diary_id}", response_model=ApiResponse)
 async def update_diary(diary_id: int, diary: DiaryUpdate):
-    """更新交易日记"""
+    """更新交易日记（仅未闭环周期可改）"""
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT id, deleted_at FROM pdca.trading_diary WHERE id = %s", (diary_id,))
@@ -126,6 +175,12 @@ async def update_diary(diary_id: int, diary: DiaryUpdate):
                 raise HTTPException(status_code=404, detail=PDCAError.DIARY_NOT_FOUND.detail())
             if existing[1]:
                 raise HTTPException(status_code=400, detail=PDCAError.DIARY_DELETED.detail())
+
+            # ③ 仅未闭环周期允许修改
+            cycle_id = _diary_cycle_id(conn, diary_id)
+            if cycle_id is None:
+                raise HTTPException(status_code=404, detail=PDCAError.DIARY_NOT_FOUND.detail())
+            _assert_cycle_not_done(conn, cycle_id)
 
             updates = {}
             for field in ("emotion_note", "review_text", "three_month_review_done"):
@@ -143,6 +198,32 @@ async def update_diary(diary_id: int, diary: DiaryUpdate):
             cur.execute(
                 f"UPDATE pdca.trading_diary SET {', '.join(set_clauses)} WHERE id = %s",
                 values,
+            )
+            conn.commit()
+            return ApiResponse(code=200, message="success", data={"id": diary_id})
+
+
+@router.delete("/{diary_id}", response_model=ApiResponse)
+async def delete_diary(diary_id: int):
+    """软删除交易日记（仅未闭环周期可删，幂等）"""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, deleted_at FROM pdca.trading_diary WHERE id = %s", (diary_id,))
+            existing = cur.fetchone()
+            if not existing:
+                raise HTTPException(status_code=404, detail=PDCAError.DIARY_NOT_FOUND.detail())
+            if existing[1]:
+                raise HTTPException(status_code=400, detail=PDCAError.DIARY_DELETED.detail())
+
+            # ③ 仅未闭环周期允许删除
+            cycle_id = _diary_cycle_id(conn, diary_id)
+            if cycle_id is None:
+                raise HTTPException(status_code=404, detail=PDCAError.DIARY_NOT_FOUND.detail())
+            _assert_cycle_not_done(conn, cycle_id)
+
+            cur.execute(
+                "UPDATE pdca.trading_diary SET deleted_at = NOW() WHERE id = %s",
+                (diary_id,),
             )
             conn.commit()
             return ApiResponse(code=200, message="success", data={"id": diary_id})

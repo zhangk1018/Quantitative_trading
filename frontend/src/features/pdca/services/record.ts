@@ -3,6 +3,7 @@
  */
 import { apiGet, apiPost, apiPut, apiDelete } from './client';
 import { createEntityService } from './factory';
+import { inferMarketKey } from '@/features/watchlist/utils/stock-utils';
 import { API_PREFIX } from '@/config/constants';
 import type {
   TradingRecord,
@@ -79,8 +80,17 @@ export interface DailyOHLC {
  */
 export async function fetchDailyOHLC(code: string, date: string): Promise<DailyOHLC | null> {
   // kline 接口挂载在 /api/kline（见 backend core/api/main.py），非 /api/pdca/kline
+  // 港/美股代码（.HK 后缀 / 纯字母）携带 market 参数；A股（cn）保持向后兼容不传
+  const market = inferMarketKey(code);
   const data = await apiGet<{ data?: unknown[] }>(`/kline/${code}`, {
-    params: { period: 'daily', start_date: date, end_date: date, limit: 1, adj: 'none' },
+    params: {
+      period: 'daily',
+      start_date: date,
+      end_date: date,
+      limit: 1,
+      adj: 'none',
+      ...(market && market !== 'cn' ? { market } : {}),
+    },
   });
   const arr = data.data;
   if (arr && arr.length > 0) {

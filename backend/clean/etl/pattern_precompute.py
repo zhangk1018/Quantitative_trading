@@ -11,12 +11,14 @@ K 2026-06-17 决策：
   python backend/clean/etl/pattern_precompute.py --latest           # 增量：仅最近 10 天
   python backend/clean/etl/pattern_precompute.py --latest --days 5  # 增量：最近 5 天
   python backend/clean/etl/pattern_precompute.py --code 000001      # 单只测试
+  python backend/clean/etl/pattern_precompute.py --market hk        # 仅港股
 """
 import os
 import sys
 import argparse
 import logging
 import time
+from typing import Optional
 
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, backend_dir)
@@ -28,6 +30,7 @@ import numpy as np
 import talib
 from utils.config import config
 from utils.logger import configure_root_logging
+from utils.stock_code_utils import normalize_db_code
 
 configure_root_logging(logging.INFO)
 logger = logging.getLogger('pattern_precompute')
@@ -58,39 +61,41 @@ def compute_patterns_1d(open_, high_, low_, close_):
 
 
 def process_stock(cur, code: str, year_table: str = 'stock_quotes_2026',
-                  lookback_days: int = 0) -> int:
+                  lookback_days: int = 0, market: str = 'cn') -> int:
     """处理单只股票: 读 K 线 → 算 pattern → 批量 UPDATE stock_indicators_<year>.
 
     Args:
         cur: 数据库游标
-        code: 股票代码
+        code: 股票代码（A股 6 位数字 / 港股 9988.HK / 美股 AAPL）
         year_table: 年份分区表名
         lookback_days: 仅更新最近 N 天 (0 = 全量)
+        market: 目标市场标识（'cn'/'hk'/'us'）
 
     Returns:
         更新的行数
     """
     year = year_table.replace('stock_quotes_', '')
     ind_table = f'stock_indicators_{year}'
+    db_code, _ = normalize_db_code(code)
 
     if lookback_days > 0:
         # 增量模式：多读 30 天缓冲用于 TA-Lib 计算，但只更新最近 lookback_days 天
         cur.execute(sql.SQL('''
             SELECT trade_date, open, high, low, close
             FROM {}
-            WHERE code=%s AND cycle='1d'
+            WHERE code=%s AND cycle='1d' AND market=%s
             ORDER BY trade_date DESC
             LIMIT %s
-        ''').format(sql.Identifier(year_table)), (code, lookback_days + 30))
+        ''').format(sql.Identifier(year_table)), (db_code, market, lookback_days + 30))
         rows = cur.fetchall()
         rows.reverse()
     else:
         cur.execute(sql.SQL('''
             SELECT trade_date, open, high, low, close
             FROM {}
-            WHERE code=%s AND cycle='1d'
+            WHERE code=%s AND cycle='1d' AND market=%s
             ORDER BY trade_date
-        ''').format(sql.Identifier(year_table)), (code,))
+        ''').format(sql.Identifier(year_table)), (db_code, market))
         rows = cur.fetchall()
 
     if len(rows) < 3:
@@ -125,7 +130,7 @@ def process_stock(cur, code: str, year_table: str = 'stock_quotes_2026',
                 int(r['pattern_bullish_engulfing']),
                 int(r['pattern_bearish_engulfing']),
                 int(r['pattern_hammer']),
-                code, r['trade_date'],
+                db_code, r['trade_date'], market,
             ))
 
     if not update_rows:
@@ -138,7 +143,7 @@ def process_stock(cur, code: str, year_table: str = 'stock_quotes_2026',
             pattern_bullish_engulfing = %s,
             pattern_bearish_engulfing = %s,
             pattern_hammer           = %s
-        WHERE code = %s AND trade_date = %s AND cycle = '1d'
+        WHERE code = %s AND trade_date = %s AND cycle = '1d' AND market = %s
     ''', update_rows)
 
     return len(update_rows)
@@ -151,6 +156,8 @@ def main():
     parser.add_argument('--limit', type=int, default=0, help='限制股票数 (测试用)')
     parser.add_argument('--latest', action='store_true', help='增量模式：仅计算最近 days 天')
     parser.add_argument('--days', type=int, default=10, help='增量模式回溯天数 (默认 10)')
+    parser.add_argument('--market', choices=['cn', 'hk', 'us'], default='cn',
+                        help='市场 (默认 cn，仅 A 股)')
     args = parser.parse_args()
 
     # 验证 year 参数（防止 SQL 注入）
@@ -173,7 +180,7 @@ def main():
     year_table = f'stock_quotes_{args.year}'
 
     if args.code:
-        n = process_stock(cur, args.code, year_table, lookback_days=lookback_days)
+        n = process_stock(cur, args.code, year_table, lookback_days=lookback_days, market=args.market)
         conn.commit()
         mode = f'增量(最近{args.days}天)' if args.latest else '全量'
         logger.info(f'✅ {args.code}: 更新 {n} 行 ({mode})')
@@ -185,12 +192,14 @@ def main():
         # 增量模式：只查最近 days 天有交易的股票
         cur.execute(sql.SQL('''
             SELECT DISTINCT code FROM {}
-            WHERE cycle='1d'
+            WHERE cycle='1d' AND market=%s
             AND trade_date >= CURRENT_DATE - %s::INTEGER
             ORDER BY code
-        ''').format(sql.Identifier(year_table)), (args.days + 30,))
+        ''').format(sql.Identifier(year_table)), (args.market, args.days + 30))
     else:
-        cur.execute(sql.SQL('SELECT DISTINCT code FROM {} ORDER BY code').format(sql.Identifier(year_table)))
+        cur.execute(sql.SQL('''
+            SELECT DISTINCT code FROM {} WHERE market=%s ORDER BY code
+        ''').format(sql.Identifier(year_table)), (args.market,))
     codes = [r[0] for r in cur.fetchall()]
     if args.limit:
         codes = codes[:args.limit]
@@ -204,7 +213,7 @@ def main():
     t0 = time.time()
     for i, code in enumerate(codes):
         try:
-            n = process_stock(cur, code, year_table, lookback_days=lookback_days)
+            n = process_stock(cur, code, year_table, lookback_days=lookback_days, market=args.market)
             if n > 0:
                 success += 1
             total_rows += n
