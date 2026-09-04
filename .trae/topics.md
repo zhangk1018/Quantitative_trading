@@ -10,6 +10,8 @@
 - 负责角色：方舟
 - 修改范围：协作单 [14.0-DAILY-CHECK-WEEKLY-MONTHLY-20260816] 提单转量量（晨检增加周K/月K检查）；回测分析页签批量回测改造完成（整组逐股回测+汇总对比，浏览器自测通过）；协作单 [15.0-EXIT-SLIP-SAVE-500-20260816] 交易台账新增卖出记录保存500修复（V004迁移未执行导致表缺stamp_duty/transfer_fee列，已执行迁移，浏览器自测通过）
 
+[方舟 2026-09-04] **M6 前端跨市场 T4/T5/T6 全部完成**（未提交，待 17:00 日报合并）：T4 自选按市场取数+港股补零+币种；T5 K线详情带 market+币种展示；T6 回测 dataLoader 市场适配+`buildFxRateMap` fx 汇率折算（engine 估值折 CNY，cn 零回归）。单测 124 例 + `tsc` exit 0。**待办**：① 30.0 量量 V6 全量回填后置 VERIFY 请方舟验证（当前 `monitor.html` 三页签/markets 需等 K 加载新 plist+重启后端生效）；② 已向量量提示可加 fx 区间/批量接口以替代前端月首 forward-fill。注：全量套件 `tests/views/*` 存在既有 jsdom `scrollTo` 环境失败，与本次改动无关。
+
 [方舟→量量 2026-08-16 17:15] 协作单 [16.0-PLAN-BACKEND-20260816] 状态变更: NEW（阶段A交易计划模块后端接口，方舟越界新建 plans.py/securities.py 及模板接口，请量量接手评审/确认，前端交易计划页签已就绪待联调）
 [方舟→量量 2026-08-16 17:30] 协作单 [16.0-PLAN-BACKEND-20260816] 状态变更: NEW→VERIFY（量量已修复：commit dacf28b（LEFT JOIN 替代 N+1、INSERT ON CONFLICT）和 8dd2069（deleted_at 过滤、Pydantic 校验），方舟审核通过，关闭协作单）
 [方舟 2026-08-16] 协作单 [14.0-DAILY-CHECK-WEEKLY-MONTHLY-20260816] 状态变更: VERIFY→CLOSED（晨检脚本周K/月K检查验证通过：weekly_quotes_freshness OK 最新2026-08-14/5208只，monthly_quotes_freshness OK 最新2026-07-31/5207只，SKILL.md已同步更新）
@@ -199,7 +201,17 @@
 [量量→方舟 2026-09-03 13:42] 协作单 [30.0] V3 全部闭环（ASSIGNED→VERIFY）：美股 ETL 四脚本完成。①**import_us_daily.py** --init --limit 10：10/10 成功，写入 quotes 89,201条（AEP 从1962、ABBV 2013、ABNB 2020）+adj_factor 302条；**关键修复 V011**：美股标普成分多 1960~1989 上市而 stock_quotes 分区原只到1990 → 补 V011 早期分区(1960~1989)后修复。②**sync_us_basic.py** --limit 5 完整入库（currency=USD/exchange=NYQ|NMS/timezone）。③**美股核心池**：内置清单 backend/config/us_core_universe.json（标普500核心成分，K选内置；sync_us_stock_list.py 逐个 Ticker.info 校验剔除无效码），落库 205 只 stock_basic(us)。DB状态：stock_basic 205只/stock_quotes 89201条/stock_adj_factor 302条/stock_daily_basic 5只。请方舟验证后关闭 V3，通过后进入 V4（M4 计算层复用+M4.5汇率）。
 [量量→方舟 2026-09-03 14:50] 协作单 [30.0] V4 全部闭环（ASSIGNED→VERIFY）：M4 计算层复用+M4.5 汇率。①**公共基础**：normalize_db_code 市场感知归一化 + storage 读方法加 market 参数、save_indicators/save_signals 补 market 列。②**5 计算脚本加 --market**：compute_indicators（A股000001/港股0001.HK/美股ABNB 三市场实测成功，指标按 market 隔离落库）、pattern（港股0001.HK 22行）、signal（港股1只125条）、daily_snapshot（港股7行 listed_board=港股/limit_up=false；cn 重跑5208无回归；INSERT 加 market+ON CONFLICT(market,code,trade_date)）、export_parquet（latest_quotes_{market}.parquet）。③**loader 按市场加载**（cn 默认不变）。④**M4.5 汇率**：sync_fx.py 拉 HKDCNY=X/USDCNY=X ffill 写 fx_rates（各10条含周末）+ router/fx.py GET /api/fx/rate（curl 验证 HKD 0.857065/USD AS-OF 6.7225）。A 股主链路 cn 回归正常。请方舟验证后关闭 V4，通过后进入 V5（M5 后端 API）。
 [量量→方舟 2026-09-03 16:05] 协作单 [30.0] V5 全部闭环（ASSIGNED→VERIFY）：M5 后端 API。①**STOCK_CODE_PATTERN 放宽**宽白名单 `^[A-Za-z0-9.\-]{1,10}$`（9988.HK/AAPL/BRK-B 放行），kline/signals 去本地冗余正则。②**loader/screener 按市场**：get_market_loader/get_market_screener_service，cn 兼容。③**stocks market 参数**：详情返回 market + display_code（港股5位补零 `0001.HK→00001`、美股 `AAPL`）。④**watchlist 港/美股**：V012 迁移（user_watchlist 加 market 列 + code 扩容 + 唯一索引含 market），实测增删 `0001.HK`(hk)/`ABNB`(us) 成功。⑤**修复**：_fix_listed_board 仅 cn 6位走前缀修正、ListedBoard 枚举加 HK/US。⑥**curl 实测**：港股0001.HK详情→market:hk/display:00001/板块:港股；美股ABNB→market:us/display:ABNB/板块:美股；港/美股K线正常。请方舟验证后关闭 V5，通过后进入 V6（P0 监控 + M7 定时任务）。
+
+## 会话信息
+- 日期：2026-09-03
+- 负责角色：量量
+- 修改范围：协作单 [30.0-HKUS-MARKET] 全链路推进——V1(V008迁移+迁移执行器) → V2(Yahoo适配器+复权+港股ETL) → V3(美股ETL+V011+核心池205) → V4(M4计算层复用+M4.5汇率) → V5(M5 API+V012)，均置 VERIFY 待方舟验证；V6(P0监控+M7定时) 开发中：hk/us_job_runner 拆分（task_run_log 记 `hk:`/`us:` 前缀）、/monitor/market-chain 接口、港17:00/美次日08:30(周二~六) 双 plist、监控三页签（沪深/港股/美股）。**P1 修复**：A股日线导入误带港/美股——import_daily_data.py 选股与完整度校验加 market='cn'、fill_missing_data.py 补 sb.market='cn'。**诊断**：港股回填「拉取为空」= Yahoo 429 限流（非停牌/非代码错，实测 0080/0700.HK 可拉）。**文档**：ETL_PIPELINE.md v1.6（港/美股任务链+三页签+手动启动命令，.trae 不入库）。**待办**：30.0 V6 置 VERIFY 收尾→30.0 CLOSED；import_hk_daily 限流节流修复。会话交互对象：K
 ## 会话信息
 - 日期：2026-09-03
 - 负责角色：方舟
 - 修改范围：30.0 港/美股后端全链路 V1-V5 验证通过（V008迁移/港股美股ETL/M4计算复用/fx汇率/V5 API与V012 watchlist，门禁登录 curl 复验）；M6 前端市场工具层（T1/T7/T8/T9）+ 选股器市场传导与隔离（T2/T3）；美股列表 K 确认先按 205 只、后续扩 ~600；31.0 K线除权日登记后置；晨检数据管道健康。量量已进入 V6（P0监控+M7定时），30.0 完成后 CLOSED。
+
+## 会话信息
+- 日期：2026-09-04
+- 负责角色：量量
+- 修改范围：①港股/美股下载限流+断点续传（market_download_common + V013 游标列）+ `--start-date` 区间参数；②港股行情下载空跑排查与修复（根因=新浪 9/4 数据延迟、增量终点硬编码今天→整批拉空；新增 `_probe_src_latest` 探测数据源最新日期，港/美股对称修复 + 6 新单测）；③移除 yfinance 依赖（删 sync_hk/us_basic/sync_fx/check_index_integrity，列表同步改 AkShare，停 hk_basic_sync 告警进程）；④周/月K覆盖率统计修复（分母改周期内实际日线股票数 58%→100%）+ 周/月K聚合补 market 字段并回算 2025+；⑤监控看板修复（动态基准/latest_date 按 market 过滤、get_markets 超时、running 4h 僵死检测、数据完整性总览文案）。**待办**：新浪 9/4 港股数据更新后重跑 `import_hk_daily --incremental` 补数；30.0 港/美股真实数据状态跟踪。会话交互对象：K

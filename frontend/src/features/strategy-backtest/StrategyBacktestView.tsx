@@ -8,7 +8,7 @@ import dayjs from 'dayjs';
 import type { FilterNode, StrategyBacktestDefaults, StrategyBacktestResult } from './types';
 import { getStrategyBacktestDefaults } from './storage';
 import { parseTreeParam, stripUnsupportedFieldsForEngine } from './utils/filterTreeAdapter';
-import { loadBacktestData, tryRestoreFromCache, saveToCache, computeCacheHash } from './utils/dataLoader';
+import { loadBacktestData, tryRestoreFromCache, saveToCache, computeCacheHash, buildFxRateMap, inferBacktestMarket } from './utils/dataLoader';
 import type { ValidationResult } from './utils/dataLoader';
 import ConditionsSummary from './components/ConditionsSummary';
 import BacktestPanel from './components/BacktestPanel';
@@ -268,6 +268,10 @@ const StrategyBacktestView: React.FC = () => {
       setState('running');
       setProgress({ stage: 'indicators', percent: 0, message: '计算技术指标...' });
 
+      // 跨市场结算：按基准推断回测市场，港/美股构建逐日汇率折算表（A股 cn 返回 undefined，引擎默认 rate=1）
+      const backtestMarket = inferBacktestMarket(config.benchmarkCode);
+      const fxRateByDate = await buildFxRateMap(backtestMarket, data.tradeDates, session.signal);
+
       const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
       sessionManager.current.setWorker(worker);
 
@@ -289,6 +293,7 @@ const StrategyBacktestView: React.FC = () => {
           exitMode: isLayeredTP ? 'layeredTakeProfit' : undefined,
           layeredTPParams: isLayeredTP ? layeredTPParams : undefined,
           customIndicatorValues,
+          fxRateByDate,
         },
       });
 

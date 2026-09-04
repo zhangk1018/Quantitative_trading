@@ -56,6 +56,10 @@ class MonitorConfig:
     # 覆盖率阈值（成功/部分/失败的分界）
     COVERAGE_SUCCESS = float(os.getenv("MONITOR_COVERAGE_SUCCESS", "95"))  # >=95% 视为成功
     COVERAGE_FAIL = float(os.getenv("MONITOR_COVERAGE_FAIL", "50"))        # <50% 视为失败
+    # running 僵死判定：task_run_log 中某任务标记 running 超过该小时数仍未结束，
+    # 视为「父进程已死亡 / 状态残留」，降级为疑似中断（避免看板永远显示执行中）。
+    # 需覆盖港股全量导入/基本面限流拉取时长（正常单步骤 <4h）。
+    RUNNING_STALE_HOURS = float(os.getenv("MONITOR_RUNNING_STALE_HOURS", "4"))
     # 异常端点错误码
     ERR_QUERY_FAILED = 503  # 数据库查询失败
 
@@ -71,6 +75,28 @@ BEIJING_TZ = timezone(timedelta(hours=8))
 def _now_beijing() -> datetime:
     """返回带时区标记的当前北京时间"""
     return datetime.now(BEIJING_TZ)
+
+
+def _is_running_stale(start_time) -> bool:
+    """判断 task_run_log 中 running 记录是否僵死（父进程已死但状态残留）。
+
+    规则：start_time 距今超过 MonitorConfig.RUNNING_STALE_HOURS 小时仍未结束，
+    视为僵死。数据库 timestamp 无时区（Asia/Shanghai），按北京时间解释比较。
+
+    Args:
+        start_time: task_run_log.start_time（datetime / str / None）
+
+    Returns:
+        True 表示已超时（应为残留状态）；False 表示仍在正常执行窗口内
+    """
+    if not start_time:
+        return False
+    if isinstance(start_time, str):
+        start_time = datetime.fromisoformat(start_time)
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=BEIJING_TZ)
+    elapsed = (_now_beijing() - start_time).total_seconds()
+    return elapsed > MonitorConfig.RUNNING_STALE_HOURS * 3600
 
 
 def _get_last_trade_date(ref_date: datetime) -> str:
@@ -404,7 +430,7 @@ def get_data_summary():
                 codes_str = (", ".join(real_missing_codes[:5]) + (f" 等{missing_real}只" if missing_real > 5 else "")) if real_missing_codes else f"共{missing_real}只"
                 result["warnings"].append({
                     "level": "warning", "type": "real_missing",
-                    "message": f"有 {missing_real} 只活跃股票缺少最新交易日数据: {codes_str}",
+                    "message": f"有 {missing_real} 只股票缺少最新交易日数据（已合并 {missing_merged} + 近期停牌 {missing_suspended_recent}）: {codes_str}",
                     "missing_codes": real_missing_codes,
                     "suggestion": "运行 `python backend/collector/etl/import_daily_data.py --incremental` 补充缺失数据"
                 })
@@ -564,7 +590,20 @@ def get_pipeline_status():
 # 每日任务链 A→F（数据库状态优先，日志兜底）
 # ============================================
 
-def _check_task_from_db(task_key: str) -> Dict[str, Any]:
+# 可按 market 列区分市场的任务表（task_run_log / stock_list 无 market 维度，单独处理）。
+# A 股/港股/美股 ETL 写入这些表时带各自 market 值，动态基准必须按 market 过滤，
+# 否则宽表等任务会因混入其他市场股票数而误报「数据不足」partial。
+_MARKET_FILTER_TABLES = {
+    "stock_quotes",
+    "stock_daily_basic",
+    "stock_indicators",
+    "trade_signals",
+    "stock_daily_snapshot",
+    "stock_adj_factor",
+}
+
+
+def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
     """
     从数据库直接检查任务的数据状态，不依赖日志文件。
 
@@ -662,10 +701,16 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
             # 检查数据覆盖情况（若设置了 data_date 且数据表有该日期的数据）
             log_data_date = today_log.get("data_date")
             if log_data_date:
-                data_count = _query_scalar(
-                    f"SELECT COUNT(*) FROM {table} WHERE {date_col} = %s",
-                    (log_data_date,),
-                ) or 0
+                if table in _MARKET_FILTER_TABLES:
+                    data_count = _query_scalar(
+                        f"SELECT COUNT(*) FROM {table} WHERE {date_col} = %s AND market = %s",
+                        (log_data_date, market),
+                    ) or 0
+                else:
+                    data_count = _query_scalar(
+                        f"SELECT COUNT(*) FROM {table} WHERE {date_col} = %s",
+                        (log_data_date,),
+                    ) or 0
                 return {
                     "status": "success",
                     "message": f"执行成功，共 {data_count} 条" if data_count else "执行成功",
@@ -674,24 +719,42 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
                 }
             return {"status": "success", "message": "执行成功"}
         elif log_status == "running":
+            # 父进程可能已死（中断残留）：running 超时自动降级为疑似中断
+            if _is_running_stale(today_log.get("start_time")):
+                return {
+                    "status": "failed",
+                    "message": "疑似中断（running 超时，父进程可能已退出）",
+                    "data_date": str(today_log["data_date"]) if today_log.get("data_date") else None,
+                }
             return {"status": "running", "message": "执行中..."}
         elif log_status == "failed":
             return {"status": "failed", "message": (today_log.get("error_message") or "执行失败")[:100]}
 
     # ========== 无今日执行记录，回退到数据表检查 ==========
+    # 动态基准按 market 隔离：latest_date 也须按 market 过滤，否则滞后市场（港/美股）
+    # 会被 A 股最新日期污染，导致按 market 过滤后计数为 0 而误报「今日无数据」pending，
+    # 掩盖「数据未更新/数据异常」的真实状态（A 股为最新市场不受影响）。
+    market_where = " AND market = %s"
+    market_param: tuple = (market,)
+    if not (market and table in _MARKET_FILTER_TABLES):
+        market_where = ""
+        market_param = ()
     if task_name:
         latest_date = _query_scalar(
-            f"SELECT MAX({date_col}) FROM {table} WHERE task_name = %s",
-            (task_name,),
+            f"SELECT MAX({date_col}) FROM {table} WHERE task_name = %s{market_where}",
+            (task_name,) + market_param,
         )
     elif cfg.get("cycle_col"):
         # 周线/月线等有 cycle 过滤的任务，加上 cycle 条件避免全表扫描
         latest_date = _query_scalar(
-            f"SELECT MAX({date_col}) FROM {table} WHERE {cfg['cycle_col']} = %s",
-            (cfg["cycle_val"],),
+            f"SELECT MAX({date_col}) FROM {table} WHERE {cfg['cycle_col']} = %s{market_where}",
+            (cfg["cycle_val"],) + market_param,
         )
     else:
-        latest_date = _query_scalar(f"SELECT MAX({date_col}) FROM {table}")
+        latest_date = _query_scalar(
+            f"SELECT MAX({date_col}) FROM {table} WHERE {date_col} IS NOT NULL{market_where}",
+            market_param,
+        )
 
     if not latest_date:
         return {"status": "pending", "message": "无数据"}
@@ -720,6 +783,9 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
     if task_name:
         where_parts.append("task_name = %s")
         params.append(task_name)
+    if market and table in _MARKET_FILTER_TABLES:
+        where_parts.append("market = %s")
+        params.append(market)
 
     where_clause = " AND ".join(where_parts)
     count = _query_scalar(f"SELECT COUNT(*) FROM {table} WHERE {where_clause}", tuple(params)) or 0
@@ -761,13 +827,18 @@ def _check_task_from_db(task_key: str) -> Dict[str, Any]:
     elif task_key == "daily_import":
         min_count = max(1, count)  # 有数据就算成功
     else:
+        # 动态基准：用「该市场」当日行情股票数作为基准（stock_quotes 按 market 过滤），
+        # 避免港股/美股混入同一表被计入 A 股基准导致宽表覆盖率虚低误报 partial。
         dynamic_min = _query_scalar(
-            "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle = '1d'",
-            (latest_date,),
+            "SELECT COUNT(DISTINCT code) FROM stock_quotes "
+            "WHERE trade_date = %s AND cycle = '1d' AND market = %s",
+            (latest_date, market),
         )
         # 优先使用 TASK_MIN_COUNTS 中显式配置的阈值（如 signal_precompute=100），
-        # 因为某些任务（如信号）天然不会覆盖全部股票
-        config_min = MonitorConfig.TASK_MIN_COUNTS.get(task_key)
+        # 因为某些任务（如信号）天然不会覆盖全部股票。
+        # 注意：固定阈值按 A 股体量设定（4000 等），对港股/美股（股票数 < A股）会永远
+        # coverage 不足，故港美股一律退化为用「该市场」动态基准（自身行情股票数）。
+        config_min = None if market != "cn" else MonitorConfig.TASK_MIN_COUNTS.get(task_key)
         if config_min is not None:
             min_count = config_min
         else:
@@ -965,8 +1036,8 @@ def get_task_chain_status():
     has_failed = False
 
     for task in TASK_CHAIN:
-        # 唯一数据源：数据库
-        db_info = _check_task_from_db(task["key"])
+        # 唯一数据源：数据库。A 股任务按 market='cn' 过滤基准，避免被港/美股污染
+        db_info = _check_task_from_db(task["key"], market="cn")
         status = db_info.get("status", "pending")
 
         tasks.append({
@@ -2122,10 +2193,21 @@ def get_markets():
         cur = conn.cursor()
         for m in markets:
             market = m['m']
-            cur.execute("SELECT MAX(trade_date), COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1d' AND market=%s", (market,))
-            latest, covered = cur.fetchone()
-            covered = covered if covered else 0
+            # 拆分查询：MAX + COUNT(DISTINCT code) 合并时优化器会对全表做 hash 聚合，
+            # 单次扫描全部分区耗时 40s+（实测 cn 43s）；改为先取最新日期，再按日期过滤
+            # （分区裁剪 + 索引）计数，单步 <0.5s。
+            cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market=%s", (market,))
+            latest = cur.fetchone()[0]
             latest_str = latest.isoformat() if latest is not None else None
+            if latest is not None:
+                cur.execute(
+                    "SELECT COUNT(DISTINCT code) FROM stock_quotes "
+                    "WHERE trade_date=%s AND cycle='1d' AND market=%s",
+                    (latest, market),
+                )
+                covered = cur.fetchone()[0] or 0
+            else:
+                covered = 0
             cur.execute("SELECT COUNT(*) FROM stock_basic WHERE market=%s AND delist_date IS NULL", (market,))
             basic_count = cur.fetchone()[0] or 0
             null_pct = None
@@ -2162,6 +2244,26 @@ def get_markets():
     return ApiResponse(code=200, message="success", data={"markets": result})
 
 
+# 港/美股任务链步骤（label 与 hk_job_runner/us_job_runner 的步骤名一致，写入 task_run_log 为 'hk:label'）。
+# key 复用 A 股 _check_task_from_db 的 TASK_DB_CONFIG；仅【数据表类】步骤参与各市场覆盖评估，
+# 列表/Parquet 纯基于 task_run_log 状态（market 无覆盖维度）。
+MARKET_CHAIN = [
+    {"name": "股票列表", "label": "股票列表", "key": "stock_list_sync", "no_coverage": True},
+    {"name": "日线清洗", "label": "日线清洗", "key": "daily_import"},
+    {"name": "基本面", "label": "基本面", "key": "daily_basic_sync"},
+    {"name": "技术指标", "label": "指标", "key": "indicators_compute"},
+    {"name": "K线形态", "label": "形态", "key": "indicators_compute"},  # pattern 存于 stock_indicators，复用指标评估
+    {"name": "交易信号", "label": "信号", "key": "signal_precompute"},
+    {"name": "宽表", "label": "宽表", "key": "snapshot_sync"},
+    {"name": "Parquet", "label": "Parquet", "key": "parquet_export", "no_coverage": True},
+]
+# 参与各市场覆盖评估的 task_key（避免与 A 股混算基准）
+_MARKET_COVERAGE_TABLES = {
+    "daily_import", "daily_basic_sync", "indicators_compute",
+    "signal_precompute", "snapshot_sync",
+}
+
+
 @router.get("/monitor/market-chain/", summary="港/美股任务链状态（分市场）")
 def get_market_chain(market: str = Query('hk', pattern='^(hk|us)$')):
     """
@@ -2171,7 +2273,10 @@ def get_market_chain(market: str = Query('hk', pattern='^(hk|us)$')):
     因此无需加列即可区分，且不影响 A 股 task-chain）。
 
     步骤顺序：股票列表 → 日线 → 基本面 → 指标 → 形态 → 信号 → 宽表 → Parquet。
-    状态：success / running / failed / pending（今日无记录时 pending）。
+    - 当日 task_run_log 有记录：直接按 running / failed / success 展示（不重复覆盖评估，避免
+      用 A 股交易日期望误判港/美股为 pending）。
+    - 当日无记录：数据表类步骤回退到 _check_task_from_db(key, market)，用「该市场」自身基准评估
+      覆盖率（跨市场基准已按 market 隔离，不会因混入其他市场股票数误报 partial）。
     """
     prefix = f"{market}:%"
     raw = []
@@ -2179,36 +2284,62 @@ def get_market_chain(market: str = Query('hk', pattern='^(hk|us)$')):
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT task_name, status, error_message, data_date FROM task_run_log "
+            "SELECT task_name, status, error_message, data_date, start_time FROM task_run_log "
             "WHERE task_name LIKE %s AND data_date = CURRENT_DATE ORDER BY start_time ASC",
             (prefix,),
         )
-        raw = [{"task_name": r[0], "status": r[1], "error_message": r[2], "data_date": r[3]} for r in cur.fetchall()]
+        raw = [{"task_name": r[0], "status": r[1], "error_message": r[2],
+                "data_date": r[3], "start_time": r[4]} for r in cur.fetchall()]
         cur.close()
     except Exception:
         pass
     finally:
         _put_db_conn(conn)
+    seen = {r["task_name"]: r for r in raw}
     tasks = []
-    for r in raw:
-        name = (r["task_name"] or "").split(":", 1)[-1] or r["task_name"]
-        tasks.append({
-            "id": name, "name": name, "status": r["status"] or "pending",
-            "message": (r["error_message"] or "")[:100],
-            "data_date": str(r["data_date"]) if r.get("data_date") else None,
-        })
+    for step in MARKET_CHAIN:
+        task_log_name = f"{market}:{step['label']}"
+        rec = seen.get(task_log_name)
+        if rec:
+            status = rec["status"] or "pending"
+            message = (rec["error_message"] or "")[:100] if status == "failed" else ""
+            # running 僵死检测：父进程可能已死，running 超时降级为疑似中断
+            if status == "running" and _is_running_stale(rec.get("start_time")):
+                status = "failed"
+                message = "疑似中断（running 超时，父进程可能已退出）"
+            tasks.append({
+                "name": step["name"],
+                "status": status,
+                "message": message,
+                "data_date": str(rec["data_date"]) if rec.get("data_date") else None,
+            })
+            continue
+        if not step.get("no_coverage") and step["key"] in _MARKET_COVERAGE_TABLES:
+            db = _check_task_from_db(step["key"], market=market)
+            tasks.append({
+                "name": step["name"],
+                "status": db.get("status", "pending"),
+                "message": db.get("message", ""),
+                "data_count": db.get("data_count"),
+                "data_date": db.get("data_date"),
+            })
+        else:
+            tasks.append({
+                "name": step["name"], "status": "pending",
+                "message": "今日无执行记录", "data_date": None,
+            })
     has_failed = any(t["status"] == "failed" for t in tasks)
+    has_running = any(t["status"] == "running" for t in tasks)
     has_partial = any(t["status"] == "partial" for t in tasks)
     has_pending = any(t["status"] == "pending" for t in tasks)
-    has_running = any(t["status"] == "running" for t in tasks)
     if has_failed:
         overall = "failed"
     elif has_running:
         overall = "running"
-    elif has_pending:
-        overall = "pending"
     elif has_partial:
         overall = "partial"
+    elif has_pending:
+        overall = "pending"
     else:
         overall = "success" if tasks else "pending"
     return ApiResponse(code=200, message="success", data={

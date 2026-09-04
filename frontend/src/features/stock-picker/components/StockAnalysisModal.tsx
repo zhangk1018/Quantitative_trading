@@ -6,6 +6,7 @@ import { Modal, Typography, Spin, Alert, Segmented, Tooltip } from 'antd';
 import { fetchKLineData, toFriendlyMessage, type PatternMarker } from '@/features/stock-detail/api';
 import { buildChartData, type ChartDataResult } from '@/lib/indicators/chart-adapter';
 import { sanitizeNumber, sanitizePct } from '@/lib/indicators/indicators';
+import { formatPriceWithCurrency } from '@/shared/utils/currency';
 import { CHART_THEME, CUSTOM_INDICATOR_COLORS } from '@/lib/indicators/chart-config';
 import KLineChart, { type MainType, type OscType } from './KLineChart';
 import { detectConditions, type ConditionEvent, type ConditionConfig } from '@/lib/indicators/condition-detector';
@@ -30,6 +31,8 @@ type ModalStock = {
   market_cap: number | null;
   amount: number | null;
   listed_board: string | null;
+  /** 市场键（cn/hk/us），用于币种展示；缺省按代码推断 */
+  market?: string;
 };
 
 interface StockAnalysisModalProps {
@@ -246,6 +249,14 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
 
   const changeColor = (stock?.change_pct ?? 0) >= 0 ? colors.up : colors.down;
 
+  // 币种展示：market 优先，否则按代码推断（A股 CNY 不前缀、港股 HK$/美股 $）
+  const displayCurrency = useMemo(() => {
+    const code = stock?.stock_code ?? '';
+    const isHk = stock?.market === 'hk' || /\.HK$/i.test(code);
+    const isUs = stock?.market === 'us' || (!isHk && /^[A-Za-z]/.test(code));
+    return isUs ? 'USD' : isHk ? 'HKD' : 'CNY';
+  }, [stock?.market, stock?.stock_code]);
+
   return (
     <Modal
       title={null}
@@ -276,7 +287,7 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
             </Text>
             <Text className="text-[#848E9C] text-xs">{stock?.stock_code}</Text>
             <Text className="text-base font-bold" style={{ color: changeColor }}>
-              {sanitizeNumber(stock?.close)}
+              {stock?.close != null ? formatPriceWithCurrency(stock.close, displayCurrency) : '--'}
             </Text>
             <Text className="text-xs" style={{ color: changeColor }}>
               {stock?.change_pct != null ? sanitizePct(stock.change_pct) : '--'}

@@ -2,7 +2,7 @@
 """
 美股日线行情下载脚本（协作单 30.0 V3 / M3）
 
-从 Yahoo 金融数据源拉取美股日线（auto_adjust=False 原始价 + Adj Close 后复权），
+从 AkShare（新浪财经）数据源拉取美股日线（不复权 + 前复权占位、经库存锚点重建为后复权），
 经复权工具拆分 raw_*/adj_*，标注意除权日，写入 stock_quotes 与 stock_adj_factor。
 
 写入口径（对齐方案 v2 §1.2 / 港股 M2 同款）：
@@ -39,8 +39,18 @@ from psycopg2.extras import execute_values
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from utils.logger import setup_logger  # noqa: E402
-from collector.datasource.yahoo import YahooDataSource, normalize_code  # noqa: E402
+from collector.datasource.akshare import (  # noqa: E402
+    AkShareDataSource,
+    normalize_code,
+    anchor_us_adj_close,
+)
 from collector.utils.adj_adjust import split_raw_adj, detect_factor_dates  # noqa: E402
+from collector.etl.market_download_common import (  # noqa: E402
+    get_market_last_processed_code,
+    set_market_last_processed_code,
+    resume_codes,
+    rate_limit_sleep,
+)
 
 logger = setup_logger('us_daily_import')
 
@@ -52,6 +62,7 @@ CYCLE = '1d'
 ADJUST_TYPE = 'adj'            # stock_quotes 成交价列存的复权口径（adj_close=后复权）
 TIMEZONE = 'America/New_York'  # 美股收盘时区（常规时段 09:30-16:00 美东）
 MARKET_CLOSE_HHMM = '16:00:00'  # 美股常规收盘时间（生成 trade_datetime）
+PROBE_CODE = 'AAPL'            # 增量窗口探针标的：苹果，流动性极好几乎每日成交
 
 
 # ==================== 数据库连接（独立 psycopg2 路径） ====================
@@ -305,15 +316,15 @@ def write_adj_factor(conn: psycopg2.extensions.connection, df: pd.DataFrame, cod
 
 
 def _list_us_codes(conn: Optional[psycopg2.extensions.connection],
-                   src: Optional[YahooDataSource] = None) -> List[str]:
+                   src: Optional[AkShareDataSource] = None) -> List[str]:
     """获取 market='us' 的代码列表。
 
     优先从 stock_basic 读已入库的美股代码；若为空（如列表尚未同步），
-    降级调用 YahooDataSource.get_market_list('us') 拉取核心池清单兜底。
+    降级调用 AkShareDataSource.get_stock_list() 拉取核心池清单兜底。
 
     Args:
         conn: 数据库连接（可为 None）
-        src: Yahoo 数据源（降级拉取列表用）
+        src: AkShare 数据源（降级拉取列表用）
 
     Returns:
         规范化美股代码列表（如 AAPL、MSFT）
@@ -325,63 +336,87 @@ def _list_us_codes(conn: Optional[psycopg2.extensions.connection],
                 codes = [r[0] for r in cur.fetchall()]
             if codes:
                 return codes
-            logger.info("  📋 stock_basic 尚无美股代码，改从 Yahoo 核心池清单兜底")
+            logger.info("  📋 stock_basic 尚无美股代码，改从 AkShare 核心池清单兜底")
         except psycopg2.DatabaseError as e:
-            logger.warning(f"⚠️ 查询美股代码列表失败（改用 Yahoo 清单兜底）: {e}")
+            logger.warning(f"⚠️ 查询美股代码列表失败（改用 AkShare 清单兜底）: {e}")
     if src is not None:
-        df = src.get_market_list(MARKET)
+        df = src.get_stock_list()
         if df is not None and not df.empty:
             return [normalize_code(str(c), MARKET) for c in df['code'].tolist()]
-        logger.warning("⚠️ Yahoo 核心池清单不可用，返回空列表")
+        logger.warning("⚠️ AkShare 核心池清单不可用，返回空列表")
     return []
 
 
 # ==================== 单标导入 ====================
 def import_one(
-    src: YahooDataSource,
+    src: AkShareDataSource,
     conn: Optional[psycopg2.extensions.connection],
     code: str,
     start: Optional[str] = None,
     end: Optional[str] = None,
     period: Optional[str] = None,
     dry_run: bool = False,
-) -> Tuple[int, int]:
+) -> Tuple[int, int, Optional[str]]:
     """拉取并写入单只美股日线 + 复权因子。
 
     Args:
-        src: Yahoo 数据源适配器
+        src: AkShare 数据源适配器
         conn: 数据库连接（dry_run 时可为 None）
         code: 规范化美股代码（如 AAPL）
         start/end: 日期区间（YYYY-MM-DD）
-        period: 或指定拉取周期（max/1y/...）
+        period: 或指定拉取周期（忽略，AkShare 全量后切片）
         dry_run: 试运行模式，拉取并打印、不落库
 
     Returns:
-        (quotes 条数, adj_factor 条数)
+        (quotes 条数, adj_factor 条数, 实际覆盖的最后交易日 ISO 字符串)
     """
     df_raw = src.download_single(code, market=MARKET, start=start, end=end, period=period)
     if df_raw is None or df_raw.empty:
         logger.info(f"  {code}: 拉取为空（可能限流或停牌）")
-        return 0, 0
+        return 0, 0, None
+
+    # 美股后复权重建：新浪只给前复权（最新日=原始价），用库存锚点 C 还原为后复权水平，
+    # 使新写 adj_* 与存量后复权口径连续。库中无锚点（如美股当前为前复权口径）时按前复权入库。
+    if not dry_run and conn is not None and 'Adj Close' in df_raw.columns:
+        anchor = anchor_us_adj_close(conn, code)
+        if abs(anchor - 1.0) > 1e-9:
+            df_raw['Adj Close'] = df_raw['Adj Close'] * anchor
+        else:
+            logger.info(f"  {code}: 无后复权锚点，Adj Close 按【前复权】口径入库")
 
     quotes, adj_factor = clean_and_split(df_raw, code)
+    q = 0 if quotes is None else len(quotes)
+    a = 0 if adj_factor is None else len(adj_factor)
+    max_date: Optional[str] = None
+    if quotes is not None and not quotes.empty:
+        max_date = pd.to_datetime(quotes['trade_date']).max().date().isoformat()
     if dry_run:
-        logger.info(f"[DRY-RUN] {code}: 待写入 quotes {0 if quotes is None else len(quotes)} 条, "
-                    f"adj_factor {0 if adj_factor is None else len(adj_factor)} 条")
+        logger.info(f"[DRY-RUN] {code}: 待写入 quotes {q} 条, adj_factor {a} 条")
         if quotes is not None and not quotes.empty:
             logger.info(quotes.tail(3).to_string(index=False))
-        return (0 if quotes is None else len(quotes)), (0 if adj_factor is None else len(adj_factor))
+        return q, a, max_date
 
     if conn is None:
         raise RuntimeError('非 dry-run 模式必须提供数据库连接')
     q = write_quotes(conn, quotes, code) if quotes is not None else 0
     a = write_adj_factor(conn, adj_factor, code) if adj_factor is not None else 0
-    return q, a
+    return q, a, max_date
 
 
-def run_init(src: YahooDataSource, conn: psycopg2.extensions.connection,
-             limit: Optional[int] = None, dry_run: bool = False) -> Dict[str, int]:
-    """全量导入（period='max'）。Returns: 统计 dict。"""
+def run_init(src: AkShareDataSource, conn: psycopg2.extensions.connection,
+             limit: Optional[int] = None, dry_run: bool = False,
+             start_date: Optional[str] = None) -> Dict[str, int]:
+    """全量导入（默认 period='max'；指定 start_date 时按 [start_date, 今天] 区间拉取）。
+
+    支持限流与断点续传。Returns: 统计 dict。
+
+    Args:
+        src: AkShare 数据源适配器
+        conn: 数据库连接（dry_run 时可为 None）
+        limit: 仅处理前 N 只（调试用）
+        dry_run: 试运行模式，不落库
+        start_date: 起始日期（YYYY-MM-DD）；给定则替代全量 period，按区间下载
+    """
     codes = _list_us_codes(conn if not dry_run else None, src) if not dry_run else []
     if dry_run:
         # dry-run 下未从库读取代码，用一份小样例验证流程
@@ -389,33 +424,98 @@ def run_init(src: YahooDataSource, conn: psycopg2.extensions.connection,
     if limit:
         codes = codes[:limit]
     cfg = src.cfg
-    stats = {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0}
-    logger.info(f"🚀 [init] 全量导入 {len(codes)} 只美股（period={cfg.default_period}）")
+    # 断点续传：加载游标，跳过已处理的标的
+    if not dry_run:
+        last_proc = get_market_last_processed_code(conn, MARKET)
+        if last_proc:
+            before = len(codes)
+            codes = resume_codes(codes, last_proc)
+            logger.info(f"🔁 断点续传：上次处理至 {last_proc}，跳过 {before - len(codes)} 只，剩余 {len(codes)} 只")
+    stats = {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0, 'max_trade_date': None}
+    if start_date:
+        end = date.today().isoformat()
+        logger.info(f"🚀 [init] 区间导入 {len(codes)} 只美股，{start_date} ~ {end}")
+    else:
+        end = None
+        logger.info(f"🚀 [init] 全量导入 {len(codes)} 只美股（period={cfg.default_period}）")
     for i, code in enumerate(codes, 1):
         try:
-            q, a = import_one(src, conn if not dry_run else None, code, period=cfg.default_period, dry_run=dry_run)
+            if start_date:
+                q, a, max_date = import_one(src, conn if not dry_run else None, code,
+                                            start=start_date, end=end, dry_run=dry_run)
+            else:
+                q, a, max_date = import_one(src, conn if not dry_run else None, code,
+                                            period=cfg.default_period, dry_run=dry_run)
             if q or a:
                 stats['success'] += 1
                 stats['quotes'] += q
                 stats['adj_factor'] += a
+                if max_date and (stats['max_trade_date'] is None or max_date > stats['max_trade_date']):
+                    stats['max_trade_date'] = max_date
             else:
                 stats['fail'] += 1
         except Exception as e:
             stats['fail'] += 1
             logger.error(f"  {code}: 导入失败: {e}")
+        # 限流：每个标处理后随机休眠，降低数据源请求频率（防「拉取为空」限流）
+        rate_limit_sleep(cfg)
+        # 断点续传：回写当前已处理游标（中断后可从其之后继续）
+        if not dry_run:
+            set_market_last_processed_code(conn, MARKET, code)
         if i % 50 == 0:
             logger.info(f"  进度 {i}/{len(codes)}")
     if not dry_run:
-        set_last_sync_date(conn, date.today().isoformat())
+        # 整批遍历完，清空游标（本轮目标已处理完，下次运行重新从 batch 起点续日期窗口）
+        set_market_last_processed_code(conn, MARKET, None)
+        # 仅在成功写入时才回写：避免全量失败轮次把 last_sync_date 推进、吞掉缺口
+        if stats['quotes'] > 0:
+            write_back = stats['max_trade_date'] or date.today().isoformat()
+            set_last_sync_date(conn, write_back)
+            logger.info(f"📝 本轮成功写入 {stats['quotes']} 条，last_sync_date 回写至 {write_back}")
+        else:
+            logger.warning('⚠️ 本轮无成功写入，跳过回写 last_sync_date（保留旧进度，下次可重试）')
     logger.info(f"✅ init 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
                 f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
     return stats
 
 
-def run_incremental(src: YahooDataSource, conn: psycopg2.extensions.connection,
+def _probe_src_latest(src: AkShareDataSource, end: str) -> str:
+    """探测数据源实际最新交易日，作为增量窗口终点（不超过 end）。
+
+    与港股同源问题：新浪美股日线在收盘后延迟更新，若增量窗口终点硬编码为 date.today()，
+    数据源未更新时整批「拉取为空」空跑，既浪费时间又高频请求新浪接口（易触发限流）。
+    此处以代表股全量历史的最大日期近似数据源最新交易日，若早于 end 则降级窗口终点；
+    数据源更新后重跑自动补回缺口。
+
+    Args:
+        src: AkShare 数据源适配器
+        end: 期望窗口终点（通常是今天）
+
+    Returns:
+        实际窗口终点（min(end, 数据源最新交易日)）；探针失败时保守沿用 end。
+    """
+    df = src.download_single(PROBE_CODE, market=MARKET)
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        logger.warning(f"⚠️ 数据源探针 {PROBE_CODE} 不可用，无法探测最新日期，沿用窗口终点 {end}")
+        return end
+    latest = df.index.max()
+    if latest is None or pd.isna(latest):
+        return end
+    latest_str = pd.to_datetime(latest).date().isoformat()
+    if latest_str < end:
+        logger.warning(f"⚠️ 数据源最新日期 {latest_str}（探针 {PROBE_CODE}）早于今天 {end}，"
+                       f"增量窗口终点调整为 {latest_str}；数据源更新后重跑可补回缺口")
+        return latest_str
+    return end
+
+
+def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection,
                     limit: Optional[int] = None, dry_run: bool = False) -> Dict[str, int]:
     """增量导入（从 etl_control.last_sync_date+1 到今天）。Returns: 统计 dict。"""
     today = date.today().isoformat()
+    # 探测数据源实际最新交易日：新浪美股日线收盘后延迟更新，仍以 date.today() 为终点
+    # 会整批「拉取为空」空跑，故降级为数据源最新日期（探针失败时保守沿用 today）。
+    end = _probe_src_latest(src, today)
     last_str = get_last_sync_date(conn) if not dry_run else None
     if last_str:
         start = (datetime.strptime(last_str, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -424,28 +524,58 @@ def run_incremental(src: YahooDataSource, conn: psycopg2.extensions.connection,
         start = (date.today() - timedelta(days=src.cfg.incremental_lookback_days)).isoformat()
         logger.info(f"📅 etl_control 无记录，回溯 {src.cfg.incremental_lookback_days} 天作为起点")
 
+    if start > end:
+        logger.warning(f"⚠️ 数据源最新日期 {end} 尚未覆盖增量起点 {start}，本轮无新增数据可拉，跳过")
+        return {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0, 'max_trade_date': None}
+
     codes = _list_us_codes(conn if not dry_run else None, src) if not dry_run else ['AAPL']
     if limit:
         codes = codes[:limit]
 
-    stats = {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0}
-    logger.info(f"🚀 [incremental] 增量导入 {len(codes)} 只美股，区间 {start} ~ {today}")
+    cfg = src.cfg
+    # 断点续传：加载游标，跳过已处理的标的
+    if not dry_run:
+        last_proc = get_market_last_processed_code(conn, MARKET)
+        if last_proc:
+            before = len(codes)
+            codes = resume_codes(codes, last_proc)
+            logger.info(f"🔁 断点续传：上次处理至 {last_proc}，跳过 {before - len(codes)} 只，剩余 {len(codes)} 只")
+
+    stats = {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0, 'max_trade_date': None}
+    logger.info(f"🚀 [incremental] 增量导入 {len(codes)} 只美股，区间 {start} ~ {end}")
     for i, code in enumerate(codes, 1):
         try:
-            q, a = import_one(src, conn if not dry_run else None, code, start=start, end=today, dry_run=dry_run)
+            q, a, max_date = import_one(src, conn if not dry_run else None, code, start=start, end=end, dry_run=dry_run)
             if q or a:
                 stats['success'] += 1
                 stats['quotes'] += q
                 stats['adj_factor'] += a
+                if max_date and (stats['max_trade_date'] is None or max_date > stats['max_trade_date']):
+                    stats['max_trade_date'] = max_date
             else:
                 stats['fail'] += 1
         except Exception as e:
             stats['fail'] += 1
             logger.error(f"  {code}: 导入失败: {e}")
+        # 限流：每个标处理后随机休眠，降低数据源请求频率（防「拉取为空」限流）
+        rate_limit_sleep(cfg)
+        # 断点续传：回写当前已处理游标（中断后可从其之后继续）
+        if not dry_run:
+            set_market_last_processed_code(conn, MARKET, code)
         if i % 50 == 0:
             logger.info(f"  进度 {i}/{len(codes)}")
     if not dry_run:
-        set_last_sync_date(conn, today)
+        # 整批遍历完，清空游标（本轮目标已处理完，下次运行重新从 batch 起点续日期窗口）
+        set_market_last_processed_code(conn, MARKET, None)
+        # 仅在成功写入时才回写，且回写【实际覆盖的最后交易日】而非 date.today()：
+        # 1) 失败轮次不回写，保留旧进度，下次增量可重试补缺口；
+        # 2) 盘中/盘前未收盘时拉到的是前一交易日数据，回写实际覆盖日，避免把未来日期推进为已同步。
+        if stats['quotes'] > 0:
+            write_back = stats['max_trade_date'] or today
+            set_last_sync_date(conn, write_back)
+            logger.info(f"📝 本轮成功写入 {stats['quotes']} 条，last_sync_date 回写至 {write_back}")
+        else:
+            logger.warning('⚠️ 本轮无成功写入，跳过回写 last_sync_date（保留旧进度，下次增量可重试补缺口）')
     logger.info(f"✅ incremental 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
                 f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
     return stats
@@ -454,6 +584,8 @@ def run_incremental(src: YahooDataSource, conn: psycopg2.extensions.connection,
 def main() -> None:
     parser = argparse.ArgumentParser(description='美股日线行情下载脚本')
     parser.add_argument('--init', action='store_true', help='全量导入（period=max）')
+    parser.add_argument('--start-date', type=str, default=None,
+                        help='与 --init 联用：按 [起始日期, 今天] 区间导入（如 2025-01-01），替代全量 period')
     parser.add_argument('--incremental', action='store_true', help='增量导入（last_sync_date+1~今天）')
     parser.add_argument('--limit', type=int, default=None, help='最多拉取的标的数量（调试用）')
     parser.add_argument('--dry-run', action='store_true', help='试运行模式（拉取验证、不落库）')
@@ -463,9 +595,9 @@ def main() -> None:
     if not (args.init or args.incremental or args.test_one):
         parser.error('请指定 --init / --incremental / --test-one 之一')
 
-    src = YahooDataSource(market=MARKET)
+    src = AkShareDataSource(market=MARKET)
     if not src.connect():
-        logger.error('❌ Yahoo 数据源连接失败')
+        logger.error('❌ AkShare 数据源连接失败')
         raise SystemExit(1)
 
     conn = None
@@ -479,10 +611,10 @@ def main() -> None:
             code = normalize_code(args.test_one, MARKET)
             start = (date.today() - timedelta(days=5 * 365)).isoformat()
             logger.info(f"🎯 单只验证: {code}（区间 {start} ~ 今天）")
-            q, a = import_one(src, conn, code, start=start, dry_run=args.dry_run)
+            q, a, _ = import_one(src, conn, code, start=start, dry_run=args.dry_run)
             logger.info(f"🎯 {code} 完成: quotes {q} 条, adj_factor {a} 条")
         elif args.init:
-            run_init(src, conn, limit=args.limit, dry_run=args.dry_run)
+            run_init(src, conn, limit=args.limit, dry_run=args.dry_run, start_date=args.start_date)
         elif args.incremental:
             run_incremental(src, conn, limit=args.limit, dry_run=args.dry_run)
     except Exception as e:

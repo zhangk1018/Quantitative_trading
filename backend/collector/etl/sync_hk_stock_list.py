@@ -75,20 +75,22 @@ def _connect() -> psycopg2.extensions.connection:
 
 # ==================== 股票列表同步 ====================
 def _fetch_stock_list() -> pd.DataFrame:
-    """从 Yahoo 拉取港股列表并整理为 stock_basic 入库列。
+    """从 AkShare（新浪）拉取港股列表并整理为 stock_basic 入库列。
+
+    K 2026-09-04 起弃用 Yahoo：港股列表改由 AkShare 新浪全市场接口获取。
 
     Returns:
         DataFrame：code, name, exchange, market, currency, timezone
     """
-    from collector.datasource.yahoo import YahooDataSource
+    from collector.datasource.akshare import AkShareDataSource
 
-    src = YahooDataSource(market=MARKET)
+    src = AkShareDataSource(market=MARKET)
     if not src.connect():
-        raise RuntimeError('Yahoo 数据源连接失败，无法拉取港股列表')
-    df = src.get_market_list(MARKET)
+        raise RuntimeError('AkShare 数据源连接失败，无法拉取港股列表')
+    df = src.get_stock_list()
 
     if df.empty:
-        logger.warning('⚠️ Yahoo 返回港股列表为空（可能成分接口被限流）')
+        logger.warning('⚠️ AkShare 返回港股列表为空（可能接口限流）')
         return pd.DataFrame(columns=['code', 'name', 'exchange', 'market', 'currency', 'timezone'])
 
     df = df.copy()
@@ -98,7 +100,7 @@ def _fetch_stock_list() -> pd.DataFrame:
     df['timezone'] = 'Asia/Hong_Kong'
     # code 已由适配器规范化；此处兜底再规范化一次（幂等）
     df['code'] = df['code'].astype(str)
-    logger.info(f"✅ 获取港股列表 {len(df)} 只（恒指/国企成分并集）")
+    logger.info(f"✅ 获取港股列表 {len(df)} 只（AkShare 新浪全市场）")
     return df[['code', 'name', 'exchange', 'market', 'currency', 'timezone']]
 
 
@@ -155,7 +157,7 @@ def main() -> None:
     try:
         count = sync_stock_list(dry_run=args.dry_run)
         if count == 0 and not args.dry_run:
-            logger.warning('⚠️ 未同步到任何港股，请检查 Yahoo 接口与网络')
+            logger.warning('⚠️ 未同步到任何港股，请检查 AkShare 接口与网络')
     except Exception as e:
         logger.error(f'程序异常: {e}')
         raise

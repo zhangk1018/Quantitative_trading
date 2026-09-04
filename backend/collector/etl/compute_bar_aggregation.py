@@ -163,7 +163,8 @@ def compute_aggregation(conn, target_date: date, cycle: str) -> int:
         # 第1步：核心 OHLCV 聚合（不含 pre_close，避免慢速子查询）
         cur.execute(f"""
             INSERT INTO stock_quotes (code, cycle, trade_date, open, high, low, close,
-                                       volume, amount, adjust_type, trade_datetime, pre_close, ah_vol, ah_amount)
+                                       volume, amount, adjust_type, trade_datetime, pre_close, ah_vol, ah_amount,
+                                       market)
             SELECT
                 q.code,
                 '{cycle}' AS cycle,
@@ -178,7 +179,8 @@ def compute_aggregation(conn, target_date: date, cycle: str) -> int:
                 (%s::date + TIME '15:00:00')::timestamp AT TIME ZONE 'Asia/Shanghai' AS trade_datetime,
                 0 AS pre_close,
                 0 AS ah_vol,
-                0 AS ah_amount
+                0 AS ah_amount,
+                MIN(q.market) AS market
             FROM stock_quotes q
             WHERE q.cycle = '1d'
               AND q.trade_date >= %s
@@ -196,7 +198,8 @@ def compute_aggregation(conn, target_date: date, cycle: str) -> int:
                 pre_close = 0,
                 trade_datetime = EXCLUDED.trade_datetime,
                 ah_vol = EXCLUDED.ah_vol,
-                ah_amount = EXCLUDED.ah_amount
+                ah_amount = EXCLUDED.ah_amount,
+                market = EXCLUDED.market
         """, (target_date, target_date, period_start, period_end))
 
         affected = cur.rowcount

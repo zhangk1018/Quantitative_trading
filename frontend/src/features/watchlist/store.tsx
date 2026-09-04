@@ -8,7 +8,7 @@
  */
 
 import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
-import { SYSTEM_GROUPS, SYSTEM_GROUP_SET, detectMarketGroup } from './utils/stock-utils';
+import { SYSTEM_GROUPS, SYSTEM_GROUP_SET, detectMarketGroup, isValidStockCode } from './utils/stock-utils';
 
 export { SYSTEM_GROUP_SET, detectMarketGroup };
 export type { SystemGroup } from './utils/stock-utils';
@@ -427,8 +427,8 @@ export function WatchlistProvider({ children }: { children: React.ReactNode }) {
           skipped++;
           continue;
         }
-        if (!/^\d{6}$/.test(trimmed)) {
-          errors.push(`${trimmed}: 格式无效（需6位数字）`);
+        if (!isValidStockCode(trimmed)) {
+          errors.push(`${trimmed}: 格式无效（需6位数字 / 港股 .HK / 美股字母代码）`);
           skipped++;
           continue;
         }

@@ -10,6 +10,7 @@ import {
   FUNDAMENTAL_FIELD_LABELS,
   type FilterAuditTrail,
 } from './filterTreeAdapter';
+import { inferMarketKey, type MarketKey } from '@/features/watchlist/utils/stock-utils';
 
 // ==================== 类型 ====================
 
@@ -135,6 +136,92 @@ export async function saveToCache(
   }
 }
 
+// ==================== 市场推断（单市场回测） ====================
+
+/**
+ * 由基准指数代码推断回测市场（回测默认单市场，市场由基准决定）：
+ * - 港股：代码含 `.HK` 或恒生指数（`^HSI` / 恒生）
+ * - A股：沪深指数 / 6 位数字代码（`000300.SH` / `999999` 等）
+ * - 美股：其余（`^GSPC` / `SPY` / `^IXIC` 等）
+ * A股(纯数字)返回 cn；港股特判恒生指数（inferMarketKey 会把 `^HSI` 判为美股）。
+ */
+export function inferBacktestMarket(benchmarkCode: string): MarketKey {
+  const c = benchmarkCode.trim().toUpperCase();
+  if (c.includes('.HK') || c.startsWith('^HSI') || c.startsWith('恒生')) return 'hk';
+  return inferMarketKey(c) ?? 'cn';
+}
+
+// ==================== 汇率折算（跨市场结算） ====================
+
+/** 各市场对应的"当地货币折 CNY"债券对（横拟为债券：HKDCNY=X / USDCNY=X），A股无需折算返回 null。 */
+function getFxPairForMarket(market: MarketKey): string | null {
+  if (market === 'hk') return 'HKDCNY=X';
+  if (market === 'us') return 'USDCNY=X';
+  return null;
+}
+
+/**
+ * 构建跨市场回测的逐交易日汇率折算表：Map<tradeDate, 每单位当地货币折合 CNY 的比率>。
+ *
+ * 仅供港/美股（hk/us）使用；A股(cn)返回 undefined（引擎默认 rate=1，无换算，保证 A股无回归）。
+ *
+ * 后端 /api/fx/rate 仅支持"单日期 AS-OF"查询（返回该日及之前最近有效汇率），无法一次拉全区间。
+ * 为控制请求量，以【每月首个交易日】为锚点，逐锚点查询 AS-OF 汇率，该月其余交易日沿用，
+ * 即"月首汇率按月 forward-fill"的近似（fx_rates 每日 ffill，月首取值可代表当月水平，误差可忽略）。
+ *
+ * @param market 回测市场（hk/us）
+ * @param tradeDates 升序交易日历 YYYY-MM-DD
+ * @param signal 中止信号
+ * @returns ₹率折算表；cn 或无交易日历返回 undefined
+ */
+export async function buildFxRateMap(
+  market: MarketKey,
+  tradeDates: string[],
+  signal?: AbortSignal,
+): Promise<Record<string, number> | undefined> {
+  const pair = getFxPairForMarket(market);
+  if (!pair || tradeDates.length === 0) return undefined;
+
+  // 每月首个交易日作为锚点（保证任意交易日都能命中一个 ≤ 其自身的锚点，覆盖完整区间）
+  const firstByMonth = new Map<string, string>();
+  for (const d of tradeDates) {
+    const month = d.slice(0, 7);
+    if (!firstByMonth.has(month)) firstByMonth.set(month, d);
+  }
+  const anchors = Array.from(firstByMonth.values()).sort();
+
+  // 逐步拉取锚点 AS-OF 汇率（后端仅支持单日期），失败或异常沿用前一有效值
+  const anchorRates: Array<{ date: string; rate: number }> = [];
+  let prevRate = 1;
+  for (const asOf of anchors) {
+    let rate = prevRate;
+    try {
+      const resp = await fetch(
+        `/api/fx/rate?pair=${encodeURIComponent(pair)}&date=${encodeURIComponent(asOf)}`,
+        { signal },
+      );
+      if (resp.ok) {
+        const js = await resp.json();
+        if (typeof js?.rate === 'number' && js.rate > 0) rate = js.rate;
+      }
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') throw e;
+      // 网络/认证异常：沿用前一有效汇率，不阻断回测
+    }
+    anchorRates.push({ date: asOf, rate });
+    prevRate = rate;
+  }
+
+  // 逐交易日回填"最近一个 ≤ 该日的锚点汇率"
+  const rateByDate: Record<string, number> = {};
+  let ai = 0;
+  for (const d of tradeDates) {
+    while (ai < anchorRates.length - 1 && anchorRates[ai + 1].date <= d) ai++;
+    rateByDate[d] = anchorRates[ai].date <= d ? anchorRates[ai].rate : 1;
+  }
+  return rateByDate;
+}
+
 // ==================== 数据完整性校验 ====================
 
 /**
@@ -221,6 +308,14 @@ export async function loadBacktestData(
   // 0. 校验 FilterNode 结构
   validateFilterNode(filterTree, 0);
 
+  // 回测市场（由基准推断，单市场）；A股默认 cn 不显式传 market
+  const mkt = inferBacktestMarket(config.benchmarkCode);
+  const marketParam = mkt !== 'cn' ? `market=${mkt}` : '';
+  const buildStocksQuery = (q: string) => {
+    if (mkt === 'cn' || /[?&]market=/.test(q)) return q;
+    return q ? `${q}&market=${mkt}` : `market=${mkt}`;
+  };
+
   const warnings: string[] = [];
   const softErrors: string[] = [];
   const hardErrors: string[] = [];
@@ -243,7 +338,7 @@ export async function loadBacktestData(
   let candidateCodes: string[] = [];
   try {
     const response = await fetch(
-      `/api/stocks/?${pushdownQuery}`,
+      `/api/stocks/?${buildStocksQuery(pushdownQuery)}`,
       { signal },
     );
     const result = await response.json();
@@ -318,7 +413,10 @@ export async function loadBacktestData(
 
   if (candidateCodes.length > 0) {
     const codesParam = candidateCodes.join(',');
-    const ohlcvResp = await fetch(`/api/snapshot/all?codes=${codesParam}`, { signal });
+    const params = new URLSearchParams();
+    params.set('codes', codesParam);
+    if (marketParam) params.set('market', mkt);
+    const ohlcvResp = await fetch(`/api/snapshot/all?${params.toString()}`, { signal });
 
     const ohlcvData = await ohlcvResp.json();
 
@@ -330,7 +428,7 @@ export async function loadBacktestData(
     tradeDates = ohlcvData.data?.trade_dates ?? [];
   } else {
     // 兜底：全量加载
-    const resp = await fetch('/api/snapshot/all', { signal });
+    const resp = await fetch(`/api/snapshot/all${marketParam ? `?${marketParam}` : ''}`, { signal });
     const data = await resp.json();
     const stocks = data.data?.stocks ?? [];
     const extracted = extractFromStocks(stocks);

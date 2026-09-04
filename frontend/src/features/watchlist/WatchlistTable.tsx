@@ -6,10 +6,14 @@ import {
   formatNumber,
   formatChangePct,
   formatChangeAmount,
-  formatMarketCap,
   calcChangeAmount,
 } from './utils/stock-formatter';
+import { formatStockCodeForDisplay } from './utils/stock-utils';
+import { formatPriceWithCurrency, formatMarketCapWithCurrency } from '@/shared/utils/currency';
 import type { WatchlistStockRow } from './index';
+
+/** 市场 → 币种映射（A股 CNY 不前缀、港股 HK$/美股 $） */
+const CURRENCY_BY_MARKET: Record<string, string> = { cn: 'CNY', hk: 'HKD', us: 'USD' };
 
 type SortField = 'stock_code' | 'stock_name' | 'close' | 'change_pct' | 'pe' | 'pb' | 'market_cap';
 type SortDir = 'asc' | 'desc';
@@ -66,6 +70,8 @@ const TableRow = memo<{
   const isUp = changePct !== null && changePct >= 0;
   const color = isUp ? colors.up : colors.down;
   const changeAmount = calcChangeAmount(row.close, changePct);
+  const currency = CURRENCY_BY_MARKET[row.market] ?? 'CNY';
+  const displayCode = formatStockCodeForDisplay(row.stock_code, row.market);
 
   return (
     <tr
@@ -82,10 +88,10 @@ const TableRow = memo<{
           data-testid={`watchlist-checkbox-${row.stock_code}`}
         />
       </td>
-      <td className="px-3 py-2 text-text-primary font-mono">{row.stock_code}</td>
+      <td className="px-3 py-2 text-text-primary font-mono">{displayCode}</td>
       <td className="px-3 py-2 text-text-primary">{row.stock_name}</td>
       <td className="px-3 py-2 text-right font-mono" style={{ color }}>
-        {formatNumber(row.close)}
+        {formatPriceWithCurrency(row.close, currency)}
       </td>
       <td className="px-3 py-2 text-right font-mono" style={{ color }}>
         {formatChangePct(changePct)}
@@ -100,7 +106,7 @@ const TableRow = memo<{
         {formatNumber(row.pb)}
       </td>
       <td className="px-3 py-2 text-right text-text-primary font-mono">
-        {formatMarketCap(row.market_cap)}
+        {formatMarketCapWithCurrency(row.market_cap, currency)}
       </td>
       <td className="px-3 py-2 text-center">
         <span className="text-xs px-1.5 py-0.5 bg-bg-card text-text-secondary rounded">

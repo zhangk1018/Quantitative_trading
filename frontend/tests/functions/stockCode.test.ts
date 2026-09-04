@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatStockCodeForDisplay,
   detectMarketGroup,
+  isValidStockCode,
 } from '@/features/watchlist/utils/stock-utils';
 
 describe('formatStockCodeForDisplay', () => {
@@ -49,5 +50,32 @@ describe('detectMarketGroup', () => {
 
   it('美股识别', () => {
     expect(detectMarketGroup('AAPL')).toBe('美股');
+  });
+});
+
+describe('isValidStockCode', () => {
+  it('接受 A股 6 位数字', () => {
+    expect(isValidStockCode('000001')).toBe(true);
+    expect(isValidStockCode('600519')).toBe(true);
+    expect(isValidStockCode('300750')).toBe(true);
+  });
+
+  it('接受港股 .HK 代码（含前导零）', () => {
+    expect(isValidStockCode('9988.HK')).toBe(true);
+    expect(isValidStockCode('09988.HK')).toBe(true);
+    expect(isValidStockCode('700.HK')).toBe(true);
+  });
+
+  it('接受美股字母代码', () => {
+    expect(isValidStockCode('AAPL')).toBe(true);
+    expect(isValidStockCode('BRK-B')).toBe(true);
+  });
+
+  it('拒绝空串 / 非法格式', () => {
+    expect(isValidStockCode('')).toBe(false);
+    expect(isValidStockCode('   ')).toBe(false);
+    expect(isValidStockCode('12345')).toBe(false);   // 5 位数字非 A股
+    expect(isValidStockCode('1234567')).toBe(false); // 7 位数字
+    expect(isValidStockCode('.HK')).toBe(false);     // 无代码主体
   });
 });

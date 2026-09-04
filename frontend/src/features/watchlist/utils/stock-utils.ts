@@ -33,6 +33,21 @@ export function inferMarketKey(code: string | undefined): MarketKey | undefined 
 }
 
 /**
+ * 校验股票代码格式是否合法（是否能够作为自选股加入/查询）。
+ * - A股：6 位数字（如 `000001` / `600519`）
+ * - 港股：带 `.HK` 后缀（如 `09988.HK` / `9988.HK`）
+ * - 美股：1-10 位字母（可含 `.` / `-`，如 `AAPL` / `BRK-B`）
+ */
+export function isValidStockCode(code: string): boolean {
+  const trimmed = code.trim();
+  if (!trimmed) return false;
+  if (/^[A-Za-z0-9]+\.HK$/i.test(trimmed)) return true; // 港股
+  if (/^\d{6}$/.test(trimmed)) return true;             // A股
+  if (/^[A-Za-z][A-Za-z0-9.\-]{0,9}$/.test(trimmed)) return true; // 美股
+  return false;
+}
+
+/**
  * 港股代码展示层补零（K 对齐口径：恒生主板个股展示 5 位，对齐港股通/交易软件惯例）。
  * - 接口层统一去前导零（yfinance：`9988.HK` / `700.HK` / `1.HK`）
  * - 展示层按 market padStart(5, '0') 补零至 5 位：`9988.HK→09988.HK`、`700.HK→00700.HK`、`1.HK→00001.HK`

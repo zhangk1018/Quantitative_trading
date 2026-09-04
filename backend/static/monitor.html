@@ -212,7 +212,7 @@ function renderSummary(summary, trend) {
   const coverageCardClass = effRate > 100 ? 'red' : effRate < 95 ? 'amber' : 'green';
 
   $('dataSummary').innerHTML = `
-    <div class="stat-row" style="grid-template-columns:repeat(9, 1fr);">
+    <div class="stat-row" style="grid-template-columns:repeat(8, 1fr);">
       <div class="stat-card ${coverageCardClass}"><div class="value">${effRate}%</div><div class="label">有效覆盖率</div></div>
       <div class="stat-card blue"><div class="value">${coverage.covered_stocks || 0}</div><div class="label">已覆盖股票</div></div>
       <div class="stat-card amber"><div class="value">${coverage.active_stocks || stocks.active || 0}</div><div class="label">活跃股票</div></div>
@@ -221,9 +221,8 @@ function renderSummary(summary, trend) {
       <div class="stat-card ${breakdown.suspended > 0 ? 'amber' : ''}"><div class="value">${breakdown.suspended || 0}</div><div class="label">ST/停牌</div></div>
       <div class="stat-card ${breakdown.merged > 0 ? 'purple' : ''}"><div class="value">${breakdown.merged || 0}</div><div class="label">已合并</div></div>
       <div class="stat-card ${(breakdown.suspended_recent || 0) > 0 ? 'amber' : ''}"><div class="value">${breakdown.suspended_recent || 0}</div><div class="label">近期停牌</div></div>
-      <div class="stat-card ${realMissing > 0 ? 'red' : ''}"><div class="value">${realMissing}</div><div class="label">真正缺失</div></div>
     </div>
-    ${realMissing > 0 ? `<div style="margin-top:8px;font-size:12px;"><span style="color:var(--red);">⚠️ 有 ${realMissing} 只活跃股票缺少数据：` + (missingCodes.length > 0 ? missingCodes.slice(0,5).join(', ') + (missingCodes.length > 5 ? '...' : '') : '') + `</span></div>` : ''}
+    ${realMissing > 0 ? `<div style="margin-top:8px;font-size:12px;"><span style="color:var(--red);">⚠️ 有 ${realMissing} 只股票缺少最新交易日数据（已合并 ${breakdown.merged || 0} + 近期停牌 ${breakdown.suspended_recent || 0}）：` + (missingCodes.length > 0 ? missingCodes.slice(0,5).join(', ') + (missingCodes.length > 5 ? '...' : '') : '') + `</span></div>` : ''}
     ${bars ? `
     <div style="margin-top:12px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">

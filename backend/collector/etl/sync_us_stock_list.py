@@ -3,26 +3,27 @@
 美股股票列表同步脚本（协作单 30.0 V3 / M3）
 
 从内置核心池清单（backend/config/us_core_universe.json，K 批示 ~600 只精简版 ~211 只）
-经 Yahoo Ticker.info 逐个校验有效性后，写入 stock_basic 表。
+经 AkShare 读取后写入 stock_basic 表。
+
+K 2026-09-04 起弃用 Yahoo：不再逐个 Yahoo Ticker.info 校验有效性（风控/限流频繁），
+直接经 AkShareDataSource.get_stock_list() 读取核心池清单生成入库行。
 
 写入规范（market='us'）：
 - code：Yahoo 格式大写（如 AAPL / MSFT / BRK-B）
-- name：Yahoo info 的 longName / shortName
-- exchange：info.exchange（NMS/NAS/NYQ 等），兜底 'NMS'；currency='USD'；timezone='America/New_York'
+- name：核心池清单代码（无独立名称映射时暂用代码本身）
+- exchange：'NMS'；currency='USD'；timezone='America/New_York'
 - 独立 psycopg2 写库（execute_values + ON CONFLICT (code) DO UPDATE）
-
-方案 §8「宽白名单 + 有效性由 Ticker.info 判异常」：核心池内无效代码在 info 抛异常时剔除。
 
 用法：
     ./venv/bin/python backend/collector/etl/sync_us_stock_list.py            # 同步入库
-    ./venv/bin/python backend/collector/etl/sync_us_stock_list.py --dry-run  # 仅校验+查看
+    ./venv/bin/python backend/collector/etl/sync_us_stock_list.py --dry-run  # 仅查看
 """
 import os
 import sys
 import argparse
 import json
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List
 
 import pandas as pd
 import psycopg2
@@ -31,7 +32,6 @@ from psycopg2.extras import execute_values
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from utils.logger import setup_logger  # noqa: E402
-from collector.datasource.yahoo import YahooDataSource  # noqa: E402
 
 logger = setup_logger('us_stock_list_sync')
 
@@ -77,7 +77,7 @@ def _connect() -> psycopg2.extensions.connection:
     return psycopg2.connect(_make_dsn())
 
 
-# ==================== 列表来源与校验 ====================
+# ==================== 列表来源与整理 ====================
 def _load_core_pool() -> List[str]:
     """读取美股核心池清单代码（us_core_universe.json）。"""
     try:
@@ -89,39 +89,32 @@ def _load_core_pool() -> List[str]:
     return [s.strip() for s in symbols if str(s).strip()]
 
 
-def _validate_and_fetch(codes: List[str]) -> pd.DataFrame:
-    """逐个用 Yahoo Ticker.info 校验代码并取 name/exchange；无效剔除。
+def _fetch_stock_list() -> pd.DataFrame:
+    """用 AkShare 读取美股核心池清单并整理为 stock_basic 入库列。
 
-    连续 fail >=5 视为限流，提前结束（剩余留待下次）。单只失败自动跳过不阻断。
+    K 2026-09-04 起弃用 Yahoo：不再逐个 Yahoo Ticker.info 校验（风控/限流频繁），
+    直接经 AkShareDataSource.get_stock_list() 读取核心池清单生成入库行。
     """
-    import yfinance as yf
-    yf.config.network.proxy = None
-    rows: List[Dict[str, Any]] = []
-    fail = 0
-    total = len(codes)
-    for i, code in enumerate(codes, 1):
-        try:
-            info = yf.Ticker(code).info
-            if not info or not info.get('symbol'):
-                raise ValueError('info 异常或无效')
-            rows.append({
-                'code': code,
-                'name': (info.get('longName') or info.get('shortName') or code)[:50],
-                'exchange': info.get('exchange', 'NMS'),
-                'market': MARKET,
-                'currency': 'USD',
-                'timezone': 'America/New_York',
-            })
-            fail = 0
-        except Exception as e:
-            fail += 1
-            logger.warning(f"  {code}: 校验失败，剔除（{str(e)[:80]}）")
-            if fail >= 5:
-                logger.warning(f"⚠️ 连续 {fail} 只校验失败，疑似限流，提前结束（已处理 {i}/{total}）")
-                break
-        if i % 50 == 0:
-            logger.info(f"  校验进度 {i}/{total}，有效 {len(rows)}")
-    return pd.DataFrame(rows)
+    from collector.datasource.akshare import AkShareDataSource
+
+    src = AkShareDataSource(market=MARKET)
+    if not src.connect():
+        raise RuntimeError('AkShare 数据源连接失败，无法拉取美股列表')
+    df = src.get_stock_list()
+
+    if df.empty:
+        logger.warning('⚠️ AkShare 返回美股列表为空')
+        return pd.DataFrame(columns=['code', 'name', 'exchange', 'market', 'currency', 'timezone'])
+
+    df = df.copy()
+    df['exchange'] = 'NMS'
+    df['market'] = MARKET
+    df['currency'] = 'USD'
+    df['timezone'] = 'America/New_York'
+    # code 已由适配器规范化；此处兜底再规范化一次（幂等）
+    df['code'] = df['code'].astype(str)
+    logger.info(f"✅ 获取美股列表 {len(df)} 只（AkShare 核心池清单）")
+    return df[['code', 'name', 'exchange', 'market', 'currency', 'timezone']]
 
 
 # ==================== 列表同步 ====================
@@ -131,10 +124,10 @@ def sync_stock_list(dry_run: bool = False) -> int:
     if not codes:
         logger.error('❌ 核心池代码为空，无法同步')
         return 0
-    logger.info(f"🚀 核心池共 {len(codes)} 只，开始 Yahoo 校验...")
-    df = _validate_and_fetch(codes)
+    logger.info(f"🚀 核心池共 {len(codes)} 只，开始经 AkShare 读取...")
+    df = _fetch_stock_list()
     if df.empty:
-        logger.warning('⚠️ 校验后无有效美股，未同步')
+        logger.warning('⚠️ 读取后无有效美股，未同步')
         return 0
 
     if dry_run:
@@ -177,7 +170,7 @@ def main() -> None:
     try:
         count = sync_stock_list(dry_run=args.dry_run)
         if count == 0 and not args.dry_run:
-            logger.warning('⚠️ 未同步到任何美股，请检查核心池清单与 Yahoo 接口')
+            logger.warning('⚠️ 未同步到任何美股，请检查核心池清单与 AkShare 接口')
     except Exception as e:
         logger.error(f'程序异常: {e}')
         raise

@@ -97,6 +97,12 @@ export interface StrategyBacktestInput {
   benchmarkOhlcv?: number[][];
   /** 交易日历（可选，后端提供则直接使用） */
   tradeDates?: string[];
+  /**
+   * 逐交易日汇率折算表：Map<tradeDate, 每单位当地货币折合CNY的比率>。
+   * 仅港/美股回测时提供（HKD/CNY、USD/CNY），A股(cn)不提供则默认 1（无换算）。
+   * 用于将持仓市值折算为 CNY 口径做净值结算，保证跨市场资产可比。
+   */
+  fxRateByDate?: Record<string, number>;
   /** 进度回调 */
   onProgress?: (info: ProgressInfo) => void;
   /** 选股条件中剥离的非标准字段名列表（用于审计日志） */
@@ -667,7 +673,7 @@ export function calcSellCommission(
  */
 export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBacktestResult {
   const startTime = performance.now();
-  const { allOhlcv, snapshots, filterTree, config, startDate, endDate, benchmarkOhlcv, tradeDates, strippedFields, exitMode, layeredTPParams, customIndicatorValues } = input;
+  const { allOhlcv, snapshots, filterTree, config, startDate, endDate, benchmarkOhlcv, tradeDates, strippedFields, exitMode, layeredTPParams, customIndicatorValues, fxRateByDate } = input;
   const warnings: string[] = [];
 
   // P1-1.1: 将剥离的非标准字段名写入回测警告，提升用户透明度
@@ -962,7 +968,10 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
       const bars = stockBars.get(code);
       if (!bars) continue;
       const closePrice = bars[barIdx][OHLCV_CLOSE];
-      marketValueFen += pos.shares * closePrice * 100;
+      // fx 折算：港/美股持仓市值按当日汇率折 CNY，A股 cn 不提供则 rate=1（无换算）。
+      // 使总资产 totalEquityFen 以 CNY 统一口径结算，跨市场资产可比。
+      const rate = fxRateByDate?.[currentDate] ?? 1;
+      marketValueFen += pos.shares * closePrice * 100 * rate;
     }
 
     const totalEquityFen = cashFen + marketValueFen;

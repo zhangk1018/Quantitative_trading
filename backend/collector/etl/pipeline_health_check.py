@@ -227,6 +227,44 @@ def check_directories(result: HealthCheckResult):
                 result.warn(name, f'不存在且无法创建: {e}')
 
 
+def _period_daily_count(cur, target_date: str, cycle: str) -> int:
+    """统计 target_date 所在周/月周期内、有日线数据的去重股票数。
+
+    与 compute_bar_aggregation.py 的 get_period_range 口径一致：
+    周线按 trade_calendar 连续交易日分组（week_id），月线按自然月。
+    返回该周期内 stock_quotes cycle='1d' 的去重 code 数，
+    作为周线/月线聚合的「应覆盖股票数」分母（避免用全市场 stock_basic
+    总数导致港/美股混入分母而覆盖率虚低）。
+    """
+    if cycle == '1w':
+        cur.execute("""
+            WITH trade_weeks AS (
+                SELECT cal_date,
+                    SUM(CASE WHEN pretrade_date != cal_date - 1 THEN 1 ELSE 0 END)
+                        OVER (ORDER BY cal_date) AS week_id
+                FROM trade_calendar
+                WHERE is_open = 1
+            )
+            SELECT MIN(cal_date), MAX(cal_date) FROM trade_weeks
+            WHERE week_id = (SELECT week_id FROM trade_weeks WHERE cal_date = %s)
+        """, (target_date,))
+    else:  # '1m'
+        cur.execute("""
+            SELECT MIN(cal_date), MAX(cal_date) FROM trade_calendar
+            WHERE is_open = 1
+              AND DATE_TRUNC('month', cal_date) = DATE_TRUNC('month', %s::date)
+        """, (target_date,))
+    row = cur.fetchone()
+    if not row or row[0] is None or row[1] is None:
+        return 0
+    start, end = row
+    cur.execute(
+        "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1d' AND trade_date BETWEEN %s AND %s",
+        (start, end),
+    )
+    return cur.fetchone()[0] or 0
+
+
 def check_recent_data(result: HealthCheckResult, target_date: str = None):
     """检查最近的数据状态"""
     print('\n[6/6] 📊 最近数据状态')
@@ -268,8 +306,8 @@ def check_recent_data(result: HealthCheckResult, target_date: str = None):
         if latest_weekly:
             cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1w'", (latest_weekly,))
             w_cnt = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM stock_basic")
-            w_total = cur.fetchone()[0]
+            # 分母 = 该周周期内有日线数据的去重股票数（聚合真实覆盖范围）
+            w_total = _period_daily_count(cur, latest_weekly, '1w')
             w_cov = w_cnt * 100 // w_total if w_total else 0
             if w_cov < 80:
                 result.warn('周K线', f'最新 {latest_weekly}，覆盖率 {w_cnt}/{w_total} ({w_cov}%) - 低于 80%')
@@ -284,8 +322,8 @@ def check_recent_data(result: HealthCheckResult, target_date: str = None):
         if latest_monthly:
             cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1m'", (latest_monthly,))
             m_cnt = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM stock_basic")
-            m_total = cur.fetchone()[0]
+            # 分母 = 该月周期内有日线数据的去重股票数（聚合真实覆盖范围）
+            m_total = _period_daily_count(cur, latest_monthly, '1m')
             m_cov = m_cnt * 100 // m_total if m_total else 0
             if m_cov < 80:
                 result.warn('月K线', f'最新 {latest_monthly}，覆盖率 {m_cnt}/{m_total} ({m_cov}%) - 低于 80%')

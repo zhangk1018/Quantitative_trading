@@ -152,7 +152,7 @@ def main() -> None:
     if failed:
         logger.error(f"🛑 [港股] 完成，失败步骤（已重试并告警）: {failed}")
     else:
-        logger.info(f"✅ [港股] ETL 全链路成功（列表→日线→基本面→指标→形态→信号→宽表→Parquet）")
+        logger.info(f"✅ [港股] ETL 全链路成功（列表→日线→指标→形态→信号→宽表→Parquet）")
     logger.info("=" * 70)
     sys.exit(0 if not failed else 1)
 

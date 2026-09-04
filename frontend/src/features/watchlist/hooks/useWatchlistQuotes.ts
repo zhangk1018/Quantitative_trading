@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { App } from 'antd';
 import { fetchStocks, type StockItem } from '@/features/stock-detail/api';
+import { inferMarketKey, type MarketKey } from '@/features/watchlist/utils/stock-utils';
 
 /** 获取行情数据的最大条数 */
 const MAX_WATCHLIST_SIZE = 200;
@@ -57,14 +58,37 @@ export function useWatchlistQuotes(codes: string[]): UseWatchlistQuotesResult {
       }
       setError(null);
 
-      fetchStocks({ stock_codes: currentCodes.join(','), limit: MAX_WATCHLIST_SIZE }, controller.signal)
-        .then((result) => {
+      // 自选可能跨市场（A股/港股/美股），后端 get_stocks 的 market 为单一市场过滤，
+      // 因此按市场分桶分别请求，最后合并。A股(cn) 不显式传 market（默认兼容旧后端）。
+      const buckets: Record<MarketKey, string[]> = { cn: [], hk: [], us: [] };
+      for (const c of currentCodes) {
+        const mkt = inferMarketKey(c) ?? 'cn';
+        buckets[mkt].push(c);
+      }
+
+      const fetchBucket = async (mkt: MarketKey, codes: string[], signal: AbortSignal) => {
+        const params: Record<string, unknown> = {
+          stock_codes: codes.join(','),
+          limit: MAX_WATCHLIST_SIZE,
+        };
+        if (mkt !== 'cn') params.market = mkt;
+        const result = await fetchStocks(params, signal);
+        const map = new Map<string, StockItem>();
+        (result?.items ?? []).forEach((item) => map.set(item.stock_code, item));
+        return map;
+      };
+
+      const tasks = (Object.keys(buckets) as MarketKey[])
+        .filter((mkt) => buckets[mkt].length > 0)
+        .map((mkt) => fetchBucket(mkt, buckets[mkt], controller.signal));
+
+      Promise.all(tasks)
+        .then((maps) => {
           // 忽略已中止的请求
           if (controller.signal.aborted) return;
-          const map = new Map<string, StockItem>();
-          const items = result?.items ?? [];
-          items.forEach((item) => map.set(item.stock_code, item));
-          setQuotesMap(map);
+          const merged = new Map<string, StockItem>();
+          maps.forEach((m) => m.forEach((v, k) => merged.set(k, v)));
+          setQuotesMap(merged);
           hasLoaded.current = true;
           setError(null);
         })

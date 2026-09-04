@@ -15,6 +15,7 @@ import { Typography, Button, Spin, App, Modal, Input } from 'antd';
 import { PlusOutlined, ReloadOutlined, FolderAddOutlined } from '@ant-design/icons';
 import { useWatchlist, SYSTEM_GROUP_SET } from './store';
 import { useWatchlistQuotes } from './hooks/useWatchlistQuotes';
+import { inferMarketKey, type MarketKey } from './utils/stock-utils';
 import StockAnalysisModal from '@/features/stock-picker/components/StockAnalysisModal';
 import WatchlistTable from './WatchlistTable';
 import WatchlistFilter from './WatchlistFilter';
@@ -37,6 +38,8 @@ export interface WatchlistStockRow {
   turnover_rate: number | null;
   listed_board: string | null;
   group_name: string;
+  /** 市场键（cn/hk/us），展示层据此补零/加币种 */
+  market: MarketKey;
 }
 
 function toModalStock(row: WatchlistStockRow) {
@@ -51,6 +54,7 @@ function toModalStock(row: WatchlistStockRow) {
     market_cap: row.market_cap ?? 0,
     amount: row.amount ?? 0,
     listed_board: row.listed_board,
+    market: row.market,
   };
 }
 
@@ -134,6 +138,7 @@ const Watchlist: React.FC = () => {
         turnover_rate: quote?.turnover_rate ?? null,
         listed_board: quote?.listed_board ?? null,
         group_name: groupName,
+        market: inferMarketKey(code) ?? 'cn',
       };
     });
   }, [visibleCodes, quotesMap, state.stocks, activeGroup]);
