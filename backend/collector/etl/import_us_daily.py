@@ -192,6 +192,16 @@ def clean_and_split(df_raw: pd.DataFrame, code: str) -> Tuple[Optional[pd.DataFr
     splitted = split_raw_adj(
         cleaned.rename(columns={'adj_close': 'adj_close'}).copy(), keep=('open', 'high', 'low', 'close')
     )
+    # 负后复权价防护（与港股一致）：新浪/锚点重建异常时可能产生负 adj_*，
+    # 负价会使前端校验失败并使指标失真，回退为对应原始价并置因子 1.0。
+    # 置于 detect_factor_dates 之前，避免负因子被误标为除权日。
+    neg_mask = (splitted[['adj_open', 'adj_high', 'adj_low', 'adj_close']] < 0).any(axis=1)
+    if neg_mask.any():
+        n_neg = int(neg_mask.sum())
+        logger.warning(f"  {code}: 检测到 {n_neg} 天负后复权价（复权异常），回退为原始价")
+        for col in ('open', 'high', 'low', 'close'):
+            splitted.loc[neg_mask, f'adj_{col}'] = splitted.loc[neg_mask, f'raw_{col}']
+        splitted.loc[neg_mask, 'adj_factor'] = 1.0
     splitted = detect_factor_dates(splitted)
     splitted['code'] = code
 

@@ -186,6 +186,17 @@ def clean_and_split(df_raw: pd.DataFrame, code: str) -> Tuple[Optional[pd.DataFr
     splitted = split_raw_adj(
         cleaned.rename(columns={'adj_close': 'adj_close'}).copy(), keep=('open', 'high', 'low', 'close')
     )
+    # 仙股 hfq 防护：新浪 hfq 对部分仙股返回负后复权价（adj_* 为负而 raw_* 为正）。
+    # 负价会导致前端校验失败（StockResponse 价格字段 >= 0）并使技术指标失真，
+    # 此处将负后复权价回退为对应原始价，并把该日因子置 1.0（无复权调整）。
+    # 置于 detect_factor_dates 之前，避免负因子被误标为除权日。
+    neg_mask = (splitted[['adj_open', 'adj_high', 'adj_low', 'adj_close']] < 0).any(axis=1)
+    if neg_mask.any():
+        n_neg = int(neg_mask.sum())
+        logger.warning(f"  {code}: 检测到 {n_neg} 天负后复权价（hfq 异常），回退为原始价")
+        for col in ('open', 'high', 'low', 'close'):
+            splitted.loc[neg_mask, f'adj_{col}'] = splitted.loc[neg_mask, f'raw_{col}']
+        splitted.loc[neg_mask, 'adj_factor'] = 1.0
     splitted = detect_factor_dates(splitted)
     splitted['code'] = code
 
