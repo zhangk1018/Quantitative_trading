@@ -44,6 +44,12 @@ ALL_CHECKS = [
     'daily_quotes_freshness',
     'daily_quotes_volume',
     'missing_stocks',
+    'daily_quotes_freshness_hk',
+    'daily_quotes_volume_hk',
+    'missing_stocks_hk',
+    'daily_quotes_freshness_us',
+    'daily_quotes_volume_us',
+    'missing_stocks_us',
     'weekly_quotes_freshness',
     'monthly_quotes_freshness',
     'snapshot_sync',
@@ -55,16 +61,35 @@ ALL_CHECKS = [
 CHECK_DESCRIPTIONS = {
     'postgres_service': 'PostgreSQL 服务进程状态',
     'database_connection': '数据库连接测试',
-    'daily_quotes_freshness': '日线行情最新日期新鲜度',
-    'daily_quotes_volume': '日线行情每日数据量（≥4500 条）',
-    'missing_stocks': '最新交易日缺失股票数',
-    'weekly_quotes_freshness': '周K线最新日期新鲜度',
-    'monthly_quotes_freshness': '月K线最新日期新鲜度',
+    'daily_quotes_freshness': 'A股日线行情最新日期新鲜度',
+    'daily_quotes_volume': 'A股日线行情每日数据量',
+    'missing_stocks': 'A股最新交易日缺失股票数',
+    'daily_quotes_freshness_hk': '港股日线行情最新日期新鲜度',
+    'daily_quotes_volume_hk': '港股日线行情每日数据量',
+    'missing_stocks_hk': '港股最新交易日缺失股票数',
+    'daily_quotes_freshness_us': '美股日线行情最新日期新鲜度',
+    'daily_quotes_volume_us': '美股日线行情每日数据量',
+    'missing_stocks_us': '美股最新交易日缺失股票数',
+    'weekly_quotes_freshness': 'A股周K线最新日期新鲜度',
+    'monthly_quotes_freshness': 'A股月K线最新日期新鲜度',
     'snapshot_sync': '宽表同步状态 (stock_daily_snapshot)',
     'field_completeness': '关键字段填充率',
     'task_run_log': '最近任务执行日志',
     'log_file_errors': '日志文件错误计数',
 }
+
+# 各市场检查阈值配置
+# - min_good_volume：应覆盖的最小股票数（OK 达标线）
+# - min_warn_volume：低于此值告警（WARN），低于 min_good 但不低于此 WARN
+# - max_missing：允许的最大缺失股票数（超过则 WARN）
+MARKET_CONFIG = {
+    'cn': {'min_good_volume': 5000, 'min_warn_volume': 4500, 'max_missing': 100},
+    'hk': {'min_good_volume': 2600, 'min_warn_volume': 2000, 'max_missing': 50},
+    'us': {'min_good_volume': 190, 'min_warn_volume': 150, 'max_missing': 10},
+}
+
+# 交易市场列表（cn=沪深A股, hk=港股, us=美股）
+TRADED_MARKETS = ['cn', 'hk', 'us']
 
 
 class CheckResult:
@@ -126,6 +151,11 @@ def get_db_conn():
     )
 
 
+def _mk_name(base, market):
+    """生成检查项名称：cn 保持原名（向后兼容），其他市场加 _market 后缀"""
+    return base if market == 'cn' else f'{base}_{market}'
+
+
 # ===================== 检查函数 =====================
 
 def check_postgres_service(result):
@@ -164,107 +194,115 @@ def check_database_connection(result):
         result.error('database_connection', f'连接失败: {e}')
 
 
-def check_daily_quotes_freshness(result):
-    """检查日线行情最新日期新鲜度"""
+def check_daily_quotes_freshness(result, market='cn'):
+    """检查日线行情最新日期新鲜度（支持按市场过滤）"""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d'")
+        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market = %s", (market,))
         latest = cur.fetchone()[0]
         cur.close()
         conn.close()
         if latest is None:
-            result.error('daily_quotes_freshness', '日线数据为空')
+            result.error(_mk_name('daily_quotes_freshness', market), f'{market} 日线数据为空')
             return
         days_ago = (datetime.now().date() - latest).days
         if days_ago > 5:
-            result.error('daily_quotes_freshness', f'最新交易日 {latest}，距今 {days_ago} 天（超过阈值 5 天）')
+            result.error(_mk_name('daily_quotes_freshness', market), f'{market} 最新交易日 {latest}，距今 {days_ago} 天（超过阈值 5 天）')
         elif days_ago > 3:
-            result.warn('daily_quotes_freshness', f'最新交易日 {latest}，距今 {days_ago} 天（超过阈值 3 天）')
+            result.warn(_mk_name('daily_quotes_freshness', market), f'{market} 最新交易日 {latest}，距今 {days_ago} 天（超过阈值 3 天）')
         else:
-            result.ok('daily_quotes_freshness', f'最新交易日 {latest}')
+            result.ok(_mk_name('daily_quotes_freshness', market), f'{market} 最新交易日 {latest}')
     except Exception as e:
-        result.error('daily_quotes_freshness', str(e))
+        result.error(_mk_name('daily_quotes_freshness', market), str(e))
 
 
-def check_daily_quotes_volume(result):
-    """检查日线行情每日数据量"""
+def check_daily_quotes_volume(result, market='cn'):
+    """检查日线行情每日数据量（阈值按市场配置）"""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d'")
+        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market = %s", (market,))
         latest = cur.fetchone()[0]
         if latest is None:
-            result.error('daily_quotes_volume', '日线数据为空')
+            result.error(_mk_name('daily_quotes_volume', market), f'{market} 日线数据为空')
             cur.close()
             conn.close()
             return
-        cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1d'", (latest,))
+        cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1d' AND market = %s", (latest, market))
         cnt = cur.fetchone()[0]
         cur.close()
         conn.close()
-        if cnt < 4500:
-            result.error('daily_quotes_volume', f'最新交易日 {latest} 仅 {cnt} 只（低于阈值 4500）')
-        elif cnt < 5000:
-            result.warn('daily_quotes_volume', f'最新交易日 {latest} 共 {cnt} 只（低于 5000）')
+        cfg = MARKET_CONFIG.get(market, MARKET_CONFIG['cn'])
+        if cnt < cfg['min_warn_volume']:
+            result.error(_mk_name('daily_quotes_volume', market), f'{market} 最新交易日 {latest} 仅 {cnt} 只（低于阈值 {cfg["min_warn_volume"]}）')
+        elif cnt < cfg['min_good_volume']:
+            result.warn(_mk_name('daily_quotes_volume', market), f'{market} 最新交易日 {latest} 共 {cnt} 只（低于 {cfg["min_good_volume"]}）')
         else:
-            result.ok('daily_quotes_volume', f'最新交易日 {latest} 共 {cnt} 只')
+            result.ok(_mk_name('daily_quotes_volume', market), f'{market} 最新交易日 {latest} 共 {cnt} 只')
     except Exception as e:
-        result.error('daily_quotes_volume', str(e))
+        result.error(_mk_name('daily_quotes_volume', market), str(e))
 
 
-def check_missing_stocks(result):
-    """检查最新交易日缺失股票数"""
+def check_missing_stocks(result, market='cn'):
+    """检查最新交易日缺失股票数（按市场过滤股票池）"""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d'")
+        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market = %s", (market,))
         latest = cur.fetchone()[0]
         if latest is None:
-            result.warn('missing_stocks', '日线数据为空，无法计算缺失股票')
+            result.warn(_mk_name('missing_stocks', market), f'{market} 日线数据为空，无法计算缺失股票')
             cur.close()
             conn.close()
             return
-        # 排除北交所（8/920 开头），与日线导入逻辑保持一致，
-        # 避免北交所股票被误计为"缺失"产生误报
-        cur.execute("""
-            SELECT COUNT(*) FROM stock_basic
-            WHERE (delist_date IS NULL OR delist_date > %s)
-            AND code NOT LIKE '8%%'
-            AND code NOT LIKE '920%%'
-        """, (latest,))
+        if market == 'cn':
+            # 仅 A股排除北交所（8/920 开头），与日线导入逻辑保持一致，避免北交所被误计为"缺失"
+            cur.execute("""
+                SELECT COUNT(*) FROM stock_basic
+                WHERE market = 'cn'
+                AND (delist_date IS NULL OR delist_date > %s)
+                AND code NOT LIKE '8%%'
+                AND code NOT LIKE '920%%'
+            """, (latest,))
+        else:
+            cur.execute("""
+                SELECT COUNT(*) FROM stock_basic
+                WHERE market = %s
+                AND (delist_date IS NULL OR delist_date > %s)
+            """, (market, latest))
         total_active = cur.fetchone()[0]
         cur.execute("""
             SELECT COUNT(DISTINCT code) FROM stock_quotes
             WHERE trade_date = %s AND cycle='1d'
-            AND code NOT LIKE '8%%'
-            AND code NOT LIKE '920%%'
-        """, (latest,))
+            AND market = %s
+        """, (latest, market))
         have_data = cur.fetchone()[0]
         cur.close()
         conn.close()
         missing = total_active - have_data
-        if missing > 100:
-            result.warn('missing_stocks', f'最新交易日 {latest} 缺失 {missing} 只（活跃 {total_active}，有数据 {have_data}）')
+        cfg = MARKET_CONFIG.get(market, MARKET_CONFIG['cn'])
+        if missing > cfg['max_missing']:
+            result.warn(_mk_name('missing_stocks', market), f'{market} 最新交易日 {latest} 缺失 {missing} 只（活跃 {total_active}，有数据 {have_data}）')
         else:
-            result.ok('missing_stocks', f'最新交易日 {latest} 缺失 {missing} 只（活跃 {total_active}，有数据 {have_data}）')
+            result.ok(_mk_name('missing_stocks', market), f'{market} 最新交易日 {latest} 缺失 {missing} 只（活跃 {total_active}，有数据 {have_data}）')
     except Exception as e:
-        result.warn('missing_stocks', str(e))
+        result.warn(_mk_name('missing_stocks', market), str(e))
 
 
 def check_weekly_quotes_freshness(result):
-    """检查周K线最新日期新鲜度"""
+    """检查 A股周K线最新日期新鲜度"""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1w'")
+        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1w' AND market='cn'")
         latest = cur.fetchone()[0]
         if latest is None:
             result.warn('weekly_quotes_freshness', '周K线数据为空')
             cur.close()
             conn.close()
             return
-        cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1w'", (latest,))
+        cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1w' AND market='cn'", (latest,))
         cnt = cur.fetchone()[0]
         cur.close()
         conn.close()
@@ -281,18 +319,18 @@ def check_weekly_quotes_freshness(result):
 
 
 def check_monthly_quotes_freshness(result):
-    """检查月K线最新日期新鲜度"""
+    """检查 A股月K线最新日期新鲜度"""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1m'")
+        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1m' AND market='cn'")
         latest = cur.fetchone()[0]
         if latest is None:
             result.warn('monthly_quotes_freshness', '月K线数据为空')
             cur.close()
             conn.close()
             return
-        cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1m'", (latest,))
+        cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1m' AND market='cn'", (latest,))
         cnt = cur.fetchone()[0]
         cur.close()
         conn.close()
@@ -309,30 +347,30 @@ def check_monthly_quotes_freshness(result):
 
 
 def check_snapshot_sync(result):
-    """检查宽表同步状态"""
+    """检查 A股宽表同步状态（market='cn'）"""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT MAX(trade_date) FROM stock_daily_snapshot")
+        cur.execute("SELECT MAX(trade_date) FROM stock_daily_snapshot WHERE market = 'cn'")
         latest = cur.fetchone()[0]
         if latest is None:
-            result.error('snapshot_sync', 'stock_daily_snapshot 为空')
+            result.error('snapshot_sync', 'stock_daily_snapshot (cn) 为空')
             cur.close()
             conn.close()
             return
-        cur.execute("SELECT COUNT(*) FROM stock_daily_snapshot WHERE trade_date = %s", (latest,))
+        cur.execute("SELECT COUNT(*) FROM stock_daily_snapshot WHERE trade_date = %s AND market = 'cn'", (latest,))
         cnt = cur.fetchone()[0]
         cur.close()
         conn.close()
-        # 与日线最新日期对比
+        # 与 A股日线最新日期对比
         conn2 = get_db_conn()
         cur2 = conn2.cursor()
-        cur2.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d'")
+        cur2.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market = 'cn'")
         latest_quote = cur2.fetchone()[0]
         cur2.close()
         conn2.close()
         if latest_quote and latest < latest_quote:
-            result.warn('snapshot_sync', f'宽表最新 {latest}（{cnt} 条），落后于日线 {latest_quote}，需同步')
+            result.warn('snapshot_sync', f'宽表最新 {latest}（{cnt} 条），落后于 A股日线 {latest_quote}，需同步')
         else:
             result.ok('snapshot_sync', f'最新 {latest}，共 {cnt} 条')
     except Exception as e:
@@ -352,7 +390,7 @@ def check_field_completeness(result):
               ROUND(SUM(CASE WHEN dea IS NOT NULL AND dea != 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as dea_pct,
               ROUND(SUM(CASE WHEN rsi6 IS NOT NULL AND rsi6 != 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as rsi6_pct
             FROM stock_indicators 
-            WHERE trade_date = (SELECT MAX(trade_date) FROM stock_indicators WHERE cycle='1d') AND cycle='1d'
+            WHERE trade_date = (SELECT MAX(trade_date) FROM stock_indicators WHERE cycle='1d' AND market='cn') AND cycle='1d' AND market = 'cn'
         """)
         row = cur.fetchone()
         total, dif_pct, dea_pct, rsi6_pct = row
@@ -433,6 +471,12 @@ CHECK_FUNCTIONS = {
     'daily_quotes_freshness': check_daily_quotes_freshness,
     'daily_quotes_volume': check_daily_quotes_volume,
     'missing_stocks': check_missing_stocks,
+    'daily_quotes_freshness_hk': lambda r: check_daily_quotes_freshness(r, 'hk'),
+    'daily_quotes_volume_hk': lambda r: check_daily_quotes_volume(r, 'hk'),
+    'missing_stocks_hk': lambda r: check_missing_stocks(r, 'hk'),
+    'daily_quotes_freshness_us': lambda r: check_daily_quotes_freshness(r, 'us'),
+    'daily_quotes_volume_us': lambda r: check_daily_quotes_volume(r, 'us'),
+    'missing_stocks_us': lambda r: check_missing_stocks(r, 'us'),
     'weekly_quotes_freshness': check_weekly_quotes_freshness,
     'monthly_quotes_freshness': check_monthly_quotes_freshness,
     'snapshot_sync': check_snapshot_sync,

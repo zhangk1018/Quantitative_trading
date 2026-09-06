@@ -5,12 +5,11 @@
 美股为独立线性管道，次日 08:30 触发，串行执行（此时美东前一交易日已收盘）：
   1. sync_us_stock_list.py    —— 股票列表同步
   2. import_us_daily.py       —— 日线行情（--incremental，写库 ON CONFLICT 幂等）
-  3. sync_us_basic.py         —— 基本面同步（--date 最新交易日）
-  4. compute_indicators_daily.py --market us    —— 指标
-  5. pattern_precompute.py --market us --latest —— 形态
-  6. signal_precompute.py --market us           —— 信号
-  7. daily_snapshot_sync.py --market us --latest —— 宽表
-  8. export_parquet.py --market us               —— Parquet
+  3. compute_indicators_daily.py --market us    —— 指标
+  4. pattern_precompute.py --market us --latest —— 形态
+  5. signal_precompute.py --market us           —— 信号
+  6. daily_snapshot_sync.py --market us --latest —— 宽表
+  7. export_parquet.py --market us               —— Parquet
 
 与港股 hk_job_runner.py 相互独立（解耦），互不影响。单步失败自动重试 3 次
 （间隔 5 分钟，可用 USJOB_RETRY_INTERVAL 覆盖），仍失败落 alerts.log(market=us)。
@@ -128,7 +127,6 @@ def _run_script(args: List[str], step: str) -> int:
 STEPS: List[tuple[str, List[str]]] = [
     ("股票列表", [PYTHON, str(BACKEND_DIR / "collector/etl/sync_us_stock_list.py")]),
     ("日线清洗", [PYTHON, str(BACKEND_DIR / "collector/etl/import_us_daily.py"), "--incremental"]),
-    ("基本面", [PYTHON, str(BACKEND_DIR / "collector/etl/sync_us_basic.py")]),
     ("指标", [PYTHON, str(BACKEND_DIR / "clean/etl/compute_indicators_daily.py"), "--market", MARKET]),
     ("形态", [PYTHON, str(BACKEND_DIR / "clean/etl/pattern_precompute.py"), "--market", MARKET, "--latest"]),
     ("信号", [PYTHON, str(BACKEND_DIR / "clean/etl/signal_precompute.py"), "--market", MARKET]),

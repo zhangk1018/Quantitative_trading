@@ -5,8 +5,8 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { fetchKLineData, fetchSignals, fetchStockDetail, KLineDataResult, SignalItem, StockDetailInfo } from './api';
 import { useStockChart } from './hooks/useStockChart';
 
-/** 股票代码格式校验：6 位数字，以 0/3/6/8/9 开头 */
-const STOCK_CODE_RE = /^[03689]\d{5}$/;
+/** 股票代码格式校验：A股 6 位数字 / 港股 `0001.HK` / 美股 `AAPL`（对齐后端宽白名单） */
+const STOCK_CODE_RE = /^[A-Za-z0-9.-]{1,10}$/;
 
 /** 用户可见的通用错误提示，不暴露内部堆栈 */
 const GENERIC_ERROR_MSG = '数据加载失败，请稍后重试';

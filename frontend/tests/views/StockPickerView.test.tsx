@@ -353,6 +353,33 @@ describe('StockPickerView 集成测试（行情指标 + runScreening）', () => 
     });
   });
 
+  describe('M6: 市场传导', () => {
+    it('切换到港股后，请求 URL 携带 market=hk', async () => {
+      const user = userEvent.setup();
+      renderView();
+
+      // 点击"港股"radio（默认沪深），触发 SET_MARKET
+      await user.click(screen.getByText('港股'));
+
+      await user.click(screen.getByTestId('start-screener'));
+
+      await waitFor(() => expect(lastRequestUrl).not.toBeNull());
+      const url = new URL(lastRequestUrl!);
+      expect(url.searchParams.get('market')).toBe('hk');
+    });
+
+    it('默认沪深（cn）时，请求不带 market 参数', async () => {
+      const user = userEvent.setup();
+      renderView();
+
+      await user.click(screen.getByTestId('start-screener'));
+
+      await waitFor(() => expect(lastRequestUrl).not.toBeNull());
+      const url = new URL(lastRequestUrl!);
+      expect(url.searchParams.get('market')).toBeNull();
+    });
+  });
+
   describe('A11: loading → 成功 → 表格渲染', () => {
     const mockItems = [
       { stock_code: '000001', stock_name: '平安银行', close: 12.5, change_pct: 2.5, market_cap: 2.5e11, pe_ttm: 6.5, pb: 0.8, turnover_rate: 3.2, trade_date: '2026-07-11', amount: 1e9, pe: 6.5, listed_board: '主板' },

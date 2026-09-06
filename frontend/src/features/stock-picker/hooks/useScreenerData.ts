@@ -180,6 +180,7 @@ function createEmptyCache() {
 }
 
 export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['message']) {
+  const selectedMarket = useScreenerSelector((s) => s.market.selectedMarket);
   const selectedBoards = useScreenerSelector((s) => s.market.selectedBoards);
   const stockRange = useScreenerSelector((s) => s.market.stockRange);
   const marketIndicatorRanges = useScreenerSelector((s) => s.marketIndicators.ranges);
@@ -192,13 +193,13 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
     filterGroup?: FilterGroup | null;
     customIndicators: typeof customIndicators;
   }>({
-    selectedBoards, stockRange, marketIndicatorRanges,
+    selectedMarket, selectedBoards, stockRange, marketIndicatorRanges,
     financialIndicatorRanges, selectedTechnicalIndicators, filterGroup,
     customIndicators,
   });
   useEffect(() => {
     stateRef.current = {
-      selectedBoards, stockRange, marketIndicatorRanges,
+      selectedMarket, selectedBoards, stockRange, marketIndicatorRanges,
       financialIndicatorRanges, selectedTechnicalIndicators, filterGroup,
       customIndicators,
     };

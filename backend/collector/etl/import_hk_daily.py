@@ -492,6 +492,8 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
         logger.warning(f"⚠️ 数据源最新日期 {end} 尚未覆盖增量起点 {start}，本轮无新增数据可拉，跳过")
         return {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0, 'max_trade_date': None}
 
+    # 新浪切片为半开区间 [start, end)（不含 end），终点 +1 天以包含数据源最新交易日 end 当天
+    end_excl = (datetime.strptime(end, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
     codes = _list_hk_codes(conn) if not dry_run else ['700.HK']
     if limit:
         codes = codes[:limit]
@@ -509,7 +511,7 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
     logger.info(f"🚀 [incremental] 增量导入 {len(codes)} 只港股，区间 {start} ~ {end}")
     for i, code in enumerate(codes, 1):
         try:
-            q, a, max_date = import_one(src, conn if not dry_run else None, code, start=start, end=end, dry_run=dry_run)
+            q, a, max_date = import_one(src, conn if not dry_run else None, code, start=start, end=end_excl, dry_run=dry_run)
             if q or a:
                 stats['success'] += 1
                 stats['quotes'] += q

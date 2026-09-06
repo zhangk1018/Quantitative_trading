@@ -5,12 +5,11 @@
 港股为独立线性管道，当日 17:00 触发，串行执行：
   1. sync_hk_stock_list.py    —— 股票列表同步
   2. import_hk_daily.py       —— 日线行情（--incremental，写库 ON CONFLICT 幂等）
-  3. sync_hk_basic.py         —— 基本面同步（--date 最新交易日）
-  4. compute_indicators_daily.py --market hk    —— 指标
-  5. pattern_precompute.py --market hk --latest —— 形态
-  6. signal_precompute.py --market hk           —— 信号
-  7. daily_snapshot_sync.py --market hk --latest —— 宽表
-  8. export_parquet.py --market hk               —— Parquet
+  3. compute_indicators_daily.py --market hk    —— 指标
+  4. pattern_precompute.py --market hk --latest —— 形态
+  5. signal_precompute.py --market hk           —— 信号
+  6. daily_snapshot_sync.py --market hk --latest —— 宽表
+  7. export_parquet.py --market hk               —— Parquet
 
 与美股 us_job_runner.py 相互独立（解耦），互不影响。单步失败自动重试 3 次
 （间隔 5 分钟，可用 HKJOB_RETRY_INTERVAL 覆盖），仍失败落 alerts.log(market=hk)。
@@ -128,7 +127,6 @@ def _run_script(args: List[str], step: str) -> int:
 STEPS: List[tuple[str, List[str]]] = [
     ("股票列表", [PYTHON, str(BACKEND_DIR / "collector/etl/sync_hk_stock_list.py")]),
     ("日线清洗", [PYTHON, str(BACKEND_DIR / "collector/etl/import_hk_daily.py"), "--incremental"]),
-    ("基本面", [PYTHON, str(BACKEND_DIR / "collector/etl/sync_hk_basic.py")]),
     ("指标", [PYTHON, str(BACKEND_DIR / "clean/etl/compute_indicators_daily.py"), "--market", MARKET]),
     ("形态", [PYTHON, str(BACKEND_DIR / "clean/etl/pattern_precompute.py"), "--market", MARKET, "--latest"]),
     ("信号", [PYTHON, str(BACKEND_DIR / "clean/etl/signal_precompute.py"), "--market", MARKET]),

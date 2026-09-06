@@ -39,6 +39,12 @@ if (typeof URL.createObjectURL !== 'function') {
   (URL as any).revokeObjectURL = vi.fn();
 }
 
+// scrollTo polyfill（jsdom 不实现 Element.scrollTo，StockPickerView 的
+// useStockPickerActions 在"开始选股/重置"后调用 tableContainerRef.scrollTo）
+if (typeof Element !== 'undefined' && !Element.prototype.scrollTo) {
+  Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo;
+}
+
 // 每个测试后清理 DOM + 重置 MSW handlers
 afterEach(() => {
   cleanup();
