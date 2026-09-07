@@ -121,6 +121,47 @@ def _get_last_trade_date(ref_date: datetime) -> str:
     return target.strftime("%Y-%m-%d")
 
 
+# 美股 2026 纽交所休市日（固定假日及补休，依年度维护；后续可接入美股交易日历源）
+US_HOLIDAYS_2026 = frozenset({
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03",
+    "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
+    "2026-11-26", "2026-12-25",
+})
+
+
+def _get_last_us_trade_date(ref_dt: datetime) -> str:
+    """美股期望交易日：按美东时钟，跳过周末与美股休市日。
+
+    美股 ETL 在「美东交易日收盘后的北京次日 08:30（周二~六）」运行，故监控期望须用美东时钟判断，
+    不能复用 A 股 `_get_last_trade_date`（否则美股休市日/未到交易时段会被误判「数据未更新」）。
+    规则：
+    - 美东当天若是休市（周末/假日）→ 期望为最近一个已收盘交易日
+    - 美东当天是交易日但未收盘（<17:00）→ 期望回退到上一交易日
+    - 美东当天是交易日且已收盘（>=17:00）→ 期望为当天
+
+    Args:
+        ref_dt: 当前北京时间（带时区）
+
+    Returns:
+        str: 美股期望交易日（YYYY-MM-DD）
+    """
+    # 固定按 -12h（EDT 夏令时）；EST 差 13h，仅在 17:00 临界 ±1h 内可能偏差，概率极低可忽略
+    us_now = ref_dt - timedelta(hours=12)
+    day = us_now.date()
+    not_tradeable = lambda d: d.weekday() >= 5 or d.isoformat() in US_HOLIDAYS_2026
+
+    # 当前时刻所处「交易日」：若本身非交易日则向近回退到最近交易日
+    target = day
+    while not_tradeable(target):
+        target -= timedelta(days=1)
+    # 落在交易日当天但尚未收盘（<17:00）→ 期望回退到上一交易日
+    if target == day and us_now.time() < datetime.time(17, 0):
+        target -= timedelta(days=1)
+        while not_tradeable(target):
+            target -= timedelta(days=1)
+    return target.strftime("%Y-%m-%d")
+
+
 def _get_db_conn():
     """获取数据库连接（优先从连接池获取，超时则创建直接连接）"""
     global _monitor_pool
@@ -218,11 +259,18 @@ def _cached(key: str, ttl_seconds: int = 60):
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            entry = _cache.get(key)
+            # 支持 key 模板（如 "data_summary:{market}"），按调用参数生成市场专属缓存键，避免多市场串值
+            real_key = key
+            if "{" in key:
+                try:
+                    real_key = key.format(**kwargs)
+                except (KeyError, TypeError):
+                    real_key = key
+            entry = _cache.get(real_key)
             if entry and entry.is_valid():
                 return entry.data
             data = func(*args, **kwargs)
-            _cache[key] = _CacheEntry(data, ttl_seconds)
+            _cache[real_key] = _CacheEntry(data, ttl_seconds)
             return data
         return wrapper
     return decorator
@@ -296,10 +344,13 @@ def _query_scalar(sql: str, params: tuple = None, conn=None):
 # ============================================
 
 @router.get("/monitor/data-summary/", summary="数据完整性总览")
-@_cached("data_summary", ttl_seconds=60)
-def get_data_summary():
+@_cached("data_summary:{market}", ttl_seconds=60)
+def get_data_summary(market: str = Query("cn", pattern="^(cn|hk|us)$")):
     """
     返回四张核心表的最新数据日期、股票覆盖数、覆盖率等。
+
+    Args:
+        market: 市场标识（cn=沪深 / hk=港股 / us=美股），默认沪深
     """
     result = {"tables": {}, "coverage": {}, "stocks": {}, "warnings": []}
 
@@ -316,17 +367,17 @@ def get_data_summary():
             ("stock_indicators", "AND cycle = '1d'", True),
             ("trade_signals", "", False),
         ]:
-            latest = _qs(f"SELECT MAX(trade_date) FROM {table} WHERE 1=1 {cycle_filter}")
+            latest = _qs(f"SELECT MAX(trade_date) FROM {table} WHERE 1=1 {cycle_filter} AND market = %s", (market,))
             if latest:
                 if use_cycle_col:
                     count = _qs(
-                        f"SELECT COUNT(DISTINCT code) FROM {table} WHERE trade_date = %s AND cycle = '1d'",
-                        (latest,),
+                        f"SELECT COUNT(DISTINCT code) FROM {table} WHERE trade_date = %s AND cycle = '1d' AND market = %s",
+                        (latest, market),
                     )
                 else:
                     count = _qs(
-                        f"SELECT COUNT(DISTINCT code) FROM {table} WHERE trade_date = %s",
-                        (latest,),
+                        f"SELECT COUNT(DISTINCT code) FROM {table} WHERE trade_date = %s AND market = %s",
+                        (latest, market),
                     )
                 result["tables"][table] = {
                     "latest_date": str(latest),
@@ -334,16 +385,16 @@ def get_data_summary():
                 }
 
         # 最新交易日
-        latest_quote = _qs("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'")
+        latest_quote = _qs("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d' AND market = %s", (market,))
         if latest_quote:
             covered_count = _qs(
-                "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1d' AND trade_date = %s",
-                (latest_quote,)
+                "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1d' AND trade_date = %s AND market = %s",
+                (latest_quote, market)
             ) or 0
             if covered_count < MonitorConfig.MIN_COVERAGE_COUNT:
                 latest_quote = _qs(
-                    "SELECT trade_date FROM stock_quotes WHERE cycle = '1d' AND trade_date < %s GROUP BY trade_date ORDER BY trade_date DESC LIMIT 1",
-                    (latest_quote,)
+                    "SELECT trade_date FROM stock_quotes WHERE cycle = '1d' AND market = %s AND trade_date < %s GROUP BY trade_date ORDER BY trade_date DESC LIMIT 1",
+                    (market, latest_quote)
                 )
 
         if latest_quote:
@@ -351,31 +402,31 @@ def get_data_summary():
             active_cutoff = active_cutoff_date.strftime("%Y-%m-%d")
 
             covered = _qs(
-                "SELECT COUNT(DISTINCT q.code) FROM stock_quotes q WHERE q.cycle = '1d' AND q.trade_date = %s AND EXISTS (SELECT 1 FROM stock_quotes q2 WHERE q2.cycle = '1d' AND q2.code = q.code AND q2.trade_date >= %s)",
-                (latest_quote, active_cutoff_date),
+                "SELECT COUNT(DISTINCT q.code) FROM stock_quotes q WHERE q.cycle = '1d' AND q.market = %s AND q.trade_date = %s AND EXISTS (SELECT 1 FROM stock_quotes q2 WHERE q2.cycle = '1d' AND q2.code = q.code AND q2.market = q.market AND q2.trade_date >= %s)",
+                (market, latest_quote, active_cutoff_date),
             ) or 0
             total = _qs(
-                "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1d' AND trade_date >= %s",
-                (active_cutoff_date,),
+                "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1d' AND market = %s AND trade_date >= %s",
+                (market, active_cutoff_date),
             ) or 0
             coverage_rate = round(covered / total * 100, 2) if total else 0
 
             missing_in_quote = _qs(
-                "SELECT COUNT(*) FROM (SELECT DISTINCT code FROM stock_quotes WHERE cycle = '1d' AND trade_date >= %s) active_t WHERE NOT EXISTS (SELECT 1 FROM stock_quotes q WHERE q.cycle = '1d' AND q.trade_date = %s AND q.code = active_t.code)",
-                (active_cutoff_date, latest_quote),
+                "SELECT COUNT(*) FROM (SELECT DISTINCT code FROM stock_quotes WHERE cycle = '1d' AND market = %s AND trade_date >= %s) active_t WHERE NOT EXISTS (SELECT 1 FROM stock_quotes q WHERE q.cycle = '1d' AND q.market = %s AND q.trade_date = %s AND q.code = active_t.code)",
+                (market, active_cutoff_date, market, latest_quote),
             ) or 0
 
             extra_in_quote = _qs(
-                "SELECT COUNT(DISTINCT q.code) FROM stock_quotes q WHERE q.cycle = '1d' AND q.trade_date = %s AND NOT EXISTS (SELECT 1 FROM stock_quotes q2 WHERE q2.cycle = '1d' AND q2.code = q.code AND q2.trade_date >= %s)",
-                (latest_quote, active_cutoff_date),
+                "SELECT COUNT(DISTINCT q.code) FROM stock_quotes q WHERE q.cycle = '1d' AND q.market = %s AND q.trade_date = %s AND NOT EXISTS (SELECT 1 FROM stock_quotes q2 WHERE q2.cycle = '1d' AND q2.market = %s AND q2.code = q.code AND q2.trade_date >= %s)",
+                (market, latest_quote, market, active_cutoff_date),
             ) or 0
 
             # 缺失股票分类
             missing_codes = []
             if missing_in_quote > 0:
                 missing_rows = _qd(
-                    "SELECT b.code, b.name, b.delist_date FROM stock_basic b WHERE EXISTS (SELECT 1 FROM stock_quotes q2 WHERE q2.cycle = '1d' AND q2.code = b.code AND q2.trade_date >= %s) AND NOT EXISTS (SELECT 1 FROM stock_quotes q WHERE q.cycle = '1d' AND q.trade_date = %s AND b.code = q.code)",
-                    (active_cutoff_date, latest_quote),
+                    "SELECT b.code, b.name, b.delist_date FROM stock_basic b WHERE b.market = %s AND EXISTS (SELECT 1 FROM stock_quotes q2 WHERE q2.cycle = '1d' AND q2.code = b.code AND q2.market = %s AND q2.trade_date >= %s) AND NOT EXISTS (SELECT 1 FROM stock_quotes q WHERE q.cycle = '1d' AND q.market = %s AND q.trade_date = %s AND b.code = q.code)",
+                    (market, market, active_cutoff_date, market, latest_quote),
                 )
                 missing_codes = missing_rows or []
 
@@ -385,8 +436,8 @@ def get_data_summary():
             if missing_codes:
                 missing_codes_list = [r["code"] for r in missing_codes]
                 recent_data = _qd(
-                    "SELECT DISTINCT code FROM stock_quotes WHERE code = ANY(%s) AND trade_date >= %s::date - INTERVAL '30 days' AND trade_date < %s",
-                    (missing_codes_list, latest_quote, latest_quote),
+                    "SELECT DISTINCT code FROM stock_quotes WHERE market = %s AND code = ANY(%s) AND trade_date >= %s::date - INTERVAL '30 days' AND trade_date < %s",
+                    (market, missing_codes_list, latest_quote, latest_quote),
                 )
                 recent_codes = set(r["code"] for r in (recent_data or []))
 
@@ -457,11 +508,12 @@ def get_data_summary():
                     "suggestion": "请等待下一个交易日（周一）的数据更新"
                 })
 
-        # 总股票数
-        result["stocks"]["total"] = _qs("SELECT COUNT(*) FROM stock_basic") or 0
-        result["stocks"]["delisted"] = _qs("SELECT COUNT(*) FROM stock_basic WHERE delist_date IS NOT NULL") or 0
+        # 总股票数（按市场）
+        result["stocks"]["total"] = _qs("SELECT COUNT(*) FROM stock_basic WHERE market = %s", (market,)) or 0
+        result["stocks"]["delisted"] = _qs("SELECT COUNT(*) FROM stock_basic WHERE delist_date IS NOT NULL AND market = %s", (market,)) or 0
         result["stocks"]["suspended"] = _qs(
-            "SELECT COUNT(*) FROM stock_basic WHERE (name LIKE 'ST%%' OR name LIKE '*ST%%' OR name LIKE 'S%%ST%%' OR name LIKE 'S*ST%%') AND delist_date IS NULL AND name NOT LIKE '%%退%%'"
+            "SELECT COUNT(*) FROM stock_basic WHERE market = %s AND (name LIKE 'ST%%' OR name LIKE '*ST%%' OR name LIKE 'S%%ST%%' OR name LIKE 'S*ST%%') AND delist_date IS NULL AND name NOT LIKE '%%退%%'",
+            (market,)
         ) or 0
         result["stocks"]["active"] = result["stocks"]["total"] - result["stocks"]["delisted"] - result["stocks"]["suspended"]
 
@@ -475,20 +527,26 @@ def get_data_summary():
 # ============================================
 
 @router.get("/monitor/coverage-trend/", summary="覆盖率趋势")
-@_cached("coverage_trend", ttl_seconds=60)
-def get_coverage_trend(days: int = Query(30, ge=1, le=365)):
-    """返回最近 N 天每日的股票覆盖数"""
+@_cached("coverage_trend:{market}:{days}", ttl_seconds=60)
+def get_coverage_trend(days: int = Query(30, ge=1, le=365),
+                       market: str = Query("cn", pattern="^(cn|hk|us)$")):
+    """返回最近 N 天每日的股票覆盖数。
+
+    Args:
+        days: 统计天数（1~365）
+        market: 市场标识（cn=沪深 / hk=港股 / us=美股），默认沪深
+    """
     rows = _query_dict(
         """
         SELECT trade_date, COUNT(DISTINCT code) AS stock_count
         FROM stock_quotes
-        WHERE cycle = '1d' AND trade_date >= CURRENT_DATE - %s::INTEGER
+        WHERE cycle = '1d' AND market = %s AND trade_date >= CURRENT_DATE - %s::INTEGER
         GROUP BY trade_date
         ORDER BY trade_date ASC
         """,
-        (days,),
+        (market, days),
     )
-    total = _query_scalar("SELECT COUNT(*) FROM stock_basic") or 0
+    total = _query_scalar("SELECT COUNT(*) FROM stock_basic WHERE market = %s", (market,)) or 0
     trend = []
     for r in rows:
         coverage_rate = round(r["stock_count"] / total * 100, 2) if total else 0
@@ -594,6 +652,7 @@ def get_pipeline_status():
 # A 股/港股/美股 ETL 写入这些表时带各自 market 值，动态基准必须按 market 过滤，
 # 否则宽表等任务会因混入其他市场股票数而误报「数据不足」partial。
 _MARKET_FILTER_TABLES = {
+    "stock_basic",
     "stock_quotes",
     "stock_daily_basic",
     "stock_indicators",
@@ -623,8 +682,8 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
             "date_col": "data_date",
             "task_name": "pipeline_health_check",
         },
-        "stock_list_sync": {        # B: 股票列表同步
-            "table": "stock_list",
+        "stock_list_sync": {        # B: 股票列表同步（stock_basic 含 cn/hk/us 各市场，按 market 过滤）
+            "table": "stock_basic",
             "date_col": "updated_at",
         },
         "daily_import": {           # C: 行情导入
@@ -761,9 +820,12 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
 
     latest_str = str(latest_date)
 
-    # 判断最新数据是否已更新到期望的交易日
+    # 判断最新数据是否已更新到期望的交易日（美股用美东时钟+休市日，避免误报）
     today_beijing = _now_beijing()
-    expected_trade_date = _get_last_trade_date(today_beijing)
+    if market == "us":
+        expected_trade_date = _get_last_us_trade_date(today_beijing)
+    else:
+        expected_trade_date = _get_last_trade_date(today_beijing)
 
     # stock_list_sync 为元数据表，非每日更新，跳过日期比较
     if task_key != "stock_list_sync" and str(latest_date) < expected_trade_date:
@@ -2248,18 +2310,18 @@ def get_markets():
 # key 复用 A 股 _check_task_from_db 的 TASK_DB_CONFIG；仅【数据表类】步骤参与各市场覆盖评估，
 # 列表/Parquet 纯基于 task_run_log 状态（market 无覆盖维度）。
 MARKET_CHAIN = [
-    {"name": "股票列表", "label": "股票列表", "key": "stock_list_sync", "no_coverage": True},
+    {"name": "股票列表", "label": "股票列表", "key": "stock_list_sync"},
     {"name": "日线清洗", "label": "日线清洗", "key": "daily_import"},
     {"name": "基本面", "label": "基本面", "key": "daily_basic_sync"},
     {"name": "技术指标", "label": "指标", "key": "indicators_compute"},
     {"name": "K线形态", "label": "形态", "key": "indicators_compute"},  # pattern 存于 stock_indicators，复用指标评估
     {"name": "交易信号", "label": "信号", "key": "signal_precompute"},
     {"name": "宽表", "label": "宽表", "key": "snapshot_sync"},
-    {"name": "Parquet", "label": "Parquet", "key": "parquet_export", "no_coverage": True},
+    {"name": "Parquet", "label": "Parquet", "key": "snapshot_sync"},  # Parquet 为宽表导出，复用宽表快照新鲜度检查
 ]
 # 参与各市场覆盖评估的 task_key（避免与 A 股混算基准）
 _MARKET_COVERAGE_TABLES = {
-    "daily_import", "daily_basic_sync", "indicators_compute",
+    "stock_list_sync", "daily_import", "daily_basic_sync", "indicators_compute",
     "signal_precompute", "snapshot_sync",
 }
 
