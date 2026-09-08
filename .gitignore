@@ -52,6 +52,8 @@ data/backup/
 data/cache/
 *.sqlite
 *.sqlite3
+# Parquet 备份文件（export_parquet 轮转生成，不入库）
+*.parquet.bak*
 
 # Temp files
 tmp/
