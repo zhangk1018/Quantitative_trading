@@ -211,6 +211,91 @@ class AkShareDataSource(BaseDataSource):
         except Exception as e:
             return None
 
+    def download_hk_snapshot_all(self) -> Optional[pd.DataFrame]:
+        """一次拉取港股全市场**当日实时快照**（ak.stock_hk_spot，单次请求返回全市场）。
+
+        用于「当日增量快速对齐」：仅覆盖最新交易日单日，且**不含复权因子**——
+        调用方必须锚定库中既有后复权序列换算（见 import_hk_daily.import_hk_snapshot_daily）。
+
+        Returns:
+            DataFrame（index=交易日期；列 Open/High/Low/Close/Volume/Amount/Timezone，
+            附加 prev_close=昨收、raw_code=新浪原始代码、has_adj=False 标记无复权），
+            失败或为空返回 None。
+        """
+        if ak is None:
+            return None
+        _sanitize_proxy_env()
+        try:
+            raw = ak.stock_hk_spot()
+        except Exception:
+            return None
+        if raw is None or raw.empty:
+            return None
+        # 新浪快照列名（需容错列名漂移，仅取必要列）
+        col = {c: str(c) for c in raw.columns}
+        def _col(*names: str) -> Optional[str]:
+            """按候选列名返回实际列名（首个命中）或 None。"""
+            al = xl = None
+            for n in names:
+                if n in col:
+                    al = col[n]
+                    break
+            for n in names:
+                if n in col.values():
+                    xl = n
+            return al if al else xl
+        c_code = _col('代码')
+        c_time = _col('日期时间', '时间')
+        c_open = _col('今开')
+        c_high = _col('最高')
+        c_low = _col('最低')
+        c_close = _col('最新价', '最新')
+        c_prev = _col('昨收')
+        c_vol = _col('成交量')
+        c_amt = _col('成交额')
+        if not c_code or not c_close:
+            return None
+        rows: List[Dict[str, Any]] = []
+        for _, r in raw.iterrows():
+            code = str(r.get(c_code, '')).strip()
+            if not code:
+                continue
+            open_v = self._num(r.get(c_open)) if c_open else None
+            high_v = self._num(r.get(c_high)) if c_high else None
+            low_v = self._num(r.get(c_low)) if c_low else None
+            close_v = self._num(r.get(c_close))
+            prev_v = self._num(r.get(c_prev)) if c_prev else None
+            vol_v = self._num(r.get(c_vol)) if c_vol else None
+            amt_v = self._num(r.get(c_amt)) if c_amt else None
+            dt = None
+            if c_time:
+                try:
+                    dt = pd.to_datetime(str(r.get(c_time)))
+                except Exception:
+                    dt = None
+            rows.append({
+                'Date': pd.Timestamp(dt) if dt is not None else pd.Timestamp.now().normalize(),
+                'code': normalize_code(code, 'hk'),
+                'raw_code': code,
+                'Open': open_v, 'High': high_v, 'Low': low_v, 'Close': close_v,
+                'prev_close': prev_v, 'Volume': vol_v, 'Amount': amt_v,
+                'Timezone': self.cfg.timezone,
+            })
+        if not rows:
+            return None
+        df = pd.DataFrame(rows).set_index('Date')
+        df['has_adj'] = False
+        return df
+
+    @staticmethod
+    def _num(v: Any) -> Optional[float]:
+        """把新浪快照单元格安全转 float（失败/空返回 None）。"""
+        try:
+            f = float(v)
+            return f
+        except (TypeError, ValueError):
+            return None
+
     def _fetch_hk(self, sym: str, ticker: str, start: Optional[str], end: Optional[str]) -> Optional[pd.DataFrame]:
         """港股：新浪不复权 + 后复权→组装原始 OHLC 与后复权 Adj Close。"""
         raw = ak.stock_hk_daily(symbol=sym, adjust='')

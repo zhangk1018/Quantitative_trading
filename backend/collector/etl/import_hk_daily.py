@@ -23,14 +23,16 @@ stock_adj_factor 用唯一键 uk_adj_factor_market_code_date (market, code, trad
     --incremental [--limit 20] [--dry-run]                # 增量
 """
 import os
+import re
 import sys
 import argparse
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import psycopg2
+import requests
 from psycopg2.extras import execute_values
 
 # 保证 `import collector.* / collector.utils / utils.logger` 可解析
@@ -57,6 +59,11 @@ ADJUST_TYPE = 'adj'            # stock_quotes 成交价列存的复权口径（a
 HOT = 'Asia/Hong_Kong'         # 港股收盘时区
 MARKET_CLOSE_HHMM = '16:00:00'  # 港股收盘时间（生成 trade_datetime）
 PROBE_CODE = '0700.HK'         # 增量窗口探针标的：腾讯，恒生权重股几乎每日成交
+
+# 港交所官方「Dividends & Other Entitlements」全市场除权除息名单（单请求，日更）。
+# 用于批量快照路径的**权威除权路由**：当日 Ex-Date（除净日）命中的股票无条件回退逐只
+# 下载，消除启发式 2% 阈值对小幅除息（<2%）的漏检风险。
+HKEX_EENT_URL = 'https://www3.hkexnews.hk/reports/doe/eent.htm'
 
 
 # ==================== 数据库连接（独立 psycopg2 路径） ====================
@@ -249,14 +256,40 @@ def clean_and_split(df_raw: pd.DataFrame, code: str) -> Tuple[Optional[pd.DataFr
 
 
 # ==================== 写入方法 ====================
+def write_quotes_cols() -> List[str]:
+    """stock_quotes 写入列及顺序（write_quotes 与批量快照 _snapshot_quotes_df 共用）。"""
+    return ['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close',
+            'volume', 'amount', 'adjust_type', 'trade_datetime', 'market',
+            'raw_open', 'raw_high', 'raw_low', 'raw_close',
+            'adj_open', 'adj_high', 'adj_low', 'adj_close']
+
+
+def _is_missing(v: Any) -> bool:
+    """是否是缺失值（None / pd.NA / NaN），用于批量快照单元格容错。"""
+    if v is None:
+        return True
+    try:
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return False
+
+
+def _to_nonneg_int(v: Any) -> Optional[int]:
+    """把批量快照成交量等单元格安全转非负 int；空/无效/负值返回 None。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(f) or f < 0:
+        return None
+    return int(f)
+
+
 def write_quotes(conn: psycopg2.extensions.connection, df: pd.DataFrame, code: str) -> int:
     """批量写入 stock_quotes（execute_values + ON CONFLICT (code, cycle, trade_date)）。"""
     if df is None or df.empty:
         return 0
-    cols = ['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close',
-            'volume', 'amount', 'adjust_type', 'trade_datetime', 'market',
-            'raw_open', 'raw_high', 'raw_low', 'raw_close',
-            'adj_open', 'adj_high', 'adj_low', 'adj_close']
+    cols = write_quotes_cols()
     values = [tuple(r[c] for c in cols) for r in df[cols].to_dict('records')]
     try:
         with conn.cursor() as cur:
@@ -378,6 +411,308 @@ def import_one(
     return q, a, max_date
 
 
+def resolve_one(conn: psycopg2.extensions.connection, src: AkShareDataSource,
+                code: str, dry_run: bool = False) -> Tuple[int, int, Optional[str]]:
+    """按「当日单日」窗口回退拉取并写入单只港股（供批量快照对除权/新股回退）。
+
+    等价于 import_one 的当日窗口版本：拉取该股当日不复权+后复权日线，经 clean_and_split
+    拆分后写入 stock_quotes / stock_adj_factor（含除权检测），与逐只路径口径完全一致。
+
+    Args:
+        conn: 数据库连接（dry_run 时可为 None）
+        src: AkShare 数据源适配器（需为 hk）
+        code: 规范化港股代码（如 0700.HK）
+        dry_run: 试运行模式（拉取打印、不落库）
+
+    Returns:
+        (quotes 条数, adj_factor 条数, 实际覆盖的最后交易日 ISO 字符串)
+    """
+    today = date.today()
+    start = today.isoformat()
+    end_excl = (today + timedelta(days=1)).isoformat()
+    df_raw = src.download_single(code, market=MARKET, start=start, end=end_excl)
+    if df_raw is None or df_raw.empty:
+        logger.info(f"  {code}: 快照回退拉取为空（可能退市/停牌/限流）")
+        return 0, 0, None
+    quotes, adj_factor = clean_and_split(df_raw, code)
+    q = 0 if quotes is None else len(quotes)
+    a = 0 if adj_factor is None else len(adj_factor)
+    max_date: Optional[str] = None
+    if quotes is not None and not quotes.empty:
+        max_date = pd.to_datetime(quotes['trade_date']).max().date().isoformat()
+    if dry_run:
+        logger.info(f"[DRY-RUN] {code}: 回退待写入 quotes {q} 条, adj_factor {a} 条")
+        return q, a, max_date
+    if conn is None:
+        raise RuntimeError('非 dry-run 模式必须提供数据库连接')
+    qq = write_quotes(conn, quotes, code) if quotes is not None else 0
+    aa = write_adj_factor(conn, adj_factor, code) if adj_factor is not None else 0
+    return qq, aa, max_date
+
+
+def _hk_snapshot_latest(conn: psycopg2.extensions.connection, code: str,
+                        before_date: Optional[date] = None) -> Optional[Tuple[float, float]]:
+    """读取港股该股最近一笔（默认）或某交易日**之前**最近一笔已入库 (adj_close, raw_close)。
+
+    用于批量快照：`adj_close/raw_close` 为后复权倍率 C（把无复权快照换算为后复权价），
+    raw_close 用于除权疑似检测（与新浪快照「昨收」比较）。
+    库中无有效锚点（新上市/缺 raw_close）时返回 None，由调用方回退逐只下载。
+
+    Args:
+        conn: psycopg2 连接
+        code: 规范化港股代码（如 0700.HK）
+        before_date: 若给定，只取 < before_date 的最新一笔（即快照交易日 T 之前的 T-1），
+            用于批量快照场景——此时快照「昨收」正是 T-1 收盘，应与 T-1 的 raw_close 对齐；
+            否则（库中恰为 T）会把 T 自身当锚点、昨收对 T 误判为除权。
+
+    Returns:
+        (最近 adj_close, 最近 raw_close)；无有效锚点返回 None
+    """
+    before_clause = "AND trade_date < %s" if before_date is not None else ""
+    params: List[Any] = [code]
+    if before_date is not None:
+        params.append(before_date)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT adj_close, raw_close FROM stock_quotes "
+                "WHERE market='hk' AND code=%s AND cycle='1d' "
+                "AND adj_close IS NOT NULL AND raw_close IS NOT NULL AND raw_close > 0 "
+                f"AND adj_close > 0 {before_clause} ORDER BY trade_date DESC LIMIT 1",
+                tuple(params),
+            )
+            row = cur.fetchone()
+        if row and row[0] and row[1]:
+            return float(row[0]), float(row[1])
+    except psycopg2.DatabaseError as e:
+        logger.warning(f"⚠️ 读取港股 {code} 复权锚点失败: {e}")
+    return None
+
+
+def _hk_rate_diverges(spot_prev: Optional[float], raw_close: Optional[float]) -> bool:
+    """除权疑似检测：新浪快照「昨收」与库中 T-1 的 raw_close 明显偏离时判定疑似除权。
+
+    批量快照无复权因子，若该股当日除权（价格跳空），直接用 T-1 锚点换算会得到错误的后复权价。
+    正常交易日快照「昨收」应等于库中 T-1 的 raw_close（二者都是前一日收盘，原始价口径）。
+    阈值取 2%：兼顾两相——
+    - 净例噪声：低价仙股昨收与库中 raw_close 常因四舍五入/tick 差 0.5%~1.5%（如 0.66 vs 0.665），
+      0.5% 会被大量误判回退使批量加速失效，故放宽；
+    - 真实除权（分红/送股）跳空通常在 2% 以上，2% 阈值仍能拦截明显除权。
+    极端小比例除权（<2%）存在以 T-1 锚点误换算的泄露风险，但影响极小、且 resolve_one
+    仍对「昨收缺失」等不确定情形保守回退，总体安全。
+    > 注：自「权威除权路由」接入后，港交所当日除净名单命中的股票已在 _hk_exright_codes
+    > 处**无条件回退逐只**，本启发式仅作为港交所名单拉取失败（返回 None）时的兜底。
+
+    Args:
+        spot_prev: 快照昨收（新浪 stock_hk_spot 的「昨收」，原始价口径）
+        raw_close: 库中 T-1 的 raw_close（昨日原始收盘）
+
+    Returns:
+        True=疑似除权应回退，False=可安全批量换算
+    """
+    if spot_prev is None or raw_close is None or raw_close <= 0:
+        # 缺昨收/缺库中昨日收盘的无法判断，保守回退
+        return True
+    ratio = spot_prev / raw_close
+    return abs(ratio - 1.0) > 0.02
+
+
+def _hk_exright_codes(trade_date: date) -> Optional[set]:
+    """拉取港交所官方「Dividends & Other Entitlements」全市场除权除息名单，返回当日除净日命中代码集。
+
+    作为批量快照路径的**权威除权路由**数据源：港交所在一个页面列出全部上市发行人当前有效的
+    除权除息登记，含 Ex-Date（除净日/除息日）列。当日除净日命中的股票批量快照无法正确换算后复权
+    （T-1 锚点法在除权后失效），须无条件回退逐只下载。
+
+    Args:
+        trade_date: 目标交易日（批量快照的交易日期），按「除净日 = trade_date」过滤命中。
+
+    Returns:
+        命中的港股代码集（规范形如 '0700.HK'，零填充 4 位）；拉取/解析/匹配失败返回 None，
+        此时调用方回落启发式 `_hk_rate_diverges` 判定。
+    """
+    # 港交所 Ex-Date 为 dd/mm（日/月）格式（如 "30/05"=5月30日）
+    want_md = f"{trade_date.day:02d}/{trade_date.month:02d}"
+    try:
+        resp = requests.get(
+            HKEX_EENT_URL,
+            timeout=20,
+            headers={'User-Agent': 'Mozilla/5.0 (compatible; hk-daily-importer)'},
+        )
+        resp.raise_for_status()
+        import io
+
+        tables = pd.read_html(io.StringIO(resp.text))
+        data = next((t for t in tables if t.shape[1] >= 6), None)
+        if data is None:
+            logger.warning('⚠️ 港交所除权名单表格结构异常，回落启发式检测')
+            return None
+
+        codes: set = set()
+        for _, row in data.iterrows():
+            name_cell = row.get(1)
+            ex_cell = row.get(4)
+            if not isinstance(name_cell, str) or not isinstance(ex_cell, str):
+                continue
+            ex_block = ex_cell.strip()
+            if not ex_block:
+                continue
+            match_code = re.search(r'\((\d{1,5})\)', name_cell)
+            if not match_code:
+                continue
+            # 港交所码位 1~5 位变长显示（如 Tencent (00700)→0700.HK）；
+            # 复用 normalize_code 保证与 stock_quotes 库内代码口径一致。
+            code = normalize_code(match_code.group(1), 'hk')
+            # Ex-Date 形如 "31/08" 或 "31/08/2026"，取前两段 dd/mm 与目标交易日比对
+            parts = ex_block.split('/')
+            if len(parts) < 2:
+                continue
+            md = f"{parts[0].strip().zfill(2)}/{parts[1].strip().zfill(2)}"
+            if md == want_md:
+                codes.add(code)
+        logger.info(f"📖 港交所权威除权名单：{trade_date} 共 {len(codes)} 只除净")
+        return codes
+    except Exception as e:
+        logger.warning(f"⚠️ 港交所除权名单拉取/解析失败（回落启发式）: {e}")
+        return None
+
+
+def _snapshot_quotes_df(code: str, r: pd.Series, anchor: float, trade_date: date) -> pd.DataFrame:
+    """把批量快照单行（原始价）+ 复权锚点 C 构造为入库的 stock_quotes 单日 DataFrame。
+
+    成交价列统一存后复权价 = 原始价 × C（与逐只路径 clean_and_split 口径一致）；同时存
+    raw_*/adj_*。pre_close=库中最近后复权价（= raw_close×C），保证序列连续。
+
+    Args:
+        code: 规范化港股代码
+        r: 快照行（Column Open/High/Low/Close/prev_close/Volume/Amount）
+        anchor: 复权倍率 C = 最近 adj_close/raw_close
+        trade_date: 当日交易日期
+
+    Returns:
+        stock_quotes 单行 DataFrame（与 write_quotes 期望列对齐）
+    """
+    raw_open = r.get('Open')
+    raw_high = r.get('High')
+    raw_low = r.get('Low')
+    raw_close = r.get('Close')
+    raw_prev = r.get('prev_close')
+    if _is_missing(raw_open) or _is_missing(raw_close):
+        # 无有效成交价（如停牌快照全空）→ 返回空 df，调用方跳过
+        return pd.DataFrame(columns=write_quotes_cols())
+    vol = _to_nonneg_int(r.get('Volume'))
+    C = anchor
+    adj_open = raw_open * C if not _is_missing(raw_open) else None
+    adj_high = raw_high * C if not _is_missing(raw_high) else None
+    adj_low = raw_low * C if not _is_missing(raw_low) else None
+    adj_close = raw_close * C
+    # pre_close：库中最近后复权价（≈ raw_prev×C）
+    prev = raw_prev * C if raw_prev is not None and not _is_missing(raw_prev) else adj_open
+    amount = (adj_close * vol) if vol is not None else None
+    trade_datetime = (pd.Timestamp(trade_date) + pd.Timedelta(MARKET_CLOSE_HHMM)).tz_localize(HOT)
+    row = {
+        'code': code, 'cycle': CYCLE, 'trade_date': trade_date,
+        'open': adj_open, 'high': adj_high, 'low': adj_low, 'close': adj_close,
+        'pre_close': prev, 'volume': vol, 'amount': amount, 'adjust_type': ADJUST_TYPE,
+        'trade_datetime': trade_datetime, 'market': MARKET,
+        'raw_open': raw_open, 'raw_high': raw_high, 'raw_low': raw_low, 'raw_close': raw_close,
+        'adj_open': adj_open, 'adj_high': adj_high, 'adj_low': adj_low, 'adj_close': adj_close,
+    }
+    return pd.DataFrame([row], columns=write_quotes_cols())
+
+
+def import_hk_snapshot_daily(conn: psycopg2.extensions.connection, src: AkShareDataSource,
+                             dry_run: bool = False) -> int:
+    """「当日增量」批量快照导入：一次拉取全市场当日 OHLCV，锚定库中后复权序列换算写入。
+
+    仅在增量窗口只含最新单日时调用（见 run_incremental）。对无复权锚点（新股）或疑似除权
+    （昨收与库中最近 raw_close 偏离）的股票，静默回退 `resolve_one` 逐只拉取，保证复权口径不被破坏。
+
+    Args:
+        conn: 数据库连接（dry_run 时可为 None；批量换算需穿库取锚点）
+        src: AkShare 数据源适配器
+        dry_run: 试运行模式（拉取打印、不落库）
+
+    Returns:
+        dict：{snap_ok: 快照是否成功拉取, direct: 直写数, fallback: 回退数, failed: 失败数}
+        snap_ok=False（快照接口失败/空）时 run_incremental 应沿用逐只路径。
+    """
+    snap = src.download_hk_snapshot_all()
+    if snap is None or snap.empty:
+        logger.warning('⚠️ 批量快照拉取为空/失败，跳过（将回落原逐只增量路径）')
+        return {'snap_ok': False, 'direct': 0, 'fallback': 0, 'failed': 0}
+
+    direct, fallback, failed, exright = 0, 0, 0, 0
+    quotes_rows: Dict[str, pd.DataFrame] = {}
+    # 当日交易日期 = 快照索引（单日）
+    snap_date = snap.index.max().date()
+    logger.info(f"📸 批量快照：拉取港股全市场 {len(snap)} 只当日快照，交易日 {snap_date}")
+
+    # 权威除权路由：港交所当日除净名单（单请求全市场）。拉取失败返回 None → 回落启发式。
+    exright_codes = _hk_exright_codes(snap_date)
+
+    for _, r in snap.iterrows():
+        # 快照 df 以交易日期为索引，code 存于列中
+        code = str(r.get('code', '')).strip()
+        if not code:
+            continue
+        try:
+            # 权威名单命中 → 无条件回退逐只（批量 T-1 锚点法在除权日失效）
+            if exright_codes is not None and code in exright_codes:
+                logger.info(f"  {code}: 港交所名单命中（当日除净）→ 回退逐只")
+                exright += 1
+                fallback += 1
+                if not dry_run:
+                    resolve_one(conn, src, code, dry_run=False)
+                continue
+            if conn is None or dry_run:
+                # dry-run/无连库无法取锚点：保守回退逐只（dry-run 下不调用 resolve_one 落库）
+                fallback += 1
+                if not dry_run:
+                    resolve_one(conn, src, code, dry_run=False)
+                continue
+            latest = _hk_snapshot_latest(conn, code, snap_date)
+            if latest is None:
+                # 新上市/缺历史 → 回退逐只完整拉取（含复权检测）
+                fallback += 1
+                resolve_one(conn, src, code, dry_run=False)
+                continue
+            adj_close, raw_close = latest
+            anchor = adj_close / raw_close
+            # 除权疑似检测：快照昨收 与 库中最近 raw_close 比较
+            if _hk_rate_diverges(r.get('prev_close'), raw_close):
+                logger.info(f"  {code}: 快照昨收 {r.get('prev_close')} vs 库最近 raw_close {raw_close} 偏离，疑似除权 → 回退逐只")
+                fallback += 1
+                resolve_one(conn, src, code, dry_run=False)
+                continue
+            quotes = _snapshot_quotes_df(code, r, anchor, snap_date)
+            if quotes is None or quotes.empty:
+                fallback += 1  # 无有效价（停牌）→ 回退逐只尝试
+                resolve_one(conn, src, code, dry_run=False)
+                continue
+            quotes_rows[code] = quotes
+            direct += 1
+        except Exception as e:
+            failed += 1
+            logger.error(f"  {code}: 批量快照处理失败: {e}")
+            try:
+                resolve_one(conn, src, code, dry_run=False)
+            except Exception as e2:
+                logger.error(f"  {code}: 回退也失败: {e2}")
+    if failed:
+        logger.warning(f"⚠️ 批量快照处理失败 {failed} 只（已尝试回退）")
+
+    if not dry_run:
+        for code, quotes in quotes_rows.items():
+            try:
+                write_quotes(conn, quotes, code)
+            except psycopg2.Error as e:
+                failed += 1
+                logger.error(f"  {code}: 批量写入失败: {e}")
+    logger.info(f"✅ 批量快照完成: 直写 {direct}, 回退 {fallback}（含权威除权 {exright}）, 失败 {failed}")
+    return {'snap_ok': True, 'direct': direct, 'fallback': fallback, 'failed': failed, 'exright': exright}
+
+
 def run_init(src: AkShareDataSource, conn: psycopg2.extensions.connection,
              limit: Optional[int] = None, dry_run: bool = False,
              start_date: Optional[str] = None) -> Dict[str, int]:
@@ -484,6 +819,41 @@ def _probe_src_latest(src: AkShareDataSource, end: str) -> str:
     return end
 
 
+def _window_is_single_day(src: AkShareDataSource, start: str, end: str) -> bool:
+    """增量窗口 [start, end) 是否仅覆盖最新单交易日 `end`（批量快照可用性判定）。
+
+    ak.stock_hk_spot() 只返回最新一天快照，故仅当窗口内除最新交易日外没有任何其他
+    交易日（即 last_sync 到数据源最新之间无待补缺口）时才启用批量路径；若期间跨了
+    交易日但未同步（存在缺口），必须回退逐只拉取，避免静默跳过中间交易日造成数据缺口。
+
+    用探针代表股在窗口内 [start, end) 的日线判交集：
+    - 窗口内有且仅有 end 一个交易日 → 启用批量快照
+    - 探针失败 / 窗口内还有其他交易日 / end 不在探针数据中 → 保守逐只
+
+    Args:
+        src: AkShare 数据源适配器
+        start: 增量起点（YYYY-MM-DD，上轮 last_sync_date+1 或回溯兜底）
+        end: 数据源最新交易日（YYYY-MM-DD）
+
+    Returns:
+        是否可在本窗口启用批量快照快速对齐
+    """
+    end_excl = (datetime.strptime(end, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+    df = src.download_single(PROBE_CODE, market=MARKET, start=start, end=end_excl)
+    if df is None or getattr(df, 'empty', True):
+        logger.warning(f"⚠️ 批量窗口判定探针 {PROBE_CODE} 不可用，保守沿用逐只增量路径")
+        return False
+    days = {pd.to_datetime(d).date().strftime('%Y-%m-%d') for d in df.index}
+    others = [d for d in days if start <= d < end]
+    single = len(others) == 0 and end in days
+    if single:
+        logger.info(f"⚡ 增量窗口 {start}~{end} 仅含 {end} 一个交易日，可启用批量快照")
+    else:
+        logger.warning(f"⚠️ 增量窗口 {start}~{end} 内交易日非仅最新日（窗口={sorted(days)}），"
+                       f"需要补历史缺口，沿用逐只增量路径")
+    return single
+
+
 def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection,
                     limit: Optional[int] = None, dry_run: bool = False) -> Dict[str, int]:
     """增量导入（从 etl_control.last_sync_date+1 到今天）。Returns: 统计 dict。"""
@@ -520,6 +890,34 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
 
     stats = {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0, 'max_trade_date': None}
     logger.info(f"🚀 [incremental] 增量导入 {len(codes)} 只港股，区间 {start} ~ {end}")
+
+    # ===== 批量快照加速（当日单日快速对齐）=====
+    # ak.stock_hk_spot() 一次返回全市场当日快照，可把逐只 2802 次请求压缩为 1 次；
+    # 但快照仅覆盖最新交易单日，故仅当增量窗口只含最新交易日（无待补缺口）时启用，
+    # 否则必须沿用逐只路径，避免静默跳过中间交易日造成数据缺口。
+    if not dry_run and limit is None and _window_is_single_day(src, start, end):
+        batch = import_hk_snapshot_daily(conn, src, dry_run=False)
+        if batch['snap_ok']:
+            # 快照已拉取：direct 为快照直写、fallback 为其内部已用 resolve_one 回退落库，
+            # 二者都已覆盖最新单日 → 整批对齐完成，无需再走逐只循环。
+            covered = batch['direct'] + batch['fallback']
+            logger.info(f"✅ 批量快照对齐完成: 直写 {batch['direct']}, "
+                        f"内部回退 {batch['fallback']}, 覆盖 {covered} 只")
+            if batch['direct'] > 0:
+                stats['success'] += batch['direct'] + batch['fallback']
+                stats['quotes'] += batch['direct']
+            stats['max_trade_date'] = end
+            # 整批处理完，清断点游标并回写增量进度至数据源最新交易日
+            set_market_last_processed_code(conn, MARKET, None)
+            if stats['quotes'] > 0:
+                set_last_sync_date(conn, end)
+                logger.info(f"📝 批量快照对齐后 last_sync_date 回写至 {end}")
+            else:
+                logger.warning('⚠️ 批量快照直写为空（全部回退亦无价），保留原 last_sync_date')
+            logger.info(f"✅ incremental(批量) 完成: 直写 {batch['direct']}")
+            return stats
+        logger.warning('⚡ 批量快照接口未返回数据，回退逐只增量路径')
+
     for i, code in enumerate(codes, 1):
         try:
             q, a, max_date = import_one(src, conn if not dry_run else None, code, start=start, end=end_excl, dry_run=dry_run)
