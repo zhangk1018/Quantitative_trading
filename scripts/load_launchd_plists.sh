@@ -26,7 +26,8 @@ for label in com.quant.backend com.quant.backend.healthcheck com.quant.postgresq
              com.quant.log-cleanup.monthly \
              com.quant.daily_job.stage1 com.quant.daily_job.stage2 \
              com.quant.bar-aggregation.weekly com.quant.bar-aggregation.monthly \
-             com.quant.weekly_kline com.quant.monthly_kline com.quant.bar_aggregation; do
+             com.quant.weekly_kline com.quant.monthly_kline com.quant.bar_aggregation \
+             com.quant.hk-basic-sync.saturday com.quant.us-basic-sync.saturday; do
     launchctl remove "$label" 2>/dev/null || true
 done
 
@@ -61,6 +62,12 @@ launchctl load -w "$LAUNCH_AGENTS/com.quant.hk_job.plist" && echo "✅ hk_job lo
 echo "=== 美股 ETL（次日 08:30，下载清洗→指标→形态→信号→宽表→Parquet）==="
 launchctl unload "$LAUNCH_AGENTS/com.quant.us_job.plist" 2>/dev/null && sleep 1
 launchctl load -w "$LAUNCH_AGENTS/com.quant.us_job.plist" && echo "✅ us_job loaded"
+
+echo "=== 周六基本面补全（港股 12:00 / 美股 13:00，独立于每日链）==="
+launchctl unload "$LAUNCH_AGENTS/com.quant.hk_basic_sync.saturday.plist" 2>/dev/null && sleep 1
+launchctl load -w "$LAUNCH_AGENTS/com.quant.hk_basic_sync.saturday.plist" && echo "✅ hk_basic_sync.saturday loaded"
+launchctl unload "$LAUNCH_AGENTS/com.quant.us_basic_sync.saturday.plist" 2>/dev/null && sleep 1
+launchctl load -w "$LAUNCH_AGENTS/com.quant.us_basic_sync.saturday.plist" && echo "✅ us_basic_sync.saturday loaded"
 
 echo ""
 echo "=== 验证 ==="

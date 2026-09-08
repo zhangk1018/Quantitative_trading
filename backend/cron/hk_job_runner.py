@@ -124,15 +124,30 @@ def _run_script(args: List[str], step: str) -> int:
     return last_code
 
 
-STEPS: List[tuple[str, List[str]]] = [
-    ("股票列表", [PYTHON, str(BACKEND_DIR / "collector/etl/sync_hk_stock_list.py")]),
-    ("日线清洗", [PYTHON, str(BACKEND_DIR / "collector/etl/import_hk_daily.py"), "--incremental"]),
-    ("指标", [PYTHON, str(BACKEND_DIR / "clean/etl/compute_indicators_daily.py"), "--market", MARKET]),
-    ("形态", [PYTHON, str(BACKEND_DIR / "clean/etl/pattern_precompute.py"), "--market", MARKET, "--latest"]),
-    ("信号", [PYTHON, str(BACKEND_DIR / "clean/etl/signal_precompute.py"), "--market", MARKET]),
-    ("宽表", [PYTHON, str(BACKEND_DIR / "collector/etl/daily_snapshot_sync.py"), "--market", MARKET, "--latest"]),
-    ("Parquet", [PYTHON, str(BACKEND_DIR / "clean/enrich/export_parquet.py"), "--market", MARKET]),
-]
+_BASIC_STEP: tuple[str, List[str]] = (
+    "基本面", [PYTHON, str(BACKEND_DIR / "collector/etl/sync_hk_basic.py")],
+)
+
+
+def _build_steps() -> List[tuple[str, List[str]]]:
+    """构建港股任务链步骤。
+
+    基本面（百度逐只、约 1 小时）默认不参与每日串行链，以免拖慢每日 20:00 调度；
+    仅当设置 HKJOB_RUN_BASIC=1（低频/手动补全）时插入「基本面」步骤（日线之后、指标之前）。
+    """
+    steps: List[tuple[str, List[str]]] = [
+        ("股票列表", [PYTHON, str(BACKEND_DIR / "collector/etl/sync_hk_stock_list.py")]),
+        ("日线清洗", [PYTHON, str(BACKEND_DIR / "collector/etl/import_hk_daily.py"), "--incremental"]),
+        ("指标", [PYTHON, str(BACKEND_DIR / "clean/etl/compute_indicators_daily.py"), "--market", MARKET]),
+        ("形态", [PYTHON, str(BACKEND_DIR / "clean/etl/pattern_precompute.py"), "--market", MARKET, "--latest"]),
+        ("信号", [PYTHON, str(BACKEND_DIR / "clean/etl/signal_precompute.py"), "--market", MARKET]),
+        ("宽表", [PYTHON, str(BACKEND_DIR / "collector/etl/daily_snapshot_sync.py"), "--market", MARKET, "--latest"]),
+        ("Parquet", [PYTHON, str(BACKEND_DIR / "clean/enrich/export_parquet.py"), "--market", MARKET]),
+    ]
+    if os.environ.get("HKJOB_RUN_BASIC") == "1":
+        steps.insert(2, _BASIC_STEP)
+        logger.info("ℹ️ HKJOB_RUN_BASIC=1，已启用港股基本面低频步骤")
+    return steps
 
 
 def main() -> None:
@@ -140,7 +155,7 @@ def main() -> None:
     logger.info("=" * 70)
     logger.info(f"🚀 [港股] ETL 全链路开始（{datetime.now()}）")
     failed: List[str] = []
-    for label, args in STEPS:
+    for label, args in _build_steps():
         task_name = f"hk:{label}"
         log_id = _log_start(task_name)
         code = _run_script(args, label)

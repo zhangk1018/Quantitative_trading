@@ -21,6 +21,9 @@ python-jose[cryptography]>=3.3.0
 # 数据处理
 scipy>=1.11.0
 scikit-learn>=1.3.0
+# 交易日历统一来源（沪深 SSE/港股 HKEX/美股 XNYS 监控期望交易日计算）。
+# 引入失败时 monitor.py 自动降级为周末兜底 / US_HOLIDAYS_2026，不阻塞后端启动。
+pandas_market_calendars>=5.4.0
 # K 线形态识别 - K 2026-06-17 决策: 直接用 TA-Lib 真库
 # 系统依赖: brew install ta-lib (macOS) / apt-get install ta-lib (Linux)
 # Python 包: pip install TA-Lib (C 库 0.6.4 + Python 0.6.8 已验证可装)

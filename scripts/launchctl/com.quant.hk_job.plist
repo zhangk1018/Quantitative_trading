@@ -29,33 +29,33 @@
     <key>StandardErrorPath</key>
     <string>/Volumes/MyData/Quantitative_trading/logs/cron/hk_job.stderr.log</string>
 
-    <!-- 港股 ETL 全链路：当日 17:00 周一~周五 触发（下载清洗→指标→形态→信号→宽表→Parquet） -->
+    <!-- 港股 ETL 全链路：当日 21:20 周一~周五 触发（下载清洗→指标→形态→信号→宽表→Parquet） -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>
             <key>Weekday</key><integer>1</integer>
-            <key>Hour</key><integer>17</integer>
-            <key>Minute</key><integer>0</integer>
+            <key>Hour</key><integer>21</integer>
+            <key>Minute</key><integer>20</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>2</integer>
-            <key>Hour</key><integer>17</integer>
-            <key>Minute</key><integer>0</integer>
+            <key>Hour</key><integer>21</integer>
+            <key>Minute</key><integer>20</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>3</integer>
-            <key>Hour</key><integer>17</integer>
-            <key>Minute</key><integer>0</integer>
+            <key>Hour</key><integer>21</integer>
+            <key>Minute</key><integer>20</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>4</integer>
-            <key>Hour</key><integer>17</integer>
-            <key>Minute</key><integer>0</integer>
+            <key>Hour</key><integer>21</integer>
+            <key>Minute</key><integer>20</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>5</integer>
-            <key>Hour</key><integer>17</integer>
-            <key>Minute</key><integer>0</integer>
+            <key>Hour</key><integer>21</integer>
+            <key>Minute</key><integer>20</integer>
         </dict>
     </array>
 

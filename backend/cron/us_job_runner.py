@@ -127,6 +127,7 @@ def _run_script(args: List[str], step: str) -> int:
 STEPS: List[tuple[str, List[str]]] = [
     ("股票列表", [PYTHON, str(BACKEND_DIR / "collector/etl/sync_us_stock_list.py")]),
     ("日线清洗", [PYTHON, str(BACKEND_DIR / "collector/etl/import_us_daily.py"), "--incremental"]),
+    ("基本面", [PYTHON, str(BACKEND_DIR / "collector/etl/sync_us_basic.py")]),
     ("指标", [PYTHON, str(BACKEND_DIR / "clean/etl/compute_indicators_daily.py"), "--market", MARKET]),
     ("形态", [PYTHON, str(BACKEND_DIR / "clean/etl/pattern_precompute.py"), "--market", MARKET, "--latest"]),
     ("信号", [PYTHON, str(BACKEND_DIR / "clean/etl/signal_precompute.py"), "--market", MARKET]),

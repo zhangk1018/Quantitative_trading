@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quant.us-basic-sync.saturday</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Volumes/MyData/Quantitative_trading/venv/bin/python</string>
+        <string>/Volumes/MyData/Quantitative_trading/backend/collector/etl/sync_us_basic.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Volumes/MyData/Quantitative_trading</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Volumes/MyData/Quantitative_trading/venv/bin</string>
+        <key>PYTHONPATH</key>
+        <string>/Volumes/MyData/Quantitative_trading</string>
+        <key>APP_ENV</key>
+        <string>dev</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Volumes/MyData/Quantitative_trading/logs/cron/us_basic_sync_sat.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Volumes/MyData/Quantitative_trading/logs/cron/us_basic_sync_sat.stderr.log</string>
+
+    <!-- 美股基本面全量补全（新浪接口，约几分钟）：每周六 13:00 触发 -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key><integer>6</integer>
+            <key>Hour</key><integer>13</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+
+    <key>ThrottleInterval</key>
+    <integer>0</integer>
+    <key>NumberOfRetries</key>
+    <integer>0</integer>
+</dict>
+</plist>

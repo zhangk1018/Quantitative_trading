@@ -22,6 +22,18 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 
+# 交易日历统一来源（hk/exchange_calendars）。各市场期望交易日计算共用同一套逻辑，
+# 内部按市场参数映射到对应交易所日历，替换原先 A股/美股各自硬编码的日期推算。
+# 引入失败时降级为旧的后备逻辑（周末兜底 / US_HOLIDAYS_2026），不阻塞监控。
+try:
+    import pandas_market_calendars as _mcal
+    _MCAL_AVAILABLE = True
+except Exception as _mcal_err:  # pragma: no cover - 依赖缺失时的降级路径
+    _mcal = None
+    _MCAL_AVAILABLE = False
+    logging.getLogger(__name__).warning(
+        f"pandas_market_calendars 不可用，交易日历降级为后备逻辑: {_mcal_err}")
+
 from shared.schemas import ApiResponse
 
 # 添加 backend 目录到路径以导入 monitoring 模块
@@ -40,8 +52,17 @@ router = APIRouter(tags=["数据监控"])
 
 class MonitorConfig:
     """监控阈值配置 - 可通过环境变量覆盖"""
-    # 覆盖数：低于此值视为"数据不足"
+    # 覆盖数：低于此值视为"数据不足"。该值用于沪深（5000+只），
+    # 港股/美股股票数量级远小于沪深，须用各市场专属阈值（见 MIN_COVERAGE_COUNT_MKT），
+    # 否则港股(约2200只)/美股(约200只)会被全局 3000 误判为"数据不足"。
     MIN_COVERAGE_COUNT = int(os.getenv("MONITOR_MIN_COVERAGE_COUNT", "3000"))
+    # 各市场覆盖回退阈值（预期最新交易日股票数近似下限）：
+    #   cn=3000（沪深）、hk=1800（港股 2183/约2200只）、us=180（美股 205/约200只）
+    MIN_COVERAGE_COUNT_MKT = {
+        "cn": int(os.getenv("MONITOR_MIN_COVERAGE_CN", "3000")),
+        "hk": int(os.getenv("MONITOR_MIN_COVERAGE_HK", "1800")),
+        "us": int(os.getenv("MONITOR_MIN_COVERAGE_US", "180")),
+    }
     # 各任务最低数据条数
     TASK_MIN_COUNTS = {
         "daily_import":      int(os.getenv("MONITOR_MIN_DAILY_IMPORT", "4000")),
@@ -99,67 +120,121 @@ def _is_running_stale(start_time) -> bool:
     return elapsed > MonitorConfig.RUNNING_STALE_HOURS * 3600
 
 
-def _get_last_trade_date(ref_date: datetime) -> str:
-    """
-    计算最近一个交易日（跳过周末，简化处理不含节假日）。
-    - 周一~周五 15:30 之后：返回当天
-    - 周一~周五 15:30 之前：返回前一个工作日
-    - 周六/周日：返回周五
-    """
-    weekday = ref_date.weekday()  # 0=Mon, 6=Sun
-    hour = ref_date.hour
+# ============================================
+# 交易日历统一计算（沪深/港股/美股同一套逻辑）
+# 依赖 pandas_market_calendars（exchange_calendars），按市场参数映射对应交易所日历；
+# 引入失败时分别降级为「周末兜底」（cn/hk）或「US_HOLIDAYS_2026」（us）。
+# ============================================
 
-    if weekday >= 5:  # Sat=5, Sun=6
-        delta = weekday - 4  # Sat->1, Sun->2 days back to Friday
-        target = ref_date - timedelta(days=delta)
-    elif hour < 15:  # 工作日 15:00 前，市场未收盘
-        # 周一回退到周五，其他工作日回退到前一天
-        delta = 3 if weekday == 0 else 1
-        target = ref_date - timedelta(days=delta)
-    else:
-        target = ref_date
-    return target.strftime("%Y-%m-%d")
+# 市场 -> (exchange_calendars 日历 code, 相对北京时区小时差)
+#   cn: 上交所 SSE（北京时区）；hk: 港交所 HKEX（与北京无时差）；us: 纽交所 XNYS（美东，约 -12h/EDT）
+_MARKET_CAL_CODES = {
+    "cn": ("SSE", 0),
+    "hk": ("HKEX", 0),
+    "us": ("XNYS", -12),
+}
+# 各市场当地收盘钟点（本地 24h 制）。早于该钟点的交易日视为"未收盘"，期望回退上一交易日。
+_MARKET_CLOSE_HOUR = {"cn": 15, "hk": 16, "us": 16}
 
-
-# 美股 2026 纽交所休市日（固定假日及补休，依年度维护；后续可接入美股交易日历源）
+# 美股 2026 纽交所休市日（现仅用于 pandas_market_calendars 不可用时的降级后备；依年度维护）
 US_HOLIDAYS_2026 = frozenset({
     "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03",
     "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
     "2026-11-26", "2026-12-25",
 })
+# pandas_market_calendars 生成的交易日缓存：{cal_code: frozenset(YYYY-MM-DD)}
+_MCAL_TRADE_DAYS: Dict[str, frozenset] = {}
+# 覆盖年份：当前年前后各若干年，避免未来日期越界
+_MCAL_LOOKBACK_YEARS = 4
+_MCAL_LOOKAHEAD_YEARS = 3
 
 
-def _get_last_us_trade_date(ref_dt: datetime) -> str:
-    """美股期望交易日：按美东时钟，跳过周末与美股休市日。
-
-    美股 ETL 在「美东交易日收盘后的北京次日 08:30（周二~六）」运行，故监控期望须用美东时钟判断，
-    不能复用 A 股 `_get_last_trade_date`（否则美股休市日/未到交易时段会被误判「数据未更新」）。
-    规则：
-    - 美东当天若是休市（周末/假日）→ 期望为最近一个已收盘交易日
-    - 美东当天是交易日但未收盘（<17:00）→ 期望回退到上一交易日
-    - 美东当天是交易日且已收盘（>=17:00）→ 期望为当天
+def _load_trade_days(cal_code: str) -> Optional[frozenset]:
+    """从 pandas_market_calendars 获取指定日历的交易日集合（带进程级缓存）。
 
     Args:
+        cal_code: exchange_calendars 日历 code（如 SSE/HKEX/XNYS）
+
+    Returns:
+        frozenset: 全部交易日 YYYY-MM-DD 集合；失败返回 None（调用方走后备逻辑）
+    """
+    if not _MCAL_AVAILABLE:
+        return None
+    cached = _MCAL_TRADE_DAYS.get(cal_code)
+    if cached is not None:
+        return cached
+    try:
+        now = datetime.now()
+        start = now.replace(year=now.year - _MCAL_LOOKBACK_YEARS, month=1, day=1).strftime("%Y-%m-%d")
+        end = now.replace(year=now.year + _MCAL_LOOKAHEAD_YEARS, month=12, day=31).strftime("%Y-%m-%d")
+        cal = _mcal.get_calendar(cal_code)
+        sched = cal.schedule(start_date=start, end_date=end)
+        days = frozenset(ts.strftime("%Y-%m-%d") for ts in sched.index)
+        _MCAL_TRADE_DAYS[cal_code] = days
+        return days
+    except Exception as e:  # pragma: no cover - 日历源异常降级
+        logger.warning(f"加载交易日历失败（{cal_code}），降级后备逻辑: {e}")
+        return None
+
+
+def _is_trade_day_cn_hk(d: datetime.date) -> bool:
+    """沪深/港股降级后备：仅按工作日（周末休市）判定，不含法定节假日。"""
+    return d.weekday() < 5
+
+
+def _get_last_trade_date(market: str, ref_dt: datetime) -> str:
+    """计算指定市场的期望（最近已收盘）交易日。
+
+    沪深/港股/美股共用同一套逻辑：按市场映射到 exchange_calendars 日历，
+    用「市场当地时钟」判断当天是否为交易日；若当天休市或未到收盘钟点，则向前回退到最近一个交易日。
+
+    规则（统一）：
+    - 当天是交易日且已过当地收盘钟点 → 期望 = 当天
+    - 当天是交易日但未到收盘钟点 → 期望 = 上一个交易日
+    - 当天休市（周末/法定假日）→ 期望 = 最近一个交易日
+
+    Args:
+        market: 市场标识，cn/hk/us
         ref_dt: 当前北京时间（带时区）
 
     Returns:
-        str: 美股期望交易日（YYYY-MM-DD）
+        str: 期望交易日（YYYY-MM-DD）
     """
-    # 固定按 -12h（EDT 夏令时）；EST 差 13h，仅在 17:00 临界 ±1h 内可能偏差，概率极低可忽略
-    us_now = ref_dt - timedelta(hours=12)
-    day = us_now.date()
-    not_tradeable = lambda d: d.weekday() >= 5 or d.isoformat() in US_HOLIDAYS_2026
+    cal_code, tz_hours = _MARKET_CAL_CODES.get(market, ("SSE", 0))
+    close_hour = _MARKET_CLOSE_HOUR.get(market, 15)
+    # 市场当地时钟（us 相对北京滞后 12h/EDT，故空格加负小时；cn/hk 与北京一致）
+    local_now = ref_dt + timedelta(hours=tz_hours)
+    day = local_now.date()
+    day_str = day.isoformat()
 
-    # 当前时刻所处「交易日」：若本身非交易日则向近回退到最近交易日
-    target = day
-    while not_tradeable(target):
+    trade_days = _load_trade_days(cal_code)
+    if trade_days is not None:
+        is_open = day_str in trade_days
+    else:
+        # 降级：美股用硬编码休市日，沪深/港股仅周末判定
+        if market == "us":
+            is_open = not (day.weekday() >= 5 or day_str in US_HOLIDAYS_2026)
+        else:
+            is_open = _is_trade_day_cn_hk(day)
+
+    if is_open and local_now.hour >= close_hour:
+        return day_str
+
+    # 当天休市，或未到收盘钟点 -> 向前回退到最近一个交易日
+    target = day - timedelta(days=1)
+    while True:
+        ts = target.isoformat()
+        if trade_days is not None:
+            if ts in trade_days:
+                return ts
+        else:
+            if market == "us":
+                if not (target.weekday() >= 5 or ts in US_HOLIDAYS_2026):
+                    return ts
+            else:
+                if _is_trade_day_cn_hk(target):
+                    return ts
         target -= timedelta(days=1)
-    # 落在交易日当天但尚未收盘（<17:00）→ 期望回退到上一交易日
-    if target == day and us_now.time() < datetime.time(17, 0):
-        target -= timedelta(days=1)
-        while not_tradeable(target):
-            target -= timedelta(days=1)
-    return target.strftime("%Y-%m-%d")
 
 
 def _get_db_conn():
@@ -391,7 +466,9 @@ def get_data_summary(market: str = Query("cn", pattern="^(cn|hk|us)$")):
                 "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1d' AND trade_date = %s AND market = %s",
                 (latest_quote, market)
             ) or 0
-            if covered_count < MonitorConfig.MIN_COVERAGE_COUNT:
+            # 覆盖数过少视为该交易日数据未完整导入，回退到前一有完整数据的交易日。
+            # 阈值按市场区分（沪深 3000 / 港股 1800 / 美股 180），避免港股/美股被全局 3000 误回退。
+            if covered_count < MonitorConfig.MIN_COVERAGE_COUNT_MKT.get(market, MonitorConfig.MIN_COVERAGE_COUNT):
                 latest_quote = _qs(
                     "SELECT trade_date FROM stock_quotes WHERE cycle = '1d' AND market = %s AND trade_date < %s GROUP BY trade_date ORDER BY trade_date DESC LIMIT 1",
                     (market, latest_quote)
@@ -820,12 +897,9 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
 
     latest_str = str(latest_date)
 
-    # 判断最新数据是否已更新到期望的交易日（美股用美东时钟+休市日，避免误报）
+    # 判断最新数据是否已更新到期望的交易日（沪深/港股/美股共用统一日历逻辑，避免误报）
     today_beijing = _now_beijing()
-    if market == "us":
-        expected_trade_date = _get_last_us_trade_date(today_beijing)
-    else:
-        expected_trade_date = _get_last_trade_date(today_beijing)
+    expected_trade_date = _get_last_trade_date(market, today_beijing)
 
     # stock_list_sync 为元数据表，非每日更新，跳过日期比较
     if task_key != "stock_list_sync" and str(latest_date) < expected_trade_date:
@@ -896,15 +970,19 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
             "WHERE trade_date = %s AND cycle = '1d' AND market = %s",
             (latest_date, market),
         )
-        # 优先使用 TASK_MIN_COUNTS 中显式配置的阈值（如 signal_precompute=100），
-        # 因为某些任务（如信号）天然不会覆盖全部股票。
-        # 注意：固定阈值按 A 股体量设定（4000 等），对港股/美股（股票数 < A股）会永远
-        # coverage 不足，故港美股一律退化为用「该市场」动态基准（自身行情股票数）。
-        config_min = None if market != "cn" else MonitorConfig.TASK_MIN_COUNTS.get(task_key)
-        if config_min is not None:
-            min_count = config_min
+        if task_key == "signal_precompute":
+            # 信号为事件驱动型（仅指标触发才生成，非每日每只必有），天然不覆盖全市场，
+            # 无论任何市场都用固定阈值判断，避免港/美股用行情股票数当基准导致覆盖率虚低误报。
+            config_min = MonitorConfig.TASK_MIN_COUNTS.get(task_key)
+            min_count = config_min if config_min is not None else 100
         else:
-            min_count = dynamic_min if dynamic_min and dynamic_min > 0 else MonitorConfig.TASK_MIN_COUNTS.get(task_key, 1000)
+            # 其余任务：固定阈值按 A 股体量设定（4000 等），对港股/美股（股票数 < A股）会永远
+            # coverage 不足，故港美股一律退化为用「该市场」动态基准（自身行情股票数）。
+            config_min = None if market != "cn" else MonitorConfig.TASK_MIN_COUNTS.get(task_key)
+            if config_min is not None:
+                min_count = config_min
+            else:
+                min_count = dynamic_min if dynamic_min and dynamic_min > 0 else MonitorConfig.TASK_MIN_COUNTS.get(task_key, 1000)
     coverage = count / min_count * 100 if min_count > 0 else 0
 
     if count >= min_count:
@@ -2273,7 +2351,7 @@ def get_markets():
             cur.execute("SELECT COUNT(*) FROM stock_basic WHERE market=%s AND delist_date IS NULL", (market,))
             basic_count = cur.fetchone()[0] or 0
             null_pct = None
-            if market == 'cn':
+            if market in ('cn', 'hk', 'us'):
                 cur.execute("SELECT COUNT(*) FROM stock_indicators WHERE market=%s", (market,))
                 total = cur.fetchone()[0] or 0
                 if total:
