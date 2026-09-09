@@ -437,7 +437,6 @@ def check_task_run_log(result):
 def check_log_file_errors(result):
     """检查日志文件错误计数"""
     log_dirs = [
-        PROJECT_ROOT / 'logs' / 'etl',
         PROJECT_ROOT / 'logs' / 'cron',
     ]
     total_errors = 0

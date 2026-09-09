@@ -90,7 +90,8 @@ def setup_logger(
     time_interval: str = None,
     compress_archived: bool = None,
     log_dir: str = None,
-    level: int = logging.INFO
+    level: int = logging.INFO,
+    filename: str = None
 ) -> logging.Logger:
     """
     设置日志记录器，支持日志轮转功能
@@ -104,6 +105,8 @@ def setup_logger(
         compress_archived: 是否压缩历史日志
         log_dir: 日志目录路径（支持环境变量或绝对路径）
         level: 日志级别
+        filename: 自定义日志文件名（如带日期的"indicator_compute_20260909.log"），
+            缺省使用 f"{name}.log"，便于按日期生成每日文件避免单文件过大
 
     Returns:
         配置好的logger实例
@@ -132,7 +135,7 @@ def setup_logger(
     console_formatter = IsoFormatter(LOG_FORMAT)
     console_handler.setFormatter(console_formatter)
 
-    log_file = os.path.join(log_dir, f"{name}.log")
+    log_file = os.path.join(log_dir, filename or f"{name}.log")
 
     if rotation_mode == 'size':
         max_bytes = max_bytes_mb * 1024 * 1024

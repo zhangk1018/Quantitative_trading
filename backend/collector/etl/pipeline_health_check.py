@@ -212,7 +212,6 @@ def check_directories(result: HealthCheckResult):
     """检查必需目录"""
     print('\n[5/6] 📁 目录检查')
     required_dirs = [
-        ('logs/etl', PROJECT_ROOT / 'logs' / 'etl'),
         ('data/metadata', PROJECT_ROOT / 'data' / 'metadata'),
         ('data/snapshot', PROJECT_ROOT / 'data' / 'snapshot'),
     ]
@@ -227,8 +226,8 @@ def check_directories(result: HealthCheckResult):
                 result.warn(name, f'不存在且无法创建: {e}')
 
 
-def _period_daily_count(cur, target_date: str, cycle: str) -> int:
-    """统计 target_date 所在周/月周期内、有日线数据的去重股票数。
+def _period_daily_count(cur, market: str, target_date: str, cycle: str) -> int:
+    """统计 target_date 所在周/月周期内、**指定市场**有日线数据的去重股票数。
 
     与 compute_bar_aggregation.py 的 get_period_range 口径一致：
     周线按 trade_calendar 连续交易日分组（week_id），月线按自然月。
@@ -259,79 +258,115 @@ def _period_daily_count(cur, target_date: str, cycle: str) -> int:
         return 0
     start, end = row
     cur.execute(
-        "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1d' AND trade_date BETWEEN %s AND %s",
-        (start, end),
+        "SELECT COUNT(DISTINCT code) FROM stock_quotes"
+        " WHERE cycle='1d' AND market=%s AND trade_date BETWEEN %s AND %s",
+        (market, start, end),
     )
     return cur.fetchone()[0] or 0
 
 
+# 市场列表：(market 值, 展示标签)。用于最近数据状态按市场分开展示。
+MARKET_LIST = [
+    ('cn', '沪深'),
+    ('hk', '港股'),
+    ('us', '美股'),
+]
+
+
+def _check_market_recent(cur, result: HealthCheckResult, market: str, label: str):
+    """检查单个市场的日/周/月 K 线及宽表最新状态。"""
+    # --- 日线数据 ---
+    cur.execute(
+        "SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market=%s", (market,)
+    )
+    latest_quote = cur.fetchone()[0]
+    if latest_quote:
+        result.ok(f'{label} 日K线 最新日期', str(latest_quote))
+    else:
+        result.warn(f'{label} 日K线', '无任何数据')
+        latest_quote = None
+
+    # stock_daily_snapshot 最新日期
+    cur.execute(
+        "SELECT MAX(trade_date) FROM stock_daily_snapshot WHERE market=%s", (market,)
+    )
+    latest_snapshot = cur.fetchone()[0]
+    if latest_snapshot:
+        result.ok(f'{label} stock_daily_snapshot 最新日期', str(latest_snapshot))
+    else:
+        result.warn(f'{label} stock_daily_snapshot', '无任何数据（宽表为空）')
+
+    # 最近一天日线数据完整度（分母 = 该市场 stock_basic 总数）
+    if latest_quote:
+        cur.execute(
+            "SELECT COUNT(DISTINCT code) FROM stock_quotes"
+            " WHERE trade_date = %s AND cycle='1d' AND market=%s",
+            (latest_quote, market),
+        )
+        cnt = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM stock_basic WHERE market=%s", (market,))
+        total = cur.fetchone()[0]
+        coverage = cnt * 100 // total if total else 0
+        if coverage < 80:
+            result.warn(f'{label} 日K线 数据完整度', f'{cnt}/{total} ({coverage}%) - 低于 80%')
+        else:
+            result.ok(f'{label} 日K线 数据完整度', f'{cnt}/{total} ({coverage}%)')
+
+    # --- 周K线数据 ---
+    cur.execute(
+        "SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1w' AND market=%s", (market,)
+    )
+    latest_weekly = cur.fetchone()[0]
+    if latest_weekly:
+        cur.execute(
+            "SELECT COUNT(DISTINCT code) FROM stock_quotes"
+            " WHERE trade_date = %s AND cycle='1w' AND market=%s",
+            (latest_weekly, market),
+        )
+        w_cnt = cur.fetchone()[0]
+        w_total = _period_daily_count(cur, market, latest_weekly, '1w')
+        w_cov = w_cnt * 100 // w_total if w_total else 0
+        if w_total == 0:
+            result.warn(f'{label} 周K线', f'最新 {latest_weekly}，无法计算覆盖率（周期内无日线数据）')
+        elif w_cov < 80:
+            result.warn(f'{label} 周K线', f'最新 {latest_weekly}，覆盖率 {w_cnt}/{w_total} ({w_cov}%) - 低于 80%')
+        else:
+            result.ok(f'{label} 周K线', f'最新 {latest_weekly}，覆盖率 {w_cnt}/{w_total} ({w_cov}%)')
+    else:
+        result.warn(f'{label} 周K线', '无任何数据')
+
+    # --- 月K线数据 ---
+    cur.execute(
+        "SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1m' AND market=%s", (market,)
+    )
+    latest_monthly = cur.fetchone()[0]
+    if latest_monthly:
+        cur.execute(
+            "SELECT COUNT(DISTINCT code) FROM stock_quotes"
+            " WHERE trade_date = %s AND cycle='1m' AND market=%s",
+            (latest_monthly, market),
+        )
+        m_cnt = cur.fetchone()[0]
+        m_total = _period_daily_count(cur, market, latest_monthly, '1m')
+        m_cov = m_cnt * 100 // m_total if m_total else 0
+        if m_total == 0:
+            result.warn(f'{label} 月K线', f'最新 {latest_monthly}，无法计算覆盖率（周期内无日线数据）')
+        elif m_cov < 80:
+            result.warn(f'{label} 月K线', f'最新 {latest_monthly}，覆盖率 {m_cnt}/{m_total} ({m_cov}%) - 低于 80%')
+        else:
+            result.ok(f'{label} 月K线', f'最新 {latest_monthly}，覆盖率 {m_cnt}/{m_total} ({m_cov}%)')
+    else:
+        result.warn(f'{label} 月K线', '无任何数据')
+
+
 def check_recent_data(result: HealthCheckResult, target_date: str = None):
-    """检查最近的数据状态"""
-    print('\n[6/6] 📊 最近数据状态')
+    """检查最近的数据状态（按沪深/港股/美股分开统计）"""
+    print('\n[6/6] 📊 最近数据状态（按市场）')
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-
-        # --- 日线数据 ---
-        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d'")
-        latest_quote = cur.fetchone()[0]
-        if latest_quote:
-            result.ok('日K线 最新日期', str(latest_quote))
-        else:
-            result.warn('日K线', '无任何数据')
-
-        # stock_daily_snapshot 最新日期
-        cur.execute("SELECT MAX(trade_date) FROM stock_daily_snapshot")
-        latest_snapshot = cur.fetchone()[0]
-        if latest_snapshot:
-            result.ok('stock_daily_snapshot 最新日期', str(latest_snapshot))
-        else:
-            result.warn('stock_daily_snapshot', '无任何数据（宽表为空）')
-
-        # 最近一天日线数据完整度
-        if latest_quote:
-            cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1d'", (latest_quote,))
-            cnt = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM stock_basic")
-            total = cur.fetchone()[0]
-            coverage = cnt * 100 // total if total else 0
-            if coverage < 80:
-                result.warn('日K线 数据完整度', f'{cnt}/{total} ({coverage}%) - 低于 80%')
-            else:
-                result.ok('日K线 数据完整度', f'{cnt}/{total} ({coverage}%)')
-
-        # --- 周K线数据 ---
-        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1w'")
-        latest_weekly = cur.fetchone()[0]
-        if latest_weekly:
-            cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1w'", (latest_weekly,))
-            w_cnt = cur.fetchone()[0]
-            # 分母 = 该周周期内有日线数据的去重股票数（聚合真实覆盖范围）
-            w_total = _period_daily_count(cur, latest_weekly, '1w')
-            w_cov = w_cnt * 100 // w_total if w_total else 0
-            if w_cov < 80:
-                result.warn('周K线', f'最新 {latest_weekly}，覆盖率 {w_cnt}/{w_total} ({w_cov}%) - 低于 80%')
-            else:
-                result.ok('周K线', f'最新 {latest_weekly}，覆盖率 {w_cnt}/{w_total} ({w_cov}%)')
-        else:
-            result.warn('周K线', '无任何数据')
-
-        # --- 月K线数据 ---
-        cur.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1m'")
-        latest_monthly = cur.fetchone()[0]
-        if latest_monthly:
-            cur.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE trade_date = %s AND cycle='1m'", (latest_monthly,))
-            m_cnt = cur.fetchone()[0]
-            # 分母 = 该月周期内有日线数据的去重股票数（聚合真实覆盖范围）
-            m_total = _period_daily_count(cur, latest_monthly, '1m')
-            m_cov = m_cnt * 100 // m_total if m_total else 0
-            if m_cov < 80:
-                result.warn('月K线', f'最新 {latest_monthly}，覆盖率 {m_cnt}/{m_total} ({m_cov}%) - 低于 80%')
-            else:
-                result.ok('月K线', f'最新 {latest_monthly}，覆盖率 {m_cnt}/{m_total} ({m_cov}%)')
-        else:
-            result.warn('月K线', '无任何数据')
-
+        for market, label in MARKET_LIST:
+            _check_market_recent(cur, result, market, label)
         cur.close()
         conn.close()
     except Exception as e:

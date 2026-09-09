@@ -37,6 +37,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))  # 显式加载
 # 复用统一日志格式（时间戳 - LEVEL - logger - thread - message）
 sys.path.insert(0, os.path.join(BASE_DIR, "backend"))
 from utils.logger import IsoFormatter, LOG_FORMAT  # noqa: E402
+from utils.log_retention import cleanup_cron_logs  # noqa: E402
 
 def _get_db_engine():
     """构建 SQLAlchemy Engine"""
@@ -491,6 +492,13 @@ def main():
             sys.exit(1)
 
     os.makedirs(LOG_DIR, exist_ok=True)
+    # 日志保留治理：删除超过 30 天的 cron 每日任务明细日志（文件锁保证单实例，每日清理一次）
+    try:
+        _removed = cleanup_cron_logs(LOG_DIR, keep_days=30)
+        if _removed:
+            print(f"[INFO] 已清理 {_removed} 个超过 30 天的 cron 明细日志")
+    except Exception as e:
+        print(f"[WARN] 日志保留清理失败: {e}")
     try:
         engine = _get_db_engine()
         task_logger = TaskLogger(engine)

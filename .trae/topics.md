@@ -280,3 +280,8 @@
 - 日期：2026-09-07
 - 负责角色：量量
 - 修改范围：监控后端改造两条——33.0 监控看板按市场统计（`monitor.py` 加 market 参数+市场专属缓存键，`monitor.html` 三市场预加载+页签联动）、33.1 美股任务链误报修复（`US_HOLIDAYS_2026`+`_get_last_us_trade_date` 美东时钟期望交易日、股票列表/Parquet 改数据就绪判断）。32.0 港股脏数据（volume=0/Adj Close 缺失/孤立未复权错价）清洗由方舟完成，量量侧 `import_hk_daily.py` 导入层拦截列为明日待办。协作单 33.0/33.1 待 K 重启后端后由方舟复核。
+
+## 会话信息
+- 日期：2026-09-09
+- 负责角色：量量
+- 修改范围：①**港股当日增量探针端点错配 P0 修复**（`import_hk_daily.py`）——`_probe_src_latest`/`_window_is_single_day` 由逐只日线源（新浪滞后一天）切换为批量快照源 `download_hk_snapshot_all`（与生产路径一致），`_window_is_single_day` 改按窗口内是否含工作日判缺口，删废弃 `PROBE_CODE`；实测 09-09 批量直写 2709 回写 last_sync。②**跨市场混算举一反三**：`standardize_stock_codes.py` 的 `check_data_consistency` 限定 market='cn'，标注废弃 `calculate_highs.py`/`run_data_complete.py`，复核监控/任务链已按市场隔离。③**日志治理**：`compute_indicators_daily.py` 详细日志按日期轮转 `logs/cron/indicator_compute.log` + `_write_summary` 汇总；新建 `log_retention.py`（30 天清理 cron 明细）集成 `daily_job_runner`。④**港股调度**：改造 `probe_hk_poll.py` 以全天不复权快照源为命中判据（实测 17:02 就绪），港股自动任务 **21:20 → 18:30**。**待办**：32.0 P1——`import_hk_daily.py` 导入层「Adj Close 缺失/≤Close×1.01 剔除回退+告警」防复发；复验 09-10 18:30 自动任务正常导入。会话交互对象：K

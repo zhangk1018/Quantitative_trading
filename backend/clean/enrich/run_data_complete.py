@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-数据补全和清洗主程序
+【已废弃】旧 src 架构遗留脚本（数据补全和清洗）
+
+该脚本依赖旧 `src/` 目录中的 `utils.config`（`src/` 已不存在，脚本无法运行），
+不属于当前任务链。当前宽表同步与指标计算由
+`daily_snapshot_sync.py` / `compute_indicators_daily.py` / `export_parquet.py` 承担。
+保留仅供参考；如需删除请先确认无引用方。
 
 执行流程：
 1. 从Parquet文件同步基础数据到数据库

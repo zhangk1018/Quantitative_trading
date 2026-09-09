@@ -29,33 +29,35 @@
     <key>StandardErrorPath</key>
     <string>/Volumes/MyData/Quantitative_trading/logs/cron/hk_job.stderr.log</string>
 
-    <!-- 港股 ETL 全链路：当日 21:20 周一~周五 触发（下载清洗→指标→形态→信号→宽表→Parquet） -->
+    <!-- 港股 ETL 全链路：当日 18:30 周一~周五 触发（下载清洗→指标→形态→信号→宽表→Parquet）。
+         新浪 stock_hk_spot 全天不复权快照当日即对齐（实测当日 17:02 已就绪），
+         故无需再等旧逐只日线接口（约 21:14 才到位）而延后到 21:20。 -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>
             <key>Weekday</key><integer>1</integer>
-            <key>Hour</key><integer>21</integer>
-            <key>Minute</key><integer>20</integer>
+            <key>Hour</key><integer>18</integer>
+            <key>Minute</key><integer>30</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>2</integer>
-            <key>Hour</key><integer>21</integer>
-            <key>Minute</key><integer>20</integer>
+            <key>Hour</key><integer>18</integer>
+            <key>Minute</key><integer>30</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>3</integer>
-            <key>Hour</key><integer>21</integer>
-            <key>Minute</key><integer>20</integer>
+            <key>Hour</key><integer>18</integer>
+            <key>Minute</key><integer>30</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>4</integer>
-            <key>Hour</key><integer>21</integer>
-            <key>Minute</key><integer>20</integer>
+            <key>Hour</key><integer>18</integer>
+            <key>Minute</key><integer>30</integer>
         </dict>
         <dict>
             <key>Weekday</key><integer>5</integer>
-            <key>Hour</key><integer>21</integer>
-            <key>Minute</key><integer>20</integer>
+            <key>Hour</key><integer>18</integer>
+            <key>Minute</key><integer>30</integer>
         </dict>
     </array>
 

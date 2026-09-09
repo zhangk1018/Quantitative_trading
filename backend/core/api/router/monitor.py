@@ -1333,9 +1333,13 @@ def get_sync_checkpoints(
 
 
 @router.get("/monitor/health-check/", summary="系统健康状态")
-@_cached("health_check", ttl_seconds=60)
-def get_health_check():
-    """返回数据库连接、数据源可用性、分区覆盖等系统健康状态"""
+@_cached("health_check:{market}", ttl_seconds=60)
+def get_health_check(market: str = Query("cn", pattern="^(cn|hk|us)$")):
+    """返回数据库连接、数据源可用性、分区覆盖等系统健康状态
+
+    Args:
+        market: 市场（cn/hk/us），数据统计按该市场过滤，默认沪深。
+    """
     try:
         # 使用新的 SystemMonitor 进行健康检查
         db_config = {
@@ -1347,7 +1351,7 @@ def get_health_check():
         }
         
         monitor = SystemMonitor(db_config)
-        summary = monitor.get_system_summary()
+        summary = monitor.get_system_summary(market)
         
         # 添加分区信息
         partitions = {}
@@ -1543,19 +1547,22 @@ def standardize_codes():
 # ============================================
 
 @router.get("/monitor/field-completeness/", summary="字段完整性检查")
-@_cached("field_completeness", ttl_seconds=300)
-def get_field_completeness():
+@_cached("field_completeness:{market}", ttl_seconds=300)
+def get_field_completeness(market: str = Query("cn", pattern="^(cn|hk|us)$")):
     """
     检查各核心表的字段空值率，按表分组返回统计结果。
     空值率 = NULL值记录数 / 总记录数 × 100%
+
+    Args:
+        market: 市场（cn/hk/us），所有统计按该市场过滤，默认沪深。
     """
     result = {"tables": {}, "overall_status": "ok", "issues": []}
 
-    latest_quotes = _query_scalar("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d'")
-    latest_snapshot = _query_scalar("SELECT MAX(trade_date) FROM stock_daily_snapshot")
+    latest_quotes = _query_scalar("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market=%s", (market,))
+    latest_snapshot = _query_scalar("SELECT MAX(trade_date) FROM stock_daily_snapshot WHERE market=%s", (market,))
     # 使用 stock_quotes 最新日期作为 indicators 查询的代理（避免全分区扫描）
     latest_indicators = latest_quotes
-    latest_adj = _query_scalar("SELECT MAX(trade_date) FROM stock_adj_factor")
+    latest_adj = _query_scalar("SELECT MAX(trade_date) FROM stock_adj_factor WHERE market=%s", (market,))
 
     # --- stock_quotes 最新交易日字段空值 ---
     if latest_quotes:
@@ -1570,9 +1577,9 @@ def get_field_completeness():
                 SUM(CASE WHEN volume IS NULL THEN 1 ELSE 0 END) AS null_volume,
                 SUM(CASE WHEN amount IS NULL THEN 1 ELSE 0 END) AS null_amount
             FROM stock_quotes
-            WHERE cycle='1d' AND trade_date=%s
+            WHERE cycle='1d' AND trade_date=%s AND market=%s
             """,
-            (latest_quotes,),
+            (latest_quotes, market),
         )
         if row:
             r = row[0]
@@ -1618,9 +1625,9 @@ def get_field_completeness():
             sql = f"""
                 SELECT COUNT(*) AS total, {null_sum_exprs}
                 FROM stock_daily_snapshot
-                WHERE trade_date=%s
+                WHERE trade_date=%s AND market=%s
             """
-            row = _query_dict(sql, (latest_snapshot,))
+            row = _query_dict(sql, (latest_snapshot, market))
             if row:
                 r = row[0]
                 total = int(r["total"]) or 1
@@ -1663,9 +1670,9 @@ def get_field_completeness():
             sql = f"""
                 SELECT COUNT(*) AS total, {null_sum_exprs}
                 FROM stock_indicators
-                WHERE cycle='1d' AND trade_date=%s
+                WHERE cycle='1d' AND trade_date=%s AND market=%s
             """
-            row = _query_dict(sql, (latest_indicators,))
+            row = _query_dict(sql, (latest_indicators, market))
             if row:
                 r = row[0]
                 total = int(r["total"]) or 1
@@ -1688,7 +1695,7 @@ def get_field_completeness():
                     "fields": fields,
                 }
 
-    # --- stock_adj_factor 总体空值 ---
+    # --- stock_adj_factor 总体空值（按市场） ---
     if latest_adj:
         row = _query_dict(
             """
@@ -1696,7 +1703,9 @@ def get_field_completeness():
                 COUNT(*) AS total,
                 SUM(CASE WHEN adj_factor IS NULL THEN 1 ELSE 0 END) AS null_adj_factor
             FROM stock_adj_factor
-            """
+            WHERE market=%s
+            """,
+            (market,),
         )
         if row:
             r = row[0]
@@ -1748,32 +1757,37 @@ def get_field_completeness():
 # ============================================
 
 @router.get("/monitor/consistency-check/", summary="数据一致性检查")
-@_cached("consistency_check", ttl_seconds=300)
+@_cached("consistency_check:{market}", ttl_seconds=300)
 def get_consistency_check(
     show_diff_codes: bool = Query(False, description="是否返回缺失股票代码列表"),
+    market: str = Query("cn", pattern="^(cn|hk|us)$"),
 ):
     """
     跨表一致性检查，包括：
     1. quotes vs indicators — indicators 是否覆盖所有行情股票
-    2. quotes vs adj_factor — 复权因子是否覆盖
-    3. quotes vs snapshot — 快照是否覆盖
-    4. 交易日历 vs quotes — 非交易日污染 & 交易日缺失
-    5. 停牌/ST数据隔离检查 — 确认ST股票在 quotes 中有数据
+    2. 交易日历 vs quotes — 非交易日污染 & 交易日缺失（仅沪深适用）
+    3. quotes vs adj_factor — 复权因子是否覆盖
+    4. quotes vs snapshot — 快照是否覆盖
+    5. ST/停牌数据隔离检查 — 确认ST股票在 quotes 中有数据（仅沪深适用）
+
+    Args:
+        show_diff_codes: 是否返回缺失股票代码列表。
+        market: 市场（cn/hk/us），各检查按该市场过滤；交易日历/ST 为沪深专属，非 cn 时跳过。
     """
     result = {"checks": [], "overall_status": "ok"}
-    latest_quote = _query_scalar("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d'")
-    total_stocks = _query_scalar("SELECT COUNT(*) FROM stock_basic") or 0
-    latest_adj = _query_scalar("SELECT MAX(trade_date) FROM stock_adj_factor")
+    latest_quote = _query_scalar("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market=%s", (market,))
+    total_stocks = _query_scalar("SELECT COUNT(*) FROM stock_basic WHERE market=%s", (market,)) or 0
+    latest_adj = _query_scalar("SELECT MAX(trade_date) FROM stock_adj_factor WHERE market=%s", (market,))
 
     # --- Check 1: quotes vs indicators ---
     if latest_quote:
         quote_stocks = _query_scalar(
-            "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1d' AND trade_date=%s",
-            (latest_quote,),
+            "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1d' AND trade_date=%s AND market=%s",
+            (latest_quote, market),
         ) or 0
         indicator_stocks = _query_scalar(
-            "SELECT COUNT(DISTINCT code) FROM stock_indicators WHERE cycle='1d' AND trade_date=%s",
-            (latest_quote,),
+            "SELECT COUNT(DISTINCT code) FROM stock_indicators WHERE cycle='1d' AND trade_date=%s AND market=%s",
+            (latest_quote, market),
         ) or 0
         diff1 = quote_stocks - indicator_stocks
 
@@ -1785,16 +1799,16 @@ def get_consistency_check(
                 SELECT COUNT(*) FROM (
                     SELECT q.code
                     FROM stock_quotes q
-                    WHERE q.cycle='1d' AND q.trade_date=%s
+                    WHERE q.cycle='1d' AND q.trade_date=%s AND q.market=%s
                       AND NOT EXISTS (
                         SELECT 1 FROM stock_indicators i
-                        WHERE i.cycle='1d' AND i.trade_date=%s AND i.code=q.code
+                        WHERE i.cycle='1d' AND i.trade_date=%s AND i.market=%s AND i.code=q.code
                       )
                     GROUP BY q.code
                     HAVING COUNT(*) >= 60
                 ) m
                 """,
-                (latest_quote, latest_quote),
+                (latest_quote, market, latest_quote, market),
             ) or 0
 
         status = "ok" if real_missing == 0 else "error"
@@ -1813,58 +1827,66 @@ def get_consistency_check(
                 """
                 SELECT DISTINCT q.code
                 FROM stock_quotes q
-                WHERE q.cycle='1d' AND q.trade_date=%s
+                WHERE q.cycle='1d' AND q.trade_date=%s AND q.market=%s
                   AND NOT EXISTS (
                     SELECT 1 FROM stock_indicators i
-                    WHERE i.cycle='1d' AND i.trade_date=%s AND i.code=q.code
+                    WHERE i.cycle='1d' AND i.trade_date=%s AND i.market=%s AND i.code=q.code
                   )
                 ORDER BY q.code
                 """,
-                (latest_quote, latest_quote),
+                (latest_quote, market, latest_quote, market),
             )
             check1["diff_codes"] = [r["code"] for r in diff_codes]
         result["checks"].append(check1)
 
-    # --- Check 2: 交易日 vs 周末/节假日污染 ---
-    # 使用 trade_calendar 检查（小表，避免扫描 stock_quotes 全部分区）
-    weekend_quote_count = _query_scalar(
-        """
-        SELECT 1 FROM trade_calendar tc
-        WHERE tc.is_open = 1
-          AND EXTRACT(DOW FROM tc.cal_date) IN (0, 6)
-          AND tc.cal_date >= '2020-01-01'
-        LIMIT 1
-        """
-    ) or 0
-    has_weekend_pollution = weekend_quote_count > 0
+    # --- Check 2: 交易日 vs 周末/节假日污染（沪深专属，trade_calendar 为 A 股日历） ---
+    if market == 'cn':
+        # 使用 trade_calendar 检查（小表，避免扫描 stock_quotes 全部分区）
+        weekend_quote_count = _query_scalar(
+            """
+            SELECT 1 FROM trade_calendar tc
+            WHERE tc.is_open = 1
+              AND EXTRACT(DOW FROM tc.cal_date) IN (0, 6)
+              AND tc.cal_date >= '2020-01-01'
+            LIMIT 1
+            """
+        ) or 0
+        has_weekend_pollution = weekend_quote_count > 0
 
-    # 交易日缺失检查：用 LEFT JOIN 替代 NOT EXISTS 子查询，避免逐行扫描 stock_quotes
-    missing_trade_days = _query_scalar(
-        """
-        SELECT COUNT(*) FROM trade_calendar tc
-        LEFT JOIN (
-            SELECT DISTINCT trade_date FROM stock_quotes
-            WHERE cycle='1d' AND trade_date >= '2020-01-01'
-        ) q ON q.trade_date = tc.cal_date
-        WHERE tc.is_open = 1
-          AND tc.cal_date >= '2020-01-01'
-          AND tc.cal_date <= CURRENT_DATE
-          AND q.trade_date IS NULL
-        """
-    ) or 0
+        # 交易日缺失检查：用 LEFT JOIN 替代 NOT EXISTS 子查询，避免逐行扫描 stock_quotes
+        missing_trade_days = _query_scalar(
+            """
+            SELECT COUNT(*) FROM trade_calendar tc
+            LEFT JOIN (
+                SELECT DISTINCT trade_date FROM stock_quotes
+                WHERE cycle='1d' AND market=%s AND trade_date >= '2020-01-01'
+            ) q ON q.trade_date = tc.cal_date
+            WHERE tc.is_open = 1
+              AND tc.cal_date >= '2020-01-01'
+              AND tc.cal_date <= CURRENT_DATE
+              AND q.trade_date IS NULL
+            """,
+            (market,),
+        ) or 0
 
-    check2_status = "ok"
-    if has_weekend_pollution:
-        check2_status = "error"
-    if missing_trade_days > 0:
-        check2_status = "error" if missing_trade_days > 5 else "warning"
+        check2_status = "ok"
+        if has_weekend_pollution:
+            check2_status = "error"
+        if missing_trade_days > 0:
+            check2_status = "error" if missing_trade_days > 5 else "warning"
 
-    check2 = {
-        "name": "交易日历 vs quotes",
-        "status": check2_status,
-        "has_weekend_pollution": has_weekend_pollution,
-        "missing_trade_days_since_2020": missing_trade_days,
-    }
+        check2 = {
+            "name": "交易日历 vs quotes",
+            "status": check2_status,
+            "has_weekend_pollution": has_weekend_pollution,
+            "missing_trade_days_since_2020": missing_trade_days,
+        }
+    else:
+        check2 = {
+            "name": "交易日历 vs quotes",
+            "status": "skipped",
+            "note": "trade_calendar 为沪深日历，非 cn 市场跳过",
+        }
     result["checks"].append(check2)
 
     # --- Check 3: 复权因子覆盖 ---
@@ -1878,8 +1900,8 @@ def get_consistency_check(
     adj_days = 0
     if latest_adj:
         adj_days = _query_scalar(
-            "SELECT COUNT(DISTINCT trade_date) FROM stock_adj_factor WHERE trade_date >= %s",
-            (latest_adj - timedelta(days=365),),
+            "SELECT COUNT(DISTINCT trade_date) FROM stock_adj_factor WHERE trade_date >= %s AND market=%s",
+            (latest_adj - timedelta(days=365), market),
         ) or 0
 
     check3_status = "ok"
@@ -1908,15 +1930,15 @@ def get_consistency_check(
     result["checks"].append(check3)
 
     # --- Check 4: stock_daily_snapshot 覆盖 ---
-    latest_snapshot = _query_scalar("SELECT MAX(trade_date) FROM stock_daily_snapshot")
+    latest_snapshot = _query_scalar("SELECT MAX(trade_date) FROM stock_daily_snapshot WHERE market=%s", (market,))
     if latest_snapshot and latest_quote:
         snapshot_stocks = _query_scalar(
-            "SELECT COUNT(DISTINCT code) FROM stock_daily_snapshot WHERE trade_date=%s",
-            (latest_snapshot,),
+            "SELECT COUNT(DISTINCT code) FROM stock_daily_snapshot WHERE trade_date=%s AND market=%s",
+            (latest_snapshot, market),
         ) or 0
         quote_stocks_at_snapshot_date = _query_scalar(
-            "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1d' AND trade_date=%s",
-            (latest_snapshot,),
+            "SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1d' AND trade_date=%s AND market=%s",
+            (latest_snapshot, market),
         ) or 0
         diff4 = quote_stocks_at_snapshot_date - snapshot_stocks
         check4 = {
@@ -1938,16 +1960,17 @@ def get_consistency_check(
         }
     result["checks"].append(check4)
 
-    # --- Check 5: ST/停牌隔离校验 ---
-    if latest_quote:
+    # --- Check 5: ST/停牌隔离校验（沪深专属，ST 命名仅 A 股适用；非 cn 跳过） ---
+    if market == 'cn' and latest_quote:
         st_with_data = _query_scalar(
             """
             SELECT COUNT(*) FROM stock_basic b
-            WHERE (b.name LIKE 'ST%%' OR b.name LIKE '*ST%%' OR b.name LIKE 'S%%ST%%')
+            WHERE b.market='cn'
+              AND (b.name LIKE 'ST%%' OR b.name LIKE '*ST%%' OR b.name LIKE 'S%%ST%%')
               AND b.delist_date IS NULL
               AND EXISTS (
                 SELECT 1 FROM stock_quotes q
-                WHERE q.cycle='1d' AND q.trade_date=%s AND q.code=b.code
+                WHERE q.cycle='1d' AND q.trade_date=%s AND q.market='cn' AND q.code=b.code
               )
             """,
             (latest_quote,),
@@ -1955,7 +1978,8 @@ def get_consistency_check(
         st_total = _query_scalar(
             """
             SELECT COUNT(*) FROM stock_basic b
-            WHERE (b.name LIKE 'ST%%' OR b.name LIKE '*ST%%' OR b.name LIKE 'S%%ST%%')
+            WHERE b.market='cn'
+              AND (b.name LIKE 'ST%%' OR b.name LIKE '*ST%%' OR b.name LIKE 'S%%ST%%')
               AND b.delist_date IS NULL
             """
         ) or 0
@@ -1968,6 +1992,12 @@ def get_consistency_check(
             "st_missing": st_missing,
         }
         result["checks"].append(check5)
+    elif market != 'cn':
+        result["checks"].append({
+            "name": "ST/停牌隔离校验",
+            "status": "skipped",
+            "note": "ST 命名仅沪深适用，非 cn 市场跳过",
+        })
 
     # 更新整体状态
     error_checks = [c for c in result["checks"] if c["status"] == "error"]
@@ -1985,9 +2015,10 @@ def get_consistency_check(
 # ============================================
 
 @router.get("/monitor/anomaly-detection/", summary="异常值检测")
-@_cached("anomaly_detection", ttl_seconds=300)
+@_cached("anomaly_detection:{market}", ttl_seconds=300)
 def get_anomaly_detection(
     days: int = Query(5, ge=1, le=30, description="检查最近N天的数据"),
+    market: str = Query("cn", pattern="^(cn|hk|us)$"),
 ):
     """
     检查最新交易日数据中的异常值：
@@ -1996,9 +2027,13 @@ def get_anomaly_detection(
     3. 成交量异常（volume<0, volume为0的股票）
     4. 复权价格负值检测
     5. 连续多日volume=0的非停牌股票
+
+    Args:
+        days: 检查最近 N 天。
+        market: 市场（cn/hk/us），所有检测按该市场过滤，默认沪深。
     """
     result = {"checks": [], "overall_status": "ok"}
-    latest_quote = _query_scalar("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d'")
+    latest_quote = _query_scalar("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market=%s", (market,))
     if not latest_quote:
         return ApiResponse(code=200, message="success", data=result)
 
@@ -2012,9 +2047,9 @@ def get_anomaly_detection(
             SUM(CASE WHEN close <= 0 THEN 1 ELSE 0 END) AS neg_close,
             SUM(CASE WHEN volume < 0 THEN 1 ELSE 0 END) AS neg_volume
         FROM stock_quotes
-        WHERE cycle='1d' AND trade_date=%s
+        WHERE cycle='1d' AND trade_date=%s AND market=%s
         """,
-        (latest_quote,),
+        (latest_quote, market),
     )
     if ohlc_anomalies:
         r = ohlc_anomalies[0]

@@ -226,8 +226,8 @@ def sync_to_stock_basic(conn, stock_df):
 
     cursor = conn.cursor()
 
-    # 获取当前 stock_basic 中的代码
-    cursor.execute("SELECT code FROM stock_basic")
+    # 获取当前 stock_basic 中的沪深（cn）代码（本脚本仅同步 A 股列表，港/美股由各自 sync 脚本维护）
+    cursor.execute("SELECT code FROM stock_basic WHERE market='cn'")
     existing_codes = {row[0] for row in cursor.fetchall()}
     logger.info(f"stock_basic 现有: {len(existing_codes)} 只")
 
@@ -282,11 +282,12 @@ def sync_to_stock_basic(conn, stock_df):
         logger.info(f"成功插入/更新 {cursor.rowcount} 只股票")
 
     # 验证
-    cursor.execute("SELECT COUNT(*) FROM stock_basic")
+    cursor.execute("SELECT COUNT(*) FROM stock_basic WHERE market='cn'")
     total = cursor.fetchone()[0]
-    logger.info(f"stock_basic 总数: {total}")
+    logger.info(f"stock_basic 沪深总数: {total}")
 
-    # 按市场统计（按项目规范：002/003归深圳主板，302归创业板）
+    # 沪深市场分布统计（按项目规范：002/003归深圳主板，302归创业板）
+    # 限定 market='cn'，避免港/美股混入「其他」分类造成虚高
     cursor.execute("""
         SELECT
             CASE
@@ -300,6 +301,7 @@ def sync_to_stock_basic(conn, stock_df):
             END as market,
             COUNT(*)
         FROM stock_basic
+        WHERE market = 'cn'
         GROUP BY 1
         ORDER BY count DESC
     """)
@@ -310,31 +312,32 @@ def sync_to_stock_basic(conn, stock_df):
 
 
 def verify_coverage(conn):
-    """验证覆盖率"""
+    """验证沪深（cn）覆盖率（本脚本仅同步 A 股列表，统计限定 cn 市场）"""
     cursor = conn.cursor()
 
     # 最新交易日
-    cursor.execute("SELECT MAX(trade_date)::date FROM stock_quotes")
+    cursor.execute("SELECT MAX(trade_date)::date FROM stock_quotes WHERE market='cn' AND cycle='1d'")
     latest_date = cursor.fetchone()[0]
 
-    # stock_basic 总数
-    cursor.execute("SELECT COUNT(*) FROM stock_basic")
+    # stock_basic 沪深总数
+    cursor.execute("SELECT COUNT(*) FROM stock_basic WHERE market='cn'")
     total = cursor.fetchone()[0]
 
     # 覆盖数
     cursor.execute("""
         SELECT COUNT(DISTINCT q.code)
         FROM stock_quotes q
-        WHERE q.trade_date::date = %s
+        WHERE q.trade_date::date = %s AND q.market='cn'
     """, (latest_date,))
     covered = cursor.fetchone()[0]
 
     # 缺失
     cursor.execute("""
         SELECT COUNT(*) FROM stock_basic b
-        WHERE NOT EXISTS (
+        WHERE b.market='cn'
+          AND NOT EXISTS (
             SELECT 1 FROM stock_quotes q
-            WHERE q.code = b.code AND q.trade_date::date = %s
+            WHERE q.code = b.code AND q.trade_date::date = %s AND q.market='cn'
         )
     """, (latest_date,))
     missing = cursor.fetchone()[0]
@@ -342,7 +345,7 @@ def verify_coverage(conn):
     # 多出
     cursor.execute("""
         SELECT COUNT(DISTINCT q.code) FROM stock_quotes q
-        WHERE q.trade_date::date = %s
+        WHERE q.trade_date::date = %s AND q.market='cn'
         AND NOT EXISTS (SELECT 1 FROM stock_basic b WHERE b.code = q.code)
     """, (latest_date,))
     extra = cursor.fetchone()[0]

@@ -7,6 +7,7 @@
 import sys
 import os
 import json
+import re
 from typing import Optional
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, backend_dir)
@@ -21,7 +22,23 @@ from utils.config import config
 from utils.logger import setup_logger
 from utils.stock_code_utils import normalize_db_code
 
-logger = setup_logger('indicator_compute')
+# 日志按市场+日期分文件，每日一个：A股(默认/cn) indicator_compute_YYYYMMDD.log，
+# 港股/美股分别 indicator_compute_hk_YYYYMMDD.log / indicator_compute_us_YYYYMMDD.log。
+# 文件名带处理数据当日日期，避免单文件持续累积过大；size 轮转仅作异常兜底。
+# 通过解析 argv 的 --market 确定 logger 名（每次由 subprocess 新起进程，天然生效）。
+_market_match = re.search(r'(?:^|\s)--market[=\s](\w+)', ' '.join(sys.argv))
+_logger_market = (_market_match.group(1) if _market_match else 'cn').lower()
+_logger_name = 'indicator_compute' if _logger_market == 'cn' else f'indicator_compute_{_logger_market}'
+_today = datetime.now().strftime('%Y%m%d')
+
+logger = setup_logger(
+    _logger_name,
+    rotation_mode='size',    # size 仅作兜底（当日异常超大时才轮转），文件名已按日期每日一个新文件
+    max_bytes_mb=200,
+    backup_count=30,
+    log_dir=os.path.join(os.path.dirname(backend_dir), 'logs', 'cron'),
+    filename=f"{_logger_name}_{_today}.log",
+)
 
 
 def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str,

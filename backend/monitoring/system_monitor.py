@@ -17,6 +17,15 @@ from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+# 合法市场值，用于校验并防止非法字符串混入 SQL
+VALID_MARKETS = ('cn', 'hk', 'us')
+
+
+def _normalize_market(market: Optional[str]) -> str:
+    """校验并规整市场参数，非法值回退为 'cn'（默认沪深）。"""
+    market = (market or 'cn').strip().lower()
+    return market if market in VALID_MARKETS else 'cn'
+
 
 class SystemMonitor:
     """系统状态监控器"""
@@ -55,13 +64,19 @@ class SystemMonitor:
             self.conn.close()
             logger.info("数据库连接已关闭")
     
-    def check_database_status(self) -> Dict[str, Any]:
-        """检查数据库状态"""
+    def check_database_status(self, market: str = 'cn') -> Dict[str, Any]:
+        """检查数据库状态。
+
+        Args:
+            market: 市场（cn/hk/us），行情最新日期与周期统计按该市场过滤，默认沪深。
+        """
+        market = _normalize_market(market)
         result = {
             "status": "unknown",
             "connected": False,
             "tables": {},
-            "error": None
+            "error": None,
+            "market": market
         }
         
         try:
@@ -104,14 +119,14 @@ class SystemMonitor:
                     "note": "估算值" if count > 100000 else "精确值"
                 }
 
-            # stock_quotes 按周期统计（仅查日线 MAX 日期，避免全表扫描）
+            # stock_quotes 按周期统计（仅查日线 MAX 日期，避免全表扫描），按市场过滤
             try:
                 cursor.execute("""
                     SELECT '1d' AS cycle, COUNT(*) AS cnt
                     FROM stock_quotes
-                    WHERE cycle = '1d'
-                      AND trade_date = (SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d')
-                """)
+                    WHERE cycle = '1d' AND market = %s
+                      AND trade_date = (SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market=%s)
+                """, (market, market))
                 row = cursor.fetchone()
                 cycle_counts = {'1d': row[1]} if row else {}
                 # 周线/月线用估算值
@@ -126,13 +141,13 @@ class SystemMonitor:
                     total_est = sq_est[1]
                     daily_est = cycle_counts.get('1d', 0)
                     # 1w 和 1m 按比例估算（假设 1w≈1/5 日线, 1m≈1/22 日线, 但此处用独立查询更准确）
-                    cursor.execute("SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1w'")
+                    cursor.execute("SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1w' AND market=%s", (market,))
                     w_dates = cursor.fetchone()[0] or 0
-                    cursor.execute("SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1m'")
+                    cursor.execute("SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1m' AND market=%s", (market,))
                     m_dates = cursor.fetchone()[0] or 0
-                    cursor.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1w' AND trade_date = (SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1w')")
+                    cursor.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1w' AND market=%s AND trade_date=(SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1w' AND market=%s)", (market, market))
                     w_stocks = cursor.fetchone()[0] or 0
-                    cursor.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1m' AND trade_date = (SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1m')")
+                    cursor.execute("SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1m' AND market=%s AND trade_date=(SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1m' AND market=%s)", (market, market))
                     m_stocks = cursor.fetchone()[0] or 0
                     cycle_counts['1w'] = w_dates * max(w_stocks, 5000)
                     cycle_counts['1m'] = m_dates * max(m_stocks, 5000)
@@ -144,12 +159,12 @@ class SystemMonitor:
             # 统一获取当前日期，供后续 freshness 计算使用
             today = datetime.now().date()
 
-            # 检查最新数据日期（日线）
+            # 检查最新数据日期（日线），按市场过滤
             cursor.execute("""
                 SELECT MAX(trade_date)
                 FROM stock_quotes
-                WHERE cycle = '1d'
-            """)
+                WHERE cycle = '1d' AND market = %s
+            """, (market,))
             latest_date = cursor.fetchone()[0]
             if latest_date:
                 result["latest_trade_date"] = str(latest_date)
@@ -171,15 +186,23 @@ class SystemMonitor:
         
         return result
     
-    def check_data_coverage(self) -> Dict[str, Any]:
-        """检查数据覆盖率（排除已退市和北交所股票，避免误告警）"""
+    def check_data_coverage(self, market: str = 'cn') -> Dict[str, Any]:
+        """检查数据覆盖率（排除已退市股票；沪深额外排除北交所，避免误告警）。
+
+        Args:
+            market: 市场（cn/hk/us），覆盖率口径按该市场过滤，默认沪深。
+                    cn 时沿用「北交所（8/920/43 开头）排除」；hk/us 不做该前缀排除，
+                    避免误伤以 8/9 开头的港股代码。
+        """
+        market = _normalize_market(market)
         result = {
             "coverage_rate": 0,
             "covered_stocks": 0,
             "total_stocks": 0,
             "missing_stocks": 0,
             "excluded_stocks": 0,
-            "latest_date": None
+            "latest_date": None,
+            "market": market
         }
 
         try:
@@ -188,8 +211,8 @@ class SystemMonitor:
 
             cursor = self.conn.cursor()
 
-            # 获取最新交易日
-            cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'")
+            # 获取最新交易日（按市场）
+            cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d' AND market=%s", (market,))
             latest_date = cursor.fetchone()[0]
             if not latest_date:
                 cursor.close()
@@ -197,20 +220,18 @@ class SystemMonitor:
 
             result["latest_date"] = str(latest_date)
 
-            # 有效股票口径：未退市 + 非北交所（8/920/43 开头）
+            # 有效股票口径：限市场 + 未退市；沪深额外排除北交所（8/920/43 开头）
             # 注意：psycopg2 使用 %s 作为参数占位符，SQL 字面量中的 % 必须转义为 %%
-            active_stock_filter = """
-                delist_date IS NULL
-                AND code NOT LIKE '8%%'
-                AND code NOT LIKE '920%%'
-                AND code NOT LIKE '43%%'
-            """
-            active_stock_filter_b = """
-                b.delist_date IS NULL
-                AND b.code NOT LIKE '8%%'
-                AND b.code NOT LIKE '920%%'
-                AND b.code NOT LIKE '43%%'
-            """
+            bj_exclude = (
+                "AND code NOT LIKE '8%%' AND code NOT LIKE '920%%' AND code NOT LIKE '43%%'"
+                if market == 'cn' else ""
+            )
+            bj_exclude_b = (
+                "AND b.code NOT LIKE '8%%' AND b.code NOT LIKE '920%%' AND b.code NOT LIKE '43%%'"
+                if market == 'cn' else ""
+            )
+            active_stock_filter = f"market = '{market}' AND delist_date IS NULL {bj_exclude}"
+            active_stock_filter_b = f"b.market = '{market}' AND b.delist_date IS NULL {bj_exclude_b}"
 
             # 被排除的股票数（数据透明）
             cursor.execute(f"""
@@ -231,13 +252,13 @@ class SystemMonitor:
             cursor.execute(f"""
                 SELECT COUNT(DISTINCT q.code)
                 FROM stock_quotes q
-                WHERE q.cycle = '1d' AND q.trade_date = %s
+                WHERE q.cycle = '1d' AND q.trade_date = %s AND q.market = %s
                   AND EXISTS (
                     SELECT 1 FROM stock_basic b
                     WHERE b.code = q.code
                       AND {active_stock_filter_b}
                   )
-            """, (latest_date,))
+            """, (latest_date, market))
             covered = cursor.fetchone()[0] or 0
             result["covered_stocks"] = covered
 
@@ -250,10 +271,10 @@ class SystemMonitor:
                 WHERE {active_stock_filter_b}
                   AND NOT EXISTS (
                     SELECT 1 FROM stock_quotes q
-                    WHERE q.cycle = '1d' AND q.trade_date = %s
+                    WHERE q.cycle = '1d' AND q.trade_date = %s AND q.market = %s
                       AND b.code = q.code
                   )
-            """, (latest_date,))
+            """, (latest_date, market))
             result["missing_stocks"] = cursor.fetchone()[0] or 0
 
             cursor.close()
@@ -263,14 +284,21 @@ class SystemMonitor:
 
         return result
     
-    def check_daily_data_quality(self, latest_date: Optional[Any] = None) -> Dict[str, Any]:
-        """日级数据质量审计（关键字段完整性、表间一致性）"""
+    def check_daily_data_quality(self, latest_date: Optional[Any] = None, market: str = 'cn') -> Dict[str, Any]:
+        """日级数据质量审计（关键字段完整性、表间一致性）。
+
+        Args:
+            latest_date: 最新交易日；为空时按目标市场自动查询。
+            market: 市场（cn/hk/us），所有统计口径按该市场过滤，默认沪深。
+        """
+        market = _normalize_market(market)
         result = {
             "quotes_field_coverage": {},
             "snapshot_vs_quotes_diff": None,
             "indicators_coverage": None,
             "daily_basic_coverage": None,
-            "status": "unknown"
+            "status": "unknown",
+            "market": market
         }
 
         try:
@@ -279,9 +307,9 @@ class SystemMonitor:
 
             cursor = self.conn.cursor()
 
-            # 若未传入最新交易日，自动查询
+            # 若未传入最新交易日，按目标市场自动查询
             if latest_date is None:
-                cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'")
+                cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d' AND market=%s", (market,))
                 latest_date = cursor.fetchone()[0]
 
             if not latest_date:
@@ -299,8 +327,8 @@ class SystemMonitor:
                        SUM(CASE WHEN close IS NOT NULL THEN 1 ELSE 0 END) AS close_cnt,
                        SUM(CASE WHEN volume IS NOT NULL THEN 1 ELSE 0 END) AS volume_cnt
                 FROM stock_quotes
-                WHERE cycle = '1d' AND trade_date = %s
-            """, (latest_date,))
+                WHERE cycle = '1d' AND trade_date = %s AND market = %s
+            """, (latest_date, market))
             row = cursor.fetchone()
             total = row[0] or 0
             if total > 0:
@@ -316,9 +344,9 @@ class SystemMonitor:
             # 2. stock_daily_snapshot 与 stock_quotes 日线记录数差异
             cursor.execute("""
                 SELECT
-                    (SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle = '1d' AND trade_date = %s) AS quotes_cnt,
-                    (SELECT COUNT(*) FROM stock_daily_snapshot WHERE trade_date = %s) AS snapshot_cnt
-            """, (latest_date, latest_date))
+                    (SELECT COUNT(DISTINCT code) FROM stock_quotes WHERE cycle='1d' AND trade_date=%s AND market=%s) AS quotes_cnt,
+                    (SELECT COUNT(*) FROM stock_daily_snapshot WHERE trade_date=%s AND market=%s) AS snapshot_cnt
+            """, (latest_date, market, latest_date, market))
             row = cursor.fetchone()
             quotes_cnt, snapshot_cnt = row[0] or 0, row[1] or 0
             result["snapshot_vs_quotes_diff"] = {
@@ -330,13 +358,13 @@ class SystemMonitor:
             # 3. indicators 与 daily_basic 覆盖
             cursor.execute("""
                 SELECT COUNT(DISTINCT code) FROM stock_indicators
-                WHERE cycle = '1d' AND trade_date = %s
-            """, (latest_date,))
+                WHERE cycle = '1d' AND trade_date = %s AND market = %s
+            """, (latest_date, market))
             result["indicators_coverage"] = cursor.fetchone()[0] or 0
 
             cursor.execute("""
-                SELECT COUNT(*) FROM stock_daily_basic WHERE trade_date = %s
-            """, (latest_date,))
+                SELECT COUNT(*) FROM stock_daily_basic WHERE trade_date = %s AND market = %s
+            """, (latest_date, market))
             result["daily_basic_coverage"] = cursor.fetchone()[0] or 0
 
             cursor.close()
@@ -354,14 +382,20 @@ class SystemMonitor:
 
         return result
 
-    def check_weekly_line_status(self) -> Dict[str, Any]:
-        """检查周线数据状态"""
+    def check_weekly_line_status(self, market: str = 'cn') -> Dict[str, Any]:
+        """检查周线数据状态。
+
+        Args:
+            market: 市场（cn/hk/us），周线统计按该市场过滤，默认沪深。
+        """
+        market = _normalize_market(market)
         result = {
             "status": "unknown",
             "latest_week_end": None,
             "stock_count": 0,
             "weeks_available": 0,
-            "error": None
+            "error": None,
+            "market": market
         }
         try:
             if not self.conn or self.conn.closed:
@@ -371,8 +405,8 @@ class SystemMonitor:
 
             # 最新周线日期
             cursor.execute("""
-                SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1w'
-            """)
+                SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1w' AND market=%s
+            """, (market,))
             latest = cursor.fetchone()[0]
             if latest:
                 result["latest_week_end"] = str(latest)
@@ -380,18 +414,18 @@ class SystemMonitor:
                 # 最新周线覆盖股票数
                 cursor.execute("""
                     SELECT COUNT(DISTINCT code) FROM stock_quotes
-                    WHERE cycle = '1w' AND trade_date = %s
-                """, (latest,))
+                    WHERE cycle = '1w' AND trade_date = %s AND market = %s
+                """, (latest, market))
                 result["stock_count"] = cursor.fetchone()[0] or 0
 
             # 周线总周数
             cursor.execute("""
-                SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1w'
-            """)
+                SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1w' AND market = %s
+            """, (market,))
             result["weeks_available"] = cursor.fetchone()[0] or 0
 
             # 判断新鲜度：最新周线是否与最新日线同周
-            cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'")
+            cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d' AND market=%s", (market,))
             latest_daily = cursor.fetchone()[0]
             if latest and latest_daily:
                 # 判断最新日线是否属于该周
@@ -414,14 +448,20 @@ class SystemMonitor:
             result["error"] = str(e)
         return result
 
-    def check_monthly_line_status(self) -> Dict[str, Any]:
-        """检查月线数据状态"""
+    def check_monthly_line_status(self, market: str = 'cn') -> Dict[str, Any]:
+        """检查月线数据状态。
+
+        Args:
+            market: 市场（cn/hk/us），月线统计按该市场过滤，默认沪深。
+        """
+        market = _normalize_market(market)
         result = {
             "status": "unknown",
             "latest_month_end": None,
             "stock_count": 0,
             "months_available": 0,
-            "error": None
+            "error": None,
+            "market": market
         }
         try:
             if not self.conn or self.conn.closed:
@@ -431,8 +471,8 @@ class SystemMonitor:
 
             # 最新月线日期
             cursor.execute("""
-                SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1m'
-            """)
+                SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1m' AND market=%s
+            """, (market,))
             latest = cursor.fetchone()[0]
             if latest:
                 result["latest_month_end"] = str(latest)
@@ -440,18 +480,18 @@ class SystemMonitor:
                 # 最新月线覆盖股票数
                 cursor.execute("""
                     SELECT COUNT(DISTINCT code) FROM stock_quotes
-                    WHERE cycle = '1m' AND trade_date = %s
-                """, (latest,))
+                    WHERE cycle = '1m' AND trade_date = %s AND market = %s
+                """, (latest, market))
                 result["stock_count"] = cursor.fetchone()[0] or 0
 
             # 月线总月数
             cursor.execute("""
-                SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1m'
-            """)
+                SELECT COUNT(DISTINCT trade_date) FROM stock_quotes WHERE cycle = '1m' AND market = %s
+            """, (market,))
             result["months_available"] = cursor.fetchone()[0] or 0
 
             # 判断新鲜度：最新月线是否与最新日线同月
-            cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'")
+            cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d' AND market=%s", (market,))
             latest_daily = cursor.fetchone()[0]
             if latest and latest_daily:
                 cursor.execute("""
@@ -473,13 +513,18 @@ class SystemMonitor:
             result["error"] = str(e)
         return result
 
-    def get_system_summary(self) -> Dict[str, Any]:
-        """获取系统摘要信息"""
+    def get_system_summary(self, market: str = 'cn') -> Dict[str, Any]:
+        """获取系统摘要信息。
+
+        Args:
+            market: 市场（cn/hk/us），各子项统计按该市场过滤，默认沪深。
+        """
+        market = _normalize_market(market)
         latest_date = None
         try:
             if self.connect():
                 cursor = self.conn.cursor()
-                cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'")
+                cursor.execute("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle='1d' AND market=%s", (market,))
                 latest_date = cursor.fetchone()[0]
                 cursor.close()
         except Exception as e:
@@ -487,11 +532,11 @@ class SystemMonitor:
 
         summary = {
             "timestamp": datetime.now().isoformat(),
-            "database": self.check_database_status(),
-            "coverage": self.check_data_coverage(),
-            "daily_quality": self.check_daily_data_quality(latest_date),
-            "weekly_line": self.check_weekly_line_status(),
-            "monthly_line": self.check_monthly_line_status()
+            "database": self.check_database_status(market),
+            "coverage": self.check_data_coverage(market),
+            "daily_quality": self.check_daily_data_quality(latest_date, market),
+            "weekly_line": self.check_weekly_line_status(market),
+            "monthly_line": self.check_monthly_line_status(market)
         }
 
         # 计算整体健康度

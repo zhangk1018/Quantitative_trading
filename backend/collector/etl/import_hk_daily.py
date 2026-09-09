@@ -58,7 +58,6 @@ CYCLE = '1d'
 ADJUST_TYPE = 'adj'            # stock_quotes 成交价列存的复权口径（adj_close=后复权）
 HOT = 'Asia/Hong_Kong'         # 港股收盘时区
 MARKET_CLOSE_HHMM = '16:00:00'  # 港股收盘时间（生成 trade_datetime）
-PROBE_CODE = '0700.HK'         # 增量窗口探针标的：腾讯，恒生权重股几乎每日成交
 
 # 港交所官方「Dividends & Other Entitlements」全市场除权除息名单（单请求，日更）。
 # 用于批量快照路径的**权威除权路由**：当日 Ex-Date（除净日）命中的股票无条件回退逐只
@@ -792,9 +791,12 @@ def run_init(src: AkShareDataSource, conn: psycopg2.extensions.connection,
 def _probe_src_latest(src: AkShareDataSource, end: str) -> str:
     """探测数据源实际最新交易日，作为增量窗口终点（不超过 end）。
 
-    新浪港股日线在收盘后延迟更新（港股 16:00 收盘，17:00 调度时当日数据常尚未落地）。
-    若增量窗口终点硬编码为 date.today()，数据源未更新时整批「拉取为空」空跑，既浪费时间
-    又高频请求新浪接口（易触发限流）。此处以代表股全量历史的最大日期近似数据源最新交易日，
+    生产港股**当日增量**的数据路径为批量快照源 `download_hk_snapshot_all`
+    （ak.stock_hk_spot，一次全市场当日 OHLCV，前一交易日 17:02 前后即就绪），
+    而新浪**逐只日线**接口通常滞后一天（例如 09-09 探测 0700.HK 仍返回 09-08）。
+    若继续用逐只日线探测，会把 09-09 误判为"数据源未更新"而整批跳过当日导入。
+
+    故此处改用批量快照源探测最新交易日：快照非空且已覆盖当日时返回 end，否则降级。
     若早于 end 则降级窗口终点；数据源更新后重跑自动补回缺口。
 
     Args:
@@ -804,31 +806,30 @@ def _probe_src_latest(src: AkShareDataSource, end: str) -> str:
     Returns:
         实际窗口终点（min(end, 数据源最新交易日)）；探针失败时保守沿用 end。
     """
-    df = src.download_single(PROBE_CODE, market=MARKET)
-    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-        logger.warning(f"⚠️ 数据源探针 {PROBE_CODE} 不可用，无法探测最新日期，沿用窗口终点 {end}")
+    snap = src.download_hk_snapshot_all()
+    if snap is None or getattr(snap, 'empty', True) \
+            or snap.index.max() is None or pd.isna(snap.index.max()):
+        logger.warning("⚠️ 批量快照探针不可用，无法探测最新日期，沿用窗口终点 "
+                       f"{end}")
         return end
-    latest = df.index.max()
-    if latest is None or pd.isna(latest):
-        return end
-    latest_str = pd.to_datetime(latest).date().isoformat()
+    latest_str = pd.to_datetime(snap.index.max()).date().isoformat()
     if latest_str < end:
-        logger.warning(f"⚠️ 数据源最新日期 {latest_str}（探针 {PROBE_CODE}）早于今天 {end}，"
+        logger.warning(f"⚠️ 数据源最新日期 {latest_str}（批量快照）早于今天 {end}，"
                        f"增量窗口终点调整为 {latest_str}；数据源更新后重跑可补回缺口")
         return latest_str
     return end
 
 
 def _window_is_single_day(src: AkShareDataSource, start: str, end: str) -> bool:
-    """增量窗口 [start, end) 是否仅覆盖最新单交易日 `end`（批量快照可用性判定）。
+    """批量快照可用性判定：增量窗口是否仅覆盖最新单交易日 `end`。
 
     ak.stock_hk_spot() 只返回最新一天快照，故仅当窗口内除最新交易日外没有任何其他
     交易日（即 last_sync 到数据源最新之间无待补缺口）时才启用批量路径；若期间跨了
     交易日但未同步（存在缺口），必须回退逐只拉取，避免静默跳过中间交易日造成数据缺口。
 
-    用探针代表股在窗口内 [start, end) 的日线判交集：
-    - 窗口内有且仅有 end 一个交易日 → 启用批量快照
-    - 探针失败 / 窗口内还有其他交易日 / end 不在探针数据中 → 保守逐只
+    统一以批量快照源判定（与生产路径一致，逐只日线源滞后一天不可用）：
+    - 快照最新交易日 == end，且 [start, end) 内不含工作日（仅周末/节假日可跳过）→ 启用批量
+    - 快照不可用 / 最新日 ≠ end / 窗口内存在工作日缺口 → 保守逐只
 
     Args:
         src: AkShare 数据源适配器
@@ -838,20 +839,27 @@ def _window_is_single_day(src: AkShareDataSource, start: str, end: str) -> bool:
     Returns:
         是否可在本窗口启用批量快照快速对齐
     """
-    end_excl = (datetime.strptime(end, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
-    df = src.download_single(PROBE_CODE, market=MARKET, start=start, end=end_excl)
-    if df is None or getattr(df, 'empty', True):
-        logger.warning(f"⚠️ 批量窗口判定探针 {PROBE_CODE} 不可用，保守沿用逐只增量路径")
+    snap = src.download_hk_snapshot_all()
+    if snap is None or getattr(snap, 'empty', True) \
+            or snap.index.max() is None or pd.isna(snap.index.max()):
+        logger.warning("⚠️ 批量窗口判定探针不可用，保守沿用逐只增量路径")
         return False
-    days = {pd.to_datetime(d).date().strftime('%Y-%m-%d') for d in df.index}
-    others = [d for d in days if start <= d < end]
-    single = len(others) == 0 and end in days
-    if single:
-        logger.info(f"⚡ 增量窗口 {start}~{end} 仅含 {end} 一个交易日，可启用批量快照")
-    else:
-        logger.warning(f"⚠️ 增量窗口 {start}~{end} 内交易日非仅最新日（窗口={sorted(days)}），"
+    latest = pd.to_datetime(snap.index.max()).date().strftime('%Y-%m-%d')
+    if latest != end:
+        logger.warning(f"⚠️ 批量快照最新交易日 {latest} ≠ 窗口终点 {end}，"
                        f"需要补历史缺口，沿用逐只增量路径")
-    return single
+        return False
+    s = datetime.strptime(start, '%Y-%m-%d').date()
+    e = datetime.strptime(end, '%Y-%m-%d').date()
+    # [start, end) 内存在工作日 → 有交易日缺口，必须逐只补全
+    has_weekday = any((s + timedelta(days=i)).weekday() < 5
+                      for i in range(max(0, (e - s).days)))
+    if has_weekday:
+        logger.warning(f"⚠️ 增量窗口 {start}~{end} 内存在工作日（需补历史缺口），"
+                       f"沿用逐只增量路径")
+        return False
+    logger.info(f"⚡ 批量快照已覆盖最新交易日 {latest} 且窗口内无待补缺口，可启用批量快照")
+    return True
 
 
 def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection,

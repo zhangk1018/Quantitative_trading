@@ -271,27 +271,28 @@ def check_data_consistency(conn):
     """检查数据一致性"""
     logger.info("🔍 检查数据一致性...")
     
-    # 检查 stock_quotes 中不存在于 stock_basic 的代码
+    # 检查 stock_quotes 中不存在于 stock_basic 的代码（本脚本仅同步 A 股，口径限定 cn，避免港/美股混入）
     result = conn.execute(text("""
         SELECT COUNT(DISTINCT q.code) 
         FROM stock_quotes q
         LEFT JOIN stock_basic b ON q.code = b.code
-        WHERE b.code IS NULL AND q.cycle = '1d'
+        WHERE b.code IS NULL AND q.cycle = '1d' AND q.market = 'cn'
     """))
     orphan_count = result.scalar()
     if orphan_count > 0:
         logger.warning(f"⚠️ stock_quotes 中有 {orphan_count} 只股票不在 stock_basic 中")
     
     # 检查 stock_basic 中不存在于 stock_quotes 的代码（最新交易日）
-    result = conn.execute(text("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d'"))
+    result = conn.execute(text("SELECT MAX(trade_date) FROM stock_quotes WHERE cycle = '1d' AND market = 'cn'"))
     latest_date = result.scalar()
     
     if latest_date:
         result = conn.execute(text("""
             SELECT COUNT(*) 
             FROM stock_basic b
-            LEFT JOIN stock_quotes q ON b.code = q.code AND q.cycle = '1d' AND q.trade_date = :latest_date
-            WHERE q.code IS NULL
+            LEFT JOIN stock_quotes q ON b.code = q.code AND q.market = 'cn'
+                AND q.cycle = '1d' AND q.trade_date = :latest_date
+            WHERE q.code IS NULL AND b.market = 'cn'
         """), {"latest_date": latest_date})
         missing_count = result.scalar()
         logger.info(f"📈 最新交易日 {latest_date}: {missing_count} 只股票缺少行情数据")
