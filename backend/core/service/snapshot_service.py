@@ -74,8 +74,8 @@ ETL_AVOID_START_HOUR = 15
 ETL_AVOID_END_HOUR = 20
 
 
-class ServiceNotReadyError(Exception):
-    """服务数据未就绪异常"""
+class ServiceNotReadyError(RuntimeError):
+    """服务数据未就绪异常（继承 RuntimeError，使全局处理器映射为 503）"""
     pass
 
 

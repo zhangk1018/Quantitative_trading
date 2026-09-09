@@ -158,6 +158,55 @@ def _normalize_yahoo_cols(df: pd.DataFrame) -> pd.DataFrame:
     return out.rename(columns=ren)
 
 
+def _guard_unadjusted_notches(splitted: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
+    """拦截「孤立未复权错价」（协作单 32.0，P1 防复发）。
+
+    新浪/雅虎后复权源在个别交易日可能返回 `Adj Close ≈ Close`（未复权），使该行
+    `adj_factor≈1.0` 相对相邻平滑复权序列形成**孤立断崖**（相邻两日因子正常、仅当日
+    突变），而真实除权除息会形成**持久因子块**（新因子延续多日）。本函数只剔除
+    满足「前后相邻因子互相接近（非除权块）且当日因子显著偏离」的**孤立**行，避免
+    误删真实除权边界。
+
+    Args:
+        splitted: `split_raw_adj` 输出（含 trade_date / adj_factor / volume 等）
+
+    Returns:
+        (过滤后的 DataFrame, 剔除行数)
+    """
+    if splitted.empty or 'adj_factor' not in splitted or 'trade_date' not in splitted:
+        return splitted, 0
+
+    df = splitted.reset_index(drop=True)
+    factor = df['adj_factor'].astype(float)
+    normal_ratio = 0.15        # 相邻因子相差 <15% 视为「平滑段」（互相接近）
+    deviation = 0.6            # 当日因子 < 相邻因子×0.6 视为孤立偏离
+    notch = pd.Series(False, index=df.index)
+    for i in df.index:
+        if i - 1 not in df.index or i + 1 not in df.index:
+            continue  # 首尾行（含最新锚点，其 factor≈1.0 属正常）不判
+        f_prev, f_cur, f_next = factor[i - 1], factor[i], factor[i + 1]
+        # 相邻两日需互相接近（相差 < normal_ratio）才构成「前后平滑、仅当日突变」的孤立场景
+        if f_prev <= 0 or f_next <= 0:
+            continue
+        denom = max(f_prev, f_next)
+        if abs(f_prev - f_next) / denom > normal_ratio:
+            continue  # 前后不等 → 真实除权边界，不判
+        # 当日因子需显著低于相邻（< deviation×紧邻），否则不是向下的孤立错价
+        if f_cur >= deviation * min(f_prev, f_next):
+            continue
+        notch[i] = True
+
+    n = int(notch.sum())
+    if n == 0:
+        return splitted, 0
+    logger.warning(
+        f"⚠️ {df.loc[notch, 'code'].iloc[0] if 'code' in df else ''} 拦截 {n} 天"
+        f"孤立未复权错价（Adj Close≈Close 断崖）："
+        f"{pd.to_datetime(df.loc[notch, 'trade_date']).dt.date.astype(str).tolist()}，已剔除不入库"
+    )
+    return df.loc[~notch].reset_index(drop=True), n
+
+
 def clean_and_split(df_raw: pd.DataFrame, code: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     """把一个标的的 Yahoo 原生日线拆分为入库的行情/复权因子两部分。
 
@@ -203,6 +252,14 @@ def clean_and_split(df_raw: pd.DataFrame, code: str) -> Tuple[Optional[pd.DataFr
         for col in ('open', 'high', 'low', 'close'):
             splitted.loc[neg_mask, f'adj_{col}'] = splitted.loc[neg_mask, f'raw_{col}']
         splitted.loc[neg_mask, 'adj_factor'] = 1.0
+    # 孤立未复权错价拦截（协作单 32.0）：剔除 Adj Close≈Close 导致相对相邻因子孤立断崖的行
+    _splitted, _n_notch = _guard_unadjusted_notches(splitted)
+    if _n_notch > 0:
+        logger.warning(f"  {code}: 已剔除 {_n_notch} 天孤立未复权错价行，防复发")
+        splitted = _splitted
+    if splitted.empty:
+        logger.warning(f"  {code}: 全部行均为孤立未复权错价，无可入库数据")
+        return None, None
     splitted = detect_factor_dates(splitted)
     splitted['code'] = code
 
