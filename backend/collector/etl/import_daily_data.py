@@ -27,10 +27,10 @@ from collector.datasource.base import DataSourceManager, SwitchStrategy
 from collector.datasource.baostock import BaostockDataSource
 from collector.datasource.tushare import TushareDataSource
 from clean.processor.base_importer import BaseDataImporter
-from utils.logger import setup_logger
+from utils.logger import setup_detail_and_summary_loggers
 from utils.stock_code_utils import normalize_code
 
-logger = setup_logger('daily_import')
+logger, summary_logger = setup_detail_and_summary_loggers('daily_import')
 
 # 不复权数据源列表（需要转换为前复权）
 NON_ADJUSTED_SOURCES = ('tushare',)
@@ -810,6 +810,8 @@ class DailyDataImporter(BaseDataImporter):
 
         logger.info(f"全量导入完成: 成功 {success_count}, 失败 {fail_count}, "
                    f"跳过 {skip_count}, 总记录 {total_records}")
+        summary_logger.info(f"全量导入完成: 成功 {success_count}, 失败 {fail_count}, "
+                            f"跳过 {skip_count}, 总记录 {total_records}")
         self.update_task_progress('completed', 100,
                                   f"全量导入完成: 成功 {success_count}, 失败 {fail_count}, "
                                   f"跳过 {skip_count}, 总记录 {total_records}")
@@ -1051,6 +1053,7 @@ class DailyDataImporter(BaseDataImporter):
                                   f"增量导入完成: 成功 {success_count}, 失败 {fail_count}, "
                                   f"总记录 {total_records}")
         logger.info(f"增量导入完成: 成功 {success_count}, 失败 {fail_count}, 总记录 {total_records}")
+        summary_logger.info(f"增量导入完成: 成功 {success_count}, 失败 {fail_count}, 总记录 {total_records}")
         return success_count, fail_count, total_records
 
 

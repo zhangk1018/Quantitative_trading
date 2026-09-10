@@ -32,9 +32,9 @@ from collector.datasource.tushare import TushareDataSource
 from collector.datasource.baostock import BaostockDataSource
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
-from utils.logger import setup_logger
+from utils.logger import setup_detail_and_summary_loggers
 
-logger = setup_logger('daily_basic_sync')
+logger, summary_logger = setup_detail_and_summary_loggers('daily_basic_sync')
 
 # Tushare daily_basic 限频 60次/分钟，每次间隔至少 1.1 秒
 DAILY_BASIC_MIN_INTERVAL = 1.1
@@ -135,6 +135,7 @@ class DailyBasicSync:
 
         count = self.sync_date(latest_date)
         logger.info(f"✅ {latest_date} 同步完成: {count} 条记录")
+        summary_logger.info(f"✅ {latest_date} 同步完成: {count} 条记录")
         return count
 
     def sync_all(self, start_date: Optional[str] = None,
@@ -163,6 +164,7 @@ class DailyBasicSync:
             total_records += count
 
         logger.info(f"✅ 日频基本面同步完成，共 {total_records} 条记录")
+        summary_logger.info(f"✅ 日频基本面同步完成，共 {total_records} 条记录")
         return total_records
 
     def sync_incremental(self) -> int:
@@ -183,6 +185,7 @@ class DailyBasicSync:
             total_records += count
 
         logger.info(f"✅ 增量同步完成，共 {total_records} 条记录")
+        summary_logger.info(f"✅ 增量同步完成，共 {total_records} 条记录")
         return total_records
 
 
@@ -208,6 +211,7 @@ def main():
         elif args.date:
             count = syncer.sync_date(args.date)
             logger.info(f"✅ {args.date} 同步完成: {count} 条记录")
+            summary_logger.info(f"✅ {args.date} 同步完成: {count} 条记录")
         else:
             # 默认：同步最近交易日
             count = syncer.sync_latest()

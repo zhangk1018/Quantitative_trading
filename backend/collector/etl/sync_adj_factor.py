@@ -31,9 +31,9 @@ import akshare as ak
 
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
-from utils.logger import setup_logger
+from utils.logger import setup_detail_and_summary_loggers
 
-logger = setup_logger('sync_adj_factor')
+logger, summary_logger = setup_detail_and_summary_loggers('sync_adj_factor')
 
 
 # ==================== 常量 ====================
@@ -542,6 +542,15 @@ def sync_adj_factor(incremental: bool = False):
             logger.info(f"  新上市股票: {len(new_stocks)} 只")
         logger.info(f"  总记录数: {total_saved} 条")
         logger.info("=" * 60)
+
+        summary_logger.info("=" * 60)
+        summary_logger.info("✅ 复权因子同步完成")
+        summary_logger.info(f"  处理股票: {total_with_data} 只")
+        summary_logger.info(f"  已跳过(最新): {total_skipped} 只")
+        if new_stocks:
+            summary_logger.info(f"  新上市股票: {len(new_stocks)} 只")
+        summary_logger.info(f"  总记录数: {total_saved} 条")
+        summary_logger.info("=" * 60)
 
         print(f'TASK_RESULT:{json.dumps({"rows_affected": total_saved, "extra_metrics": {"total_stocks": total_with_data, "skipped": total_skipped, "new_stocks": len(new_stocks)}})}')
 

@@ -28,10 +28,10 @@ from sqlalchemy import text
 
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
-from utils.logger import setup_logger
+from utils.logger import setup_detail_and_summary_loggers
 from utils.stock_code_utils import normalize_db_code
 
-logger = setup_logger('signal_precompute')
+logger, summary_logger = setup_detail_and_summary_loggers('signal_precompute')
 
 
 class SignalPrecompute:
@@ -386,6 +386,12 @@ class SignalPrecompute:
         logger.info(f"总股票数:{total_stock_cnt}｜产生信号股票:{len(stock_with_signal)}")
         logger.info(f"累计入库交易信号:{total_write_signals}")
         logger.info("=============================================")
+
+        summary_logger.info("=============================================")
+        summary_logger.info("批量预计算任务全部完成")
+        summary_logger.info(f"总股票数:{total_stock_cnt}｜产生信号股票:{len(stock_with_signal)}")
+        summary_logger.info(f"累计入库交易信号:{total_write_signals}")
+        summary_logger.info("=============================================")
         
         return {
             "total_stocks": total_stock_cnt,

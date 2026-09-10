@@ -38,7 +38,7 @@ from psycopg2.extras import execute_values
 # 保证 `import collector.* / collector.utils / utils.logger` 可解析
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from utils.logger import setup_logger  # noqa: E402
+from utils.logger import setup_detail_and_summary_loggers  # noqa: E402
 from collector.datasource.akshare import (  # noqa: E402
     AkShareDataSource,
     normalize_code,
@@ -52,7 +52,10 @@ from collector.etl.market_download_common import (  # noqa: E402
     rate_limit_sleep,
 )
 
-logger = setup_logger('us_daily_import')
+# 日志治理（见 .trae/rules/量化交易.md）：美股日线导入的逐只明细（清洗/写入等）
+# 由 us_job_runner 捕获子进程 stdout 写入 logs/cron/<task>_<date>.log；
+# us_daily_import.log 仅保留每次运行的汇总信息（init/incremental 完成统计）。
+logger, summary_logger = setup_detail_and_summary_loggers('us_daily_import')
 
 # 项目根目录（.env 所在处）
 BASE_DIR = Path(__file__).resolve().parents[3]
@@ -486,6 +489,8 @@ def run_init(src: AkShareDataSource, conn: psycopg2.extensions.connection,
             logger.warning('⚠️ 本轮无成功写入，跳过回写 last_sync_date（保留旧进度，下次可重试）')
     logger.info(f"✅ init 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
                 f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
+    summary_logger.info(f"✅ init 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
+                        f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
     return stats
 
 
@@ -590,6 +595,8 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
             logger.warning('⚠️ 本轮无成功写入，跳过回写 last_sync_date（保留旧进度，下次增量可重试补缺口）')
     logger.info(f"✅ incremental 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
                 f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
+    summary_logger.info(f"✅ incremental 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
+                        f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
     return stats
 
 

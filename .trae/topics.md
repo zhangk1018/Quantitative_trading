@@ -334,3 +334,8 @@
 - 修改范围：前台股票搜索跨市场支持。①自选股「添加自选股」：改为代码/名称输入，新增 `searchStocksAll`（/stocks/search 三市场并发合并）并使 `useStockSearch`、弹窗 `resolveCode` 跨市场，港美股可搜；②交易室「标的代码」：统一 `stockSearchOptions`（buildStockOptions/pickStockName）三处调用，修复港股名称被加 `.HK` 前缀（原纯数字正则 label 反解），并加 `optionLabelProp="value"` 使选中后只显示代码；③K线弹窗缺省带「除权」标注；④前端信号去重段合并 + `/api/snapshot` 503 就绪轮询。遗留待 K 定夺：交易室美股中文名搜不到（stock_basic 美股仅有 ticker 名，属后端/数据层，需决策是否开协作单转量量）。会话交互对象：K
 
 - 修改范围：协作单 32.0（港股存量未复权错价）清理收尾 + 协作单 33.2 修复。①32.0：以孤立断崖判据定位 38 行/26 只错价，备份后删 30 行 factor + 重建 8 行 quotes，级联重算受影响股票指标/周月K/形态/信号/宽表/parquet；方舟复校验²补清 0069.HK(2025-09-26)/0148.HK(2026-06-11) 2 行（仅删 factor，quotes 因子本正常无需重算），精判据 f∈[0.8,1.15] 且前后>1.5× 全市场复查归零；32.0 方舟终验 CLOSED，f=0型/疑似类型平移登记为 33.3。②33.2：`snapshot_service.py` `ServiceNotReadyError` 改继承 `RuntimeError`，命中全局 503 映射修复选股快照偶发 500，方舟验证 CLOSED。日报已更新，待提交。会话交互对象：K
+
+## 会话信息
+- 日期：2026-09-10
+- 负责角色：量量
+- 修改范围：①协作单 33.3 港股 factor 残留口径复核 CLOSED（f=0/孤儿/坏值归零，除零消除）；②协作单 31.0 K线除权日后端部分（A股 factor_date 回填 31,488 行/4,703 只 + sync_adj_factor 增量打标 + kline_service 透出 ex_dates，方舟联调后 CLOSED）；③协作单 34.0 布林误报修复 CLOSED（SQL 漏选 boll 列 + 守卫）；④协作单 34.1 RSI 信号状态机合并 VERIFY（600036 98→30 条）；⑤日志治理全项目改造（logger.py 新增 setup_detail_and_summary_loggers，7 个 ETL 脚本明细→stdout(cron 明细)、主日志只留汇总，hk/us runner 补 _write_cron_detail 完整落盘）。注：31.0/34.0/34.1 后端代码已随 d3510d3 提交，本次提交覆盖日志治理。会话交互对象：K

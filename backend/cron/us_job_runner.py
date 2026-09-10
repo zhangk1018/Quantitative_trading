@@ -47,6 +47,28 @@ load_dotenv(BASE_DIR / '.env')  # 显式加载数据库连接配置
 MAX_RETRIES = 3
 RETRY_INTERVAL_DEFAULT = 300  # 秒
 
+LOG_DIR = os.environ.get('LOG_DIR', os.path.join(str(BASE_DIR), 'logs'))
+
+
+def _write_cron_detail(task_name: str, stdout_text: str) -> None:
+    """将子进程完整 stdout 追加写入 logs/cron/{task}_{date}.log（与 daily_job_runner 明细治理一致）。
+
+    各 ETL 脚本的逐条明细日志走 stdout（仅 StreamHandler），此处落盘为每日 cron 明细文件；
+    脚本自身主日志文件（如 logs/us_daily_import.log）只保留汇总信息。
+    """
+    if not stdout_text or not stdout_text.strip():
+        return
+    date_str = datetime.now().strftime("%Y%m%d")
+    log_path = os.path.join(LOG_DIR, 'cron', f"{task_name}_{date_str}.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    try:
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(stdout_text)
+            if not stdout_text.endswith('\n'):
+                f.write('\n')
+    except OSError as e:
+        logger.warning(f"⚠️ cron 明细日志写入失败 ({log_path}): {e}")
+
 
 def _get_engine():
     """构建 SQLAlchemy Engine（与 daily_job_runner 一致）。"""
@@ -90,7 +112,7 @@ def _log_end(log_id: int, success: bool, exit_code: int, error_message: Optional
         logger.warning(f"⚠️ task_run_log 更新失败: {e}")
 
 
-def _run_script(args: List[str], step: str) -> int:
+def _run_script(args: List[str], step: str, task_name: str = '') -> int:
     """执行单个脚本，失败自动重试 MAX_RETRIES 次，最终失败落 alerts.log。返回最终退出码(0=成功)。"""
     last_code = -1
     for attempt in range(1, MAX_RETRIES + 1):
@@ -101,6 +123,8 @@ def _run_script(args: List[str], step: str) -> int:
             logger.error(f"❌ [{step}] 启动失败: {e}")
             last_code = -1
             break
+        if task_name:
+            _write_cron_detail(task_name, proc.stdout)
         if proc.stdout.strip():
             logger.info(f"  [{step}] stdout:\n" + "\n".join(proc.stdout.strip().splitlines()[-15:]))
         if proc.stderr.strip():
@@ -144,7 +168,7 @@ def main() -> None:
     for label, args in STEPS:
         task_name = f"us:{label}"
         log_id = _log_start(task_name)
-        code = _run_script(args, label)
+        code = _run_script(args, label, task_name=task_name)
         _log_end(log_id, success=(code == 0), exit_code=code, error_message=None, rows=None)
         if code != 0:
             failed.append(label)

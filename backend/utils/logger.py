@@ -189,6 +189,61 @@ def _parse_time_interval(interval: str) -> tuple:
     return interval_map.get(interval, ('midnight', 1))
 
 
+def setup_detail_and_summary_loggers(
+    name: str,
+    level: int = logging.INFO,
+) -> tuple:
+    """创建「明细/汇总」分离的双 logger（日志治理）。
+
+    设计背景（见 .trae/rules/量化交易.md 日志规范与 cron 明细治理）：被 daily_job_runner
+    调度的 ETL 脚本，其逐条明细日志会经由子进程 stdout 被 runner 捕获并写入
+    logs/cron/{task}_{date}.log；若脚本自己再用 setup_logger 将明细写进 logs/{name}.log，
+    就会造成明细重复落盘。本函数统一拆分：
+
+    - 返回 (detail_logger, summary_logger)
+    - detail_logger：仅保留 stdout（由 cron runner 捕获进 cron 明细文件），不写主文件
+    - summary_logger：写 logs/{name}.log 汇总文件（轮转），不写 stdout，避免与明细 stdout 重复
+
+    Args:
+        name: logger 名（主汇总文件名 = logs/{name}.log）
+        level: 日志级别
+
+    Returns:
+        tuple: (detail_logger, summary_logger)
+    """
+    detail = setup_logger(name, level=level)
+    summary = setup_logger(f"{name}_summary", level=level, filename=f"{name}.log")
+    # summary logger：移除默认 stdout（避免与明细 stdout 重复），仅保留写 {name}.log 的文件 handler
+    for h in list(summary.handlers):
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+            summary.removeHandler(h)
+            h.close()
+    summary.propagate = False
+    # detail logger：移除文件 handler，仅保留 stdout → cron runner 捕获
+    for h in list(detail.handlers):
+        if isinstance(h, logging.FileHandler):
+            detail.removeHandler(h)
+            h.close()
+    detail.propagate = False
+    return detail, summary
+
+
+def setup_detail_stdout_only(name: str, level: int = logging.INFO) -> logging.Logger:
+    """创建仅 stdout 的明细 logger（由 cron runner 捕获进 cron 明细文件），不写任何主日志文件。
+
+    适用于日志治理：脚本明细只走 stdout（每日 cron 明细在 logs/cron/{task}_{date}.log），
+    主日志文件只保留汇总（由调用方用 setup_logger 单独写）。等价于 setup_detail_and_summary_loggers
+    返回的 detail 部分。
+    """
+    lg = setup_logger(name, level=level)
+    for h in list(lg.handlers):
+        if isinstance(h, logging.FileHandler):
+            lg.removeHandler(h)
+            h.close()
+    lg.propagate = False
+    return lg
+
+
 def configure_root_logging(level: int = logging.INFO) -> logging.Logger:
     """统一配置 root logger 的 stdout handler（格式与全项目一致）。
 

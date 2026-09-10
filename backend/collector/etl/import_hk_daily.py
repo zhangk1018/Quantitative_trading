@@ -38,7 +38,7 @@ from psycopg2.extras import execute_values
 # 保证 `import collector.* / collector.utils / utils.logger` 可解析
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from utils.logger import setup_logger  # noqa: E402
+from utils.logger import setup_detail_and_summary_loggers  # noqa: E402
 from collector.datasource.akshare import AkShareDataSource, normalize_code  # noqa: E402
 from collector.utils.adj_adjust import split_raw_adj, detect_factor_dates  # noqa: E402
 from collector.etl.market_download_common import (  # noqa: E402
@@ -48,7 +48,10 @@ from collector.etl.market_download_common import (  # noqa: E402
     rate_limit_sleep,
 )
 
-logger = setup_logger('hk_daily_import')
+# 日志治理（见 .trae/rules/量化交易.md）：港股日线导入的逐只明细（清洗/写入/回退等）
+# 由 hk_job_runner 捕获子进程 stdout 写入 logs/cron/<task>_<date>.log；
+# hk_daily_import.log 仅保留每次运行的汇总信息（init/incremental 完成统计）。
+logger, summary_logger = setup_detail_and_summary_loggers('hk_daily_import')
 
 # 项目根目录（.env 所在处）
 BASE_DIR = Path(__file__).resolve().parents[3]
@@ -842,6 +845,8 @@ def run_init(src: AkShareDataSource, conn: psycopg2.extensions.connection,
             logger.warning('⚠️ 本轮无成功写入，跳过回写 last_sync_date（保留旧进度，下次可重试）')
     logger.info(f"✅ init 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
                 f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
+    summary_logger.info(f"✅ init 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
+                        f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
     return stats
 
 
@@ -980,6 +985,7 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
             else:
                 logger.warning('⚠️ 批量快照直写为空（全部回退亦无价），保留原 last_sync_date')
             logger.info(f"✅ incremental(批量) 完成: 直写 {batch['direct']}")
+            summary_logger.info(f"✅ incremental(批量) 完成: 直写 {batch['direct']}")
             return stats
         logger.warning('⚡ 批量快照接口未返回数据，回退逐只增量路径')
 
@@ -1018,6 +1024,8 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
             logger.warning('⚠️ 本轮无成功写入，跳过回写 last_sync_date（保留旧进度，下次增量可重试补缺口）')
     logger.info(f"✅ incremental 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
                 f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
+    summary_logger.info(f"✅ incremental 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
+                        f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
     return stats
 
 

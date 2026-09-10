@@ -34,7 +34,7 @@ from collector.datasource.baostock import BaostockDataSource
 from collector.datasource.tushare import TushareDataSource
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from utils.config import config
-from utils.logger import setup_logger
+from utils.logger import setup_detail_and_summary_loggers
 from utils.stock_code_utils import normalize_code, filter_out_bse
 from backend.utils.error_handler import (
     PipelineError, ErrorSeverity, ErrorCategory,
@@ -42,7 +42,11 @@ from backend.utils.error_handler import (
 )
 from backend.utils.datasource_health import get_health_manager
 
-logger = setup_logger('data_filler')
+# 日志治理（见 .trae/rules/量化交易.md）：fill_missing_data 的逐条明细日志
+# （逐只补全、进度、数据源状态等）由 daily_job_runner 通过捕获子进程 stdout
+# 写入 logs/cron/fill_missing_data_<date>.log；data_filler.log 仅保留每次运行的
+# 汇总信息，便于快速查看整体结果而不被明细淹没。
+logger, summary_logger = setup_detail_and_summary_loggers('data_filler')
 
 
 def get_missing_stocks(storage: PostgreSQLStorage, min_days: int = 60, market: Optional[str] = None,
@@ -587,6 +591,7 @@ def main():
             total = len(codes)
             if total == 0:
                 logger.info("没有需要补全的股票 ✅")
+                summary_logger.info("没有需要补全的股票 ✅")
                 print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": {"total": 0, "success": 0, "fail": 0}})}')
                 return
 
@@ -598,6 +603,7 @@ def main():
                 codes = codes[:args.limit]
 
             logger.info(f"需补全股票: {len(codes)} 只（从 #{start_idx} 开始）")
+            summary_logger.info(f"需补全股票: {len(codes)} 只（从 #{start_idx} 开始）")
 
             # Dry-run 模式
             if args.dry_run:
@@ -709,14 +715,20 @@ def main():
             # 输出数据源健康状态
             ds_status = health_mgr.summary()
 
-            logger.info("=" * 60)
-            logger.info("📊 补全完成")
-            logger.info(f"  处理: {len(codes)} 只")
-            logger.info(f"  成功: {success} 只 (Tushare: {tushare_count}, Baostock: {baostock_count})")
-            logger.info(f"  失败: {fail} 只")
-            logger.info(f"  记录: {total_records} 条")
-            logger.info(f"  数据源状态: {ds_status}")
-            logger.info("=" * 60)
+            # 汇总信息：写 data_filler.log（summary_logger）并同步输出 stdout（进 cron 明细文件）
+            _summary_lines = [
+                "=" * 60,
+                "📊 补全完成",
+                f"  处理: {len(codes)} 只",
+                f"  成功: {success} 只 (Tushare: {tushare_count}, Baostock: {baostock_count})",
+                f"  失败: {fail} 只",
+                f"  记录: {total_records} 条",
+                f"  数据源状态: {ds_status}",
+                "=" * 60,
+            ]
+            for _line in _summary_lines:
+                summary_logger.info(_line)
+                logger.info(_line)
 
             result_data = {
                 "rows_affected": total_records,
