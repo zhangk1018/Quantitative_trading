@@ -175,7 +175,16 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
         const nonPatternConfigs = conditionConfigs.filter(c => !c.fieldKey.startsWith('pattern_'));
         const hasBackendPatterns = klineResult.patternMarkers.length > 0;
 
-        let allEvents: ConditionEvent[] = [];
+        // 缺省默认展示「除权」标注（无需勾选任何筛选条件即显示）— K 2026-09-10 需求
+        const exDateEvents: ConditionEvent[] = (klineResult.exDates || []).map(d => ({
+          time: d,
+          label: '除权',
+          fieldKey: 'ex_date',
+          color: '#B39DDB',
+          shape: 'circle',
+          direction: 'neutral',
+        }));
+        let allEvents: ConditionEvent[] = [...exDateEvents];
         const allUndetectable: { fieldKey: string; label: string; reason: string }[] = [];
 
         // 1) 非 pattern 条件（RSI/MACD 等）— 始终使用本地检测
@@ -190,7 +199,7 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
           }));
           bars.sort((a, b) => a.time.localeCompare(b.time));
           const result = detectConditions(bars, nonPatternConfigs);
-          allEvents = result.events;
+          allEvents = [...allEvents, ...result.events];
           allUndetectable.push(...result.undetectable);
         }
 

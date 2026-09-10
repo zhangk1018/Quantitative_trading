@@ -5,7 +5,7 @@ kline_service.py - K线数据服务
 import pandas as pd
 import numpy as np
 from typing import List, Optional, Dict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from decimal import Decimal
 import time
 import random
@@ -194,6 +194,9 @@ class KlineService:
             for m in pattern_dicts
         ]
 
+        # 查询除权除息日（协作单 31.0：前端 K 线标注 factor_date）
+        ex_dates = self._query_ex_dates(stock_code, kline_df)
+
         # 构建响应
         response = KLineResponse(
             stock_code=stock_code,
@@ -203,6 +206,7 @@ class KlineService:
             latest_factor=latest_factor,
             warning=warning_msg,
             pattern_markers=pattern_markers,
+            ex_dates=ex_dates,
         )
         
         # 存入缓存
@@ -322,6 +326,42 @@ class KlineService:
             return self._storage.get_pattern_markers(db_code, start_date, end_date)
         except (ValueError, KeyError) as e:
             logger.warning(f"pattern_markers 查询失败 ({stock_code}): {e}")
+            return []
+
+    def _query_ex_dates(self, stock_code: str, kline_df: pd.DataFrame) -> List[date]:
+        """查询 stock_adj_factor 表，返回时间范围内的除权除息日（factor_date）。
+
+        与 _query_pattern_markers 相同的时间范围与代码标准化逻辑，失败时返回空列表，
+        不影响 K 线主数据返回。
+
+        Args:
+            stock_code: 股票代码
+            kline_df: K线数据 DataFrame（用于获取时间范围）
+
+        Returns:
+            除权除息日列表（升序，YYYY-MM-DD 的 date 对象）
+        """
+        if self._storage is None or kline_df.empty or 'trade_date' not in kline_df.columns:
+            return []
+
+        # 获取时间范围（与 K线请求一致）
+        dates = pd.to_datetime(kline_df['trade_date'], errors='coerce')
+        valid_dates = dates.dropna()
+        if valid_dates.empty:
+            return []
+        start_date = valid_dates.min().strftime('%Y-%m-%d')
+        end_date = valid_dates.max().strftime('%Y-%m-%d')
+
+        # 标准化股票代码（去掉 sh./sz. 前缀；港股 9988.HK / 美股 AAPL 原样保留）
+        db_code = stock_code
+        for prefix in ('sh.', 'sz.', 'SH.', 'SZ.'):
+            if db_code.startswith(prefix):
+                db_code = db_code.replace(prefix, '').lower()
+
+        try:
+            return self._storage.get_ex_dates(db_code, start_date, end_date)
+        except (ValueError, KeyError) as e:
+            logger.warning(f"ex_dates 查询失败 ({stock_code}): {e}")
             return []
 
     def _calc_indicators(self, df: pd.DataFrame) -> pd.DataFrame:

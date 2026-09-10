@@ -315,31 +315,52 @@ class SignalService:
         return signals
 
     def _generate_rsi_signals(self, df: pd.DataFrame) -> List[SignalItem]:
-        """生成RSI超买超卖信号"""
+        """生成RSI超买超卖信号（连续超买/超卖段合并，每段只在退出阈值时产出 1 条拐点信号）
+
+        协作单 34.1：原逻辑每日 `rsi<30` / `rsi>70` 即触发，震荡行情下连续多日停留在
+        超买/超卖区产生大量重复信号（如 600036 2026 年 98 条/167 日）。改为状态机跟踪
+        超买/超卖段：仅在 RSI 从超买区回落（跌破 70）或从超卖区回升（站上 30）的
+        当天产出信号，一段持续超买/超卖只对应 1 条拐点信号。
+        """
         signals = []
+        n = len(df)
+        if n == 0:
+            return signals
 
-        for _, row in df.iterrows():
-            rsi = row["rsi_6"]
+        rsis = df["rsi_6"].tolist()
+        in_overbought = False  # 当前是否处于超买段（rsi > 70）
+        in_oversold = False    # 当前是否处于超卖段（rsi < 30）
 
-            # RSI超卖信号（买入）
-            if rsi < 30:
+        for i in range(n):
+            rsi = rsis[i]
+            date_i = df.iloc[i]["date"]
+            close_i = float(df.iloc[i]["close"])
+
+            # 超买段跟踪：进入超买区后，首次回落到 <=70 视为拐点（卖出）
+            if rsi > 70:
+                in_overbought = True
+            elif in_overbought:
                 signals.append(SignalItem(
-                    trade_date=row["date"],
-                    signal_type="rsi_oversold",
-                    direction="buy",
-                    price=float(row["close"]),
-                    reason=f"RSI超卖：{rsi:.2f} < 30",
-                ))
-
-            # RSI超买信号（卖出）
-            elif rsi > 70:
-                signals.append(SignalItem(
-                    trade_date=row["date"],
+                    trade_date=date_i,
                     signal_type="rsi_overbought",
                     direction="sell",
-                    price=float(row["close"]),
-                    reason=f"RSI超买：{rsi:.2f} > 70",
+                    price=close_i,
+                    reason=f"RSI超买回落：{rsi:.2f} < 70",
                 ))
+                in_overbought = False
+
+            # 超卖段跟踪：进入超卖区后，首次回升到 >=30 视为拐点（买入）
+            if rsi < 30:
+                in_oversold = True
+            elif in_oversold:
+                signals.append(SignalItem(
+                    trade_date=date_i,
+                    signal_type="rsi_oversold",
+                    direction="buy",
+                    price=close_i,
+                    reason=f"RSI超卖回升：{rsi:.2f} > 30",
+                ))
+                in_oversold = False
 
         return signals
 
@@ -351,6 +372,10 @@ class SignalService:
             close = row["close"]
             boll_upper = row["boll_upper"]
             boll_lower = row["boll_lower"]
+
+            # 守卫：布林带数据无效（缺失/为 0）时跳过，避免 close>0 恒真每日误报
+            if not boll_upper or not boll_lower:
+                continue
 
             # 突破上轨（卖出信号）
             if close > boll_upper:

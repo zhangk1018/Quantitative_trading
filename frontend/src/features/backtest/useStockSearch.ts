@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { searchStocks } from '../stock-detail/api';
+import { searchStocksAll } from '../stock-detail/api';
 import type { StockSearchItem } from '../stock-detail/api';
 
 export interface UseStockSearchResult {
@@ -31,7 +31,7 @@ export function useStockSearch(debounceDelay = 300): UseStockSearchResult {
     setLoading(true);
     setError(null);
     try {
-      const result = await searchStocks(kw.trim());
+      const result = await searchStocksAll(kw.trim());
       if (!controller.signal.aborted) {
         setOptions(result.items || []);
       }

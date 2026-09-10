@@ -16,14 +16,14 @@ function makeBar(index: number, overrides: Partial<KlineBar> = {}): KlineBar {
 }
 
 describe('detectConditions 后端口径对齐（纯前端计算）', () => {
-  it('放量突破：volume / 5日均量 >= 1.5 即命中', () => {
-    // 前 4 天 volume=100, 第 5 天 volume=180, 5日均量=116, 量比=180/116≈1.55 >= 1.5
+  it('放量突破：volume / 5日均量 >= 2.0 即命中（阈值由 1.5 收紧，缓解叠加）', () => {
+    // 前 4 天 volume=100, 第 5 天 volume=300, 5日均量=(400+300)/5=140, 量比=300/140≈2.14 >= 2.0
     const bars = [
       makeBar(0, { volume: 100 }),
       makeBar(1, { volume: 100 }),
       makeBar(2, { volume: 100 }),
       makeBar(3, { volume: 100 }),
-      makeBar(4, { volume: 180 }),
+      makeBar(4, { volume: 300 }),
     ];
 
     const result = detectConditions(bars, [{ fieldKey: 'volume_breakout' }]);
@@ -111,5 +111,19 @@ describe('detectConditions 后端口径对齐（纯前端计算）', () => {
     // 趋势在第5天中断（close=12 < close=13）
     expect(result.events.map(e => e.time)).toEqual(['2026-07-04']);
     expect(result.events.map(e => e.value)).toEqual(['连涨3天']);
+  });
+
+  it('RSI超卖：持续超卖段仅在回升跨 30 当天出 1 条拐点（段合并，避免每天重复）', () => {
+    // close 连续大跌使 RSI6 < 30（进入超卖段），再大幅反弹使 RSI6 回升跨过 30
+    const closes = [100, 95, 90, 85, 80, 75, 70, 65, 60, 64, 68, 74, 82, 92, 104];
+    const bars = closes.map((c, i) =>
+      makeBar(i, { open: c, close: c, high: c + 1, low: c - 1 })
+    );
+
+    const result = detectConditions(bars, [{ fieldKey: 'rsi_oversold' }]);
+    const oversold = result.events.filter(e => e.fieldKey === 'rsi_oversold');
+
+    // 段合并后在整段超卖+回升中只出 1 条拐点（旧逻辑会在持续超卖的每一天各出 1 条）
+    expect(oversold.length).toBe(1);
   });
 });

@@ -17,7 +17,7 @@ import {
   Modal, Form, Input, InputNumber, DatePicker, Select, App, Row, Col, AutoComplete, Button,
 } from 'antd';
 import dayjs from 'dayjs';
-import type { TradingRecord, TradingRecordFormData, StockSearchResult, ExitSlip, ExitSlipFormData } from '../types';
+import type { TradingRecord, TradingRecordFormData, ExitSlip, ExitSlipFormData } from '../types';
 import {
   INSTRUMENT_TYPE_OPTIONS, LONG_SHORT_OPTIONS, ORDER_TYPE_OPTIONS,
   TRADE_GRADE_OPTIONS, TRIGGER_SOURCE_OPTIONS,
@@ -31,6 +31,7 @@ import { calcEntryScore, calcExitScore, calcChannelHeight, calcTradeScore, calcT
 import { calcCommission, calcTransferFee, calcSlippageCost } from '../utils/tradingCostUtils';
 import ExitSlipList from './ExitSlipList';
 import ExitSlipModal from './ExitSlipModal';
+import { buildStockOptions, pickStockName } from './stockSearchOptions';
 
 interface Props {
   open: boolean;
@@ -289,13 +290,7 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
     debounceTimer.current = setTimeout(async () => {
       try {
         const results = await searchStocks(q);
-        setStockOptions(
-          results.map((s: StockSearchResult) => ({
-            value: s.code,
-            label: `${s.code} ${s.name}`,
-            code: s.code,
-          })),
-        );
+        setStockOptions(buildStockOptions(results));
       } catch {
         message.warning('股票搜索失败，请检查网络连接');
       }
@@ -308,11 +303,8 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
     };
   }, []);
 
-  const handleStockSelect = useCallback((_value: string, option: { label: string }) => {
-    // label 格式为 `${code} ${name}`；按首个空格切分取名称，
-    // 兼容 A股 `600519 贵州茅台` 与港/美股 `9988.HK 阿里巴巴` / `AAPL Apple Inc.`
-    const name = option.label.split(/\s+/).slice(1).join(' ').trim();
-    form.setFieldsValue({ security_name: name });
+  const handleStockSelect = useCallback((_value: string, option: { name?: string; label?: string }) => {
+    form.setFieldsValue({ security_name: pickStockName(option) });
   }, [form]);
 
   // --- 卖出记录管理 ---

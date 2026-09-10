@@ -59,19 +59,19 @@ async def add_stock_via_search(page: Page, code: str):
     force=True 原因：Antd Modal 关闭后 ant-modal-wrap div 残留拦截 pointer events
     """
     await page.locator('[data-testid="watchlist-add-btn"]').click(force=True)
-    await page.wait_for_selector('[data-testid="watchlist-search-input"]', state="visible", timeout=5000)
-    await page.fill('[data-testid="watchlist-search-input"]', code)
+    await page.wait_for_selector('#watchlist-search-input', state="visible", timeout=5000)
+    await page.fill('#watchlist-search-input', code)
     await page.locator('[data-testid="watchlist-search-modal-ok"]').click(force=True)
     # handleAdd 不自动关闭 modal，手动点取消
     await page.locator('[data-testid="watchlist-search-modal-cancel"]').click(force=True)
-    await page.wait_for_selector('[data-testid="watchlist-search-input"]', state="hidden", timeout=5000)
+    await page.wait_for_selector('#watchlist-search-input', state="hidden", timeout=5000)
 
 
 async def add_stock_to_group(page: Page, code: str, group: str):
     """通过搜索弹窗添加股票到指定分组"""
     await page.locator('[data-testid="watchlist-add-btn"]').click(force=True)
-    await page.wait_for_selector('[data-testid="watchlist-search-input"]', state="visible", timeout=5000)
-    await page.fill('[data-testid="watchlist-search-input"]', code)
+    await page.wait_for_selector('#watchlist-search-input', state="visible", timeout=5000)
+    await page.fill('#watchlist-search-input', code)
     # 模拟人工点击 Select 下拉
     await page.locator('[data-testid="watchlist-search-group-select"]').click()
     await page.wait_for_timeout(300)  # Select 下拉展开动画需要固定延时
@@ -80,7 +80,7 @@ async def add_stock_to_group(page: Page, code: str, group: str):
     await option.click(force=True)
     await page.locator('[data-testid="watchlist-search-modal-ok"]').click(force=True)
     await page.locator('[data-testid="watchlist-search-modal-cancel"]').click(force=True)
-    await page.wait_for_selector('[data-testid="watchlist-search-input"]', state="hidden", timeout=5000)
+    await page.wait_for_selector('#watchlist-search-input', state="hidden", timeout=5000)
 
 
 async def create_custom_group(page: Page, name: str):

@@ -110,6 +110,8 @@ interface KLineApiResponse {
   pattern_markers?: PatternMarker[];
   warning?: string | null;
   latest_factor?: number | null;
+  /** 除权除息日列表（后端 stock_adj_factor.factor_date，协作单 31.0），如 ["2026-05-08"] */
+  ex_dates?: string[];
 }
 
 export interface KLineItem {
@@ -130,10 +132,12 @@ export interface PatternMarker {
   patterns: string[];
 }
 
-/** K 线数据 + 形态标记的完整返回 */
+/** K 线数据 + 形态标记 + 除权日的完整返回 */
 export interface KLineDataResult {
   items: KLineItem[];
   patternMarkers: PatternMarker[];
+  /** 除权除息日（升序，YYYY-MM-DD） */
+  exDates: string[];
 }
 
 export interface SignalItem {
@@ -209,10 +213,13 @@ export const fetchKLineData = async (
     ? data.pattern_markers
     : [];
 
+  // 提取除权除息日 ex_dates（KLineResponse 顶层字段，协作单 31.0）
+  const exDates: string[] = Array.isArray(data?.ex_dates) ? data.ex_dates : [];
+
   // 提取 K 线数据数组（KLineResponse.data）
   const rawItems = data?.data ?? [];
   if (!Array.isArray(rawItems)) {
-    return { items: [], patternMarkers };
+    return { items: [], patternMarkers, exDates };
   }
 
   const items: KLineItem[] = rawItems
@@ -229,13 +236,53 @@ export const fetchKLineData = async (
     }))
     .filter(item => !isNaN(item.open));
 
-  return { items, patternMarkers };
+  return { items, patternMarkers, exDates };
+};
+
+/** 后端 /api/signals 返回的单条信号（裸 SignalResponse.signals 项，非信封） */
+export interface RawSignalItem {
+  trade_date: string;
+  signal_type: string;
+  direction: 'buy' | 'sell';
+  price: number;
+  reason?: string;
+}
+
+/** 后端 /api/signals 裸响应结构（response_model=SignalResponse，无 code/data 信封） */
+interface SignalResponsePayload {
+  stock_code: string;
+  stock_name?: string | null;
+  listed_board?: string | null;
+  signal_type?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  count?: number;
+  signals?: RawSignalItem[];
+}
+
+/** 后端信号类型 → 图例短标签（精简 reason 长文本，缓解 K 线文本堆叠） */
+const SIGNAL_LABELS: Record<string, { buy: string; sell: string }> = {
+  macd_cross: { buy: 'MACD金叉', sell: 'MACD死叉' },
+  rsi_oversold: { buy: 'RSI超卖', sell: '' },
+  rsi_overbought: { buy: '', sell: 'RSI超买' },
+  bollinger_breakout: { buy: '布林下破', sell: '布林上破' },
 };
 
 export const fetchSignals = async (code: string): Promise<SignalItem[]> => {
-  const { data } = await api.get<ApiResponse<SignalItem[]>>(`/signals/${code}`);
-  const list = unwrap(data);
-  return Array.isArray(list) ? list : [];
+  const { data } = await api.get<SignalResponsePayload>(`/signals/${code}`);
+  // 后端直接返回裸 SignalResponse（含顶层 signals 字段），不做 unwrap 信封解析
+  const list = Array.isArray(data?.signals) ? data.signals : [];
+  return list.map((s) => {
+    const labels = SIGNAL_LABELS[s.signal_type];
+    const text = labels ? labels[s.direction] : (s.reason ?? s.signal_type);
+    return {
+      time: s.trade_date,
+      position: s.direction === 'buy' ? 'aboveBar' : 'belowBar',
+      shape: s.direction === 'buy' ? 'arrowUp' : 'arrowDown',
+      color: s.direction === 'buy' ? '#26A69A' : '#EF5350',
+      text,
+    };
+  });
 };
 
 // ==================== 4. 股票搜索（代码/名称模糊匹配） ====================
@@ -256,9 +303,36 @@ export const searchStocks = async (
   keyword: string,
   page = 1,
   pageSize = 20,
+  market?: string,
 ): Promise<StockSearchResponse> => {
   const { data } = await api.get<ApiResponse<StockSearchResponse>>('/stocks/search', {
-    params: { keyword, page, page_size: pageSize },
+    params: { keyword, page, page_size: pageSize, ...(market ? { market } : {}) },
   });
   return unwrap(data);
+};
+
+// 跨市场搜索：cn/hk/us 三市场并发查询后合并，用于「添加自选股」等需要任意市场标的的场景
+export const searchStocksAll = async (
+  keyword: string,
+  pageSize = 20,
+): Promise<StockSearchResponse> => {
+  const results = await Promise.all(
+    (['cn', 'hk', 'us'] as const).map((m) =>
+      searchStocks(keyword, 1, pageSize, m).catch(() => ({ items: [], total: 0 })),
+    ),
+  );
+  // 按股票代码去重（三市场代码后缀不同，几乎不会撞，稳妥起见仍去重）
+  const seen = new Set<string>();
+  const items: StockSearchItem[] = [];
+  let total = 0;
+  for (const r of results) {
+    total += r.total;
+    for (const it of r.items) {
+      if (!seen.has(it.stock_code)) {
+        seen.add(it.stock_code);
+        items.push(it);
+      }
+    }
+  }
+  return { items, total };
 };

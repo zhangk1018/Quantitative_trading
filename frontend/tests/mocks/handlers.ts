@@ -121,8 +121,28 @@ export const stocksHandlers = [
         { date: '2026-07-03', patterns: ['hammer'] },
         { date: '2026-07-06', patterns: ['morning_star', 'bullish_engulfing'] },
       ],
+      // 除权除息日（协作单 31.0）
+      ex_dates: ['2026-07-03', '2026-07-07'],
     };
 
+    return HttpResponse.json(response);
+  }),
+
+  // ==================== 交易信号 ====================
+  // 后端 /api/signals/{code} 用 response_model=SignalResponse 返回裸对象（无 code/data 信封）
+  http.get('/api/signals/:code', ({ params }) => {
+    const code = params.code as string;
+    const response = {
+      stock_code: code,
+      stock_name: '招商银行',
+      listed_board: '上海主板',
+      signal_type: 'all',
+      signals: [
+        { trade_date: '2026-07-03', signal_type: 'macd_cross', direction: 'buy', price: 35.5, reason: 'MACD金叉' },
+        { trade_date: '2026-07-06', signal_type: 'rsi_overbought', direction: 'sell', price: 36.2, reason: 'RSI超买：72.3 > 70' },
+      ],
+      count: 2,
+    };
     return HttpResponse.json(response);
   }),
 ];

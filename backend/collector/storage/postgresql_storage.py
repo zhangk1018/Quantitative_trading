@@ -15,7 +15,7 @@ import warnings
 from decimal import Decimal
 from contextlib import contextmanager
 from typing import Optional, Dict, Any, List, Tuple, Generator
-from datetime import datetime
+from datetime import datetime, date
 from io import StringIO
 
 import numpy as np
@@ -965,17 +965,20 @@ class PostgreSQLStorage(BaseStorage):
         df = df.where(pd.notnull(df), None)
         if 'adj_factor' not in df.columns:
             df['adj_factor'] = None
+        if 'factor_date' not in df.columns:
+            df['factor_date'] = None
         df['adj_factor'] = df['adj_factor'].apply(lambda x: Decimal(str(x)) if pd.notnull(x) else None)
-        values = list(df[['code', 'trade_date', 'adj_factor']].itertuples(index=False, name=None))
+        values = list(df[['code', 'trade_date', 'adj_factor', 'factor_date']].itertuples(index=False, name=None))
 
         conn = self._get_conn()
         try:
             with conn.cursor() as cursor:
                 execute_values(cursor, """
-                    INSERT INTO stock_adj_factor (code, trade_date, adj_factor)
+                    INSERT INTO stock_adj_factor (code, trade_date, adj_factor, factor_date)
                     VALUES %s
                     ON CONFLICT (code, trade_date) DO UPDATE SET
-                        adj_factor = EXCLUDED.adj_factor
+                        adj_factor = EXCLUDED.adj_factor,
+                        factor_date = EXCLUDED.factor_date
                 """, values, page_size=5000)
             conn.commit()
             logger.info(f"✅ 保存复权因子: {len(values)} 条")
@@ -1468,6 +1471,39 @@ class PostgreSQLStorage(BaseStorage):
         finally:
             self._return_conn(conn)
 
+    def get_ex_dates(self, code: str, start_date: str, end_date: str) -> List[date]:
+        """查询指定股票在时间范围内的除权除息日列表（stock_adj_factor.factor_date）。
+
+        Args:
+            code: 股票代码（标准化格式，如 600000 / 9988.HK）
+            start_date: 开始日期 (YYYY-MM-DD)
+            end_date: 结束日期 (YYYY-MM-DD)
+
+        Returns:
+            除权除息日列表（升序），失败时返回空列表，不影响 K 线主数据返回
+        """
+        self._ensure_connection()
+        sql = """
+            SELECT trade_date
+            FROM stock_adj_factor
+            WHERE code = %(code)s
+              AND factor_date IS NOT NULL
+              AND trade_date BETWEEN %(start_date)s AND %(end_date)s
+            ORDER BY trade_date ASC
+        """
+        params = {'code': code, 'start_date': start_date, 'end_date': end_date}
+
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return [row[0] for row in cur.fetchall()]
+        except Exception as e:
+            logger.warning(f"ex_dates 查询失败 (code={code}): {e}")
+            return []
+        finally:
+            self._return_conn(conn)
+
     def get_adj_factor(self, code: str, start_date: Optional[str] = None,
                        end_date: Optional[str] = None, limit: int = 10000) -> pd.DataFrame:
         self._ensure_connection()
@@ -1718,7 +1754,7 @@ class PostgreSQLStorage(BaseStorage):
             SELECT q.trade_date, q.open, q.high, q.low, q.close, q.volume, q.amount,
                    b.pe_ttm, b.pb, b.circ_mv, b.turnover_rate,
                    i.ma5, i.ma10, i.ma20, i.ma60, i.dif, i.dea, i.macd,
-                   i.rsi6, i.rsi12, i.rsi24
+                   i.rsi6, i.rsi12, i.rsi24, i.boll_upper, i.boll_mid, i.boll_lower
             FROM stock_quotes q
             LEFT JOIN stock_daily_basic b ON q.code = b.code AND q.trade_date = b.trade_date
             LEFT JOIN stock_indicators i ON q.code = i.code AND q.trade_date = i.trade_date AND q.cycle = i.cycle

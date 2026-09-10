@@ -24,7 +24,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import type {
   PDCACycle, TradingPlan, TradingPlanFormData, PlanTemplate, PlanTemplateType,
-  SecurityTag, SecurityTagValue, StockSearchResult,
+  SecurityTag, SecurityTagValue,
 } from '../types';
 import {
   LONG_SHORT_LABELS, PLAN_TEMPLATE_TYPE_LABELS, SECURITY_TAG_LABELS, SECURITY_TAG_OPTIONS,
@@ -37,6 +37,7 @@ import {
   fetchSecurities, upsertSecurity, updateSecurity, deleteSecurity,
 } from '../services/plan';
 import { searchStocks } from '../services/stock';
+import { buildStockOptions, pickStockName } from './stockSearchOptions';
 
 const { Text, Title } = Typography;
 
@@ -153,12 +154,7 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
     debounceTimer.current = setTimeout(async () => {
       try {
         const results = await searchStocks(q);
-        setStockOptions(
-          results.map((s: StockSearchResult) => ({
-            value: s.code,
-            label: `${s.code} ${s.name}`,
-          })),
-        );
+        setStockOptions(buildStockOptions(results));
       } catch {
         appMessage.warning('股票搜索失败，请检查网络连接');
       }
@@ -171,9 +167,8 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
     };
   }, []);
 
-  const handleStockSelect = useCallback((_value: string, option: { label: string }) => {
-    const name = option.label.replace(/^\d+\s*/, '');
-    form.setFieldsValue({ security_name: name });
+  const handleStockSelect = useCallback((_value: string, option: { name?: string; label?: string }) => {
+    form.setFieldsValue({ security_name: pickStockName(option) });
   }, [form]);
 
   // ── 打开新建/编辑弹窗 ──
@@ -421,6 +416,7 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
                 onSelect={handleStockSelect}
                 options={stockOptions}
                 notFoundContent={null}
+                optionLabelProp="value"
               />
             </Form.Item>
             <Form.Item name="security_name" label="标的名称">
@@ -599,12 +595,7 @@ const SecurityManager: React.FC = () => {
     debounceTimer.current = setTimeout(async () => {
       try {
         const results = await searchStocks(q);
-        setStockOptions(
-          results.map((s: StockSearchResult) => ({
-            value: s.code,
-            label: `${s.code} ${s.name}`,
-          })),
-        );
+        setStockOptions(buildStockOptions(results));
       } catch {
         appMessage.warning('股票搜索失败，请检查网络连接');
       }
@@ -617,9 +608,8 @@ const SecurityManager: React.FC = () => {
     };
   }, []);
 
-  const handleStockSelect = useCallback((_value: string, option: { label: string }) => {
-    const name = option.label.replace(/^\d+\s*/, '');
-    form.setFieldsValue({ security_name: name });
+  const handleStockSelect = useCallback((_value: string, option: { name?: string; label?: string }) => {
+    form.setFieldsValue({ security_name: pickStockName(option) });
   }, [form]);
 
   const columns: ColumnsType<SecurityTag> = [
@@ -712,6 +702,7 @@ const SecurityManager: React.FC = () => {
               onSelect={handleStockSelect}
               options={stockOptions}
               notFoundContent={null}
+              optionLabelProp="value"
             />
           </Form.Item>
           <Form.Item name="security_name" label="标的名称">

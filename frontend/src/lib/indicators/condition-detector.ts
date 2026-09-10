@@ -129,8 +129,15 @@ function computeCache(bars: KlineBar[]): ComputedCache {
 function detectRsiOversold(cache: ComputedCache, bars: KlineBar[]): ConditionEvent[] {
   const events: ConditionEvent[] = [];
   const config = getConditionVisualConfig().rsi_oversold;
+  // 段合并（对齐后端 34.1 口径）：只在 RSI 从超卖区（<30）回升到 >=30 的当天打 1 条
+  // 拐点，避免一段持续超卖中每天重复标记。若超卖段持续到数据末尾未回升则不出信号。
+  let inOversold = false;
   for (let i = 0; i < cache.rsi6.length; i++) {
-    if (cache.rsi6[i] !== null && cache.rsi6[i]! < 30) {
+    const r = cache.rsi6[i];
+    if (r === null) continue;
+    if (r < 30) {
+      inOversold = true;
+    } else if (inOversold) {
       events.push({
         time: bars[i].time,
         label: config.label,
@@ -138,8 +145,9 @@ function detectRsiOversold(cache: ComputedCache, bars: KlineBar[]): ConditionEve
         color: config.color,
         shape: config.shape,
         direction: config.direction,
-        value: `RSI ${cache.rsi6[i]!.toFixed(1)}`,
+        value: `RSI ${r.toFixed(1)}`,
       });
+      inOversold = false;
     }
   }
   return events;
@@ -148,19 +156,31 @@ function detectRsiOversold(cache: ComputedCache, bars: KlineBar[]): ConditionEve
 function detectVolumeBreakout(cache: ComputedCache, bars: KlineBar[]): ConditionEvent[] {
   const events: ConditionEvent[] = [];
   const config = getConditionVisualConfig().volume_breakout;
+  // 阈值由 1.5 提至 2.0（显著放量），并在连续放量段内仅打一次标（段首），
+  // 避免连续多日放量时每天重复标记造成叠加。
+  const BREAK_RATIO = 2.0;
+  let inBreakout = false;
   for (let i = 0; i < cache.volumes.length; i++) {
-    if (cache.volMa5[i] === null) continue;
+    if (cache.volMa5[i] === null) {
+      inBreakout = false;
+      continue;
+    }
     const volRatio5 = cache.volumes[i] / cache.volMa5[i]!;
-    if (volRatio5 >= 1.5) {
-      events.push({
-        time: bars[i].time,
-        label: config.label,
-        fieldKey: 'volume_breakout',
-        color: config.color,
-        shape: config.shape,
-        direction: config.direction,
-        value: `量比 ${volRatio5.toFixed(2)}`,
-      });
+    if (volRatio5 >= BREAK_RATIO) {
+      if (!inBreakout) {
+        events.push({
+          time: bars[i].time,
+          label: config.label,
+          fieldKey: 'volume_breakout',
+          color: config.color,
+          shape: config.shape,
+          direction: config.direction,
+          value: `量比 ${volRatio5.toFixed(2)}`,
+        });
+        inBreakout = true;
+      }
+    } else {
+      inBreakout = false;
     }
   }
   return events;
@@ -216,7 +236,9 @@ function detectConsecutiveUp(cache: ComputedCache, bars: KlineBar[]): ConditionE
     if (i === 0) continue;
     if (cache.closes[i] > cache.closes[i - 1]) {
       streak++;
-      if (streak >= 3) {
+      // 段合并：一段连涨只在第 3 天（满足「连涨 3 天及以上」的段首）打一次标，
+      // 避免 3/4/5... 天每天重复标记造成叠加（协作单同前端信号去重优化）。
+      if (streak === 3) {
         events.push({
           time: bars[i].time,
           label: config.label,

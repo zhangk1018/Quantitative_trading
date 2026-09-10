@@ -53,6 +53,10 @@ const OHLCV_BATCH_SIZE = 200;
 const OHLCV_MAX_RETRIES = 2;
 /** 首次重试延迟（毫秒），后续指数退避 */
 const OHLCV_RETRY_BASE_DELAY = 500;
+/** 后端数据服务（数据刷新/加载中返回 503）就绪等待最大时长（毫秒） */
+const OHLCV_READY_WAIT_MS = 120_000;
+/** 就绪探测轮询间隔（毫秒） */
+const READY_POLL_INTERVAL_MS = 1000;
 
 // ==================== 工具函数 ====================
 
@@ -203,7 +207,31 @@ export class CustomIndicatorService {
   }
 
   /**
-   * 拉取单批 OHLCV（带重试）
+   * 等待后端快照服务就绪。
+   *
+   * 后端在全量数据刷新/加载期间会让 /api/snapshot/all 返回 503（数据加载中），
+   * 此时不能按普通失败机械重试，而应先轮询 /api/snapshot/ready 等服务就绪后再重试。
+   *
+   * @returns 就绪返回 true；超时返回 false；信号取消抛「已取消」
+   */
+  private async waitReady(maxWaitMs: number, signal?: AbortSignal): Promise<boolean> {
+    const deadline = Date.now() + maxWaitMs;
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw new Error('已取消');
+      try {
+        const resp = await fetch('/api/snapshot/ready', { signal });
+        if (resp.ok) return true;
+      } catch (err) {
+        if (signal?.aborted) throw new Error('已取消');
+        // 连接类瞬态错误：继续轮询
+      }
+      await sleep(READY_POLL_INTERVAL_MS);
+    }
+    return false;
+  }
+
+  /**
+   * 拉取单批 OHLCV（带重试 + 数据服务就绪等待）
    */
   private async fetchOhlcvBatch(
     codes: string[],
@@ -215,12 +243,23 @@ export class CustomIndicatorService {
       if (signal?.aborted) throw new Error('已取消');
 
       if (attempt > 0) {
+        // 就绪等待后重试的场景不额外退避，避免叠加延时
         const delay = OHLCV_RETRY_BASE_DELAY * Math.pow(2, attempt - 1);
         await sleep(delay);
       }
 
       try {
         const resp = await fetch(`/api/snapshot/all?codes=${codes.join(',')}`, { signal });
+        // 数据刷新/加载中：等待后端就绪后重置重试计数，重新发起本轮请求
+        if (resp.status === 503) {
+          const ready = await this.waitReady(OHLCV_READY_WAIT_MS, signal);
+          if (!ready) {
+            throw new Error(`数据服务未就绪：HTTP ${resp.status}（等待超过 ${OHLCV_READY_WAIT_MS / 1000}s）`);
+          }
+          lastError = new Error(`HTTP ${resp.status}`);
+          attempt = -1; // 就绪后重置计数，重新走一次完整请求
+          continue;
+        }
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status}`);
         }

@@ -200,21 +200,25 @@ def build_akshare_symbol(code: str, exchange: str) -> Optional[str]:
     return f"{prefix}{code}"
 
 
-def expand_factor_to_daily(code: str, df: pd.DataFrame, start_date: date, end_date: date) -> pd.DataFrame:
+def expand_factor_to_daily(code: str, df: pd.DataFrame, start_date: date, end_date: date,
+                           prev_factor_seed: Optional[float] = None) -> pd.DataFrame:
     """
     将 Akshare (Sina qfq-factor) 返回的变更日累积复权因子展开为每日复权因子（前向填充）。
 
     Akshare 返回的是 **累积型前复权因子**（每个变更日一个因子值），
     本函数将其展开为每日因子：变更日之间的日期使用上一个变更日的因子值填充。
+    同时按 `detect_factor_dates` 口径（因子相对上一日变化 >1%）在除权生效日打 `factor_date`，
+    用于前端 K 线除权标注（协作单 31.0）。
 
     Args:
         code: 股票代码
         df: Akshare 返回的 DataFrame，列包含 date/qfq_factor
         start_date: 填充起始日期
         end_date: 填充结束日期
+        prev_factor_seed: 窗口起始日之前数据库中的最新因子（用于判断窗口首日是否为除权生效日）
 
     Returns:
-        包含 code/trade_date/adj_factor 的 DataFrame
+        含 code/trade_date/adj_factor/factor_date 的 DataFrame
     """
     if df is None or df.empty:
         return pd.DataFrame()
@@ -225,7 +229,11 @@ def expand_factor_to_daily(code: str, df: pd.DataFrame, start_date: date, end_da
 
     records = []
     prev_date = start_date
-    prev_factor = None
+    prev_factor = prev_factor_seed
+    prev_is_factor_date = False  # 上一变更日是否为除权生效日（因子相对更早一日变化 >1%）
+
+    def _append(d: date, factor: float, fd: Optional[date]) -> None:
+        records.append({'code': code, 'trade_date': d, 'adj_factor': factor, 'factor_date': fd})
 
     for _, row in df.iterrows():
         change_date = row['date']
@@ -238,21 +246,32 @@ def expand_factor_to_daily(code: str, df: pd.DataFrame, start_date: date, end_da
         if current_factor > 50000:
             logger.warning(f"  [{code}] 复权因子异常大(>50000): {current_factor}，可能为数据错误")
 
+        # 除权判定：因子相对上一变更日变化 >1%（对齐 detect_factor_dates 口径）
+        is_factor_date = (
+            prev_factor is not None
+            and abs(current_factor / prev_factor - 1.0) > 0.01
+        )
+
         if prev_factor is not None:
             d = prev_date
+            first = True
             while d < change_date and d <= end_date:
-                records.append({'code': code, 'trade_date': d, 'adj_factor': prev_factor})
+                _append(d, prev_factor, d if (first and prev_is_factor_date) else None)
                 d += timedelta(days=1)
+                first = False
 
         prev_date = max(change_date, start_date)
         prev_factor = current_factor
+        prev_is_factor_date = is_factor_date
 
     # 填充最后一个变更日到 end_date
     if prev_factor is not None:
         d = prev_date
+        first = True
         while d <= end_date:
-            records.append({'code': code, 'trade_date': d, 'adj_factor': prev_factor})
+            _append(d, prev_factor, d if (first and prev_is_factor_date) else None)
             d += timedelta(days=1)
+            first = False
 
     return pd.DataFrame(records)
 
@@ -275,8 +294,11 @@ def sync_stock_adj_factor_akshare(storage: PostgreSQLStorage, code: str,
         logger.warning(f"  [WARN] {code}: Akshare 获取复权因子失败: {e}")
         df = pd.DataFrame()
 
+    # 窗口起始日之前的库内最新因子：空数据时用于前向填充，非空时用于
+    # 判断窗口首日是否为除权生效日（factor_date 边界，协作单 31.0）
+    _, last_adj = get_last_known_adj_factor(storage, code)
+
     if df is None or df.empty:
-        _, last_adj = get_last_known_adj_factor(storage, code)
         if last_adj is not None:
             filled = fill_missing_dates(storage, code, start_date, end_date, last_adj)
             if filled > 0:
@@ -285,7 +307,7 @@ def sync_stock_adj_factor_akshare(storage: PostgreSQLStorage, code: str,
         logger.debug(f"  [SKIP] {code}: 无历史复权因子可填充")
         return 0
 
-    result_df = expand_factor_to_daily(code, df, start_date, end_date)
+    result_df = expand_factor_to_daily(code, df, start_date, end_date, prev_factor_seed=last_adj)
     if result_df.empty:
         return 0
 

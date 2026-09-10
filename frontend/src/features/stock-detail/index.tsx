@@ -109,6 +109,7 @@ const StockDetailPage: React.FC = () => {
     data: klineData?.items || [],
     signals: signalsData || [],
     indicators,
+    exDates: klineData?.exDates,
   });
 
   if (!isValidCode) return <Empty description={code ? `无效的股票代码: ${code}` : '未指定股票代码'} />;

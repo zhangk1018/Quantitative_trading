@@ -23,6 +23,8 @@ interface UseStockChartParams {
   data: KLineItem[];
   signals: SignalItem[];
   indicators: StockChartIndicators;
+  /** 除权除息日（YYYY-MM-DD，从后端 K 响应 ex_dates 透出，协作单 31.0） */
+  exDates?: string[];
 }
 
 interface ChartBar {
@@ -70,11 +72,60 @@ function buildMarkers(signals: SignalItem[]): SeriesMarker<Time>[] {
   }));
 }
 
+/** 除权除息日标注：K 线下方圆点 + 「除权」文本（协作单 31.0） */
+function buildExDateMarkers(exDates: string[]): SeriesMarker<Time>[] {
+  return exDates
+    .filter((d) => d && !isNaN(Date.parse(d)))
+    .map((d) => ({
+      time: toChartTime(d),
+      position: 'belowBar',
+      color: '#B39DDB',
+      shape: 'circle',
+      text: '除权',
+    }));
+}
+
+/**
+ * 缓解信号拥堵：按信号类型分散采样。
+ * 后端信号可能存在单一类型高频（如 RSI 连续超买），旧逻辑「只取最近 N 条」会让
+ * 密集同类占满名额、标签重叠。现改为每类最多保留最近的 MAX_PER_TYPE 条，
+ * 保证 MACD/RSI/布林等不同类型信号均衡可见；总数再加 MAX_SIGNAL_MARKERS 兜底。
+ */
+const MAX_PER_TYPE = 3;
+const MAX_SIGNAL_MARKERS = 12;
+function limitSignalMarkers(signals: SeriesMarker<Time>[]): SeriesMarker<Time>[] {
+  if (signals.length <= MAX_PER_TYPE) return signals;
+  // 按信号类型标签（text）分组；无标签归入兜底组
+  const groups = new Map<string, SeriesMarker<Time>[]>();
+  for (const m of signals) {
+    const key = m.text || 'signal';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(m);
+  }
+  // 每组按时间降序取最近 MAX_PER_TYPE 条
+  let picked: SeriesMarker<Time>[] = [];
+  for (const arr of groups.values()) {
+    const recent = [...arr]
+      .sort((a, b) => Date.parse(String(b.time)) - Date.parse(String(a.time)))
+      .slice(0, MAX_PER_TYPE);
+    picked.push(...recent);
+  }
+  // 总数兜底：仍超出则保留最近 MAX_SIGNAL_MARKERS 条
+  if (picked.length > MAX_SIGNAL_MARKERS) {
+    picked = [...picked]
+      .sort((a, b) => Date.parse(String(b.time)) - Date.parse(String(a.time)))
+      .slice(0, MAX_SIGNAL_MARKERS);
+  }
+  // 转回升序供 lightweight-charts 使用
+  return picked.sort((a, b) => Date.parse(String(a.time)) - Date.parse(String(b.time)));
+}
+
 export function useStockChart({
   containerRef,
   data,
   signals,
   indicators,
+  exDates,
 }: UseStockChartParams): void {
   useEffect(() => {
     const container = containerRef.current;
@@ -124,8 +175,13 @@ export function useStockChart({
     );
 
     const markerData = buildMarkers(validateSignals(signals));
-    if (markerData.length > 0) {
-      candleSeries.setMarkers(markerData);
+    const exMarkers = buildExDateMarkers(exDates ?? []);
+    // 信号单独去重+限量缓解文本堆叠（除权标注量少独立保留），后端信号为降序统一转升序后渲染
+    const allMarkers = [...limitSignalMarkers(markerData), ...exMarkers].sort(
+      (a, b) => Date.parse(String(a.time)) - Date.parse(String(b.time)),
+    );
+    if (allMarkers.length > 0) {
+      candleSeries.setMarkers(allMarkers);
     }
 
     const volumeSeries = chart.addHistogramSeries({
@@ -167,5 +223,5 @@ export function useStockChart({
       cancelAnimationFrame(rafId);
       chart.remove();
     };
-  }, [containerRef, data, signals, indicators.ma5, indicators.ma10, indicators.ma20]);
+  }, [containerRef, data, signals, indicators.ma5, indicators.ma10, indicators.ma20, exDates]);
 }

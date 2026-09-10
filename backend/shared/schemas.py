@@ -345,6 +345,8 @@ class KLineResponse(BaseModel):
     warning: Optional[str] = Field(None, description="处理过程中产生的警告信息，如复权失败等")
     # K线形态标记（TA-Lib 预计算结果）
     pattern_markers: List[PatternMarker] = Field(default_factory=list, description="K线形态标记列表")
+    # 除权除息日（stock_adj_factor.factor_date，前端 K 线标注用，协作单 31.0）
+    ex_dates: List[date] = Field(default_factory=list, description="除权除息日列表")
 
 
 # ============================================

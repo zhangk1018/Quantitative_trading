@@ -11,6 +11,17 @@
 \[方舟→量量 2026-09-09 23:50] 协作单 [32.0-HK-UNADJUSTED-20260907] 状态变更: VERIFY→CLOSED（方舟终验通过：复核导入层守卫 `_guard_unadjusted_notches` 判据——前后相邻因子接近<15% 且当日<相邻×0.6 才判孤立未复权错价剔除，首尾不判、真实除权不误删；全市场未复权错价残留归零）。已从协作单删除归档。
 \[方舟→量量 2026-09-09 23:50] 协作单 [33.3-HK-FACTOR-RESIDUAL-20260910] 提单（NEW，P2）：登记 32.0 清理排除的 f=0 型（0021.HK 多行 factor=0）与疑似类型（0206/0339/0612/3301，因子非≈1 疑真实复权段/除权），请量量口径复核判定。
 
+\[量量→方舟 2026-09-10 08:40] 协作单 [33.3-HK-FACTOR-RESIDUAL-20260910] 状态变更: NEW→VERIFY（口径复核+清理完成：f=0 型 108 行/26 只含 0021 统一删除，备份 temp_stock_adj_factor_fix_bak_20260910；疑似类型 0206/3301 与行情 implied 一致属真实复权段无需处理、0339/0612 错价已回写对齐；全市场 factor(hk) 165896 行 f=0/孤儿/坏值/值不一致归零，check_adj_factor_jumps 除零消除；quotes 未动无需级联重算下游）。请方舟复核后 CLOSED。
+
+\[方舟→量量 2026-09-10 09:40] 协作单 [33.3-HK-FACTOR-RESIDUAL-20260910] 状态变更: VERIFY→CLOSED（方舟独立复核通过：f=0=0、全市场对账浮归零、check_adj_factor_jumps 不再除零、五股 0021/0206/0339/0612/3301 因子与 quotes implied 全一致）。已归档删除。另协作单 [31.0-KLINE-EXDIV-ANNOTATE-20260903] 已排期置 ASSIGNED（K 请排期）：排 09-11 档期，方舟前端标注 + 量量后端透出 factor_date；识别前置依赖「A股 stock_adj_factor.factor_date 当前为空」（港股已全量），请量量评估是否按 detect_factor_dates 批量回填 A 股 factor_date，否则 A 股除权标注无数据。
+\[方舟→量量 2026-09-10 09:50] 协作单 [31.0-KLINE-EXDIV-ANNOTATE-20260903] 排期定稿（K 已确认「纳入 A 股补数」）：量量本期工作项含 ①按 `detect_factor_dates`（factor 相对变化>1%）批量回填 `stock_adj_factor`(cn) 的 `factor_date`（港股已全覆盖无需回填）；②`kline_service.py` 仿 `_query_pattern_markers` 新增除权日查询并透出 KLineResponse 新增字段 `ex_dates`。方舟负责前端渲染。排 09-11 档期，请量量认领后端部分。
+
+\[量量→方舟 2026-09-10 10:00] 协作单 [31.0-KLINE-EXDIV-ANNOTATE-20260903] 状态变更: ASSIGNED→VERIFY（量量后端部分完成：①A股 stock_adj_factor.factor_date 一次性回填 31,488 行/4,703 只，按 detect_factor_dates 口径，000001/600519 分红节奏抽样验证正确；②sync_adj_factor.py expand_factor_to_daily 新增 factor_date 打标+save_adj_factor 持久化，含窗口边界 seed，4 边界场景验证通过 → 增量自动维护；③kline_service 透出 ex_dates（KLineResponse 新字段 + storage.get_ex_dates + _query_ex_dates），cn/hk/us 三市场验证正常）。请方舟前端联调：api.ts 接收 ex_dates → useStockChart buildMarkers 渲染「除权」标注。
+
+\[量量→方舟 2026-09-10 12:10] 协作单 [34.0-BOLL-SIGNAL-FALSEPOSITIVE-20260910] 状态变更: NEW→VERIFY（根因修复完成：`get_kline_with_indicators` SQL 漏选 boll_upper/boll_mid/boll_lower 列 → 信号服务兜底转 0 → close>0 恒真每日误报；已补选 3 列 + `_generate_bollinger_signals` 加 boll 无效跳过守卫，重启后端实测 600036/000001/600519 布林误报归零、reason 全为真实值，单测验证 boll=0 跳过正常触发）。请方舟复核 `/api/signals/600036` 无 `"> 0.00"` 误报、布林信号与布林带实际关系一致后 CLOSED。
+
+\[量量→方舟 2026-09-10 12:40] 协作单 [34.1-RSI-SIGNAL-DENSITY-20260910] 状态变更: NEW→VERIFY（RSI 口径优化完成：`_generate_rsi_signals` 改状态机合并——一段连续超买/超卖仅退出阈值当天产 1 条拐点信号，保留 70/30 阈值；2026 年接口实测 600036 RSI 98→30、000001 98→28、600519 88→25，总信号降至 53-71 条；600036 信号日与走势相关性抽查合理（超卖回升后反弹/超买回落后回调）；新增 tests/test_signal_rsi_merge.py 6 用例全过）。请方舟复核 RSI 信号量级与相关性后 CLOSED。
+
 ## 会话信息
 
 - 日期：2026-08-15
@@ -276,6 +287,9 @@
 - 修改范围：**0046.HK 行情异常排查与修复**。K 报告 0046.HK 行情不对，根因=新浪港股数据源在部分交易日 **Adj Close 未复权**（K 线现值 4.x→1.3 跳变）。①**第 1 类（volume=0 停牌占位，核心断裂）**：剔 216,498 行（552 只，含 0046 8/31、9/1），备份表 `stock_quotes_hk_vol0_bak_20260907`；重算周/月K（temp/bar_hk_recompute.py，仅 market=hk）+ 指标(全量 hk)+形态+信号(force-full)+宽表+parquet，0046 最新 20260904 4.12 恢复连续；②**第 2 类（volume>0 未复权错价）**：如 0046 7/17 adj=1.20=raw 级、factor0.95 夹在两日 3.2 之间（530 只/30 万行），判据复杂（2000 年 factor0.25 是真实复权）、删除会形成数据空洞 → **提单 32.0 转量量**设计导入层复权有效性校验+备用源回补+级联重算。③**美股核查无同类问题**（volume=0 仅 110 行/1984-1995/已复权历史，2026 归零）。剩 0046 7/17 等历史未复权错价待量量 32.0 处理。会话交互对象：K
 
 ## 跨会话通知
+[方舟→量量 2026-09-10 17:00] 协作单 [34.0-BOLL-SIGNAL-FALSEPOSITIVE-20260910] 状态变更: VERIFY→**CLOSED**（方舟独立复核通过：代码确认 SELECT 补选 boll_*+守卫；数据源独立查证 600036/000001/600519 boll_upper 全部实值无 0；接口实证三股布林 `>0.00` 误报 0、600036 布林 167→16 条真实信号，前端无信号告警、除权/布林正常渲染。布林误报根因彻底修复。注：600036 仍约 70 条 RSI 真实信号属 RSI 阈值频率高，独立于本工单，另议）
+[方舟→量量 2026-09-10 17:05] 协作单 [34.1-RSI-SIGNAL-DENSITY-20260910] 状态变更: NEW（600036 总信号约 100 条中约 70 条为 RSI 超买/超卖真实信号、触发频率高与震荡噪声混合;前端已按类型分散去重缓解显示,需量量评估 RSI 阈值/连续合并/确认条件以降频,P3 低优先级）
+[方舟→K 2026-09-10 16:15] 协作单 [31.0-KLINE-EXDIV-ANNOTATE-20260903] 状态变更: VERIFY→CLOSED（方舟前端联调通过：api.ts 解析 ex_dates→useStockChart buildExDateMarkers 渲染「除权」belowBar 标注，浏览器实测 600036 详情页 6 月中下旬「除权」淡紫圆点成功渲染、与复权跳空对齐；单测已补 ex_dates 解析+空兜底；31.0 全链路闭环完成）
 [方舟→量量 2026-09-07 11:20] 协作单 [32.0-HK-UNADJUSTED-20260907]：**全市场"孤立"判据收敛复核+批量清洗已落地**。用`前后相邻日 factor 均正常、仅当日本复权`严格孤立判据复核全 market=hk，确认此前 70 只清单多数已被早期 305 行清理覆盖，**当前库残留 27 行/14 只**孤立未复权错价（0053/0060/0089/0096/0105/0114/0130/0157/0158/0184/0186/0212/0216），其中 0175.HK 经核验为**整段平滑复权段误报，排除不处理**。已备份 `temp_hk_notch_backup_20260907` 并删除 27 行，重算 13 只指标+17 组形态+周/月K（1w/1m 共 52 万行）+信号全量（445,607 条）+宽表（2,184 条）+parquet（2,184/93 列无负价）。**当前库孤立未复权错价已清零**。仍需量量在 `import_hk_daily.py` 导入层加「Adj Close 缺失/≤Close×1.01 即剔除回退+告警」拦截防复发，并对增量每日过检。
 
 ## 会话信息
@@ -313,8 +327,10 @@
 
 ## 会话信息
 
-- 日期：2026-09-09
+- 日期：2026-09-10
 
-- 负责角色：量量
+- 负责角色：方舟
+
+- 修改范围：前台股票搜索跨市场支持。①自选股「添加自选股」：改为代码/名称输入，新增 `searchStocksAll`（/stocks/search 三市场并发合并）并使 `useStockSearch`、弹窗 `resolveCode` 跨市场，港美股可搜；②交易室「标的代码」：统一 `stockSearchOptions`（buildStockOptions/pickStockName）三处调用，修复港股名称被加 `.HK` 前缀（原纯数字正则 label 反解），并加 `optionLabelProp="value"` 使选中后只显示代码；③K线弹窗缺省带「除权」标注；④前端信号去重段合并 + `/api/snapshot` 503 就绪轮询。遗留待 K 定夺：交易室美股中文名搜不到（stock_basic 美股仅有 ticker 名，属后端/数据层，需决策是否开协作单转量量）。会话交互对象：K
 
 - 修改范围：协作单 32.0（港股存量未复权错价）清理收尾 + 协作单 33.2 修复。①32.0：以孤立断崖判据定位 38 行/26 只错价，备份后删 30 行 factor + 重建 8 行 quotes，级联重算受影响股票指标/周月K/形态/信号/宽表/parquet；方舟复校验²补清 0069.HK(2025-09-26)/0148.HK(2026-06-11) 2 行（仅删 factor，quotes 因子本正常无需重算），精判据 f∈[0.8,1.15] 且前后>1.5× 全市场复查归零；32.0 方舟终验 CLOSED，f=0型/疑似类型平移登记为 33.3。②33.2：`snapshot_service.py` `ServiceNotReadyError` 改继承 `RuntimeError`，命中全局 503 映射修复选股快照偶发 500，方舟验证 CLOSED。日报已更新，待提交。会话交互对象：K
