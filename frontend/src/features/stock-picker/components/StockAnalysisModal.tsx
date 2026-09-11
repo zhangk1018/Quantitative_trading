@@ -280,7 +280,7 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
         content: { borderRadius: 0, padding: 0, margin: 0, height: '100vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' },
         header: { display: 'none' },
       }}
-      destroyOnClose
+      destroyOnHidden
       maskClosable={false}
       className="stock-analysis-modal"
     >

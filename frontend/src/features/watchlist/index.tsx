@@ -253,7 +253,9 @@ const Watchlist: React.FC = () => {
       <div className="flex-1 overflow-auto">
         {quotesLoading && !hasData ? (
           <div className="flex items-center justify-center py-20" data-testid="watchlist-first-load">
-            <Spin tip="加载自选股..." />
+            <Spin>
+              <div className="text-text-secondary text-sm">加载自选股...</div>
+            </Spin>
           </div>
         ) : !hasData ? (
           <WatchlistEmpty />

@@ -185,7 +185,7 @@ const ActModule: React.FC = () => {
       {!selectedCycleId ? (
         <Empty description="请选择一个周期查看改进记录" />
       ) : recordsLoading ? (
-        <div className="flex justify-center py-16"><Spin tip="加载中..." /></div>
+        <div className="flex justify-center py-16"><Spin><span className="ml-2 text-gray-400">加载中...</span></Spin></div>
       ) : records.length === 0 ? (
         <Empty description="暂无改进记录，点击「新增改进记录」开始">
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
@@ -272,7 +272,8 @@ const ActModule: React.FC = () => {
         okText="保存"
         cancelText="取消"
         confirmLoading={saving}
-        destroyOnClose
+        destroyOnHidden
+        forceRender
         width={640}
       >
         <Form

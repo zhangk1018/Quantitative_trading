@@ -163,7 +163,7 @@ const CheckModule: React.FC = () => {
       {!selectedCycleId ? (
         <Empty description="请选择一个周期开始复盘" />
       ) : reportLoading ? (
-        <div className="flex justify-center py-16"><Spin tip="加载中..." /></div>
+        <div className="flex justify-center py-16"><Spin><span className="ml-2 text-gray-400">加载中...</span></Spin></div>
       ) : (
         <div>
           {/* 周期信息 */}

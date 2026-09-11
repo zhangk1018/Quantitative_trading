@@ -161,7 +161,7 @@ const ExperienceLibrary: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="flex justify-center py-16"><Spin tip="加载中..." /></div>
+        <div className="flex justify-center py-16"><Spin><span className="ml-2 text-gray-400">加载中...</span></Spin></div>
       ) : items.length === 0 ? (
         <Empty description={keyword || selectedTags.length > 0 ? '没有匹配的经验，调整筛选条件试试' : '暂无冻结经验，在「改进措施」中开启冻结经验后自动沉淀于此'} />
       ) : (

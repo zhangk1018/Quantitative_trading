@@ -185,7 +185,7 @@ const ConditionBuilder: React.FC = () => {
     <Collapse
       activeKey={activeKey}
       ghost
-      destroyInactivePanel
+      destroyOnHidden
       className="border-b border-border-color"
       data-testid="condition-builder-collapse"
       onChange={() => dispatch({ type: 'TOGGLE_PANEL', payload: 'condition' })}

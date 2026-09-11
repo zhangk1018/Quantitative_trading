@@ -290,6 +290,7 @@ export interface StockSearchItem {
   stock_code: string;  // e.g., "000001" (不含后缀)
   stock_name: string;  // e.g., "平安银行"
   close?: number;
+  pre_close?: number;  // 前收盘价（部分市场缺失）
   change_pct?: number;
   [key: string]: any;
 }

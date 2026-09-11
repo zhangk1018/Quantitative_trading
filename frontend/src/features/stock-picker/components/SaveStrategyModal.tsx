@@ -50,6 +50,7 @@ export function SaveStrategyModal({ visible, existingStrategies, onClose, onSave
       onCancel={onClose}
       onOk={handleOk}
       confirmLoading={saving}
+      forceRender
       okText="保存"
       cancelText="取消"
       data-testid="save-strategy-modal"

@@ -383,7 +383,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
       title={title}
       onClose={onCancel}
       width={720}
-      destroyOnClose
+      destroyOnHidden
       maskClosable={false}
       // K 2026-06-17 反馈：取消/创建按钮移至 Drawer 顶部右侧（extra 区域）
       extra={

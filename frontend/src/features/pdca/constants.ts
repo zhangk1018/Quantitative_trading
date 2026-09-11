@@ -43,6 +43,16 @@ export const PLAN_TEMPLATE_TYPE_LABELS: Record<PlanTemplateType, string> = {
 export const PLAN_TEMPLATE_TYPE_OPTIONS = Object.entries(PLAN_TEMPLATE_TYPE_LABELS).map(([value, label]) => ({ value, label }));
 
 /**
+ * 放弃条件默认文案（按模板类型挂钩）
+ * 选择短/中/长线模板时自动填入对应的放弃条件
+ */
+export const ABORT_CONDITION_BY_TYPE: Record<PlanTemplateType, string> = {
+  short_term: '跌破 5 日均线，或单日跌幅 > 3%',
+  mid_term: '周线趋势破坏，或基本面重大变化',
+  long_term: '季度财报不及预期，或行业政策转向',
+};
+
+/**
  * 标的 ABC 分类标签映射
  */
 export const SECURITY_TAG_LABELS: Record<SecurityTagValue, string> = {

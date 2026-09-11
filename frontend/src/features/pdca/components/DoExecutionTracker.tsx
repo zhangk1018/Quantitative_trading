@@ -51,7 +51,7 @@ const DoExecutionTracker: React.FC<DoExecutionTrackerProps> = ({ cycleId, cycleN
   if (loading) {
     return (
       <div className="flex justify-center py-8">
-        <Spin tip="加载执行跟踪数据..." />
+        <Spin><span className="ml-2 text-gray-400">加载执行跟踪数据...</span></Spin>
       </div>
     );
   }

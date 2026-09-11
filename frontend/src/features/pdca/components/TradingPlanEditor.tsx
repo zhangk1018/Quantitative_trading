@@ -28,6 +28,7 @@ import type {
 } from '../types';
 import {
   LONG_SHORT_LABELS, PLAN_TEMPLATE_TYPE_LABELS, SECURITY_TAG_LABELS, SECURITY_TAG_OPTIONS,
+  ABORT_CONDITION_BY_TYPE,
 } from '../constants';
 import {
   fetchCycles,
@@ -36,8 +37,7 @@ import {
   fetchPlans, createPlan, updatePlan, deletePlan, fetchPlanTemplates,
   fetchSecurities, upsertSecurity, updateSecurity, deleteSecurity,
 } from '../services/plan';
-import { searchStocks } from '../services/stock';
-import { buildStockOptions, pickStockName } from './stockSearchOptions';
+import { searchStocksAll } from '../../stock-detail/api';
 
 const { Text, Title } = Typography;
 
@@ -59,6 +59,20 @@ const fmtNum = (v: unknown, digits = 2): string => {
   const n = Number(v);
   return Number.isFinite(n) ? n.toFixed(digits) : '-';
 };
+
+/**
+ * 计算缺省止损价：统一为 入场价 × 0.95（保留 4 位小数，与入场价精度一致）
+ */
+const calcDefaultStopLoss = (entry: number): number => Math.round(entry * 0.95 * 10000) / 10000;
+
+/** 标的代码搜索选项（携带名称与前收盘价，供自动带出） */
+interface CodeOption {
+  value: string;
+  label: string;
+  code: string;
+  name: string;
+  prevClose?: number;
+}
 
 const TradingPlanEditor: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   return (
@@ -107,7 +121,7 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   const [editing, setEditing] = useState<TradingPlan | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [riskError, setRiskError] = useState<string | null>(null);
-  const [stockOptions, setStockOptions] = useState<{ value: string; label: string }[]>([]);
+  const [stockOptions, setStockOptions] = useState<CodeOption[]>([]);
   const [form] = Form.useForm();
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -144,7 +158,7 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
     loadPlans();
   }, [loadPlans]);
 
-  // ── 股票搜索（防抖） ──
+  // ── 股票搜索（防抖，跨市场：cn/hk/us） ──
   const handleStockSearch = useCallback((q: string) => {
     if (debounceTimer.current) clearTimeout(debounceTimer.current);
     if (!q || q.length < 1) {
@@ -153,8 +167,22 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
     }
     debounceTimer.current = setTimeout(async () => {
       try {
-        const results = await searchStocks(q);
-        setStockOptions(buildStockOptions(results));
+        const res = await searchStocksAll(q);
+        setStockOptions(
+          res.items.map((s) => ({
+            value: s.stock_code,
+            label: `${s.stock_code} ${s.stock_name}`,
+            code: s.stock_code,
+            name: s.stock_name,
+            // 缺省入场价 = 前收盘价（缺失时退化用最新收盘价）
+            prevClose:
+              Number(s.pre_close) > 0
+                ? Number(s.pre_close)
+                : Number(s.close) > 0
+                  ? Number(s.close)
+                  : undefined,
+          })),
+        );
       } catch {
         appMessage.warning('股票搜索失败，请检查网络连接');
       }
@@ -167,9 +195,24 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
     };
   }, []);
 
-  const handleStockSelect = useCallback((_value: string, option: { name?: string; label?: string }) => {
-    form.setFieldsValue({ security_name: pickStockName(option) });
+  // ── 止损价随入场价联动（缺省 入场价×0.95） ──
+  const syncStopLoss = useCallback((entry: unknown) => {
+    if (typeof entry !== 'number' || !Number.isFinite(entry) || entry <= 0) return;
+    form.setFieldsValue({ stop_loss_price: calcDefaultStopLoss(entry) });
   }, [form]);
+
+  // 选中标的：自动带出标的名称 + 入场价缺省为标的前收盘价，并联动止损价
+  const handleStockSelect = useCallback((_value: string, option: CodeOption) => {
+    const patch: Record<string, unknown> = { security_name: option?.name ?? '' };
+    const prevClose = option?.prevClose;
+    if (prevClose !== undefined) {
+      patch.entry_price = prevClose;
+      form.setFieldsValue(patch);
+      syncStopLoss(prevClose);
+    } else {
+      form.setFieldsValue(patch);
+    }
+  }, [form, syncStopLoss]);
 
   // ── 打开新建/编辑弹窗 ──
   const openCreate = useCallback(() => {
@@ -201,13 +244,21 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   // ── 模板切换：应用默认值 ──
   const handleTemplateChange = useCallback((templateId: number) => {
     const tpl = templates.find((t) => t.id === templateId);
-    if (!tpl || !tpl.default_values) return;
-    const dv = tpl.default_values as Record<string, unknown>;
+    if (!tpl) return;
+    const dv = (tpl.default_values ?? {}) as Record<string, unknown>;
     const patch: Record<string, unknown> = {};
     if (dv.long_short) patch.long_short = dv.long_short;
-    if (dv.abort_condition) patch.abort_condition = dv.abort_condition;
+    // 放弃条件按模板类型挂钩（短/中/长线各自默认文案）
+    const typedAbort = ABORT_CONDITION_BY_TYPE[tpl.template_type];
+    if (typedAbort) patch.abort_condition = typedAbort;
+    else if (dv.abort_condition) patch.abort_condition = dv.abort_condition;
     if (Object.keys(patch).length > 0) form.setFieldsValue(patch);
   }, [templates, form]);
+
+  // ── 入场价输入完成后（失焦）：止损价随之联动为 入场价×0.95 ──
+  const handleEntryBlur = useCallback(() => {
+    syncStopLoss(form.getFieldValue('entry_price'));
+  }, [form, syncStopLoss]);
 
   // ── 保存（创建/更新） ──
   const handleSubmit = async () => {
@@ -355,7 +406,7 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
 
       {/* 计划列表 */}
       {loading ? (
-        <div className="flex justify-center py-16"><Spin tip="加载中..." /></div>
+        <div className="flex justify-center py-16"><Spin><span className="ml-2 text-gray-400">加载中...</span></Spin></div>
       ) : plans.length === 0 ? (
         <Empty description={selectedCycle ? '该周期下暂无交易计划，点击「新建计划」' : '请先选择周期，再查看交易计划'} />
       ) : (
@@ -378,7 +429,8 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
         cancelText="取消"
         confirmLoading={submitting}
         width={720}
-        destroyOnClose
+        destroyOnHidden
+        forceRender
       >
         <Form form={form} layout="vertical">
           <div className="grid grid-cols-2 gap-x-4">
@@ -427,7 +479,7 @@ const PlanManager: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
               label="入场价"
               rules={[{ required: true, message: '请输入入场价' }]}
             >
-              <InputNumber className="w-full" min={0} precision={4} placeholder="0.0000" />
+              <InputNumber className="w-full" min={0} precision={4} placeholder="0.0000" onBlur={handleEntryBlur} />
             </Form.Item>
             <Form.Item
               name="stop_loss_price"
@@ -513,7 +565,7 @@ const SecurityManager: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<SecurityTag | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [stockOptions, setStockOptions] = useState<{ value: string; label: string }[]>([]);
+  const [stockOptions, setStockOptions] = useState<CodeOption[]>([]);
   const [form] = Form.useForm();
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -586,6 +638,7 @@ const SecurityManager: React.FC = () => {
     }
   };
 
+  // ABC 分类编辑器：股票搜索（跨市场）
   const handleStockSearch = useCallback((q: string) => {
     if (debounceTimer.current) clearTimeout(debounceTimer.current);
     if (!q || q.length < 1) {
@@ -594,8 +647,15 @@ const SecurityManager: React.FC = () => {
     }
     debounceTimer.current = setTimeout(async () => {
       try {
-        const results = await searchStocks(q);
-        setStockOptions(buildStockOptions(results));
+        const res = await searchStocksAll(q);
+        setStockOptions(
+          res.items.map((s) => ({
+            value: s.stock_code,
+            label: `${s.stock_code} ${s.stock_name}`,
+            code: s.stock_code,
+            name: s.stock_name,
+          })),
+        );
       } catch {
         appMessage.warning('股票搜索失败，请检查网络连接');
       }
@@ -608,8 +668,9 @@ const SecurityManager: React.FC = () => {
     };
   }, []);
 
-  const handleStockSelect = useCallback((_value: string, option: { name?: string; label?: string }) => {
-    form.setFieldsValue({ security_name: pickStockName(option) });
+  // 选中标的：自动带出标的名称
+  const handleStockSelect = useCallback((_value: string, option: { name?: string | null }) => {
+    form.setFieldsValue({ security_name: option?.name ?? '' });
   }, [form]);
 
   const columns: ColumnsType<SecurityTag> = [
@@ -667,7 +728,7 @@ const SecurityManager: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="flex justify-center py-16"><Spin tip="加载中..." /></div>
+        <div className="flex justify-center py-16"><Spin><span className="ml-2 text-gray-400">加载中...</span></Spin></div>
       ) : (
         <Table
           rowKey="id"
@@ -686,7 +747,8 @@ const SecurityManager: React.FC = () => {
         okText="保存"
         cancelText="取消"
         confirmLoading={submitting}
-        destroyOnClose
+        destroyOnHidden
+        forceRender
       >
         <Form form={form} layout="vertical">
           <Form.Item

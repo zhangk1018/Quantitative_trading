@@ -567,7 +567,8 @@ const TradingRecordForm: React.FC<Props> = ({ open, record, onClose, onSuccess, 
         onOk={handleSubmit}
         confirmLoading={loading}
         width={800}
-        destroyOnClose
+        destroyOnHidden
+        forceRender
         okText="保存"
         cancelText="取消"
       >

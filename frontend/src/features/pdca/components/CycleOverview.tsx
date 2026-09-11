@@ -229,7 +229,7 @@ const CycleOverview: React.FC = () => {
       {/* 周期列表 */}
       {loading ? (
         <div className="flex justify-center py-16">
-          <Spin tip="加载中..." />
+          <Spin><span className="ml-2 text-gray-400">加载中...</span></Spin>
         </div>
       ) : cycles.length === 0 ? (
         <Empty description="暂无周期数据，点击「新建周期」开始" />
@@ -260,7 +260,8 @@ const CycleOverview: React.FC = () => {
         }}
         okText="创建"
         cancelText="取消"
-        destroyOnClose
+        destroyOnHidden
+        forceRender
       >
         <Form
           form={form}

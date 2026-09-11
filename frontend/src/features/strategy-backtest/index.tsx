@@ -10,7 +10,9 @@ const StrategyBacktest: React.FC = () => (
   <Suspense
     fallback={
       <div className="flex items-center justify-center h-64">
-        <Spin size="large" tip="加载中..." />
+        <Spin size="large">
+          <span className="ml-2 text-gray-400">加载中...</span>
+        </Spin>
       </div>
     }
   >

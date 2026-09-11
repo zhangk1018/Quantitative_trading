@@ -167,7 +167,8 @@ const EquityCurve: React.FC = () => {
         onCancel={() => { setFormOpen(false); form.resetFields(); }}
         onOk={handleSave}
         confirmLoading={saving}
-        destroyOnClose
+        destroyOnHidden
+        forceRender
         okText="保存"
         cancelText="取消"
       >

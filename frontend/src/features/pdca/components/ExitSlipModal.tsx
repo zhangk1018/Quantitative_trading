@@ -148,7 +148,8 @@ const ExitSlipModal: React.FC<Props> = ({ open, editingSlip, snapshotMaxSellQty,
       okText="保存"
       cancelText="取消"
       width={560}
-      destroyOnClose
+      destroyOnHidden
+      forceRender
     >
       <Form form={form} layout="vertical">
         <Row gutter={16}>

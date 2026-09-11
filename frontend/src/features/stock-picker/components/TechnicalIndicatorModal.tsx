@@ -48,7 +48,7 @@ export const TechnicalIndicatorModal: React.FC<TechnicalIndicatorModalProps> = (
       footer={null}
       width={400}
       centered
-      destroyOnClose
+      destroyOnHidden
       maskClosable={false}
       data-testid={`technical-modal-${indicator.id}`}
     >

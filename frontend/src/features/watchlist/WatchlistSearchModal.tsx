@@ -126,7 +126,7 @@ const WatchlistSearchModal: React.FC<WatchlistSearchModalProps> = ({ open, onClo
       confirmLoading={adding}
       okText="添加"
       cancelText="取消"
-      destroyOnClose
+      destroyOnHidden
       maskClosable={!adding}
       okButtonProps={{ 'data-testid': 'watchlist-search-modal-ok' }}
       cancelButtonProps={{ 'data-testid': 'watchlist-search-modal-cancel' }}
