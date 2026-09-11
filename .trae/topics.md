@@ -339,3 +339,8 @@
 - 日期：2026-09-10
 - 负责角色：量量
 - 修改范围：①协作单 33.3 港股 factor 残留口径复核 CLOSED（f=0/孤儿/坏值归零，除零消除）；②协作单 31.0 K线除权日后端部分（A股 factor_date 回填 31,488 行/4,703 只 + sync_adj_factor 增量打标 + kline_service 透出 ex_dates，方舟联调后 CLOSED）；③协作单 34.0 布林误报修复 CLOSED（SQL 漏选 boll 列 + 守卫）；④协作单 34.1 RSI 信号状态机合并 VERIFY（600036 98→30 条）；⑤日志治理全项目改造（logger.py 新增 setup_detail_and_summary_loggers，7 个 ETL 脚本明细→stdout(cron 明细)、主日志只留汇总，hk/us runner 补 _write_cron_detail 完整落盘）。注：31.0/34.0/34.1 后端代码已随 d3510d3 提交，本次提交覆盖日志治理。会话交互对象：K
+
+## 会话信息
+- 日期：2026-09-11
+- 负责角色：方舟
+- 修改范围：交易室「交易计划」表单功能增强。①止损价随入场价联动：抽取 `syncStopLoss(entry)`，入场价失焦时止损价恒自动更新为 `入场价 × 0.95`（清除"仅止损价为空才填"拦截），入场价改动后止损随之变动；②选中标的代码自动带出入场价：标的搜索由单源 `searchStocks` 切换为跨市场 `searchStocksAll`（cn/hk/us，返回携带前收盘价），选中时入场价缺省=标的前收盘价（`pre_close`，缺失退化用最新 `close`），同时带出标的名称并联动止损价；统一同一文件 ABC 分类编辑器的标的搜索逻辑（跨市场，选中仅带名称）；清理不再使用的导入。③前端控制台警告治理：Collapse `destroyInactivePanel`→`destroyOnHidden`、Modal `destroyOnClose`→`destroyOnHidden`、Spin tip 改嵌套模式、6 个含表单 Modal 补 `forceRender`（TradingRecordForm/CycleOverview/ExitSlipModal/EquityCurve/ActModule/SaveStrategyModal）。变更均在前端（21 文件），已随 26d7445 提交。明日计划：浏览器自测交易计划联动流程 + 确认美股中文名缺口是否开单转量量。会话交互对象：K
