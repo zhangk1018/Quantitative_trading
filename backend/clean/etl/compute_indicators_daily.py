@@ -19,26 +19,20 @@ import multiprocessing as mp
 from collector.storage.postgresql_storage import PostgreSQLStorage
 from clean.processor.technical_indicator import TechnicalIndicator
 from utils.config import config
-from utils.logger import setup_logger
+from utils.logger import setup_detail_stdout_only
 from utils.stock_code_utils import normalize_db_code
 
-# 日志按市场+日期分文件，每日一个：A股(默认/cn) indicator_compute_YYYYMMDD.log，
-# 港股/美股分别 indicator_compute_hk_YYYYMMDD.log / indicator_compute_us_YYYYMMDD.log。
-# 文件名带处理数据当日日期，避免单文件持续累积过大；size 轮转仅作异常兜底。
+# 日志走 stdout-only：本脚本由 daily_job_runner / hk_job_runner / us_job_runner 调度，
+# 逐条明细经子进程 stdout 被 runner 捕获，统一落盘为 logs/cron/{task_name}_{日期}.log
+# （A 股任务名 indicators_compute；港/美股按各自步骤名写入）。
+# 因此此处不再用 setup_logger 自建 indicator_compute_*.log，避免与 cron 明细重复落盘
+# （见 utils/logger.setup_detail_stdout_only 说明，规则见 .trae/rules/量化交易.md 日志规范）。
 # 通过解析 argv 的 --market 确定 logger 名（每次由 subprocess 新起进程，天然生效）。
 _market_match = re.search(r'(?:^|\s)--market[=\s](\w+)', ' '.join(sys.argv))
 _logger_market = (_market_match.group(1) if _market_match else 'cn').lower()
 _logger_name = 'indicator_compute' if _logger_market == 'cn' else f'indicator_compute_{_logger_market}'
-_today = datetime.now().strftime('%Y%m%d')
 
-logger = setup_logger(
-    _logger_name,
-    rotation_mode='size',    # size 仅作兜底（当日异常超大时才轮转），文件名已按日期每日一个新文件
-    max_bytes_mb=200,
-    backup_count=30,
-    log_dir=os.path.join(os.path.dirname(backend_dir), 'logs', 'cron'),
-    filename=f"{_logger_name}_{_today}.log",
-)
+logger = setup_detail_stdout_only(_logger_name)
 
 
 def compute_indicators_for_stock(storage: PostgreSQLStorage, code: str,

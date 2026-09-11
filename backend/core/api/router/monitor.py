@@ -795,8 +795,11 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
             "date_col": "trade_date",
         },
         "parquet_export": {         # I: Parquet 导出
-            "table": "task_run_log",
-            "date_col": "data_date",
+            # Parquet 文件内容 = 宽表快照（stock_daily_snapshot）的导出。
+            # 用宽表作为数据源：既能按市场统计真实条数，也能走统一的「期望交易日」新鲜度门禁，
+            # 避免原先以 task_run_log 为表导致「无期望日期」且条数统计错误（把整表 run_log 行数算作导出条数）。
+            "table": "stock_daily_snapshot",
+            "date_col": "trade_date",
             "task_name": "parquet_export",
         },
         "weekly_aggregation": {     # J: 周线聚合
@@ -837,6 +840,17 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
             # 检查数据覆盖情况（若设置了 data_date 且数据表有该日期的数据）
             log_data_date = today_log.get("data_date")
             if log_data_date:
+                # 期望交易日门禁：数据落后于期望交易日则报 pending，避免「今日有成功记录」但
+                # 实际数据未更新到最新交易日时误报成功（沪深的 Parquet、港/美股等受此影响）。
+                # stock_list_sync 为元数据表，非每日更新，跳过日期比较（与下方回退分支一致）。
+                expected_trade_date = _get_last_trade_date(market, _now_beijing())
+                if task_key != "stock_list_sync" and str(log_data_date) < expected_trade_date:
+                    return {
+                        "status": "pending",
+                        "message": f"数据未更新（最新 {log_data_date}，期望 >= {expected_trade_date}）",
+                        "data_date": str(log_data_date),
+                        "data_count": None,
+                    }
                 if table in _MARKET_FILTER_TABLES:
                     data_count = _query_scalar(
                         f"SELECT COUNT(*) FROM {table} WHERE {date_col} = %s AND market = %s",
@@ -2430,7 +2444,7 @@ MARKET_CHAIN = [
     {"name": "K线形态", "label": "形态", "key": "indicators_compute"},  # pattern 存于 stock_indicators，复用指标评估
     {"name": "交易信号", "label": "信号", "key": "signal_precompute"},
     {"name": "宽表", "label": "宽表", "key": "snapshot_sync"},
-    {"name": "Parquet", "label": "Parquet", "key": "snapshot_sync"},  # Parquet 为宽表导出，复用宽表快照新鲜度检查
+    {"name": "Parquet", "label": "Parquet", "key": "snapshot_sync", "freshness": "snapshot_sync"},  # Parquet 为宽表导出，复用宽表快照新鲜度检查（含期望交易日门禁）
 ]
 # 参与各市场覆盖评估的 task_key（避免与 A 股混算基准）
 _MARKET_COVERAGE_TABLES = {
@@ -2475,6 +2489,25 @@ def get_market_chain(market: str = Query('hk', pattern='^(hk|us)$')):
     for step in MARKET_CHAIN:
         task_log_name = f"{market}:{step['label']}"
         rec = seen.get(task_log_name)
+        if step.get("freshness"):
+            # 需要「期望交易日」新鲜度门禁的步骤（当前为 Parquet=宽表快照导出）：
+            # 始终用宽表快照新鲜度评估（含期望日期与真实条数），异常运行态优先展示，
+            # 避免 rec 分支只回显原始状态而缺失「期望日期」判断。
+            db = _check_task_from_db(step.get("freshness"), market=market)
+            db_status = db.get("status", "pending")
+            if rec and rec.get("status") == "failed":
+                db_status = "failed"
+            elif rec and rec.get("status") == "running" and not _is_running_stale(rec.get("start_time")):
+                db_status = "running"
+            tasks.append({
+                "name": step["name"],
+                "status": db_status,
+                "message": ((rec.get("error_message") or "")[:100]
+                            if db_status == "failed" else db.get("message", "")),
+                "data_count": db.get("data_count"),
+                "data_date": db.get("data_date"),
+            })
+            continue
         if rec:
             status = rec["status"] or "pending"
             message = (rec["error_message"] or "")[:100] if status == "failed" else ""

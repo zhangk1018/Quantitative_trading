@@ -27,7 +27,7 @@ set -eo pipefail
 
 # ===================== 可配置项 =====================
 # 需自动排除的目录，后续可直接在此数组扩展
-IGNORE_DIRS=("temp/" "logs/" "data/cache/")
+IGNORE_DIRS=("temp/" "logs/" "data/" "postgresql_data/")
 # 允许直接推送的主分支，其他分支需二次确认
 ALLOW_PUSH_BRANCH=("main" "master")
 # 敏感文件名完整匹配（word boundary 正则，精确匹配敏感文件而非子串）
@@ -219,8 +219,9 @@ add_files_from_list() {
     done
 }
 # 已跟踪变更（修改/删除/重命名）由 git add -u 一次性处理（V1.1.6 修复 R/D bug）
+# 排除 data/ 目录：其下文件（parquet 快照、数据库dump等）即使曾被追踪，删除/修改也不入库
 if [ "$HAVE_COMMIT_CHANGES" = true ]; then
-    git add -u
+    git add -u -- . ':(exclude)data/'
     # 未跟踪文件（新文件）由 add_files_from_list 处理
     add_files_from_list "$NON_IGNORED_UNTRACKED"
 
