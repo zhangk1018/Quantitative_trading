@@ -165,7 +165,7 @@ export const pdcaHandlers = [
 
   // ── 资金快照 ──
 
-  http.get('/api/pdca/snapshots/curve', () => {
+  http.get('/api/pdca/snapshots/curve-auto', () => {
     const response: ApiResponse<ListData<CapitalCurvePoint>> = {
       code: 200,
       message: 'ok',

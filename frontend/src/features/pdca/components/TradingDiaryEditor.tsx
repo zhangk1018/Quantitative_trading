@@ -23,6 +23,55 @@ import { DEFAULT_PAGE_SIZE } from '@/config/constants';
 const { TextArea } = Input;
 const { Text } = Typography;
 
+/** 交易记录平仓状态：未平仓 / 止盈 / 止损 */
+type RecordOutcome = 'open' | 'take_profit' | 'stop_loss';
+
+const LONG_SHORT_LABEL: Record<string, string> = { long: '做多', short: '做空' };
+
+/** 依据交易记录判定平仓状态（未平仓 / 止盈 / 止损） */
+function getRecordOutcome(record: TradingRecord): RecordOutcome {
+  const hasPosition = record.exit_date == null || (record.remain_qty ?? 0) > 0;
+  if (hasPosition) return 'open';
+  return (record.gross_profit ?? 0) > 0 ? 'take_profit' : 'stop_loss';
+}
+
+/** 根据交易记录状态生成默认复盘模板（止盈/止损与未平仓各一套维度） */
+function buildReviewTemplate(record: TradingRecord): string {
+  const side = LONG_SHORT_LABEL[record.long_short] ?? record.long_short;
+  const header = `${record.code} ${record.security_name} · ${side} · ${record.entry_date}`;
+  if (getRecordOutcome(record) === 'open') {
+    return [
+      `【交易概况】${header} · 持仓中`,
+      '【入场逻辑】',
+      '- 当时为什么买入/卖出？是否符合交易计划的哪一部分？',
+      '',
+      '【执行情况】',
+      '- 入场是否按计划执行？当前账面盈亏如何？',
+      '',
+      '【持仓跟踪】',
+      '- 接下来需要重点关注哪些价位或技术信号？',
+      '',
+      '【后续计划】',
+      '- 何时止盈、何时止损？仓位如何管理？',
+    ].join('\n');
+  }
+  const outcomeLabel = getRecordOutcome(record) === 'take_profit' ? '止盈' : '止损';
+  return [
+    `【交易概况】${header} · ${outcomeLabel}`,
+    '【入场逻辑】',
+    '- 当时为什么买入/卖出？是否符合交易计划的哪一部分？',
+    '',
+    '【执行情况】',
+    '- 入场、出场是否按计划执行？价格、仓位是否符合预期？',
+    '',
+    '【情绪反思】',
+    '- 交易过程中心态如何？是否有贪婪/恐惧/侥幸影响决策？',
+    '',
+    '【改进点】',
+    '- 下次同类交易可以改进或复用的点是什么？',
+  ].join('\n');
+}
+
 const TradingDiaryEditor: React.FC = () => {
   const { message } = App.useApp();
   const [diaries, setDiaries] = useState<TradingDiary[]>([]);
@@ -193,13 +242,14 @@ const TradingDiaryEditor: React.FC = () => {
         ? '已带出该交易关联的既有日记（所属周期已闭环，仅可查看）'
         : '已带出该交易关联的既有日记，可直接编辑');
     } else {
-      // 该交易无既有日记：清空编辑态，进入「新建」模式
+      // 该交易无既有日记：进入「新建」模式，并按交易状态填充默认复盘模板
+      const record = records.find((r) => r.id === recordId);
       setEditingDiaryId(null);
       setEmotionNote('');
-      setReviewText('');
+      setReviewText(record ? buildReviewTemplate(record) : '');
       setIsViewOnly(false);
     }
-  }, [diaries, cycleStatusMap, message]);
+  }, [diaries, cycleStatusMap, records, message]);
 
   const handleCancelEdit = useCallback(() => {
     setEditingDiaryId(null);
@@ -367,7 +417,7 @@ const TradingDiaryEditor: React.FC = () => {
           <Text className="text-text-secondary text-xs mb-1 block">复盘内容 *</Text>
           <TextArea
             className="flex-1"
-            placeholder="写下游击手的复盘总结..."
+            placeholder="从入场逻辑、执行情况、情绪反思、改进点等维度，复盘这笔交易中最值得记录的几点..."
             value={reviewText}
             onChange={(e) => setReviewText(e.target.value)}
             maxLength={5000}

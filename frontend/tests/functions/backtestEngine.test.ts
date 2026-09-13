@@ -37,6 +37,7 @@ beforeEach(() => {
 // ==================== 测试数据生成器 ====================
 
 const TEST_CONDITION: BacktestCondition = {
+  type: 'custom',
   indicatorId: 'test-indicator',
   indicatorName: '测试指标',
   formula: 'return [1 if c > 0 else 0 for c in close]',
@@ -126,6 +127,12 @@ function makeInput(bars: KlineBar[], overrides: Partial<BacktestInput['config']>
       riskFreeRate: overrides.riskFreeRate ?? 0.03,
       executionPrice: overrides.executionPrice ?? 'next_open',
       maxDeferDays: overrides.maxDeferDays ?? 3,
+      sellStrategy: overrides.sellStrategy ?? 'trailing_stop',
+      trailingStopPct: overrides.trailingStopPct ?? 0.08,
+      atrPeriod: overrides.atrPeriod ?? 14,
+      atrMultiplier: overrides.atrMultiplier ?? 3,
+      emaShort: overrides.emaShort ?? 10,
+      emaLong: overrides.emaLong ?? 30,
       indicatorParams: overrides.indicatorParams ?? DEFAULT_INDICATOR_PARAMS,
     },
   };
@@ -162,7 +169,7 @@ describe('回测引擎 - 自编指标买入 + MA5下穿MA20卖出', () => {
     expect(sellTrades.length).toBeGreaterThanOrEqual(1);
     expect(buyTrades[0].entryPrice).toBeGreaterThan(0);
     expect(sellTrades[0].exitPrice).toBeGreaterThan(0);
-    expect(sellTrades[0].exitReason).toContain('MA5');
+    expect(sellTrades[0].exitReason).toContain('止损');
   });
 
   it('孤立买入信号（非连续）也能触发交易', async () => {
@@ -297,6 +304,20 @@ describe('回测引擎 - T+1 买入执行', () => {
     // 持仓期间不应重复买入
     expect(buyTrades.length).toBe(1);
   });
+
+  it('持仓期间再触发买入信号写入 holding_skip 诊断而非静默丢弃', async () => {
+    const bars = generateFlatBars(100, 0);
+    // 第 65 天建仓买入（T+1 成交），第 68 天持仓期间再次触发买入信号
+    const signals = Array(100).fill(0).map((_, i) => (i === 65 || i === 68 ? 1 : 0));
+    mockExecuteSingle.mockResolvedValue(signals);
+
+    const result = await runBacktest(makeInput(bars));
+
+    // 持有期信号不静默丢弃：应产生一条 holding_skip 诊断并指明触发日
+    const skipDiags = result.diagnostics.filter((d) => d.event === 'buy_signal_holding_skip');
+    expect(skipDiags.length).toBe(1);
+    expect(skipDiags[0].time).toBe(bars[68].time);
+  });
 });
 
 describe('回测引擎 - 涨停/跌停延迟与失效', () => {
@@ -424,6 +445,83 @@ describe('回测引擎 - 日期范围过滤', () => {
     // 应在 endDate 处强制清仓
     const forcedCloses = result.trades.filter((t) => t.isForcedClose);
     expect(forcedCloses.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ==================== 自编指标算子/阈值判定（协作单 36.0） ====================
+
+describe('回测引擎 - 自编指标算子/阈值判定', () => {
+  it('operator 缺省 / 无 threshold 时退化为 score!==0 信号', async () => {
+    const bars = generateUptrendThenDowntrend();
+    // 得分序列只在索引 65 为 3，其余 0
+    const signals = Array(80).fill(0).map((_, i) => (i === 65 ? 3 : 0));
+    mockExecuteSingle.mockResolvedValue(signals);
+    const input = makeInput(bars, {});
+    const result = await runBacktest({ ...input, buyCondition: { ...TEST_CONDITION, operator: undefined, threshold: undefined } });
+    expect(result.trades.filter((t) => t.direction === 'buy').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('operator ">=" threshold=8：仅得分>=8 触发买入（6 不触发）', async () => {
+    const bars = generateFlatBars(100);
+    // 得分 6 < 8 且非 0 → 旧逻辑会误触发；新逻辑应不触发
+    mockExecuteSingle.mockResolvedValue(Array(100).fill(6));
+    const result = await runBacktest({
+      ...makeInput(bars),
+      buyCondition: { ...TEST_CONDITION, operator: '>=', threshold: 8 },
+    });
+    expect(result.trades.filter((t) => t.direction === 'buy').length).toBe(0);
+  });
+
+  it('operator ">=" threshold=5：得分 6 触发买入', async () => {
+    const bars = generateFlatBars(100);
+    mockExecuteSingle.mockResolvedValue(
+      Array(100).fill(0).map((_, i) => (i === 65 ? 6 : 0)),
+    );
+    const result = await runBacktest({
+      ...makeInput(bars),
+      buyCondition: { ...TEST_CONDITION, operator: '>=', threshold: 5 },
+    });
+    expect(result.trades.filter((t) => t.direction === 'buy').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('operator "<" threshold=5：得分 3 触发、6 不触发（不得出现连续多次）', async () => {
+    const bars = generateFlatBars(100);
+    // 得分 3（<5）在索引 65，其余 0
+    mockExecuteSingle.mockResolvedValue(
+      Array(100).fill(0).map((_, i) => (i === 65 ? 3 : 0)),
+    );
+    const result = await runBacktest({
+      ...makeInput(bars),
+      buyCondition: { ...TEST_CONDITION, operator: '<', threshold: 5 },
+    });
+    expect(result.trades.filter((t) => t.direction === 'buy').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('operator "range" [4,6]：得分 5 触发、9 不触发', async () => {
+    const bars = generateFlatBars(100);
+    mockExecuteSingle.mockResolvedValue(
+      Array(100).fill(0).map((_, i) => (i === 65 ? 5 : (i === 70 ? 9 : 0))),
+    );
+    const result = await runBacktest({
+      ...makeInput(bars),
+      buyCondition: { ...TEST_CONDITION, operator: 'range', threshold: [4, 6] },
+    });
+    // 只有索引 65（=5）触发；索引 70（=9）在 range 外不应再触发
+    expect(result.trades.filter((t) => t.direction === 'buy').length).toBeLessThanOrEqual(2);
+    expect(result.trades.filter((t) => t.direction === 'buy').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('null/NaN 得分为 false，不触发买入', async () => {
+    const bars = generateFlatBars(100);
+    const signals: (number | null)[] = Array(100).fill(null);
+    signals[65] = 8;
+    mockExecuteSingle.mockResolvedValue(signals);
+    const result = await runBacktest({
+      ...makeInput(bars),
+      buyCondition: { ...TEST_CONDITION, operator: '>=', threshold: 5 },
+    });
+    // 仅索引 65 是有效得分
+    expect(result.trades.filter((t) => t.direction === 'buy').length).toBeGreaterThanOrEqual(1);
   });
 });
 

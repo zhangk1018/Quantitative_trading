@@ -79,7 +79,6 @@ export const REF_LINES = {
 export const PANE_RATIOS = {
   main: { top: 0.02, bottom: 0.48 },
   volume: { top: 0.55, bottom: 0.31 },
-  macd: { top: 0.72, bottom: 0.18 },
   osc: { top: 0.85, bottom: 0.05 },
 } as const;
 

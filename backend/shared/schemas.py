@@ -441,3 +441,30 @@ class SnapshotIncrementalData(BaseModel):
     latest_trade_date: str = Field(..., description="最新交易日期（YYYY-MM-DD）")
     days: int = Field(..., description="增量交易日天数")
     stocks: List[SnapshotStock] = Field(..., description="增量股票数据列表")
+
+
+class SnapshotHistoryStock(BaseModel):
+    """单只股票的历史逐日快照（预计算字段，按交易日升序）
+
+    rows 每行为 {trade_date: "YYYY-MM-DD", <预计算字段>: value, ...}，
+    字段名与 stock_daily_snapshot 表列名 / 选股 parquet 列名一致（同一口径）。
+    """
+
+    code: str = Field(..., description="股票代码，不带市场后缀", examples=["600519", "0001.HK"])
+    name: str = Field("", description="股票名称")
+    rows: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="逐日快照行数组（按交易日升序）：{trade_date, close, rsi_6, dif, dea, boll_upper, pattern_*, pe, pe_ttm, pb, market_cap, ...}",
+    )
+
+
+class SnapshotHistoryData(BaseModel):
+    """历史逐日快照响应 data 部分（回测逐日判定用，与选股视图同口径）"""
+
+    market: Optional[str] = Field(None, description="市场过滤 cn/hk/us；未指定时由代码推断")
+    start_date: str = Field(..., description="起始日期（YYYY-MM-DD，含当日）")
+    end_date: str = Field(..., description="结束日期（YYYY-MM-DD，含当日）")
+    fields: List[str] = Field(..., description="实际返回的预计算字段列表（不含 trade_date）")
+    total_codes: int = Field(..., description="返回的股票数量")
+    trade_dates: List[str] = Field(default_factory=list, description="区间内实际有数据的交易日（升序）")
+    stocks: List[SnapshotHistoryStock] = Field(..., description="逐股票历史快照列表")

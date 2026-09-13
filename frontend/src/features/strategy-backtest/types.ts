@@ -48,6 +48,14 @@ export type RangeField =
   | 'turnover_rate'  // 换手率
   | 'vol_ratio_5';   // 量比（5日）
 
+/** /history 单日快照行（stock_daily_snapshot 预计算列，与选股视图 /api/stocks/ 同源） */
+export interface SnapshotHistoryRow {
+  /** 交易日 YYYY-MM-DD */
+  trade_date: string;
+  /** 预计算字段（宽表列名）：close、market_cap、rsi_6、dif、dea、boll_upper、pattern_*、pe、pb 等 */
+  [key: string]: number | boolean | string | null;
+}
+
 /**
  * ============================================
  * 2. 系统设置 Storage 接口 (策略回测默认值)

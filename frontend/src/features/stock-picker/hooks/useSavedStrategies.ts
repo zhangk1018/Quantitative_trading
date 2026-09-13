@@ -65,6 +65,18 @@ export interface SavedStrategy {
 export type StrategyOperationResult = { ok: true } | { ok: false; error: string };
 
 /**
+ * 生成唯一 ID
+ * 优先使用 crypto.randomUUID（仅在 HTTPS/localhost 安全上下文可用），
+ * 否则回退到时间戳+随机串，避免局域网 http://IP 访问时抛错。
+ */
+export function generateId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
  * 清洗策略名称：去除 HTML 标签和特殊字符
  * 注：Antd Text 组件默认转义文本，此处双重保险
  */
@@ -151,7 +163,7 @@ export function useSavedStrategies(storage?: IStrategyStorage) {
       return { ok: false as const, error: '策略名称不能为空' };
     }
     const newStrategy: SavedStrategy = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       name: cleanedName,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

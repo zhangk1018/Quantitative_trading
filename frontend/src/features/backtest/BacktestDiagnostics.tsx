@@ -34,6 +34,7 @@ const EVENT_CONFIG: Record<DiagnosticEntry['event'], { icon: React.ReactNode; co
   insufficient_funds: { icon: <DollarOutlined />, color: '#faad14', label: '资金不足' },
   unexecuted_buy: { icon: <WarningOutlined />, color: '#faad14', label: '未执行买入' },
   script_error: { icon: <BugOutlined />, color: '#ff4d4f', label: '脚本错误' },
+  buy_signal_holding_skip: { icon: <AimOutlined />, color: '#13c2c2', label: '持有期买入信号跳过' },
 };
 
 /** 按事件类型分组统计 */

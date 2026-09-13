@@ -34,7 +34,7 @@ import { sanitizeNumber, sanitizePct } from '@/lib/indicators/indicators';
 
 // ---- 类型（不变） ----
 export type MainType = 'ma' | 'boll';
-export type OscType = 'rsi' | 'kdj';
+export type OscType = 'rsi' | 'kdj' | 'macd';
 
 interface CrosshairInfo {
   time: string;
@@ -147,6 +147,7 @@ function mkLineSeriesOptions(opts: {
 function mkHistSeriesOptions(opts: {
   priceScaleId: string;
   priceFormat?: HistogramSeriesOptions['priceFormat'];
+  visible?: boolean;
 }): DeepPartial<HistogramSeriesOptions> {
   return {
     priceScaleId: opts.priceScaleId,
@@ -154,6 +155,7 @@ function mkHistSeriesOptions(opts: {
     priceFormat: opts.priceFormat,
     priceLineVisible: false,
     lastValueVisible: false,
+    visible: opts.visible ?? true,
   };
 }
 export function buildSortedSeriesMarkers(markers: ConditionEvent[]): SeriesMarker<string>[] {
@@ -221,32 +223,37 @@ const CrosshairOverlay: React.FC<{
         </div>
       ))}
       <div className="border-t mt-2 pt-1" style={{ borderColor: CHART_THEME.border }}>
-        <div className="text-xs mb-1" style={{ color: '#848E9C' }}>MACD</div>
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-          <span style={{ color: MACD_COLORS.dif, fontWeight: 600 }}>DIF {info.dif != null ? info.dif.toFixed(2) : '--'}</span>
-          <span style={{ color: MACD_COLORS.dea, fontWeight: 600 }}>DEA {info.dea != null ? info.dea.toFixed(2) : '--'}</span>
-          <span style={{ color: info.macdHist != null ? (info.macdHist >= 0 ? candleColors.up : candleColors.down) : '#848E9C', fontWeight: 600 }}>
-            Hist {info.macdHist != null ? info.macdHist.toFixed(2) : '--'}
-          </span>
-        </div>
-      </div>
-      <div className="mt-1">
-        <div className="text-xs mb-1" style={{ color: '#848E9C' }}>{isRsi ? 'RSI' : 'KDJ'}</div>
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-          {isRsi ? (
-            <>
-              <span style={{ color: RSI_COLORS.rsi6, fontWeight: 600 }}>RSI6 {info.rsi6 != null ? info.rsi6.toFixed(2) : '--'}</span>
-              <span style={{ color: RSI_COLORS.rsi12, fontWeight: 600 }}>RSI12 {info.rsi12 != null ? info.rsi12.toFixed(2) : '--'}</span>
-              <span style={{ color: RSI_COLORS.rsi24, fontWeight: 600 }}>RSI24 {info.rsi24 != null ? info.rsi24.toFixed(2) : '--'}</span>
-            </>
-          ) : (
-            <>
-              <span style={{ color: KDJ_COLORS.k, fontWeight: 600 }}>K {info.kdjK != null ? info.kdjK.toFixed(2) : '--'}</span>
-              <span style={{ color: KDJ_COLORS.d, fontWeight: 600 }}>D {info.kdjD != null ? info.kdjD.toFixed(2) : '--'}</span>
-              <span style={{ color: KDJ_COLORS.j, fontWeight: 600 }}>J {info.kdjJ != null ? info.kdjJ.toFixed(2) : '--'}</span>
-            </>
-          )}
-        </div>
+        {oscType === 'macd' ? (
+          <>
+            <div className="text-xs mb-1" style={{ color: '#848E9C' }}>MACD</div>
+            <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+              <span style={{ color: MACD_COLORS.dif, fontWeight: 600 }}>DIF {info.dif != null ? info.dif.toFixed(2) : '--'}</span>
+              <span style={{ color: MACD_COLORS.dea, fontWeight: 600 }}>DEA {info.dea != null ? info.dea.toFixed(2) : '--'}</span>
+        <span style={{ color: info.macdHist != null ? (info.macdHist >= 0 ? candleColors.up : candleColors.down) : '#848E9C', fontWeight: 600 }}>
+                Hist {info.macdHist != null ? info.macdHist.toFixed(2) : '--'}
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="text-xs mb-1" style={{ color: '#848E9C' }}>{isRsi ? 'RSI' : 'KDJ'}</div>
+            <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+              {isRsi ? (
+                <>
+                  <span style={{ color: RSI_COLORS.rsi6, fontWeight: 600 }}>RSI6 {info.rsi6 != null ? info.rsi6.toFixed(2) : '--'}</span>
+                  <span style={{ color: RSI_COLORS.rsi12, fontWeight: 600 }}>RSI12 {info.rsi12 != null ? info.rsi12.toFixed(2) : '--'}</span>
+                  <span style={{ color: RSI_COLORS.rsi24, fontWeight: 600 }}>RSI24 {info.rsi24 != null ? info.rsi24.toFixed(2) : '--'}</span>
+                </>
+              ) : (
+                <>
+                  <span style={{ color: KDJ_COLORS.k, fontWeight: 600 }}>K {info.kdjK != null ? info.kdjK.toFixed(2) : '--'}</span>
+                  <span style={{ color: KDJ_COLORS.d, fontWeight: 600 }}>D {info.kdjD != null ? info.kdjD.toFixed(2) : '--'}</span>
+                  <span style={{ color: KDJ_COLORS.j, fontWeight: 600 }}>J {info.kdjJ != null ? info.kdjJ.toFixed(2) : '--'}</span>
+                </>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -408,9 +415,9 @@ const KLineChart: React.FC<KLineChartProps> = ({
 
     const volume = chart.addHistogramSeries(mkHistSeriesOptions({ priceScaleId: 'volume', priceFormat: { type: 'volume', precision: 0, minMove: 1 } }));
 
-    const dif = chart.addLineSeries(mkLineSeriesOptions({ color: MACD_COLORS.dif, priceScaleId: 'macd', title: 'DIF' }));
-    const dea = chart.addLineSeries(mkLineSeriesOptions({ color: MACD_COLORS.dea, priceScaleId: 'macd', title: 'DEA' }));
-    const macdHist = chart.addHistogramSeries(mkHistSeriesOptions({ priceScaleId: 'macd' }));
+    const dif = chart.addLineSeries(mkLineSeriesOptions({ color: MACD_COLORS.dif, priceScaleId: 'osc', title: 'DIF', visible: false }));
+    const dea = chart.addLineSeries(mkLineSeriesOptions({ color: MACD_COLORS.dea, priceScaleId: 'osc', title: 'DEA', visible: false }));
+    const macdHist = chart.addHistogramSeries(mkHistSeriesOptions({ priceScaleId: 'osc', visible: false }));
 
     const rsi6 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi6, priceScaleId: 'osc', title: 'RSI6' }));
     const rsi12 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi12, priceScaleId: 'osc', title: 'RSI12' }));
@@ -446,7 +453,6 @@ const KLineChart: React.FC<KLineChartProps> = ({
     // 设置边距
     chart.priceScale('left').applyOptions({ scaleMargins: { top: PANE_RATIOS.main.top, bottom: PANE_RATIOS.main.bottom }, minimumWidth: 60 });
     chart.priceScale('volume').applyOptions({ scaleMargins: { top: PANE_RATIOS.volume.top, bottom: PANE_RATIOS.volume.bottom }, visible: false });
-    chart.priceScale('macd').applyOptions({ scaleMargins: { top: PANE_RATIOS.macd.top, bottom: PANE_RATIOS.macd.bottom }, visible: true, minimumWidth: 65 });
     chart.priceScale('osc').applyOptions({ scaleMargins: { top: PANE_RATIOS.osc.top, bottom: PANE_RATIOS.osc.bottom }, visible: true, minimumWidth: 65 });
 
     // ---- 设置数据 ----
@@ -584,17 +590,22 @@ const KLineChart: React.FC<KLineChartProps> = ({
   useEffect(() => {
     if (!seriesRef.current) return;
     const s = seriesRef.current;
-    const isRsi = oscType === 'rsi';
-    s.rsi6.applyOptions({ visible: isRsi });
-    s.rsi12.applyOptions({ visible: isRsi });
-    s.rsi24.applyOptions({ visible: isRsi });
-    s.rsi30.applyOptions({ visible: isRsi });
-    s.rsi70.applyOptions({ visible: isRsi });
-    s.kdjK.applyOptions({ visible: !isRsi });
-    s.kdjD.applyOptions({ visible: !isRsi });
-    s.kdjJ.applyOptions({ visible: !isRsi });
-    s.kdj20.applyOptions({ visible: !isRsi });
-    s.kdj80.applyOptions({ visible: !isRsi });
+    const showRsi = oscType === 'rsi';
+    const showKdj = oscType === 'kdj';
+    const showMacd = oscType === 'macd';
+    s.rsi6.applyOptions({ visible: showRsi });
+    s.rsi12.applyOptions({ visible: showRsi });
+    s.rsi24.applyOptions({ visible: showRsi });
+    s.rsi30.applyOptions({ visible: showRsi });
+    s.rsi70.applyOptions({ visible: showRsi });
+    s.kdjK.applyOptions({ visible: showKdj });
+    s.kdjD.applyOptions({ visible: showKdj });
+    s.kdjJ.applyOptions({ visible: showKdj });
+    s.kdj20.applyOptions({ visible: showKdj });
+    s.kdj80.applyOptions({ visible: showKdj });
+    s.dif.applyOptions({ visible: showMacd });
+    s.dea.applyOptions({ visible: showMacd });
+    s.macdHist.applyOptions({ visible: showMacd });
   }, [oscType]);
 
   // ---- 更新标记 ----

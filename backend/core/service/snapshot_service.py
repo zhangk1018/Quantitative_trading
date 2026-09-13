@@ -20,7 +20,8 @@ import time
 import logging
 import threading
 import bisect
-from datetime import datetime
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -31,6 +32,8 @@ from psycopg2.extras import RealDictCursor
 
 from shared.schemas import (
     SnapshotAllData,
+    SnapshotHistoryData,
+    SnapshotHistoryStock,
     SnapshotIncrementalData,
     SnapshotStock,
     SnapshotIndicators,
@@ -67,6 +70,44 @@ OHLCV_VOLUME = 5
 
 # 板块枚举（统一管理）
 BOARD_VALUES = ("main_board", "gem", "beijing")
+
+# ================================================================
+# 历史逐日快照（/api/snapshot/history，协作单 35.0 回测口径对齐）
+# ================================================================
+# 字段白名单：与 stock_daily_snapshot 表实际列 / 选股 parquet 列完全一致，
+# 保证回测逐日判定与选股视图（/api/stocks/）同一口径。
+HISTORY_SNAPSHOT_FIELDS: Tuple[str, ...] = (
+    # 行情/价格
+    "open", "high", "low", "close", "pre_close", "volume", "amount",
+    "change", "change_pct", "turnover_rate", "volume_ratio", "vol_ratio_5",
+    # 技术指标
+    "ma5", "ma10", "ma20", "ma60", "v_ma5",
+    "rsi_6", "rsi_12", "rsi_24", "dif", "dea", "macd",
+    "boll_upper", "boll_mid", "boll_lower",
+    "kdj_k", "kdj_d", "kdj_j",
+    # 估值/基本面（含 stock_daily_basic 同步字段，宽表已合并）
+    "pe", "pe_ttm", "pb", "ps", "ps_ttm", "dv_ratio", "dv_ttm",
+    "market_cap", "circ_mv", "float_share", "net_mf_amount",
+    # K 线形态（TA-Lib，宽表 boolean 化）
+    "pattern_hammer", "pattern_morning_star", "pattern_evening_star",
+    "pattern_bullish_engulfing", "pattern_bearish_engulfing",
+    # 技术指标 pattern（14）
+    "ma_long_align", "ma_short_align",
+    "macd_low_golden_cross", "macd_bottom_divergence",
+    "macd_high_death_cross", "macd_top_divergence",
+    "boll_break_upper", "boll_break_middle_up", "boll_break_middle_down",
+    "boll_break_lower",
+    "rsi_low_golden_cross", "rsi_high_death_cross",
+    "rsi_top_divergence", "rsi_bottom_divergence",
+    # 突破/连续/状态
+    "break_high_20", "break_high_60", "consec_up_days",
+    "is_st", "is_new", "limit_up", "limit_down",
+)
+HISTORY_DEFAULT_DAYS = 300          # start_date 缺省时的回看自然天
+HISTORY_MAX_DAYS = 500              # 区间自然天上限
+HISTORY_MAX_CODES = 2000            # codes 数量上限
+HISTORY_MAX_ROWS = 60000            # 返回行数上限（内存保护，超出提示缩小范围）
+HISTORY_FETCH_BATCH = 5000          # 流式读取批大小
 
 # ETL 窗口避让（工作日 15:00-20:00 为 ETL 管道执行时段）
 # 在此期间避免触发后台刷新，减少内存争抢
@@ -754,6 +795,162 @@ class SnapshotService:
         self._ensure_ready()
         with self._state_lock:
             return self._latest_trade_date
+
+    # ================================================================
+    # 历史逐日快照（回测逐日判定，与选股视图同口径）
+    # ================================================================
+    @staticmethod
+    def _coerce_history_value(value: Any) -> Any:
+        """将 DB 原生类型转换为 JSON 友好类型（Decimal→float / date→str）"""
+        if value is None:
+            return None
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, date):
+            return value.strftime('%Y-%m-%d')
+        return value
+
+    def get_history_snapshots(
+        self,
+        codes: List[str],
+        market: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        fields: Optional[List[str]] = None,
+    ) -> SnapshotHistoryData:
+        """按股票列表 + 日期区间返回 stock_daily_snapshot 全历史预计算字段（只读）。
+
+        数据直接读取宽表（含 stock_daily_basic 合并的基本面列），不做前端重算，
+        与选股视图 /api/stocks/（parquet 源 = 同一宽表）口径逐字段一致。
+
+        Args:
+            codes: 股票代码列表（去重前可带空格），上限 HISTORY_MAX_CODES。
+            market: 市场过滤 cn/hk/us；传入时剔除推断市场不符的代码。
+            start_date: 起始日期 YYYY-MM-DD（含），缺省 = end_date - HISTORY_DEFAULT_DAYS。
+            end_date: 结束日期 YYYY-MM-DD（含），缺省 = 最新交易日。
+            fields: 字段白名单裁剪（交集），缺省返回 HISTORY_SNAPSHOT_FIELDS 全量。
+
+        Returns:
+            SnapshotHistoryData：按股票分组的逐日快照行（trade_date 升序）。
+
+        Raises:
+            ValueError: 参数无效（codes 为空/超限、日期格式错误、区间超限、行数超限等）。
+        """
+        # --- codes 校验与去重 ---
+        if not codes:
+            raise ValueError("codes 不能为空")
+        code_list = [c.strip().upper() for c in codes if c and c.strip()]
+        code_list = list(dict.fromkeys(code_list))
+        if not code_list:
+            raise ValueError("codes 不能为空")
+        if len(code_list) > HISTORY_MAX_CODES:
+            raise ValueError(f"codes 数量超过上限 {HISTORY_MAX_CODES}，请分批请求")
+
+        # --- market 校验与代码过滤 ---
+        mkt: Optional[str] = None
+        if market:
+            mkt = market.strip().lower()
+            if mkt not in ('cn', 'hk', 'us'):
+                raise ValueError("market 参数无效，可选：cn,hk,us")
+            code_list = [c for c in code_list if infer_market(c) == mkt]
+            if not code_list:
+                raise ValueError(f"codes 中无 {mkt} 市场股票")
+
+        # --- fields 白名单裁剪 ---
+        if fields:
+            req_set = {f.strip() for f in fields if f and f.strip()}
+            field_list = [f for f in HISTORY_SNAPSHOT_FIELDS if f in req_set]
+            if not field_list:
+                field_list = list(HISTORY_SNAPSHOT_FIELDS)
+        else:
+            field_list = list(HISTORY_SNAPSHOT_FIELDS)
+
+        # --- 日期缺省与校验 ---
+        self._refresh_if_needed()
+        self._ensure_ready()
+        with self._state_lock:
+            latest = self._latest_trade_date
+        try:
+            end = datetime.strptime(end_date, '%Y-%m-%d').date() if end_date else (
+                datetime.strptime(latest[:10], '%Y-%m-%d').date() if latest else datetime.now().date()
+            )
+        except ValueError as e:
+            raise ValueError("end_date 格式必须为 YYYY-MM-DD") from e
+        try:
+            start = datetime.strptime(start_date, '%Y-%m-%d').date() if start_date else (
+                end - timedelta(days=HISTORY_DEFAULT_DAYS)
+            )
+        except ValueError as e:
+            raise ValueError("start_date 格式必须为 YYYY-MM-DD") from e
+        if start > end:
+            raise ValueError("start_date 不能晚于 end_date")
+        if (end - start).days > HISTORY_MAX_DAYS:
+            raise ValueError(f"日期区间超过上限 {HISTORY_MAX_DAYS} 天，请缩小范围")
+
+        # --- 流式查询（行数上限内存保护） ---
+        sql = f"""
+            SELECT code, stock_name, trade_date, {', '.join(field_list)}
+            FROM stock_daily_snapshot
+            WHERE code = ANY(%(codes)s)
+              AND trade_date BETWEEN %(start)s AND %(end)s
+              {"AND market = %(market)s" if mkt else ""}
+            ORDER BY code, trade_date
+        """
+        params: Dict[str, Any] = {
+            'codes': code_list,
+            'start': start,
+            'end': end,
+        }
+        if mkt:
+            params['market'] = mkt
+
+        stocks_by_code: Dict[str, SnapshotHistoryStock] = {}
+        trade_dates_set = set()
+        total_rows = 0
+
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor(name="snapshot_history_cursor") as cur:
+                cur.execute(sql, params)
+                while True:
+                    batch = cur.fetchmany(HISTORY_FETCH_BATCH)
+                    if not batch:
+                        break
+                    for row in batch:
+                        total_rows += 1
+                        if total_rows > HISTORY_MAX_ROWS:
+                            raise ValueError(
+                                f"返回行数超过上限 {HISTORY_MAX_ROWS}，"
+                                "请缩小日期区间、减少股票数量或用 fields 裁剪后分批请求"
+                            )
+                        code = row[0]
+                        stock = stocks_by_code.get(code)
+                        if stock is None:
+                            stock = SnapshotHistoryStock(code=code, name=row[1] or '')
+                            stocks_by_code[code] = stock
+                        row_dict = {'trade_date': row[2].strftime('%Y-%m-%d')}
+                        trade_dates_set.add(row_dict['trade_date'])
+                        row_dict.update(
+                            (f, self._coerce_history_value(v)) for f, v in zip(field_list, row[3:])
+                        )
+                        stock.rows.append(row_dict)
+                    gc.collect()
+        except ValueError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"历史快照查询失败: {e}") from e
+        finally:
+            self._pool.putconn(conn)
+
+        return SnapshotHistoryData(
+            market=mkt,
+            start_date=start.strftime('%Y-%m-%d'),
+            end_date=end.strftime('%Y-%m-%d'),
+            fields=field_list,
+            total_codes=len(stocks_by_code),
+            trade_dates=sorted(trade_dates_set),
+            stocks=list(stocks_by_code.values()),
+        )
 
     def wait_ready(self, timeout: float = 600) -> bool:
         start = time.time()

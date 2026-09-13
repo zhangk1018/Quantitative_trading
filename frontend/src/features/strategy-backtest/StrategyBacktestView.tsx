@@ -16,8 +16,16 @@ import ProgressSection from './components/ProgressSection';
 import type { ProgressInfo } from './components/ProgressSection';
 import PerformanceMetrics from './components/PerformanceMetrics';
 import ChartTabs from './components/ChartTabs';
-import { getCustomIndicatorRunner, type BatchProgress } from './utils/customIndicatorRunner';
+import { getCustomIndicatorRunner, buildCustomValueByDate, type BatchProgress } from './utils/customIndicatorRunner';
 import { getCustomIndicatorById } from '../stock-picker/utils/customIndicatorStorage';
+import { computeBacktestWindow, parseTimestamp } from './engine';
+
+// ==================== 常量 ====================
+
+/** 自编指标公式最长周期的安全余量（覆盖 EMA200 等长周期指标），用于自编指标独立预热 */
+const CUSTOM_INDICATOR_MAX_PERIOD = 200;
+/** 缺失行情日的占位 bar（open/high/low/close/volume 全 0）；该日期在 runner 中不产生有效信号，引擎侧亦不会查询 */
+const NULL_BAR = [0, 0, 0, 0, 0, 0, 0];
 
 // ==================== 回测会话管理器（竞态条件防护） ====================
 
@@ -178,7 +186,7 @@ const StrategyBacktestView: React.FC = () => {
 
       // 加载数据
       setProgress({ stage: 'data', percent: 0.3, message: '加载候选股票池...' });
-      const { data, validation: v } = await loadBacktestData(filterTree, config, session.signal);
+      const { data, validation: v } = await loadBacktestData(filterTree, config, startDate, endDate, session.signal);
 
       if (!session.isActive()) return;
 
@@ -202,7 +210,8 @@ const StrategyBacktestView: React.FC = () => {
 
       // 预计算自编指标（若 filterTree 包含 custom_indicator 节点）
       const customIndicatorNodes = extractCustomIndicatorNodes(filterTree);
-      let customIndicatorValues: Map<string, Map<string, (number | null)[]>> | undefined;
+      // 自编指标按「日期键」取值：Map<scriptId, Map<code, Map<'YYYY-MM-DD', number|null>>>，根治索引错位
+      let customValueByDate: Map<string, Map<string, Map<string, number | null>>> | undefined;
 
       if (customIndicatorNodes.length > 0 && session.isActive()) {
         setProgress({ stage: 'data', percent: 0.6, message: '加载自编指标脚本...' });
@@ -227,13 +236,32 @@ const StrategyBacktestView: React.FC = () => {
           const runner = getCustomIndicatorRunner();
           await runner.init();
 
-          // 准备脚本数据
+          // 自编指标窗口：独立预热 = max(config.warmupDays, 指标最长周期+安全余量)。
+          // runner 输入按 windowDates 对齐（每只股票长度一致，index j ↔ windowDates[j]），
+          // 使 values[code][j] 可跨界 zip 成 Map<date,value>，根治子序列长度差/批次右对齐 padding。
+          const window = computeBacktestWindow(data.tradeDates, startDate, endDate, config.warmupDays);
+          const indepWarmup = Math.max(config.warmupDays, CUSTOM_INDICATOR_MAX_PERIOD);
+          const rWinStart = Math.max(0, window.startIdx - indepWarmup);
+          const windowDates = data.tradeDates.slice(rWinStart, window.actualEndIdx + 1);
+
+          const runnerOhlcv = new Map<string, number[][]>();
+          for (const [code, bars] of data.allOhlcv) {
+            const byDate = new Map<string, number[]>();
+            for (const bar of bars) byDate.set(parseTimestamp(bar[0]), bar);
+            const aligned: number[][] = [];
+            for (const d of windowDates) {
+              aligned.push(byDate.get(d) ?? NULL_BAR);
+            }
+            runnerOhlcv.set(code, aligned);
+          }
+
+          // 准备脚本数据（用对齐后的 runnerOhlcv，替代原始长度参差的 allOhlcv）
           const scripts = Array.from(uniqueScripts.values()).map(s => ({
             id: s.id,
             name: s.name,
             code: s.code,
-            stockCodes: Array.from(data.allOhlcv.keys()),
-            allOhlcv: data.allOhlcv,
+            stockCodes: Array.from(runnerOhlcv.keys()),
+            allOhlcv: runnerOhlcv,
           }));
 
           // 执行脚本
@@ -246,11 +274,8 @@ const StrategyBacktestView: React.FC = () => {
             });
           });
 
-          // 转换为 Map<scriptId, Map<stockCode, values[]>>
-          customIndicatorValues = new Map();
-          for (const [scriptId, result] of results) {
-            customIndicatorValues.set(scriptId, result.values);
-          }
+          // values[j] ↔ windowDates[j] zip 成 Map<date, value>
+          customValueByDate = buildCustomValueByDate(results, windowDates);
         }
       }
 
@@ -292,7 +317,8 @@ const StrategyBacktestView: React.FC = () => {
           strategyType: 'filterTree',
           exitMode: isLayeredTP ? 'layeredTakeProfit' : undefined,
           layeredTPParams: isLayeredTP ? layeredTPParams : undefined,
-          customIndicatorValues,
+          customValueByDate,
+          historyRowsByCode: data.historyRowsByCode,
           fxRateByDate,
         },
       });

@@ -339,7 +339,15 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
       const rawId = indicatorId?.replace('custom_', '');
       const indicator = customIndicators.find((i) => i.id === rawId);
       buyCondition = indicator
-        ? { type: 'custom', indicatorId: indicator.id, indicatorName: indicator.name, formula: indicator.formula }
+        ? {
+            type: 'custom',
+            indicatorId: indicator.id,
+            indicatorName: indicator.name,
+            formula: indicator.formula,
+            // 透传算子+默认阈值，使回测判定口径与选股视图一致
+            operator: indicator.operator,
+            threshold: indicator.defaultThreshold,
+          }
         : { type: 'custom', indicatorId: '', indicatorName: '', formula: '' };
     }
     const config: BacktestConfig = {

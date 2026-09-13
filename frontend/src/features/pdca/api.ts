@@ -18,6 +18,9 @@ export type { EntityService, PaginationParams, ListParams } from './services/fac
 // ── 交易台账 & 卖出子单 & 日线行情 ──
 export {
   fetchRecords,
+  createRecord,
+  updateRecord,
+  deleteRecord,
   fetchExitSlips,
   batchCreateExitSlips,
   updateExitSlip,

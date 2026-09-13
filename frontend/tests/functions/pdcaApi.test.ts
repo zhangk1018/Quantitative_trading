@@ -23,7 +23,7 @@ import {
   createRecord,
   updateRecord,
   deleteRecord,
-  fetchCapitalCurve,
+  fetchEquityAutoCurve,
   fetchCycles,
   searchStocks,
   exportRecords,
@@ -44,17 +44,15 @@ describe('PDCA API', () => {
 
   it('fetchRecords 返回分页数据', async () => {
     const res = await fetchRecords({ page: 1, page_size: 20 });
-    expect(res.code).toBe(200);
-    expect(res.data.total).toBeGreaterThan(0);
-    expect(res.data.items.length).toBeGreaterThan(0);
-    expect(res.data.items[0]).toHaveProperty('id');
-    expect(res.data.items[0]).toHaveProperty('code');
+    expect(res.total).toBeGreaterThan(0);
+    expect(res.items.length).toBeGreaterThan(0);
+    expect(res.items[0]).toHaveProperty('id');
+    expect(res.items[0]).toHaveProperty('code');
   });
 
   it('fetchRecords 按代码筛选', async () => {
     const res = await fetchRecords({ page: 1, page_size: 20, code: '600036' });
-    expect(res.code).toBe(200);
-    expect(res.data.items.every((r) => r.code.includes('600036'))).toBe(true);
+    expect(res.items.every((r) => r.code.includes('600036'))).toBe(true);
   });
 
   // ── createRecord ──
@@ -73,25 +71,20 @@ describe('PDCA API', () => {
       commission_exit: 5.0,
       slip_point: 0.01,
     };
-    const res = await createRecord(formData);
-    expect(res.code).toBe(200);
-    expect(res.data.code).toBe('300750');
-    expect(res.data.id).toBeGreaterThan(0);
+    const newId = await createRecord(formData);
+    expect(typeof newId).toBe('number');
   });
 
   // ── updateRecord ──
 
   it('updateRecord 成功更新', async () => {
-    const res = await updateRecord(1, { exit_price: 37.00, gross_profit: 1800 });
-    expect(res.code).toBe(200);
-    expect(res.data.exit_price).toBe(37.00);
+    await expect(updateRecord(1, { exit_price: 37.00, gross_profit: 1800 })).resolves.toBeUndefined();
   });
 
   // ── deleteRecord ──
 
   it('deleteRecord 成功删除', async () => {
-    const res = await deleteRecord(1);
-    expect(res.code).toBe(200);
+    await expect(deleteRecord(1)).resolves.toBeUndefined();
   });
 
   it('deleteRecord 删除不存在的记录返回错误信息', async () => {
@@ -100,41 +93,37 @@ describe('PDCA API', () => {
 
   // ── fetchCapitalCurve ──
 
-  it('fetchCapitalCurve 返回资金曲线数据', async () => {
-    const res = await fetchCapitalCurve();
-    expect(res.code).toBe(200);
-    expect(res.data.items.length).toBeGreaterThan(0);
-    expect(res.data.items[0]).toHaveProperty('date');
-    expect(res.data.items[0]).toHaveProperty('total_asset');
-    expect(res.data.items[0]).toHaveProperty('adjusted_nav');
-    expect(res.data.items[0]).toHaveProperty('deposit');
-    expect(res.data.items[0]).toHaveProperty('withdrawal');
-    expect(res.data.items[0]).toHaveProperty('realized_pnl');
+  it('fetchEquityAutoCurve 返回资金曲线数据', async () => {
+    const res = await fetchEquityAutoCurve();
+    expect(res.length).toBeGreaterThan(0);
+    expect(res[0]).toHaveProperty('date');
+    expect(res[0]).toHaveProperty('total_asset');
+    expect(res[0]).toHaveProperty('adjusted_nav');
+    expect(res[0]).toHaveProperty('deposit');
+    expect(res[0]).toHaveProperty('withdrawal');
+    expect(res[0]).toHaveProperty('realized_pnl');
   });
 
   // ── fetchCycles ──
 
   it('fetchCycles 按状态筛选', async () => {
     const res = await fetchCycles({ status: 'DO' });
-    expect(res.code).toBe(200);
-    expect(res.data.items.length).toBeGreaterThan(0);
-    expect(res.data.items[0].status).toBe('DO');
+    expect(res.length).toBeGreaterThan(0);
+    expect(res[0].status).toBe('DO');
   });
 
   it('fetchCycles 返回空列表当无匹配状态', async () => {
     const res = await fetchCycles({ status: 'CHECK' });
-    expect(res.code).toBe(200);
-    expect(res.data.items.length).toBe(0);
+    expect(res.length).toBe(0);
   });
 
   // ── searchStocks ──
 
   it('searchStocks 按关键字搜索', async () => {
     const res = await searchStocks('招商');
-    expect(res.code).toBe(200);
-    expect(res.data.length).toBeGreaterThan(0);
-    expect(res.data[0]).toHaveProperty('code');
-    expect(res.data[0]).toHaveProperty('name');
+    expect(res.length).toBeGreaterThan(0);
+    expect(res[0]).toHaveProperty('code');
+    expect(res[0]).toHaveProperty('name');
   });
 
   // ── exportRecords ──
@@ -155,19 +144,17 @@ describe('PDCA API', () => {
 
   it('fetchBrokerAdapters 返回券商列表', async () => {
     const res = await fetchBrokerAdapters();
-    expect(res.code).toBe(200);
-    expect(res.data.items.length).toBeGreaterThan(0);
-    expect(res.data.items[0]).toHaveProperty('broker_name');
-    expect(res.data.items[0]).toHaveProperty('display_name');
+    expect(res.length).toBeGreaterThan(0);
+    expect(res[0]).toHaveProperty('broker_name');
+    expect(res[0]).toHaveProperty('display_name');
   });
 
   // ── fetchConfig ──
 
   it('fetchConfig 返回系统配置', async () => {
     const res = await fetchConfig();
-    expect(res.code).toBe(200);
-    expect(res.data.items.length).toBeGreaterThan(0);
-    expect(res.data.items[0]).toHaveProperty('config_key');
+    expect(res.length).toBeGreaterThan(0);
+    expect(res[0]).toHaveProperty('config_key');
   });
 
   // ── updateConfig ──
@@ -177,8 +164,7 @@ describe('PDCA API', () => {
       numeric_value: 3,
       modify_reason: '测试调整',
     });
-    expect(res.code).toBe(200);
-    expect(res.data.config_key).toBe('risk_per_trade');
+    expect(res.config_key).toBe('risk_per_trade');
   });
 
   // ── 错误场景 ──
@@ -197,15 +183,13 @@ describe('PDCA API', () => {
 
   it('fetchRecords 请求超页返回空列表', async () => {
     const res = await fetchRecords({ page: 999, page_size: 20 });
-    expect(res.code).toBe(200);
-    expect(res.data.items.length).toBe(0);
-    expect(res.data.total).toBe(2);
+    expect(res.items.length).toBe(0);
+    expect(res.total).toBe(2);
   });
 
   it('fetchRecords 组合筛选（代码+日期范围）', async () => {
     const res = await fetchRecords({ page: 1, page_size: 20, code: '600036', entry_date_from: '2026-08-01', entry_date_to: '2026-08-10' });
-    expect(res.code).toBe(200);
-    expect(res.data.items.length).toBe(1);
-    expect(res.data.items[0].code).toBe('600036');
+    expect(res.items.length).toBe(1);
+    expect(res.items[0].code).toBe('600036');
   });
 });

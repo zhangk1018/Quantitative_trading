@@ -23,6 +23,20 @@ export const SELL_STRATEGY_LABELS: Record<SellStrategy, string> = {
 
 // ==================== 条件定义 ====================
 
+/** 自编指标条件的算子类型（对齐选股视图 CustomIndicator 的 INDICATOR_OPERATORS） */
+export type BacktestIndicatorOperator =
+  | '>'
+  | '>='
+  | '<'
+  | '<='
+  | '=='
+  | 'range'
+  | 'cross_up'
+  | 'cross_down';
+
+/** 自编指标条件的阈值：单值（如评分≥8）或区间（range 用 [low, high]） */
+export type BacktestIndicatorThreshold = number | [number, number];
+
 /** 自编指标条件 */
 export interface BacktestCustomCondition {
   type: 'custom';
@@ -32,6 +46,16 @@ export interface BacktestCustomCondition {
   indicatorName: string;
   /** 自编指标脚本公式（Worker 内无法访问 localStorage，必须随配置传入） */
   formula: string;
+  /**
+   * 判定算子（选股视图口径）。缺省兼容旧配置 → 退化为 score !== 0。
+   * 可选值含 range（区间）、cross_up/cross_down（上穿/下穿）。
+   */
+  operator?: BacktestIndicatorOperator;
+  /**
+   * 判定阈值。单值以 number 表示；range 算子用 [low, high]。
+   * 缺省（且 operator 非 range）→ 退化为 score !== 0。
+   */
+  threshold?: BacktestIndicatorThreshold;
 }
 
 /** 系统预设条件 */
@@ -279,7 +303,7 @@ export interface DiagnosticEntry {
   event: 'buy_signal' | 'sell_signal' | 'buy_deferred' | 'buy_expired'
     | 'sell_deferred' | 'sell_expired' | 'insufficient_funds'
     | 'buy_executed' | 'sell_executed' | 'forced_close'
-    | 'unexecuted_buy' | 'script_error';
+    | 'unexecuted_buy' | 'script_error' | 'buy_signal_holding_skip';
   /** 描述信息 */
   reason: string;
   /** 附加数据 */

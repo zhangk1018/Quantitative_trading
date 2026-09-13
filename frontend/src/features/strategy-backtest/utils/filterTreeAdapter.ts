@@ -7,10 +7,14 @@ import type { FilterNode } from '../types';
 
 // ==================== 常量 ====================
 
-/** 高风险基本面字段（仅最新快照，无法历史时点回溯，引擎侧每日过滤会不准确） */
-export const HIGH_RISK_FUNDAMENTAL_FIELDS: Set<string> = new Set([
-  'pe', 'pe_ttm', 'pb', 'market_cap', 'turnover_rate',
-]);
+/**
+ * 高风险基本面字段（仅最新快照，无法历史时点回溯，引擎侧每日过滤会不准确）。
+ *
+ * 自「回测口径统一改造」起置空：pe/pe_ttm/pb/market_cap/turnover_rate 均改为逐日判定从
+ * /api/snapshot/history 宽表预计算字段取值（与选股视图同口径），不再剥离、不再回退到"最新快照"近似。
+ * 保留本集合（空）仅为兼容 detectFundamentalFields / stripUnsupportedFieldsForEngine 的调用结构。
+ */
+export const HIGH_RISK_FUNDAMENTAL_FIELDS: Set<string> = new Set([]);
 
 /** 高风险字段的中文标签映射（用于警告提示） */
 export const FUNDAMENTAL_FIELD_LABELS: Record<string, string> = {
@@ -326,6 +330,8 @@ export interface FilterAuditTrail {
   removedExamples: Array<{ code: string; reason: string }>;
   /** 是否包含引擎侧过滤 */
   hasEngineSideFilter: boolean;
+  /** 逐日判定实际拉取 /history 的字段白名单（空=未拉取历史快照，沿用旧口径） */
+  historyFields?: string[];
 }
 
 // ==================== URL 参数解析 ====================

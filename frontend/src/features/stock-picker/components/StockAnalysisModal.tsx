@@ -373,6 +373,7 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
               options={[
                 { label: 'RSI', value: 'rsi' },
                 { label: 'KDJ', value: 'kdj' },
+                { label: 'MACD', value: 'macd' },
               ]}
               size="small"
               style={{ background: CHART_THEME.border }}

@@ -1,15 +1,15 @@
 // src/features/strategy-backtest/utils/dataLoader.ts
 // 数据加载层：双阶段过滤 + 完整性校验 + 错误分类 + IndexedDB 缓存
 
-import type { FilterNode, StockSnapshot, StrategyBacktestDefaults } from '../types';
+import type { FilterNode, StockSnapshot, StrategyBacktestDefaults, SnapshotHistoryRow } from '../types';
 import {
   extractPushdownPredicates,
   pushdownToQueryString,
   detectFundamentalFields,
   validateFilterNode,
-  FUNDAMENTAL_FIELD_LABELS,
   type FilterAuditTrail,
 } from './filterTreeAdapter';
+import { requiredHistoryFields, convertHistoryRow, MARKET_CAP_UNIT } from './historyFieldMap';
 import { inferMarketKey, type MarketKey } from '@/features/watchlist/utils/stock-utils';
 
 // ==================== 类型 ====================
@@ -21,6 +21,12 @@ export interface LoadedData {
   tradeDates: string[];
   benchmarkOhlcv?: number[][];
   auditTrail: FilterAuditTrail;
+  /**
+   * 历史逐日快照行（升序）：Map<code, SnapshotHistoryRow[]>。
+   * 与选股视图 /api/stocks/ 同源宽表预计算字段，供引擎逐日判定口径统一。
+   * 仅当 filterTree 需要 range/pattern 字段时拉取；缺省时引擎回退旧口径（向后兼容）。
+   */
+  historyRowsByCode?: Map<string, SnapshotHistoryRow[]>;
 }
 
 /** 数据完整性校验结果 */
@@ -82,7 +88,8 @@ export function computeCacheHash(
     hash = ((hash << 5) - hash) + char;
     hash |= 0; // Convert to 32bit integer
   }
-  return `v1_${Math.abs(hash).toString(16)}`;
+  // v2：整体失效历史缓存（v1 payload 无 historyRowsByCode 字段，字段/Date 键口径已重构）
+  return `v2_${Math.abs(hash).toString(16)}`;
 }
 
 /** 尝试从缓存恢复 */
@@ -222,6 +229,136 @@ export async function buildFxRateMap(
   return rateByDate;
 }
 
+// ==================== 历史逐日快照拉取（回测逐日判定，与选股视图同口径） ====================
+
+const HISTORY_MAX_ROWS = 60000;        // 行数上限（与后端 snapshot_service.HISTORY_MAX_ROWS 一致）
+const HISTORY_MAX_CODE_COUNT = 2000;   // 单请求 codes 上限（后端 HISTORY_MAX_CODES）
+const HISTORY_MAX_CONCURRENCY = 4;     // 并发批次数上限
+
+/** 将 /history 响应 payload 解析为 Map<code, SnapshotHistoryRow[]>（rows 升序，字段已裁剪+market_cap 转亿元） */
+export function parseHistoryPayload(
+  result: any,
+  fields: ReadonlySet<string>,
+): Map<string, SnapshotHistoryRow[]> {
+  const out = new Map<string, SnapshotHistoryRow[]>();
+  const stocks = result?.data?.stocks ?? [];
+  for (const s of stocks) {
+    if (!s?.code || !Array.isArray(s.rows)) continue;
+    const rows = s.rows
+      .filter((r: any) => r && typeof r === 'object')
+      .map((r: any) => convertHistoryRow(r, fields));
+    out.set(s.code, rows);
+  }
+  return out;
+}
+
+/** 构造 /history 查询串（fields 为不含 trade_date 的字段白名单） */
+function historyQuery(
+  codes: string[],
+  startDate: string,
+  endDate: string,
+  fields: string[],
+  market: string | undefined,
+): string {
+  const params = new URLSearchParams();
+  params.set('codes', codes.join(','));
+  if (startDate) params.set('start_date', startDate);
+  if (endDate) params.set('end_date', endDate);
+  if (fields.length > 0) params.set('fields', fields.join(','));
+  if (market && market !== 'cn') params.set('market', market);
+  return params.toString();
+}
+
+/** 判断 /history 非 2xx 响应是否为「行数超限」（仅此需二分重试，其余直接抛错） */
+async function isRowLimitError(resp: Response): Promise<boolean> {
+  if (resp.status !== 400) return false;
+  let msg = '';
+  try {
+    const body = await resp.json();
+    msg = String(body?.message ?? body?.detail ?? '');
+  } catch {
+    return false;
+  }
+  return msg.includes('上限');
+}
+
+/**
+ * 拉取一批 codes 的 /history。若该片返回行数超限 → 对 codes 二分递归重试（单 code 仍超限则抛错）。
+ */
+async function fetchHistoryChunk(
+  codes: string[],
+  startDate: string,
+  endDate: string,
+  fields: string[],
+  market: string | undefined,
+  signal?: AbortSignal,
+): Promise<Map<string, SnapshotHistoryRow[]>> {
+  const fieldsSet = new Set<string>(['trade_date', ...fields]);
+  const params = historyQuery(codes, startDate, endDate, fields, market);
+
+  const resp = await fetch(`/api/snapshot/history?${params}`, { signal });
+  if (resp.ok) {
+    return parseHistoryPayload(await resp.json(), fieldsSet);
+  }
+  if (!(await isRowLimitError(resp))) {
+    let msg = `HTTP ${resp.status}`;
+    try {
+      const body = await resp.json();
+      msg = String(body?.message ?? body?.detail ?? msg);
+    } catch { /* ignore */ }
+    throw new Error(`历史快照拉取失败(${msg}) codes=${codes.join(',')}`);
+  }
+
+  // 行数超限 → 二分重试（单 code 仍超限则报错提示缩小区间/裁剪 fields）
+  if (codes.length <= 1) {
+    throw new Error(
+      `历史快照拉取失败：单票 ${codes[0]} 行数仍超上限 ${HISTORY_MAX_ROWS}，请缩小日期区间或用 fields 裁剪`,
+    );
+  }
+  const mid = Math.floor(codes.length / 2);
+  const left = codes.slice(0, mid);
+  const right = codes.slice(mid);
+  const [lm, rm] = await Promise.all([
+    fetchHistoryChunk(left, startDate, endDate, fields, market, signal),
+    fetchHistoryChunk(right, startDate, endDate, fields, market, signal),
+  ]);
+  const merged = new Map<string, SnapshotHistoryRow[]>(lm);
+  for (const [k, v] of rm) merged.set(k, v);
+  return merged;
+}
+
+/**
+ * 按 codes 分批拉取 /history（并发 ≤ HISTORY_MAX_CONCURRENCY），行数超限自动二分重试。
+ * @param chunkSize 每批 codes 数量（≈floor(60000/daysInRange)，保证不触发行数超限）
+ */
+async function fetchHistoryInChunks(
+  codes: string[],
+  startDate: string,
+  endDate: string,
+  fields: string[],
+  daysInRange: number,
+  market: string | undefined,
+  signal?: AbortSignal,
+): Promise<Map<string, SnapshotHistoryRow[]>> {
+  const chunkSize = Math.max(1, Math.min(HISTORY_MAX_CODE_COUNT, Math.floor(HISTORY_MAX_ROWS / Math.max(1, daysInRange))));
+  const batches: string[][] = [];
+  for (let i = 0; i < codes.length; i += chunkSize) {
+    batches.push(codes.slice(i, i + chunkSize));
+  }
+
+  const result = new Map<string, SnapshotHistoryRow[]>();
+  for (let i = 0; i < batches.length; i += HISTORY_MAX_CONCURRENCY) {
+    const slot = batches.slice(i, i + HISTORY_MAX_CONCURRENCY);
+    const resolved = await Promise.all(
+      slot.map((b) => fetchHistoryChunk(b, startDate, endDate, fields, market, signal)),
+    );
+    for (const m of resolved) {
+      for (const [k, v] of m) result.set(k, v);
+    }
+  }
+  return result;
+}
+
 // ==================== 数据完整性校验 ====================
 
 /**
@@ -303,6 +440,8 @@ export function validateDataIntegrity(
 export async function loadBacktestData(
   filterTree: FilterNode,
   config: StrategyBacktestDefaults,
+  startDate: string,
+  endDate: string,
   signal?: AbortSignal,
 ): Promise<{ data: LoadedData; validation: ValidationResult }> {
   // 0. 校验 FilterNode 结构
@@ -320,19 +459,21 @@ export async function loadBacktestData(
   const softErrors: string[] = [];
   const hardErrors: string[] = [];
 
-  // 1. 检测基本面字段（不再硬阻断，仅记录警告；字段将在传入引擎前被自动过滤）
+  // 1. 检测基本面字段（不再硬阻断、不再剥离；逐日判定已改用 /history 历史日值口径）
   const fundamentalFields = detectFundamentalFields(filterTree);
   if (fundamentalFields.length > 0) {
-    const labels = fundamentalFields.map(f => FUNDAMENTAL_FIELD_LABELS[f] || f);
-    warnings.push(
-      `以下基本面/行情字段无法获取历史时点数据，回测时已自动过滤：${labels.join('、')}。` +
-      '这些条件仅用于初始股票池筛选（基于最新数据），不参与每日调仓判断。'
-    );
+    // 已改用历史日值口径（宽表预计算字段），与选股视图一致。
+    warnings.push('基本面/行情字段已改用历史日值口径（宽表预计算字段），与选股视图一致。');
   }
 
   // 2. 提取可下推条件
   const { pushdown, engineSideOnly } = extractPushdownPredicates(filterTree);
-  const pushdownQuery = pushdownToQueryString(pushdown);
+  // market_cap 单位修复：FilterNode 阈值为「亿元」，而下推给 /api/stocks/ 的 market_cap 语义为「万元」，
+  // 此处把亿元阈值 ×10000 转万元再下推，保证候选池缩池口径正确（引擎逐日判定仍用已转亿元的 /history 行）。
+  const pushdownWidget = { ...pushdown };
+  if (pushdownWidget.marketCapMin !== undefined) pushdownWidget.marketCapMin = pushdownWidget.marketCapMin * MARKET_CAP_UNIT;
+  if (pushdownWidget.marketCapMax !== undefined) pushdownWidget.marketCapMax = pushdownWidget.marketCapMax * MARKET_CAP_UNIT;
+  const pushdownQuery = pushdownToQueryString(pushdownWidget);
 
   // 3. 调用后端 API 获取候选股票池
   let candidateCodes: string[] = [];
@@ -437,6 +578,29 @@ export async function loadBacktestData(
     tradeDates = data.data?.trade_dates ?? [];
   }
 
+  // 4.5 拉取历史逐日快照（逐日判定口径与选股视图统一）。
+  // 仅当 filterTree 需要 range/pattern 字段时拉取；区间用 config 起止，无需 warmup（预计算字段每日独立）。
+  let historyRowsByCode: Map<string, SnapshotHistoryRow[]> | undefined;
+  const requiredFields = requiredHistoryFields(filterTree);
+  if (requiredFields.length > 0 && candidateCodes.length > 0 && tradeDates.length > 0) {
+    const daysInRange = tradeDates.filter((d) => d >= startDate && d <= endDate).length;
+    try {
+      historyRowsByCode = await fetchHistoryInChunks(
+        candidateCodes,
+        startDate,
+        endDate,
+        requiredFields,
+        daysInRange,
+        mkt === 'cn' ? undefined : mkt,
+        signal,
+      );
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') throw err;
+      console.warn('[DataLoader] 历史快照拉取失败，回退旧口径（snapshot 最新值+重算指标）', err);
+      historyRowsByCode = undefined;
+    }
+  }
+
   // 5. 数据完整性校验
   const integrityValidation = validateDataIntegrity(allOhlcv, snapshots, tradeDates);
 
@@ -454,6 +618,7 @@ export async function loadBacktestData(
     afterEngineFilter: allOhlcv.size, // 引擎侧过滤在 engine 中完成
     removedExamples: [],
     hasEngineSideFilter: engineSideOnly,
+    historyFields: requiredFields,
   };
 
   // 7. 加载基准数据
@@ -473,6 +638,7 @@ export async function loadBacktestData(
       tradeDates,
       benchmarkOhlcv,
       auditTrail,
+      historyRowsByCode,
     },
     validation,
   };

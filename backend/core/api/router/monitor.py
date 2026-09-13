@@ -824,26 +824,42 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
     date_col = cfg["date_col"]
     task_name = cfg.get("task_name")  # task_run_log 专用：按 task_name 过滤
 
-    # ========== 优先检查 task_run_log 今日执行状态 ==========
-    # 如果 task_run_log 中有今日的执行记录，以此为准
+    # ========== 优先检查 task_run_log 最近执行状态 ==========
+    # 判据从「今日是否执行」放宽为「最近已收盘交易日（期望交易日）以来是否执行」：
+    # 周六/周日/盘前等无调度时段，只要最近一次执行已覆盖期望交易日（data_date >= 期望），
+    # 即视为数据就绪，避免复权因子等增量任务（因子表日期不随执行前进，见 incremental_delta）
+    # 与港/美股滞后市场在周末被误报「待执行 / 数据未更新」。
     task_run_log_name = task_name or task_key  # 优先使用 cfg 中指定的 task_name
-    today_log = _query_one(
+    # 港/美股 task_run_log 以 {market}:{label} 命名（hk_job_runner/us_job_runner 写 hk:基本面 等），
+    # 与 A 股 key 直名（daily_basic_sync）区分；market 非 cn 且无显式 task_name 时必须带前缀查询，
+    # 否则会误用 A 股同 key 记录（如港股基本面读到 A 股 daily_basic_sync 的 success）。
+    if market in ("hk", "us") and not task_name:
+        _chain_label = MARKET_CHAIN_LABEL_BY_KEY.get(task_key)
+        if _chain_label:
+            task_run_log_name = f"{market}:{_chain_label}"
+    try:
+        expected_trade_date = _get_last_trade_date(market, _now_beijing())
+    except Exception:  # pragma: no cover - 日历异常降级
+        logger.warning(f"计算期望交易日失败（{market}），回退按今日执行记录判断")
+        expected_trade_date = None
+    recent_log = _query_one(
         "SELECT status, start_time, end_time, data_date, rows_affected, error_message "
-        "FROM task_run_log WHERE task_name = %s AND start_time >= CURRENT_DATE "
+        "FROM task_run_log WHERE task_name = %s AND start_time >= %s "
         "ORDER BY start_time DESC LIMIT 1",
-        (task_run_log_name,),
+        (task_run_log_name, expected_trade_date or "1970-01-01"),
     )
-    if today_log:
-        log_status = today_log["status"]
+    if recent_log:
+        log_status = recent_log["status"]
         # 记录中有明确的成功/失败/运行中状态
         if log_status == "success":
             # 检查数据覆盖情况（若设置了 data_date 且数据表有该日期的数据）
-            log_data_date = today_log.get("data_date")
+            log_data_date = recent_log.get("data_date")
             if log_data_date:
-                # 期望交易日门禁：数据落后于期望交易日则报 pending，避免「今日有成功记录」但
+                # 期望交易日门禁：数据落后于期望交易日则报 pending，避免「有成功记录」但
                 # 实际数据未更新到最新交易日时误报成功（沪深的 Parquet、港/美股等受此影响）。
                 # stock_list_sync 为元数据表，非每日更新，跳过日期比较（与下方回退分支一致）。
-                expected_trade_date = _get_last_trade_date(market, _now_beijing())
+                if expected_trade_date is None:
+                    expected_trade_date = _get_last_trade_date(market, _now_beijing())
                 if task_key != "stock_list_sync" and str(log_data_date) < expected_trade_date:
                     return {
                         "status": "pending",
@@ -870,17 +886,17 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
             return {"status": "success", "message": "执行成功"}
         elif log_status == "running":
             # 父进程可能已死（中断残留）：running 超时自动降级为疑似中断
-            if _is_running_stale(today_log.get("start_time")):
+            if _is_running_stale(recent_log.get("start_time")):
                 return {
                     "status": "failed",
                     "message": "疑似中断（running 超时，父进程可能已退出）",
-                    "data_date": str(today_log["data_date"]) if today_log.get("data_date") else None,
+                    "data_date": str(recent_log["data_date"]) if recent_log.get("data_date") else None,
                 }
             return {"status": "running", "message": "执行中..."}
         elif log_status == "failed":
-            return {"status": "failed", "message": (today_log.get("error_message") or "执行失败")[:100]}
+            return {"status": "failed", "message": (recent_log.get("error_message") or "执行失败")[:100]}
 
-    # ========== 无今日执行记录，回退到数据表检查 ==========
+    # ========== 无最近执行记录，回退到数据表检查 ==========
     # 动态基准按 market 隔离：latest_date 也须按 market 过滤，否则滞后市场（港/美股）
     # 会被 A 股最新日期污染，导致按 market 过滤后计数为 0 而误报「今日无数据」pending，
     # 掩盖「数据未更新/数据异常」的真实状态（A 股为最新市场不受影响）。
@@ -2445,11 +2461,19 @@ MARKET_CHAIN = [
     {"name": "交易信号", "label": "信号", "key": "signal_precompute"},
     {"name": "宽表", "label": "宽表", "key": "snapshot_sync"},
     {"name": "Parquet", "label": "Parquet", "key": "snapshot_sync", "freshness": "snapshot_sync"},  # Parquet 为宽表导出，复用宽表快照新鲜度检查（含期望交易日门禁）
+    # 周K/月K（独立 launchd：周二~六 09:30 周K / 10:00 月K，由 bar_aggregation 全市场聚合，不写 task_run_log）
+    {"name": "周K", "label": "周K", "key": "weekly_aggregation"},
+    {"name": "月K", "label": "月K", "key": "monthly_aggregation"},
 ]
+# task_key → label 映射（港/美股 task_run_log 以 {market}:{label} 命名，_check_task_from_db 按市场前缀查询用）。
+# 同 key 多步骤（indicators_compute 同时用于「技术指标/形态」）取首个 label，与 hk_job_runner/us_job_runner 写入一致。
+MARKET_CHAIN_LABEL_BY_KEY: Dict[str, str] = {}
+for _m_step in MARKET_CHAIN:
+    MARKET_CHAIN_LABEL_BY_KEY.setdefault(_m_step["key"], _m_step["label"])
 # 参与各市场覆盖评估的 task_key（避免与 A 股混算基准）
 _MARKET_COVERAGE_TABLES = {
     "stock_list_sync", "daily_import", "daily_basic_sync", "indicators_compute",
-    "signal_precompute", "snapshot_sync",
+    "signal_precompute", "snapshot_sync", "weekly_aggregation", "monthly_aggregation",
 }
 
 

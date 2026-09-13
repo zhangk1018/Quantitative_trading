@@ -19,9 +19,11 @@ import type {
   SellReason,
   RangeField,
   TechPattern,
+  SnapshotHistoryRow,
 } from './types';
 import { IndicatorCache } from './types';
 import { TRADING_DAYS_PER_YEAR, LOT_SIZE } from '../backtest/constants';
+import { RANGE_FIELD_TO_COLUMN, rowValue, findPrevRow, rowForDate } from './utils/historyFieldMap';
 
 // ==================== 常量定义 ====================
 
@@ -109,6 +111,36 @@ export interface StrategyBacktestInput {
   strippedFields?: string[];
   /** 自编指标预计算值: Map<scriptId, Map<stockCode, values[]>> */
   customIndicatorValues?: Map<string, Map<string, (number | null)[]>>;
+  /**
+   * 历史逐日快照行（升序）：Map<code, HistoryRow[]>。
+   * 与选股视图 /api/stocks/ 同源宽表预计算字段，用于逐日判定口径统一。
+   * 缺省时引擎回退到「snapshot 最新值 + 前端重算指标」旧口径（向后兼容）。
+   */
+  historyRowsByCode?: Map<string, SnapshotHistoryRow[]>;
+  /**
+   * 自编指标按日期键取值：Map<scriptId, Map<code, Map<'YYYY-MM-DD', number|null>>>。
+   * 替代旧 customIndicatorValues（数组下标）路径，根治序列长度/批次对齐错位。
+   */
+  customValueByDate?: Map<string, Map<string, Map<string, number | null>>>;
+}
+
+/**
+ * AST 评估上下文（逐日判定新增的三类口径来源）。
+ * 由引擎主循环按当前交易日 & 股票组装，随递归透传给 getFieldValue / checkTechPattern / custom_indicator。
+ */
+export interface FilterEvalContext {
+  /** 当前交易日该股宽表行（/history 同源） */
+  historyRow?: SnapshotHistoryRow;
+  /** 该股上一有行情日宽表行（后端 pattern 按自身行序取 prev 的口径） */
+  prevHistoryRow?: SnapshotHistoryRow;
+  /** 是否启用"宽表历史行严格判定"（true=range/pattern 一律按行判定，行缺失该条件 false；false/未设=回退旧口径） */
+  useHistoryRows?: boolean;
+  /** 当前交易日 YYYY-MM-DD（custom_indicator 按日期键取值的必需项） */
+  currentDate?: string;
+  /** 当前股票代码（custom_indicator 按日期键取值的必需项） */
+  code?: string;
+  /** 自编指标按日期键取值表 */
+  customValueByDate?: Map<string, Map<string, Map<string, number | null>>>;
 }
 
 // ==================== 辅助函数 ====================
@@ -221,7 +253,7 @@ export function isLimitDown(bar: number[], preClose: number, limitPct: number): 
  * @param ts 时间戳
  * @returns YYYY-MM-DD 格式字符串
  */
-function parseTimestamp(ts: number): string {
+export function parseTimestamp(ts: number): string {
   // 毫秒级时间戳（> 1e11，对应 1973-03-03+，覆盖 1990 年上交所开市以来的全部数据）
   if (ts > 1e11) {
     const date = new Date(ts);
@@ -276,6 +308,32 @@ export function buildTradeDates(
   }
 
   return Array.from(dateSet).sort();
+}
+
+/**
+ * 回测窗口纯函数（供 View 与 engine 共用，杜绝窗口计算漂移）。
+ *
+ * 假导入参 tradeDates 为升序交易日；返回全局交易日历上的归一化索引。
+ * barIdx / 自编指标对齐都以这些索引为准——View 裁剪自编指标输入、engine 裁剪指标
+ * 计算序列，二者必须使用同一窗口，日期键才能对齐。
+ */
+export function computeBacktestWindow(
+  tradeDates: string[],
+  startDate: string,
+  endDate: string,
+  warmupDays: number,
+): {
+  allTradeDates: string[];
+  startIdx: number;      // 首个不小于 startDate 的交易日索引
+  actualEndIdx: number;  // 区间内最后交易日索引（含）
+  warmupStartIdx: number; // 指标预热起点索引（含，clip 到 [0, startIdx)）
+} {
+  const allTradeDates = tradeDates;
+  const startIdx = allTradeDates.findIndex(d => d >= startDate);
+  const endIdx = allTradeDates.findIndex(d => d > endDate);
+  const actualEndIdx = endIdx === -1 ? allTradeDates.length - 1 : endIdx - 1;
+  const warmupStartIdx = Math.max(0, startIdx - warmupDays);
+  return { allTradeDates, startIdx, actualEndIdx, warmupStartIdx };
 }
 
 /**
@@ -362,53 +420,105 @@ export function computeIndicatorCache(bars: number[][], _warmupDays: number): In
 // ==================== AST 条件评估器（含 NaN 阻断） ====================
 
 /**
- * 获取字段值（用于 range 类型过滤器）
- * NaN/undefined 直接返回 null，触发阻断
- */
-function getFieldValue(
-  field: RangeField,
-  snapshot: StockSnapshot,
-  bars: number[][],
-  cache: IndicatorCache,
-  idx: number
-): number | null {
-  switch (field) {
-    case 'market_cap':
-      return snapshot.marketCap;
-    case 'close':
-      return bars[idx]?.[OHLCV_CLOSE] ?? null;
-    case 'change_pct': {
-      if (idx < 1) return null;
-      const prevClose = bars[idx - 1]?.[OHLCV_CLOSE];
-      const currClose = bars[idx]?.[OHLCV_CLOSE];
-      if (!prevClose || !currClose) return null;
-      return (currClose / prevClose - 1) * 100;
+     * 获取字段值（用于 range 类型过滤器）。
+     * 当传入 row（/history 宽表行）时，一律从该行取值（口径统一，market_cap 已转为亿元）；
+     * 否则回退旧口径（无 historyByDate 时保持原行为）。
+     */
+    function getFieldValue(
+      field: RangeField,
+      snapshot: StockSnapshot,
+      bars: number[][],
+      cache: IndicatorCache,
+      idx: number,
+      row?: SnapshotHistoryRow
+    ): number | null {
+      if (row !== undefined) {
+        const col = RANGE_FIELD_TO_COLUMN[field];
+        return rowValue(row, col);
+      }
+      // 回退旧口径（无历史行时保持原行为）
+      switch (field) {
+        case 'market_cap':
+          return snapshot.marketCap;
+        case 'close':
+          return bars[idx]?.[OHLCV_CLOSE] ?? null;
+        case 'change_pct': {
+          if (idx < 1) return null;
+          const prevClose = bars[idx - 1]?.[OHLCV_CLOSE];
+          const currClose = bars[idx]?.[OHLCV_CLOSE];
+          if (!prevClose || !currClose) return null;
+          return (currClose / prevClose - 1) * 100;
+        }
+        case 'pe':
+          return snapshot.pe;
+        case 'pe_ttm':
+          return snapshot.peTtm;
+        case 'pb':
+          return snapshot.pb;
+        case 'turnover_rate':
+          return snapshot.turnoverRate;
+        case 'vol_ratio_5':
+          return cache.getVolRatio5(idx);
+        default:
+          return null;
+      }
     }
-    case 'pe':
-      return snapshot.pe;
-    case 'pe_ttm':
-      return snapshot.peTtm;
-    case 'pb':
-      return snapshot.pb;
-    case 'turnover_rate':
-      return snapshot.turnoverRate;
-    case 'vol_ratio_5':
-      return cache.getVolRatio5(idx);
-    default:
-      return null;
-  }
-}
 
 /**
  * 检查技术形态（支持 4 种基础形态）
  * @param bars OHLCV 数组，用于获取 close 等价格数据
+ * @param row 可选：当前交易日宽表行（/history 同源）；传入时按后端 _update_tech_patterns SQL 判定，口径与选股视图一致
+ * @param prevRow 可选：该股上一有行情日宽表行
  */
 function checkTechPattern(
   pattern: TechPattern,
   cache: IndicatorCache,
   bars: number[][],
-  idx: number
+  idx: number,
+  row?: SnapshotHistoryRow,
+  prevRow?: SnapshotHistoryRow
 ): boolean {
+  // 新口径：从宽表行复刻后端 SQL（含每只股票自身行序取 prev）
+  if (row && prevRow) {
+    switch (pattern) {
+      case 'ma_bullish': {
+        const ma5 = rowValue(row, 'ma5');
+        const ma10 = rowValue(row, 'ma10');
+        const ma20 = rowValue(row, 'ma20');
+        if (ma5 === null || ma10 === null || ma20 === null) return false;
+        return ma5 > ma10 && ma10 > ma20;
+      }
+      case 'macd_golden_cross': {
+        // 金叉判定用 `<`（prev.dif < prev.dea 且 curr.dif > curr.dea），与后端一致
+        const pd = rowValue(prevRow, 'dif');
+        const pde = rowValue(prevRow, 'dea');
+        const cd = rowValue(row, 'dif');
+        const cde = rowValue(row, 'dea');
+        if (pd === null || pde === null || cd === null || cde === null) return false;
+        return pd < pde && cd > cde;
+      }
+      case 'rsi_golden_cross': {
+        const p6 = rowValue(prevRow, 'rsi_6');
+        const p12 = rowValue(prevRow, 'rsi_12');
+        const c6 = rowValue(row, 'rsi_6');
+        const c12 = rowValue(row, 'rsi_12');
+        if (p6 === null || p12 === null || c6 === null || c12 === null) return false;
+        return p6 < p12 && c6 > c12;
+      }
+      case 'boll_break_upper': {
+        const pc = rowValue(prevRow, 'close');
+        const pbu = rowValue(prevRow, 'boll_upper');
+        const cc = rowValue(row, 'close');
+        const cbu = rowValue(row, 'boll_upper');
+        if (pc === null || pbu === null || cc === null || cbu === null) return false;
+        return pc <= pbu && cc > cbu;
+      }
+      default:
+        return false;
+    }
+  }
+
+  // 回退旧口径（无历史行时前端重算）
   if (idx < 1 || idx >= bars.length) return false;
 
   switch (pattern) {
@@ -455,6 +565,8 @@ function checkTechPattern(
 
 /**
  * AST 过滤器评估（含 NaN 硬阻断）
+ * @param ctx 逐日判定上下文（historyRow/prevHistoryRow/currentDate/code/customValueByDate）。
+ *        提供后 range/pattern 一律按宽表预计算字段判定（与选股视图口径统一）；缺省回退旧口径。
  */
 export function evaluateFilter(
   node: FilterNode,
@@ -462,29 +574,45 @@ export function evaluateFilter(
   bars: number[][],
   cache: IndicatorCache,
   idx: number,
-  /** 自编指标预计算值: Map<scriptId, Map<stockCode, values[]>> */
+  /** 自编指标预计算值（旧数组下标路径，仅无 ctx.customValueByDate 时回退用）: Map<scriptId, Map<stockCode, values[]>> */
   customIndicatorValues?: Map<string, Map<string, (number | null)[]>>,
+  ctx?: FilterEvalContext,
 ): boolean {
   switch (node.type) {
     case 'and':
-      return node.children.every(c => evaluateFilter(c, snapshot, bars, cache, idx, customIndicatorValues));
+      return node.children.every(c => evaluateFilter(c, snapshot, bars, cache, idx, customIndicatorValues, ctx));
     case 'or':
-      return node.children.some(c => evaluateFilter(c, snapshot, bars, cache, idx, customIndicatorValues));
+      return node.children.some(c => evaluateFilter(c, snapshot, bars, cache, idx, customIndicatorValues, ctx));
     case 'not': {
-      const childResult = evaluateFilter(node.child, snapshot, bars, cache, idx, customIndicatorValues);
+      const childResult = evaluateFilter(node.child, snapshot, bars, cache, idx, customIndicatorValues, ctx);
       if (childResult === null || childResult === undefined) {
         return false;
       }
       return !childResult;
     }
     case 'range': {
-      const val = getFieldValue(node.field, snapshot, bars, cache, idx);
-      if (val === null || val === undefined || Number.isNaN(val)) return false;
-      const meetsMin = node.min === undefined || val >= node.min;
-      const meetsMax = node.max === undefined || val <= node.max;
-      return meetsMin && meetsMax;
+      // row-based 严格模式：仅按宽表历史行判定；该日期无行（停牌/未请求/未加载）→ false，绝不回退 snapshot
+      if (ctx?.useHistoryRows === true) {
+        const row = ctx.historyRow;
+        if (!row) return false;
+        const val = getFieldValue(node.field, snapshot, bars, cache, idx, row);
+        if (val === null || val === undefined || Number.isNaN(val)) return false;
+        const meetsMin = node.min === undefined || val >= node.min;
+        const meetsMax = node.max === undefined || val <= node.max;
+        return meetsMin && meetsMax;
+      }
+      // 旧口径（无 historyByDate 的历史缓存 / 测试直调）
+      const oldVal = getFieldValue(node.field, snapshot, bars, cache, idx);
+      if (oldVal === null || oldVal === undefined || Number.isNaN(oldVal)) return false;
+      const oldMeetsMin = node.min === undefined || oldVal >= node.min;
+      const oldMeetsMax = node.max === undefined || oldVal <= node.max;
+      return oldMeetsMin && oldMeetsMax;
     }
     case 'pattern': {
+      if (ctx?.useHistoryRows === true) {
+        if (!ctx.historyRow || !ctx.prevHistoryRow) return false;
+        return checkTechPattern(node.pattern, cache, bars, idx, ctx.historyRow, ctx.prevHistoryRow);
+      }
       return checkTechPattern(node.pattern, cache, bars, idx);
     }
     case 'kline': {
@@ -497,6 +625,15 @@ export function evaluateFilter(
       return boards.includes(snapshot.listedBoard);
     }
     case 'custom_indicator': {
+      // 新口径：按日期键取值（根治子序列长度差 / 批次右对齐 padding 的索引错位）
+      if (ctx?.customValueByDate && ctx?.currentDate && ctx?.code) {
+        const v = ctx.customValueByDate.get(node.scriptId)?.get(ctx.code)?.get(ctx.currentDate);
+        if (v === null || v === undefined || Number.isNaN(v)) return false;
+        const meetsMin = node.min === undefined || v >= node.min;
+        const meetsMax = node.max === undefined || v <= node.max;
+        return meetsMin && meetsMax;
+      }
+      // 回退旧数组下标路径
       if (!customIndicatorValues) return false;
       const scriptValues = customIndicatorValues.get(node.scriptId);
       if (!scriptValues) return false;
@@ -550,23 +687,24 @@ export function evaluateFilterScore(
   bars: number[][],
   cache: IndicatorCache,
   idx: number,
-  /** 自编指标预计算值: Map<scriptId, Map<stockCode, values[]>> */
+  /** 自编指标预计算值（旧数组下标路径）: Map<scriptId, Map<stockCode, values[]>> */
   customIndicatorValues?: Map<string, Map<string, (number | null)[]>>,
+  ctx?: FilterEvalContext,
 ): number {
   switch (node.type) {
     case 'and':
-      return node.children.reduce((sum, c) => sum + evaluateFilterScore(c, snapshot, bars, cache, idx, customIndicatorValues), 0);
+      return node.children.reduce((sum, c) => sum + evaluateFilterScore(c, snapshot, bars, cache, idx, customIndicatorValues, ctx), 0);
     case 'or':
-      return Math.max(0, ...node.children.map(c => evaluateFilterScore(c, snapshot, bars, cache, idx, customIndicatorValues)));
+      return Math.max(0, ...node.children.map(c => evaluateFilterScore(c, snapshot, bars, cache, idx, customIndicatorValues, ctx)));
     case 'not':
       // 用布尔值判定：子节点满足 → not 得0分；子节点不满足 → not 得1分
-      return evaluateFilter(node.child, snapshot, bars, cache, idx, customIndicatorValues) ? 0 : 1;
+      return evaluateFilter(node.child, snapshot, bars, cache, idx, customIndicatorValues, ctx) ? 0 : 1;
     case 'range':
     case 'pattern':
     case 'kline':
     case 'market':
     case 'custom_indicator':
-      return evaluateFilter(node, snapshot, bars, cache, idx, customIndicatorValues) ? 1 : 0;
+      return evaluateFilter(node, snapshot, bars, cache, idx, customIndicatorValues, ctx) ? 1 : 0;
     default:
       return 0;
   }
@@ -673,8 +811,19 @@ export function calcSellCommission(
  */
 export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBacktestResult {
   const startTime = performance.now();
-  const { allOhlcv, snapshots, filterTree, config, startDate, endDate, benchmarkOhlcv, tradeDates, strippedFields, exitMode, layeredTPParams, customIndicatorValues, fxRateByDate } = input;
+  const { allOhlcv, snapshots, filterTree, config, startDate, endDate, benchmarkOhlcv, tradeDates, strippedFields, exitMode, layeredTPParams, customIndicatorValues, fxRateByDate, historyRowsByCode, customValueByDate } = input;
   const warnings: string[] = [];
+
+  // 逐日判定上下文构建器：按「股票+当前交易日」从宽表历史行取当日行/上一有行情日行。
+  // 缺省（无历史行）时构造空上下文，使 evaluateFilter/evaluateFilterScore 回退旧口径，向后兼容。
+  const buildCtx = (code: string, currentDate: string): FilterEvalContext => {
+    // row-based 严格判定的开关：仅当调用方提供了 /history 宽表历史行数据时启用
+    const useHistoryRows = historyRowsByCode != null;
+    const rows = historyRowsByCode?.get(code);
+    const row = useHistoryRows && rows ? rowForDate(rows, currentDate) : undefined;
+    const prevRow = useHistoryRows && rows ? findPrevRow(rows, currentDate) : undefined;
+    return { historyRow: row ?? undefined, prevHistoryRow: prevRow ?? undefined, useHistoryRows, currentDate, code, customValueByDate };
+  };
 
   // P1-1.1: 将剥离的非标准字段名写入回测警告，提升用户透明度
   if (strippedFields && strippedFields.length > 0) {
@@ -1135,7 +1284,7 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
           if (cache && filterTree) {
             const totalConditions = countLeafConditions(filterTree);
             const scoreThreshold = Math.max(2, Math.ceil(totalConditions / 3));
-            const currentScore = evaluateFilterScore(filterTree, snapshot, bars, cache, barIdx, customIndicatorValues);
+            const currentScore = evaluateFilterScore(filterTree, snapshot, bars, cache, barIdx, customIndicatorValues, buildCtx(code, currentDate));
             if (currentScore < scoreThreshold) {
               intradayActions.push({
                 code, reason: 'rebalance', shares: pos.shares, execPrice: closePrice,
@@ -1152,7 +1301,7 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
           if (cache && filterTree) {
             const totalConditions = countLeafConditions(filterTree);
             const scoreThreshold = Math.max(2, Math.ceil(totalConditions / 3));
-            const currentScore = evaluateFilterScore(filterTree, snapshot, bars, cache, barIdx, customIndicatorValues);
+            const currentScore = evaluateFilterScore(filterTree, snapshot, bars, cache, barIdx, customIndicatorValues, buildCtx(code, currentDate));
             if (currentScore < scoreThreshold) {
               intradayActions.push({
                 code, reason: 'rebalance', shares: pos.shares, execPrice: closePrice,
@@ -1427,7 +1576,7 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
           if (isLimitUp(bar, preClose, limitPct)) continue;
 
           // AST 评估
-          if (evaluateFilter(filterTree!, snapshot, bars, cache, barIdx, customIndicatorValues)) {
+          if (evaluateFilter(filterTree!, snapshot, bars, cache, barIdx, customIndicatorValues, buildCtx(code, currentDate))) {
             targetPool.add(code);
           }
         }

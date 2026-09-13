@@ -25,10 +25,38 @@ export interface ScriptResult {
   id: string;
   /** 脚本名称 */
   name: string;
-  /** 预计算矩阵: Map<股票代码, (number|null)[]> — 内维=天数，长度与入参 OHLCV 一致 */
+  /** 预计算矩阵: Map<股票代码, (number|null)[] — 内维=天数，长度与入参 OHLCV 一致 */
   values: Map<string, (number | null)[]>;
   /** 错误列表（按股票索引） */
   errors: string[];
+}
+
+/**
+ * 将自编指标预计算结果按「日期键」zip 为 customValueByDate。
+ *
+ * 前提：入参 OHLCV 已按 windowDates 对齐（每只股票长度一致，index j ↔ windowDates[j]），
+ * 因此 values[code][j] ↔ windowDates[j]。根治旧「数组下标 + 批次右对齐 padding」的日期错位。
+ *
+ * @returns Map<scriptId, Map<code, Map<'YYYY-MM-DD', number|null>>>
+ */
+export function buildCustomValueByDate(
+  results: Map<string, ScriptResult>,
+  windowDates: string[],
+): Map<string, Map<string, Map<string, number | null>>> {
+  const out = new Map<string, Map<string, Map<string, number | null>>>();
+  for (const [scriptId, result] of results) {
+    const byCode = new Map<string, Map<string, number | null>>();
+    for (const [code, vals] of result.values) {
+      const byDate = new Map<string, number | null>();
+      const len = Math.min(windowDates.length, vals.length);
+      for (let j = 0; j < len; j++) {
+        byDate.set(windowDates[j], vals[j]);
+      }
+      byCode.set(code, byDate);
+    }
+    out.set(scriptId, byCode);
+  }
+  return out;
 }
 
 // 默认分批大小

@@ -15,6 +15,8 @@ import {
   type BacktestSummary,
   type BacktestCondition,
   type BacktestPresetCondition,
+  type BacktestIndicatorOperator,
+  type BacktestIndicatorThreshold,
   PRESET_CONDITIONS,
   type IndicatorParams,
   type ProgressInfo,
@@ -423,7 +425,56 @@ async function computeBuySignals(
     );
   }
 
-  return rawSignals.map((v) => v !== null && v !== 0 && Number.isFinite(v));
+  return rawSignals.map((v) => applyIndicatorThreshold(v, condition.operator, condition.threshold));
+}
+
+/**
+ * 按选股视图口径对自编指标逐日得分做算子+阈值判定。
+ *
+ * 兼容规则（对齐 CustomIndicator.filter 语义）：
+ * - 数值非有限值（null/NaN）→ 恒 false
+ * - operator 缺省，或 operator 非 range 且 threshold 缺省 → 退化为 score !== 0
+ * - range → v 在 [low, high] 内（含边界）
+ * - cross_up / cross_down → 需 prev 得分，本函数单日无法判定，退化为非 0（由调用方在需要时另行处理）
+ */
+function applyIndicatorThreshold(
+  v: number | null,
+  operator: BacktestIndicatorOperator | undefined,
+  threshold: BacktestIndicatorThreshold | undefined,
+): boolean {
+  if (v === null || !Number.isFinite(v)) return false;
+
+  // 区间算子
+  if (operator === 'range') {
+    if (Array.isArray(threshold) && threshold.length === 2) {
+      const [lo, hi] = threshold;
+      return v >= lo && v <= hi;
+    }
+    // 无有效区间 → 退化 score !== 0
+    return v !== 0;
+  }
+
+  // 上穿/下穿需前后日对比，单日判定无上下文 → 退化为非 0 信号（调用方有 prev 时按日判定）
+  if (operator === 'cross_up' || operator === 'cross_down') {
+    return v !== 0;
+  }
+
+  // 单值算子
+  switch (operator) {
+    case '>':
+      return typeof threshold === 'number' ? v > threshold : v !== 0;
+    case '>=':
+      return typeof threshold === 'number' ? v >= threshold : v !== 0;
+    case '<':
+      return typeof threshold === 'number' ? v < threshold : v !== 0;
+    case '<=':
+      return typeof threshold === 'number' ? v <= threshold : v !== 0;
+    case '==':
+      return typeof threshold === 'number' ? v === threshold : v !== 0;
+    default:
+      // operator 缺省
+      return v !== 0;
+  }
 }
 
 /**
@@ -715,6 +766,8 @@ export async function runBacktest(
   let sellSignalCount = 0;
   let sellLimitDeferredCount = 0;
   let sellLimitExpiredCount = 0;
+  /** 单仓持有期再触发买入信号（卖出后才重新进场），原先静默丢弃，现计数并写入诊断 */
+  let holdingBuySkipCount = 0;
 
   const trades: Trade[] = [];
   const equityCurve: EquityPoint[] = [];
@@ -913,15 +966,26 @@ export async function runBacktest(
       }
 
       // --- 信号检测 ---
-      if (state === 'idle' && pendingBuySignal === null && buySignals[i]) {
-        buySignalCount++;
-        diagnostics.push({
-          time: bar.time,
-          event: 'buy_signal',
-          reason: `"${getConditionName(buyCondition)}" 发出买入信号`,
-          data: { indicatorName: getConditionName(buyCondition) },
-        });
-        pendingBuySignal = { idx: i, deferCount: 0 };
+      if (buySignals[i]) {
+        if (state === 'idle' && pendingBuySignal === null) {
+          buySignalCount++;
+          diagnostics.push({
+            time: bar.time,
+            event: 'buy_signal',
+            reason: `"${getConditionName(buyCondition)}" 发出买入信号`,
+            data: { indicatorName: getConditionName(buyCondition) },
+          });
+          pendingBuySignal = { idx: i, deferCount: 0 };
+        } else if (state === 'holding') {
+          // 单仓持有期：卖出后才重新进场，命中信号不静默丢弃 → 写入诊断
+          holdingBuySkipCount++;
+          diagnostics.push({
+            time: bar.time,
+            event: 'buy_signal_holding_skip',
+            reason: `单仓持有期 "${getConditionName(buyCondition)}" 再触发买入信号，卖出后才重新进场，本次跳过`,
+            data: { indicatorName: getConditionName(buyCondition) },
+          });
+        }
       }
 
       if (state === 'holding' && pendingSellSignal === null) {
@@ -1016,7 +1080,8 @@ export async function runBacktest(
   const closedTrades = trades.filter((t) => t.direction === 'sell' || t.isForcedClose);
   if (closedTrades.length === 0) {
     warnings.push(
-      `回测期间共检测到 ${buySignalCount} 次买入信号，` +
+      `因买入条件确认/阈值判定共触发 ${buySignalCount} 次买入信号，` +
+      `其中持有期跳过（卖出后重新进场）${holdingBuySkipCount} 次，` +
       `因涨停顺延 ${buyLimitDeferredCount} 次（失效 ${buyLimitExpiredCount} 次），` +
       `因资金不足跳过 ${insufficientFundCount} 次，` +
       `因信号出现在期末无法 T+1 执行 ${unexecutedBuyCount} 次，` +

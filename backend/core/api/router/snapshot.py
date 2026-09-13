@@ -6,8 +6,15 @@ import os
 import time
 import logging
 from fastapi import APIRouter, Query, HTTPException
-from shared.schemas import ApiResponse, SnapshotAllData, SnapshotIncrementalData
-from core.api.dependencies import validate_required_date, validate_board, validate_market, SnapshotServiceDep, get_snapshot_service
+from shared.schemas import ApiResponse, SnapshotAllData, SnapshotHistoryData, SnapshotIncrementalData
+from core.api.dependencies import (
+    validate_optional_date,
+    validate_required_date,
+    validate_board,
+    validate_market,
+    SnapshotServiceDep,
+    get_snapshot_service,
+)
 
 logger = logging.getLogger(__name__)
 # 慢请求阈值支持环境变量配置
@@ -64,6 +71,50 @@ def get_incremental_snapshot(
         logger.warning("增量快照慢请求：since=%s, %d只, %d天, %.2fs", since, len(result.stocks), result.days, elapsed)
     else:
         logger.info("增量快照请求：since=%s, %d只, %d天, %.2fs", since, len(result.stocks), result.days)
+    return ApiResponse(code=200, message="success", data=result)
+
+
+@router.get("/history", summary="历史逐日快照（预计算字段，与选股视图同口径）", response_model=ApiResponse[SnapshotHistoryData])
+def get_history_snapshot(
+    snapshot: SnapshotServiceDep,
+    codes: str = Query(..., description="股票代码过滤，逗号分隔（≤2000只），如 000001,600000,0001.HK"),
+    market: str | None = Query(None, description="市场过滤 cn/hk/us；传入时剔除推断市场不符的代码"),
+    start_date: str | None = Query(None, description="起始日期 YYYY-MM-DD（含），缺省为 end_date 前 300 天"),
+    end_date: str | None = Query(None, description="结束日期 YYYY-MM-DD（含），缺省为最新交易日"),
+    fields: str | None = Query(None, description="字段白名单裁剪，逗号分隔；缺省返回全部预计算字段"),
+):
+    """按股票列表 + 日期区间返回 stock_daily_snapshot 全历史预计算字段（只读）。
+
+    供回测引擎逐日判定使用，字段与选股视图 /api/stocks/（同一宽表导出）口径一致。
+    """
+    code_list = [c for c in (codes.split(",") if codes else []) if c.strip()]
+    field_list = [f for f in (fields.split(",") if fields else []) if f.strip()]
+    start_val = validate_optional_date(start_date, label="start_date") if start_date else None
+    end_val = validate_optional_date(end_date, label="end_date") if end_date else None
+    t0 = time.time()
+    try:
+        result = snapshot.get_history_snapshots(
+            codes=code_list,
+            market=market,
+            start_date=start_val,
+            end_date=end_val,
+            fields=field_list or None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    elapsed = time.time() - t0
+    row_count = sum(len(s.rows) for s in result.stocks)
+
+    if elapsed > SLOW_REQUEST_THRESHOLD:
+        logger.warning(
+            "历史快照慢请求：%d只/%d行，区间 %s~%s，耗时%.2fs",
+            result.total_codes, row_count, result.start_date, result.end_date, elapsed,
+        )
+    else:
+        logger.info(
+            "历史快照请求：%d只/%d行，区间 %s~%s，耗时%.2fs",
+            result.total_codes, row_count, result.start_date, result.end_date, elapsed,
+        )
     return ApiResponse(code=200, message="success", data=result)
 
 

@@ -326,6 +326,33 @@ def sync_basic(conn, trade_date: str, limit: Optional[int] = None,
     return write_daily_basic(conn, df, trade_date)
 
 
+def _write_task_log(conn, status: str, data_date: str, error_message: str = '') -> None:
+    """向 task_run_log 写入港股基本面执行记录（task_name='hk:基本面'，与监控看板 MARKET_CHAIN 对齐）。
+
+    周六独立任务不经 hk_job_runner，脚本自身落库后监控看板才能自动显示「基本面」成功，
+    替代原先「手动向 task_run_log 插入记录」的运维要求。
+
+    Args:
+        conn: psycopg2 连接
+        status: success / failed
+        data_date: 目标交易日（YYYY-MM-DD）
+        error_message: 失败原因（成功时为空）
+    """
+    from datetime import datetime
+    now = datetime.now()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO task_run_log (task_name, stage, start_time, end_time, status, data_date, error_message) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                ('hk:基本面', 8, now, now, status, data_date, error_message or None),
+            )
+        conn.commit()
+        logger.info(f"✅ 已写入 task_run_log（hk:基本面，{status}，data_date={data_date}）")
+    except Exception as e:  # noqa: BLE001 - 日志写入失败不阻断主流程
+        logger.warning(f"写入 task_run_log 失败: {e}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='港股基本面同步脚本（AkShare 百度估值，市值+市盈率TTM，低频）')
     parser.add_argument('--date', type=str, default=None, help='目标交易日（YYYY-MM-DD），默认=港股利好最新交易日')
@@ -334,14 +361,19 @@ def main() -> None:
     args = parser.parse_args()
 
     conn = _connect()
+    trade_date: Optional[str] = None
     try:
         trade_date = args.date
         if not trade_date:
             trade_date = _latest_trade_date(conn) or pd.Timestamp.today().strftime('%Y-%m-%d')
         count = sync_basic(conn, trade_date, limit=args.limit, dry_run=args.dry_run)
         logger.info(f"完成: {count} 条")
+        if not args.dry_run:
+            _write_task_log(conn, 'success', trade_date)
     except Exception as e:  # noqa: BLE001
         logger.error(f'程序异常: {e}')
+        if conn is not None and not args.dry_run and trade_date:
+            _write_task_log(conn, 'failed', trade_date, error_message=str(e))
         raise
     finally:
         if conn is not None:
