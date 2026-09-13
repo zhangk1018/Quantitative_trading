@@ -360,3 +360,8 @@
 - 日期：2026-09-11
 - 负责角色：方舟
 - 修改范围：交易室「交易计划」表单功能增强。①止损价随入场价联动：抽取 `syncStopLoss(entry)`，入场价失焦时止损价恒自动更新为 `入场价 × 0.95`（清除"仅止损价为空才填"拦截），入场价改动后止损随之变动；②选中标的代码自动带出入场价：标的搜索由单源 `searchStocks` 切换为跨市场 `searchStocksAll`（cn/hk/us，返回携带前收盘价），选中时入场价缺省=标的前收盘价（`pre_close`，缺失退化用最新 `close`），同时带出标的名称并联动止损价；统一同一文件 ABC 分类编辑器的标的搜索逻辑（跨市场，选中仅带名称）；清理不再使用的导入。③前端控制台警告治理：Collapse `destroyInactivePanel`→`destroyOnHidden`、Modal `destroyOnClose`→`destroyOnHidden`、Spin tip 改嵌套模式、6 个含表单 Modal 补 `forceRender`（TradingRecordForm/CycleOverview/ExitSlipModal/EquityCurve/ActModule/SaveStrategyModal）。变更均在前端（21 文件），已随 26d7445 提交。明日计划：浏览器自测交易计划联动流程 + 确认美股中文名缺口是否开单转量量。会话交互对象：K
+
+## 会话信息
+- 日期：2026-09-13
+- 负责角色：量量
+- 修改范围：协作单 35.0 回测口径一致（P1）后端完成——①新端点 `GET /api/snapshot/history`（snapshot_service.get_history_snapshots + snapshot.py 路由 + schemas SnapshotHistoryStock/SnapshotHistoryData）：按 codes+区间返回 stock_daily_snapshot 全历史预计算字段 66 个，与选股 /api/stocks/ 同宽表同口径，含字段白名单裁剪/行数上限 60000/codes≤2000/区间≤500 天/服务端游标流式；单测 14 例全过 + 抽样 66 字段对账 mismatch=0 + cn/hk/us 三市场实测；②hk/us 宽表历史回填完成（hk 277 交易日/2681 只、us 282 交易日/205 只，铺至 2025-07-30，最新 09-11 与 cn 对齐）；③35.0 ASSIGNED→VERIFY + 协作单/topics 同步，待方舟前端联调。存量补提交：monitor.py 任务判据放宽为期望交易日以来 + 港/美股 task_run_log 前缀查询 + 周K/月K 入 MARKET_CHAIN；sync_hk_basic.py 自动写 task_run_log（hk:基本面）。日报已生成。会话交互对象：K
