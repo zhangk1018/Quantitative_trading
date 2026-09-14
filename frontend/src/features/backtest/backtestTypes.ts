@@ -303,7 +303,8 @@ export interface DiagnosticEntry {
   event: 'buy_signal' | 'sell_signal' | 'buy_deferred' | 'buy_expired'
     | 'sell_deferred' | 'sell_expired' | 'insufficient_funds'
     | 'buy_executed' | 'sell_executed' | 'forced_close'
-    | 'unexecuted_buy' | 'script_error' | 'buy_signal_holding_skip';
+    | 'unexecuted_buy' | 'script_error' | 'buy_signal_holding_skip'
+    | 'signal_before_range';
   /** 描述信息 */
   reason: string;
   /** 附加数据 */

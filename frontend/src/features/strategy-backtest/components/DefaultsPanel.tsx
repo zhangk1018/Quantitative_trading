@@ -174,6 +174,7 @@ const StrategyBacktestDefaultsPanel: React.FC = () => {
             style={{ width: 140 }}
             options={[
               { value: '000300.SH', label: '沪深300' },
+              { value: '999999', label: '上证指数' },
               { value: '000905.SH', label: '中证500' },
               { value: '000016.SH', label: '上证50' },
               { value: '399006.SZ', label: '创业板指' },
@@ -262,6 +263,21 @@ const StrategyBacktestDefaultsPanel: React.FC = () => {
             </Radio.Group>
           </div>
         </div>
+        <Row
+          label="每日最多建仓"
+          tooltip="每个调仓日按 AST 得分从高到低只买前 N 只（防无差别全买）；0 = 不限制（全买）。"
+        >
+          <InputNumber
+            size="small"
+            min={0}
+            max={20}
+            value={defaults.maxNewPerRebalance}
+            onChange={(v) => updateField('maxNewPerRebalance', v ?? 0)}
+            controls={false}
+            addonAfter="只"
+            className="!w-full"
+          />
+        </Row>
         <Row
           label="单股最大仓位"
           tooltip="例如 20% 表示单只股票最多占总资产 20%，超出部分闲置。默认 100% 不限制，即完全等权分配。"

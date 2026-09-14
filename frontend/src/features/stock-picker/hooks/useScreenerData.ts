@@ -4,6 +4,7 @@ import { useScreenerSelector } from '../context/ScreenerContext';
 import { fetchStocks } from '../../stock-detail/api';
 import { buildScreeningParams, CONFIG, ScreenerFilterPayload } from '../utils/screener';
 import { applyCustomIndicatorFilter, extractCustomConditions, getCustomIndicatorService } from '../utils/applyCustomIndicatorFilter';
+import { isExcludedStockName } from '../../../lib/stocks/exclusion';
 import type { StockItem, FetchStocksResponse } from '../types';
 import type { FilterCondition, FilterGroup } from '../types/filterTree';
 
@@ -266,8 +267,12 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
         const requestParams = buildScreeningParams(state, sortByParam, sortAscParam, PAGE_SIZE, offsetParam, watchlistCodes);
         const result = (await fetchStocks(requestParams, finalSignal)) as FetchStocksResponse;
 
-        let filteredItems = result.items;
-        let filteredTotal = result.total || 0;
+        // 排除名称含 ST/*ST/退 的股票（自编指标公式层拿不到名称，必须在候选阶段剔除）
+        let filteredItems = result.items.filter((item) => !isExcludedStockName(item.stock_name));
+        let filteredTotal = Math.max(
+          Math.round((result.total || 0) * (filteredItems.length / Math.max(result.items.length, 1))),
+          filteredItems.length,
+        );
         const currentFilterGroup = stateRef.current.filterGroup;
         const currentCustomIndicators = stateRef.current.customIndicators;
         if (currentFilterGroup?.conditions && currentCustomIndicators && !append) {
@@ -277,7 +282,9 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
             const filterResult = await applyCustomIndicatorFilter(stockCodes, customConditions);
             if (filterResult.executed) {
               const passedSet = filterResult.passedCodes;
-              filteredItems = result.items.filter((item) => passedSet.has(item.stock_code));
+              filteredItems = result.items.filter(
+                (item) => passedSet.has(item.stock_code) && !isExcludedStockName(item.stock_name),
+              );
               filteredTotal = Math.max(
                 Math.round((result.total || 0) * (filteredItems.length / Math.max(result.items.length, 1))),
                 filteredItems.length,
@@ -448,7 +455,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
           setProgressText('正在拉取候选股...');
           service.clearCache();
           const [loadedCandidates] = await loadAllCandidates(sortByParam, sortAscParam, signal);
-          candidates = loadedCandidates;
+          candidates = loadedCandidates.filter((c) => !isExcludedStockName(c.stock_name));
           cache.candidates = candidates;
           cache.rangeHash = rangeHash;
           cache._lastPassedCodes = null;

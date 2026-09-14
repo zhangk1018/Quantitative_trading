@@ -1468,3 +1468,58 @@ describe('顺延失败处理', () => {
     expect(result.warnings.some(w => w.includes('放弃'))).toBeTruthy();
   });
 });
+
+// ==================== 每日最多建仓（Top N）截断 ====================
+
+describe('Top N 每日新增截断', () => {
+  const allCodes = ['600000.SH', '600001.SH', '600002.SH', '600003.SH'];
+
+  function buildInputs(maxNewPerRebalance: number) {
+    const allOhlcv = new Map<string, number[][]>();
+    const snapshots = new Map<string, StockSnapshot>();
+    allCodes.forEach((code, idx) => {
+      allOhlcv.set(code, generateOhlcv(60, 10 + idx, 0.01, '2025-01-02'));
+      snapshots.set(code, createSnapshot(code, `股票${idx}`, 'main'));
+    });
+    const config: StrategyBacktestDefaults = {
+      ...DEFAULT_STRATEGY_BACKTEST_DEFAULTS,
+      maxPositions: 50, // 持仓上限放开，单独验证每日新增截断
+      maxNewPerRebalance,
+      rebalanceInterval: 21, // 月频：窗口内仅触发 1 次调仓，便于数当日建仓数
+      warmupDays: 10,
+    };
+    return {
+      input: {
+        allOhlcv,
+        snapshots,
+        filterTree: createPassAllFilter(),
+        config,
+        startDate: '2025-02-20',
+        endDate: '2025-03-10',
+        tradeDates: buildTradeDateList(60, '2025-01-02'),
+      } as StrategyBacktestInput,
+    };
+  }
+
+  it('maxNewPerRebalance=2 时，当日最多只买入前 2 只（共 4 只候选）', () => {
+    const { input } = buildInputs(2);
+    const result = runStrategyBacktest(input);
+    const entryCodes = new Set(result.trades.map(t => t.code));
+    // 4 只候选但每日新增截断为 2 → 整个窗口内实际建仓的股票数 = 2（月频仅 1 次调仓）
+    expect(entryCodes.size).toBe(2);
+  });
+
+  it('maxNewPerRebalance=0（默认）时保持"全买"：4 只候选全部建仓', () => {
+    const { input } = buildInputs(0);
+    const result = runStrategyBacktest(input);
+    const entryCodes = new Set(result.trades.map(t => t.code));
+    expect(entryCodes.size).toBe(4);
+  });
+
+  it('未配置 maxNewPerRebalance（undefined）视为不限制，等价 0', () => {
+    const { input } = buildInputs(0);
+    input.config.maxNewPerRebalance = undefined;
+    const result = runStrategyBacktest(input);
+    expect(new Set(result.trades.map(t => t.code)).size).toBe(4);
+  });
+});

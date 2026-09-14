@@ -437,6 +437,7 @@ const BacktestPanel: React.FC<BacktestPanelProps> = ({
                     style={{ width: 120 }}
                     options={[
                       { value: '000300.SH', label: '沪深300' },
+                      { value: '999999', label: '上证指数' },
                       { value: '000905.SH', label: '中证500' },
                       { value: '000688.SH', label: '科创50' },
                     ]}
@@ -493,6 +494,23 @@ const BacktestPanel: React.FC<BacktestPanelProps> = ({
                     max={50}
                     value={config.maxPositions}
                     onChange={(v) => v && updateConfig({ maxPositions: v })}
+                    disabled={disabled}
+                    style={{ width: 120 }}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs">
+                    每日最多建仓
+                    <Tooltip title="每个调仓日按 AST 得分从高到低只买前 N 只（防无差别全买）；0 = 不限制（全买）">
+                      <QuestionCircleOutlined className="ml-1 text-text-disabled" />
+                    </Tooltip>
+                  </span>
+                  <InputNumber
+                    size="small"
+                    min={0}
+                    max={20}
+                    value={config.maxNewPerRebalance}
+                    onChange={(v) => v !== null && updateConfig({ maxNewPerRebalance: v })}
                     disabled={disabled}
                     style={{ width: 120 }}
                   />

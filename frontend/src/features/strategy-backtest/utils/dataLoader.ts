@@ -11,6 +11,7 @@ import {
 } from './filterTreeAdapter';
 import { requiredHistoryFields, convertHistoryRow, MARKET_CAP_UNIT } from './historyFieldMap';
 import { inferMarketKey, type MarketKey } from '@/features/watchlist/utils/stock-utils';
+import { isExcludedStockName } from '@/lib/stocks/exclusion';
 
 // ==================== 类型 ====================
 
@@ -486,7 +487,11 @@ export async function loadBacktestData(
     // API 返回 {code, data: {items: [{stock_code, ...}], total: N}}，提取 stock_code 列表
     const items = result.data?.items ?? [];
     if (Array.isArray(items)) {
-      candidateCodes = items.map((i: any) => i.stock_code).filter(Boolean);
+      // 排除名称含 ST/*ST/退 的股票（自编指标公式层拿不到名称，须在候选池阶段剔除）
+      candidateCodes = items
+        .filter((i: any) => i && !isExcludedStockName(i.name ?? i.stock_name))
+        .map((i: any) => i.stock_code)
+        .filter(Boolean);
     } else {
       candidateCodes = [];
     }
@@ -562,7 +567,7 @@ export async function loadBacktestData(
     const ohlcvData = await ohlcvResp.json();
 
     // 从 ohlcvData 中提取 OHLCV 和快照数据（snapshot 已包含在响应中）
-    const stocks = ohlcvData.data?.stocks ?? [];
+    const stocks = (ohlcvData.data?.stocks ?? []).filter((s: any) => !isExcludedStockName(s.name));
     const extracted = extractFromStocks(stocks);
     allOhlcv = extracted.ohlcvMap;
     snapshots = extracted.snapMap;
@@ -571,7 +576,7 @@ export async function loadBacktestData(
     // 兜底：全量加载
     const resp = await fetch(`/api/snapshot/all${marketParam ? `?${marketParam}` : ''}`, { signal });
     const data = await resp.json();
-    const stocks = data.data?.stocks ?? [];
+    const stocks = (data.data?.stocks ?? []).filter((s: any) => !isExcludedStockName(s.name));
     const extracted = extractFromStocks(stocks);
     allOhlcv = extracted.ohlcvMap;
     snapshots = extracted.snapMap;
@@ -626,7 +631,19 @@ export async function loadBacktestData(
   try {
     const resp = await fetch(`/api/kline/${config.benchmarkCode}`, { signal });
     const data = await resp.json();
-    benchmarkOhlcv = data.data ?? [];
+    const kline: Array<{ trade_date: string; open?: string | number; high?: string | number; low?: string | number; close?: string | number; volume?: string | number }> = data.data ?? [];
+    // /api/kline 返回对象数组 [{trade_date, open, high, low, close, volume}, ...]，
+    // 而引擎 calcMetrics 按 number[][]（[ts,o,h,l,c,v]）读取。
+    // 此处归一化为与个股 ohlcv 一致的数组格式，否则 ts/close 取到 undefined，
+    // 日期键退化为 "NaN-NaN-NaN"，基准收益/Alpha/Beta 计算失败。
+    benchmarkOhlcv = kline.map((b) => [
+      Date.parse(b.trade_date),
+      Number(b.open),
+      Number(b.high),
+      Number(b.low),
+      Number(b.close),
+      Number(b.volume),
+    ]);
   } catch {
     console.warn('[DataLoader] 基准数据加载失败，使用空数据');
   }

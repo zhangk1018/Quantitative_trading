@@ -80,6 +80,8 @@ export interface StrategyBacktestDefaults {
   rebalanceInterval: RebalanceInterval;
   /** 最大持仓数量（3~50只） */
   maxPositions: number;
+  /** 单个调仓日最多新增建仓股票数（每日 Top N 精选，防"无差别全买"；0/undefined=不限制） */
+  maxNewPerRebalance?: number;
   /** 仓位分配方式 */
   positionAlloc: PositionAlloc;
   /** 单股最大仓位比例，1.0 = 100%（即不限制），0.15 = 15% */

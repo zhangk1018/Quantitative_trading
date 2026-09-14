@@ -74,6 +74,8 @@ STAGE1_TASKS = [
 
 STAGE2_TASKS = [
     {"name": "daily_import", "script": os.path.join("backend", "collector", "etl", "import_daily_data.py"), "args": ["--incremental"]},
+    # 协作单 37.0：指数（沪深300/上证）日线随沪深日线一起更新，供指数 MA20 择时 & 基准收益对比
+    {"name": "index_sync", "script": os.path.join("backend", "collector", "etl", "sync_index_daily.py"), "args": ["--incremental"]},
 ]
 
 STAGE3_TASKS = [

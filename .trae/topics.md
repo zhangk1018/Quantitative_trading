@@ -1,10 +1,18 @@
 # 跨会话提醒
 
 ## 会话信息
-- 日期：2026-09-13
+- 日期：2026-09-14
 - 负责角色：方舟
-- 修改范围：回测口径统一改造（35.0 后端校验 + strategy-backtest 7 文件）、回测分析算子/阈值判定修复（36.0）、run_10condition_screener 独立复算程序
-- 待办：K 复验 36.0（002508 买入日对账）；35.0 真实浏览器 K 例联调后 CLOSED；港美股基本面历史 NULL 前端判空兜底
+- 修改范围：① 37.0/38.0 指数历史数据复核→CLOSED + 已 CLOSED 协作单归档压缩体积；② 移除策略回测+选股视图「指数 MA20 择时」全套（引擎门控/字段/UI/组件/测试）；③ 实现「每日最多建仓 N」Top N 截断（AST 得分降序每日买前 N）；④ 新增 ST/退股票名称排除工具；⑤ 修复「导出结果」CSV 下载测试（antd Dropdown hover 触发）；⑥ 提交量量遗留后端 `sync_index_daily.py` + `daily_job_runner.py` 挂接
+- 待办：36.0 待浏览器终验（002508 首买日=2025-02-14）；35.0 真实浏览器 K 例联调后 CLOSED；港美股基本面历史 NULL 前端判空兜底；Top N 建仓节奏适配持仓模块
+
+[量量→方舟 2026-09-14 12:45] 协作单 [38.0-INDEX-HISTORY-20260914] 状态变更: NEW→VERIFY（指数历史已补全至 2021-01-04 起近 5.5 年）：`sync_index_daily.py` 新增 `--start` 参数，执行 `--full --start 2021-01-01`，沪深300(`000300`)/上证(`999999`) 各 **1381 条**（BaoStock 主源，2021-01-04~2026-09-11，2024 年各 242 条）。DB 核验 ✔；`GET /api/kline/000300.SH?start_date=2024-01-01` 返回 2024-01-04 收 3347.05、999999 收 2954.35；快照/指标含指数仍 0 条（market='index' 隔离生效）。回测跨 2024 年早段可按当时指数 MA20 正确开/不开仓。请方舟复核后置 CLOSED。
+
+[方舟→量量 2026-09-14 11:05] 协作单 [37.0-INDEX-KLINE-MISSING-20260914] 状态变更: NEW→CLOSED（方舟复核通过，数据侧验收 ✔）：独立核验 `stock_quotes` 沪深300(`000300`)/上证(`999999`) 各 266 条、`market='index'`、2025-08-11~2026-09-11，最新收盘 4510.16/3888.11 与报告一致；`stock_daily_snapshot` 含指数 0 条（隔离生效，不影响选股/快照）。前端指数 MA20 择时开关现可生效。**提醒**：指数仅覆盖 2025-08-11 起约一年，回测早于该日则早段视为 MA20 下方不开新仓；如需更长历史请 `--full` 扩取。
+
+[方舟→量量 2026-09-14 10:50] 协作单 [37.0-INDEX-KLINE-MISSING-20260914] 提单（NEW，P1）：**指数（沪深300/上证）K线未入库**，数据库实测 `stock_quotes`/`stock_indicators`/`stock_basic` 均无指数（000300/999999 及带后缀记录为空）。影响：前端已实现的「指数MA20环境择时」开关（`useIndexMA20Filter`）无法生效（benchmarkOhlcv 空），**且当前回测基准收益对比（默认 000300.SH）也一直是空/退化**——建议一并修复。请量量：①将沪深300 + 上证指数日线纳入 ETL 入库 `stock_quotes`；②确认入库 code 与 `/api/kline` 归一化对齐（沪深300=`000300`、上证=`999999`，避免与平安银行 `000001` 冲突）；③确认不影响选股/快照导出。
+
+[方舟→K 2026-09-14 09:00] 协作单 [36.0-BACKTEST-THRESHOLD-20260913] 复验结果+追加修复：**K 复验发现 2025-02-14 无买入，根因=预热窗口不足（非阈值逻辑 bug）**。`PREHEAT_DAYS=60` 取数起点≈2024-11-04，仅约 66 个预热交易日内 EMA/ADX 未收敛，002508 首信号日 2025-02-13 得分 8→7 漏报。已修：`PREHEAT_DAYS 60→250`、`KLINE_FETCH_LIMIT` 保持后端上限 **1000**（先后提 3000 触发 422，已回退）；复算 02-13=8、12 信号日齐备、T+1 首买=2025-02-14 ✔；引擎对 `[firstValidIdx,startIdx)` 预热段命中写入 `signal_before_range` 诊断不再静默。`tsc` 0 错误、backtestEngine 29/29 + 历史一致性 10/10。待浏览器终验后 CLOSED。
 
 [方舟→K 2026-09-13 19:35] 协作单 [36.0-BACKTEST-THRESHOLD-20260913] 状态变更: NEW→VERIFY（主修项「算子/阈值判定」已由方舟实施）：`BacktestCustomCondition` 增加可选 `operator`/`threshold`，`computeBuySignals` 改为按 operator+threshold 逐日判定（`applyIndicatorThreshold`，含 range；缺省退化 `score!==0` 兼容旧配置），`BacktestConfigPanel` 透传 `indicator.operator`/`defaultThreshold`。单测 29/29 + 历史一致性 10/10 + `tsc` 0 错误。待 K 验收 002508「10条件选股」2025-01-01~ 买入日与 12 个 `≥8` 信号日对应（T+1 成交）。
 
@@ -360,6 +368,8 @@
 - 日期：2026-09-11
 - 负责角色：方舟
 - 修改范围：交易室「交易计划」表单功能增强。①止损价随入场价联动：抽取 `syncStopLoss(entry)`，入场价失焦时止损价恒自动更新为 `入场价 × 0.95`（清除"仅止损价为空才填"拦截），入场价改动后止损随之变动；②选中标的代码自动带出入场价：标的搜索由单源 `searchStocks` 切换为跨市场 `searchStocksAll`（cn/hk/us，返回携带前收盘价），选中时入场价缺省=标的前收盘价（`pre_close`，缺失退化用最新 `close`），同时带出标的名称并联动止损价；统一同一文件 ABC 分类编辑器的标的搜索逻辑（跨市场，选中仅带名称）；清理不再使用的导入。③前端控制台警告治理：Collapse `destroyInactivePanel`→`destroyOnHidden`、Modal `destroyOnClose`→`destroyOnHidden`、Spin tip 改嵌套模式、6 个含表单 Modal 补 `forceRender`（TradingRecordForm/CycleOverview/ExitSlipModal/EquityCurve/ActModule/SaveStrategyModal）。变更均在前端（21 文件），已随 26d7445 提交。明日计划：浏览器自测交易计划联动流程 + 确认美股中文名缺口是否开单转量量。会话交互对象：K
+- [方舟 2026-09-14 19:20] 协作单 [38.0-INDEX-HISTORY-20260914] 状态变更: NEW（指数历史数据仅266条约2025-08起，需量量 `sync_index_daily.py --full` 全量补全，以支撑回测长区间「指数MA20当时择时」按各历史时点正确判断）
+- [方舟 2026-09-14 19:30] 协作单 [38.0-INDEX-HISTORY-20260914] 状态变更: VERIFY→CLOSED（量量已全量补全指数至 2021-01 起、各 1381 条，方舟复核通过；长区间「指数MA20当时择时」正式生效，<2021 无数据按兜底放行）
 
 ## 会话信息
 - 日期：2026-09-13

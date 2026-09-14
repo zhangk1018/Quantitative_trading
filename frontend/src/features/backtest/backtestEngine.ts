@@ -745,6 +745,29 @@ export async function runBacktest(
   const startIdx = startDate ? bars.findIndex((b) => b.time >= startDate) : firstValidIdx;
   const endIdx = endDate ? findLastIndex(bars, (b) => b.time <= endDate) : bars.length - 1;
 
+  // 预热段信号显式化（协作单 36.0）：用户起始日之前取数段（[firstValidIdx, startIdx)）的信号
+  // 不进入交易区间、保持静默。该段信号本身合法（尤其当预热窗口偏短、EMA/ADX 未收敛时，
+  // 得分可能与全历史口径不一致），显式记录而非静默丢弃，便于排查近起始日信号漏报问题。
+  let leadingSignalCount = 0;
+  let leadingEarliestTime = '';
+  for (let j = firstValidIdx; j < startIdx && j < buySignals.length; j++) {
+    if (buySignals[j]) {
+      if (leadingSignalCount === 0) leadingEarliestTime = bars[j].time;
+      leadingSignalCount++;
+    }
+  }
+  if (leadingSignalCount > 0) {
+    diagnostics.push({
+      time: bars[Math.min(startIdx, bars.length - 1)].time,
+      event: 'signal_before_range',
+      reason: `"${getConditionName(buyCondition)}" 在用户起始日之前（预热段）命中 ${leadingSignalCount} 次，不参与成交`,
+      data: { count: leadingSignalCount, earliest: leadingEarliestTime },
+    });
+    warnings.push(
+      `${getConditionName(buyCondition)} 在起始日之前（预热段）命中 ${leadingSignalCount} 次（最早 ${leadingEarliestTime}），预热段信号不成交，仅提示。`,
+    );
+  }
+
   // 4. 模拟交易
   let cash = capital;
   let shares = 0;

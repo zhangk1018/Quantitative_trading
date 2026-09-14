@@ -95,6 +95,7 @@ export const DEFAULT_STRATEGY_BACKTEST_DEFAULTS: StrategyBacktestDefaults = {
   // ---------- Card 2: 调仓与仓位 ----------
   rebalanceInterval: 5, // 每周（5个交易日）
   maxPositions: 10,
+  maxNewPerRebalance: 0, // 0 = 不限制（保持旧行为"无差别全买"）
   positionAlloc: 'equal',
   singleStockMaxPct: 1.0, // 100% = 不限制
   idleCashReturn: 'none',
@@ -142,6 +143,8 @@ export function getStrategyBacktestDefaults(): StrategyBacktestDefaults {
       // Card 2
       rebalanceInterval: parsed.rebalanceInterval ?? DEFAULT_STRATEGY_BACKTEST_DEFAULTS.rebalanceInterval,
       maxPositions: parsed.maxPositions ?? DEFAULT_STRATEGY_BACKTEST_DEFAULTS.maxPositions,
+      maxNewPerRebalance:
+        parsed.maxNewPerRebalance ?? DEFAULT_STRATEGY_BACKTEST_DEFAULTS.maxNewPerRebalance,
       positionAlloc: parsed.positionAlloc ?? DEFAULT_STRATEGY_BACKTEST_DEFAULTS.positionAlloc,
       singleStockMaxPct: parsed.singleStockMaxPct ?? DEFAULT_STRATEGY_BACKTEST_DEFAULTS.singleStockMaxPct,
       idleCashReturn: parsed.idleCashReturn ?? DEFAULT_STRATEGY_BACKTEST_DEFAULTS.idleCashReturn,

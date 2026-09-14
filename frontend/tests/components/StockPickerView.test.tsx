@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act, cleanup, waitFor, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 // jsdom 不支持 scrollTo，添加 polyfill 避免 unhandled rejection
 if (!Element.prototype.scrollTo) {
@@ -291,7 +292,7 @@ describe('K 2026-06-18 反馈 #1：AbortController + isMounted', () => {
       if (resolveFetches[i]) {
         await act(async () => {
           resolveFetches[i]({
-            items: [{ stock_code: 'STALE_001', stock_name: '旧股票_STALE' }],
+            items: [{ stock_code: 'STALE_001', stock_name: '旧股票_OLD' }],
             total: 999,
           });
         });
@@ -300,23 +301,23 @@ describe('K 2026-06-18 反馈 #1：AbortController + isMounted', () => {
 
     // K 反馈 #4：resolve 旧请求后等待组件稳定 + 旧数据未出现
     await waitFor(() => {
-      expect(screen.queryByText('旧股票_STALE')).not.toBeInTheDocument();
+      expect(screen.queryByText('旧股票_OLD')).not.toBeInTheDocument();
     });
 
     // resolve 最新请求
     await act(async () => {
       resolveFetches[totalCalls - 1]({
         items: [
-          { stock_code: '000001', stock_name: '最新股票_LATEST' },
+          { stock_code: '000001', stock_name: '最新股票_NEW' },
         ],
         total: 1,
       });
     });
 
     // K 反馈 #4：断言组件展示最新数据
-    expect(screen.getByText('最新股票_LATEST')).toBeInTheDocument();
+    expect(screen.getByText('最新股票_NEW')).toBeInTheDocument();
     // 断言旧股票未出现（多次快速触发中旧请求被忽略）
-    expect(screen.queryByText('旧股票_STALE')).not.toBeInTheDocument();
+    expect(screen.queryByText('旧股票_OLD')).not.toBeInTheDocument();
   });
 
   it('组件卸载后未完成请求不触发 setState 警告', async () => {
@@ -574,9 +575,16 @@ describe('2026-06-22 添加自选 + 导出结果', () => {
     const createElementSpy = vi.spyOn(document, 'createElement');
 
     try {
-      await act(async () => {
-        screen.getByTestId('export-result-btn').click();
+      const user = userEvent.setup();
+      // 等待导出按钮可用
+      await waitFor(() => {
+        expect(screen.getByTestId('export-result-btn')).not.toBeDisabled();
       });
+      // antd Dropdown 默认 hover 触发：悬停打开菜单
+      await user.hover(screen.getByTestId('export-result-btn'));
+      // 在下拉菜单中点击「CSV 格式」菜单项触发下载
+      const csvItem = await waitFor(() => screen.getByText('CSV 格式'));
+      await user.click(csvItem);
 
       // 验证：创建 Blob URL + 触发 a.click() + a.download 含 "screener-result-"
       expect(createObjectURLSpy).toHaveBeenCalledTimes(1);

@@ -1581,6 +1581,32 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
           }
         }
 
+        // Top N 每日新增截断上限（undefined/0 = 不限制，保持既有"全买"行为）
+        const maxNewPerRebalance = config.maxNewPerRebalance ?? 0;
+
+        // Top N 精选：当开启每日新增截断（maxNewPerRebalance>0）时，对当日目标池中未持有股票按 AST 得分降序，
+        // 供下方买入环节仅取前 N 只（防"无差别全买"）。maxNewPerRebalance=0 时保持既有"全买"行为。
+        let rankedCandidates: string[] | null = null;
+        if (maxNewPerRebalance > 0) {
+          const scored: Array<{ code: string; score: number }> = [];
+          for (const code of targetPool) {
+            if (positions.has(code)) continue;
+            const score = evaluateFilterScore(
+              filterTree!,
+              snapshots.get(code)!,
+              stockBars.get(code)!,
+              indicatorCaches.get(code)!,
+              stockDateIndexMap.get(code)!.get(currentDate)!,
+              customIndicatorValues,
+              buildCtx(code, currentDate),
+            );
+            scored.push({ code, score });
+          }
+          // 按得分降序（稳定排序保持同分时 targetPool 的原始插入顺序）
+          scored.sort((a, b) => b.score - a.score);
+          rankedCandidates = scored.map((x) => x.code);
+        }
+
         // 卖出：持仓不在目标池（生成 T+1 卖出指令）
         for (const [code, pos] of positions) {
           if (!targetPool.has(code)) {
@@ -1602,9 +1628,16 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
           warnings.push(`${currentDate}: 单股仓位上限 ${(config.singleStockMaxPct * 100).toFixed(1)}% < 等权 ${(100 / config.maxPositions).toFixed(1)}%，产生现金拖累`);
         }
 
-        for (const code of targetPool) {
+        // 买入候选：开启 Top N 时用「得分降序」列表（每日仅买前 N），否则保持既有全买（targetPool 插入顺序）
+        const buyUniverse = maxNewPerRebalance > 0 ? rankedCandidates! : [...targetPool];
+        const newCap = maxNewPerRebalance > 0 ? maxNewPerRebalance : Infinity;
+        let newBought = 0;
+
+        for (const code of buyUniverse) {
           if (positions.has(code)) continue;
           if (positions.size >= config.maxPositions) break;
+          if (newBought >= newCap) break; // 每日新增截断：本调仓日最多建仓 N 只
+          newBought++;
 
           pendingOrders.push({
             code,

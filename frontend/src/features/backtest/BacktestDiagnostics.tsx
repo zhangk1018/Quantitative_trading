@@ -35,6 +35,7 @@ const EVENT_CONFIG: Record<DiagnosticEntry['event'], { icon: React.ReactNode; co
   unexecuted_buy: { icon: <WarningOutlined />, color: '#faad14', label: '未执行买入' },
   script_error: { icon: <BugOutlined />, color: '#ff4d4f', label: '脚本错误' },
   buy_signal_holding_skip: { icon: <AimOutlined />, color: '#13c2c2', label: '持有期买入信号跳过' },
+  signal_before_range: { icon: <WarningOutlined />, color: '#faad14', label: '预热段命中（起始日之前）' },
 };
 
 /** 按事件类型分组统计 */
