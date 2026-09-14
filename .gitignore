@@ -104,3 +104,4 @@ yfinance-main/
 # OS files
 .DS_Store
 Thumbs.db
+default.profraw
