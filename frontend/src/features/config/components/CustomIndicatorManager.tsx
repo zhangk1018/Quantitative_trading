@@ -14,12 +14,13 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Button, message, Space, Typography } from 'antd';
+import { Button, message, Space, Typography, Segmented } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useScreenerSelector, useScreenerDispatch } from '../../stock-picker/context/ScreenerContext';
 import { CustomIndicatorModal } from '../../stock-picker/components/CustomIndicatorModal';
 import { CustomIndicatorList } from '../../stock-picker/components/CustomIndicatorList';
 import { ImportExportButtons } from '../../stock-picker/components/ImportExportButtons';
+import SellStrategyManager from './SellStrategyManager';
 import {
   saveCustomIndicator,
   removeCustomIndicator,
@@ -55,6 +56,8 @@ export const CustomIndicatorManager: React.FC = () => {
   // 弹窗状态
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [editingIndicator, setEditingIndicator] = useState<CustomIndicator | null>(null);
+  /** 自编指标分区：buy=买入策略（自编指标），sell=卖出策略 */
+  const [activeSection, setActiveSection] = useState<'buy' | 'sell'>('buy');
 
   // 路由参数 ?action=new → 自动打开新建弹窗
   // K 2026-06-17 决策：配置页做参数解析自动唤起新建弹窗
@@ -152,6 +155,21 @@ export const CustomIndicatorManager: React.FC = () => {
 
   return (
     <div className="space-y-4" data-testid="custom-indicator-manager">
+      {/* 分区切换：买入策略（自编指标） / 卖出策略 */}
+      <Segmented
+        options={[
+          { value: 'buy', label: '买入策略' },
+          { value: 'sell', label: '卖出策略' },
+        ]}
+        value={activeSection}
+        onChange={(v) => setActiveSection(v as 'buy' | 'sell')}
+        data-testid="custom-indicator-section"
+      />
+
+      {activeSection === 'sell' ? (
+        <SellStrategyManager />
+      ) : (
+      <>
       {/* 顶部操作栏：新建 + 导入导出 + 计数 */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <Space size="small">
@@ -196,6 +214,8 @@ export const CustomIndicatorManager: React.FC = () => {
           onConfirm={editingIndicator ? handleUpdate : handleSave}
           onCancel={handleCloseModal}
         />
+      )}
+      </>
       )}
     </div>
   );

@@ -302,6 +302,39 @@ describe('exportCustomIndicators / parseImportFile / importCustomIndicators', ()
     expect(result.errors[0].type).toBe('name_duplicate');
   });
 
+  it('软删除记录的 ID 不参与去重：删除后导出→导入可恢复（ID 去重 bug 回归）', () => {
+    // seed：新建指标后软删除，其 ID 仍保留在 localStorage 数组中
+    const existing = saveCustomIndicator(makeIndicator({ name: '10条件选股' }));
+    expect(removeCustomIndicator(existing.id)).toBe(true);
+    expect(listCustomIndicators()).toHaveLength(0); // 正常列表已隐藏
+
+    // 模拟「用导出功能导出再导入」：文件中的指标带原 ID（与软删除记录同 ID）
+    const file = {
+      version: 1,
+      exportedAt: '2026-09-15T00:00:00.000Z',
+      userId: MOCK_USER_ID,
+      indicators: [
+        { ...makeIndicator({ id: existing.id, name: '10条件选股' }) } as unknown as CustomIndicator,
+      ],
+    };
+
+    // 修复前：existingIds 含软删除记录 → 误判 name_duplicate，added=0
+    // 修复后：软删除 ID 不参与去重 → 正常恢复为新增
+    const preview = computeImportPreview(file);
+    expect(preview.errors).toHaveLength(0);
+    expect(preview.skipped).toBe(0);
+    expect(preview.added).toBe(1);
+
+    const result = importCustomIndicators(file);
+    expect(result.added).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.errors).toHaveLength(0);
+    const restored = listCustomIndicators();
+    expect(restored).toHaveLength(1);
+    expect(restored[0].name).toBe('10条件选股');
+    expect(restored[0].deleted).toBe(false);
+  });
+
   it('importCustomIndicators 字段非法计入 field_invalid 错误', () => {
     const file = {
       version: 1,

@@ -905,7 +905,11 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
     if not (market and table in _MARKET_FILTER_TABLES):
         market_where = ""
         market_param = ()
-    if task_name:
+    # 仅当数据表是 task_run_log（含 task_name 且 data_date 为执行日期）时才用 task_name 过滤。
+    # 其余任务（如 parquet_export 数据源是 stock_daily_snapshot，无 task_name 列）必须回落
+    # 到通用 trade_date 查询，否则 MAX(date_col) 会因「列 task_name 不存在」被 _query_scalar 吞掉
+    # 降级为 None → 误报「无数据」（详见协作单 34.x 看板 Parquet「待执行/无数据」问题）。
+    if task_name and cfg.get("table") == "task_run_log":
         latest_date = _query_scalar(
             f"SELECT MAX({date_col}) FROM {table} WHERE task_name = %s{market_where}",
             (task_name,) + market_param,

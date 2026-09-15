@@ -153,6 +153,7 @@ const BacktestView: React.FC = () => {
     endDate: config.endDate,
     capital: config.capital,
     sellStrategy: config.sellStrategy,
+    customSellStrategy: config.customSellStrategy,
     trailingStopPct: config.trailingStopPct,
     atrPeriod: config.atrPeriod,
     atrMultiplier: config.atrMultiplier,
@@ -477,6 +478,8 @@ const BacktestView: React.FC = () => {
                       children: (
                         <BacktestTradeLog
                           trades={output.trades}
+                          stockCode={configRef.current?.stockCode ?? ''}
+                          stockName={configRef.current?.stockName ?? ''}
                           onTradeClick={handleTradeClick}
                         />
                       ),

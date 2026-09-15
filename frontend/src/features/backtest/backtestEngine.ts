@@ -15,6 +15,7 @@ import {
   type BacktestSummary,
   type BacktestCondition,
   type BacktestPresetCondition,
+  type BacktestCustomSellCondition,
   type BacktestIndicatorOperator,
   type BacktestIndicatorThreshold,
   PRESET_CONDITIONS,
@@ -429,6 +430,62 @@ async function computeBuySignals(
 }
 
 /**
+ * 预计算自编卖出策略信号（纯信号协议）
+ *
+ * 复用自编指标 Pyodide 执行管线：脚本对整段 K 线全量输出每日「是否触发卖出」信号，
+ * 引擎在持仓状态下消费。持仓上下文（entry/peak/顺延）由引擎管理，脚本不可见。
+ */
+async function computeSellSignals(
+  condition: BacktestCustomSellCondition,
+  bars: KlineBar[],
+  volRatio5?: (number | null)[],
+): Promise<boolean[]> {
+  if (!condition.formula || typeof condition.formula !== 'string') {
+    throw new SignalError(
+      BacktestErrorCode.SIGNAL_SCRIPT_ERROR,
+      `自编卖出策略公式为空：${condition.strategyName}`,
+      { indicatorName: condition.strategyName },
+    );
+  }
+
+  const runner = getCustomIndicatorRunner();
+  if (!runner.isReady()) {
+    await runner.init();
+  }
+
+  let rawSignals: (number | null)[];
+  try {
+    const data: {
+      open: number[];
+      high: number[];
+      low: number[];
+      close: number[];
+      volume: number[];
+      volRatio5?: number[];
+    } = {
+      open: bars.map((b) => b.open),
+      high: bars.map((b) => b.high),
+      low: bars.map((b) => b.low),
+      close: bars.map((b) => b.close),
+      volume: bars.map((b) => b.volume),
+    };
+    if (volRatio5) {
+      data.volRatio5 = volRatio5.map((v) => (v !== null && Number.isFinite(v) ? v : 0));
+    }
+    rawSignals = await runner.executeSingle(condition.formula, data, 60_000);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new SignalError(
+      BacktestErrorCode.SIGNAL_SCRIPT_ERROR,
+      `自编卖出策略执行失败：${msg}`,
+      { indicatorName: condition.strategyName, originalError: msg },
+    );
+  }
+
+  return rawSignals.map((v) => applyIndicatorThreshold(v, condition.operator, condition.threshold));
+}
+
+/**
  * 按选股视图口径对自编指标逐日得分做算子+阈值判定。
  *
  * 兼容规则（对齐 CustomIndicator.filter 语义）：
@@ -640,6 +697,7 @@ export async function runBacktest(
     endDate,
     capital,
     sellStrategy,
+    customSellStrategy,
     trailingStopPct,
     atrPeriod,
     atrMultiplier,
@@ -653,15 +711,17 @@ export async function runBacktest(
     indicatorParams,
   } = config;
 
-  // 卖出策略参数
+  // 卖出策略参数（自编卖出策略失败时回退内置 trailing_stop）
   const sellParams: SellSignalParams = {
-    strategy: sellStrategy,
+    strategy: sellStrategy === 'custom' ? 'trailing_stop' : sellStrategy,
     trailingStopPct,
     atrPeriod,
     atrMultiplier,
     emaShort,
     emaLong,
   };
+  /** 自编卖出策略是否启用且成功预计算（false 时主循环走内置 checkSellSignal） */
+  const useCustomSell = sellStrategy === 'custom' && !!customSellStrategy;
 
   // P0-1: 参数合法性校验（致命错误：Worker 层捕获后向 UI 报告错误码）
   try {
@@ -727,6 +787,33 @@ export async function runBacktest(
   if (buySignals.length !== bars.length) {
     warnings.push(`买入信号长度 ${buySignals.length} 与 K 线数量 ${bars.length} 不一致`);
     return { trades: [], equityCurve: [], summary: buildEmptySummary(), warnings, diagnostics };
+  }
+
+  // 2.5 预计算自编卖出策略信号（纯信号协议；失败 → 回退内置 + 警告，非阻断）
+  let customSellSignals: boolean[] | null = null;
+  let customSellFailed = false;
+  if (useCustomSell && customSellStrategy) {
+    try {
+      safeProgress(onProgress, { stage: 'signals', percent: 52, message: '正在计算自编卖出策略信号...' });
+      customSellSignals = await computeSellSignals(customSellStrategy, bars, cache.volRatio5);
+      if (customSellSignals.length !== bars.length) {
+        customSellFailed = true;
+        warnings.push(`自编卖出策略信号长度 ${customSellSignals.length} 与 K 线数量 ${bars.length} 不一致，已回退内置策略「高点回落移动止损（8%回撤）」`);
+      } else {
+        safeProgress(onProgress, { stage: 'signals', percent: 58, message: '自编卖出策略信号预计算完成' });
+      }
+    } catch (err) {
+      customSellFailed = true;
+      const msg = err instanceof Error ? err.message : String(err);
+      warnings.push(`自编卖出策略执行失败，已回退内置策略「高点回落移动止损（8%回撤）」：${msg}`);
+      diagnostics.push({
+        time: new Date().toISOString().slice(0, 10),
+        event: 'script_error',
+        reason: `自编卖出策略执行失败：${msg}`,
+        data: { strategyName: customSellStrategy.strategyName },
+      });
+    }
+    if (customSellFailed) customSellSignals = null;
   }
 
   // 3. 确定预热期和日期范围
@@ -1012,24 +1099,38 @@ export async function runBacktest(
       }
 
       if (state === 'holding' && pendingSellSignal === null) {
-        const sellResult = checkSellSignal(sellParams, {
-          bar,
-          idx: i,
-          entryPrice: currentEntryPrice,
-          entryIdx: currentEntryIdx,
-          peakPriceSinceEntry,
-          cache,
-        });
-        // 更新峰值（trailing_stop 策略会更新）
-        peakPriceSinceEntry = sellResult.newPeak;
-        if (sellResult.triggered) {
-          sellSignalCount++;
-          diagnostics.push({
-            time: bar.time,
-            event: 'sell_signal',
-            reason: `${sellResult.reason} 发出卖出信号`,
+        if (customSellSignals !== null && !customSellFailed && i < customSellSignals.length) {
+          // 自编卖出策略（纯信号协议）：持仓状态下消费预计算信号，不依赖 peak/entry 上下文
+          if (customSellSignals[i]) {
+            sellSignalCount++;
+            diagnostics.push({
+              time: bar.time,
+              event: 'sell_signal',
+              reason: `"${customSellStrategy?.strategyName}" 发出卖出信号`,
+            });
+            pendingSellSignal = { idx: i, deferCount: 0 };
+          }
+        } else {
+          // 内置卖出策略（或自编失败回退内置）
+          const sellResult = checkSellSignal(sellParams, {
+            bar,
+            idx: i,
+            entryPrice: currentEntryPrice,
+            entryIdx: currentEntryIdx,
+            peakPriceSinceEntry,
+            cache,
           });
-          pendingSellSignal = { idx: i, deferCount: 0 };
+          // 更新峰值（trailing_stop 策略会更新）
+          peakPriceSinceEntry = sellResult.newPeak;
+          if (sellResult.triggered) {
+            sellSignalCount++;
+            diagnostics.push({
+              time: bar.time,
+              event: 'sell_signal',
+              reason: `${sellResult.reason} 发出卖出信号`,
+            });
+            pendingSellSignal = { idx: i, deferCount: 0 };
+          }
         }
       }
     }

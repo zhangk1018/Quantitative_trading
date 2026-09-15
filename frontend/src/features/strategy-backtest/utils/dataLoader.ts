@@ -438,12 +438,75 @@ export function validateDataIntegrity(
  * 阶段一：后端粗筛 — 提取无歧义条件传给后端 API
  * 阶段二：引擎预过滤 — 用完整 AST 在引擎侧再次精准过滤
  */
+// ==================== 全市场候选池（方案 A：自编指标且无下推条件） ====================
+/** /api/stocks/ 分页批量大小（后端 limit 上限） */
+const FULL_MARKET_PAGE_LIMIT = 200;
+/** OHLCV 分块拉取大小（避免单次 /api/snapshot/all 响应过大） */
+const FULL_MARKET_OHLCV_CHUNK = 300;
+
+/** 深度遍历 filterTree，判断是否含自定义指标节点 */
+function hasCustomIndicatorNode(tree: FilterNode): boolean {
+  const stack: FilterNode[] = [tree];
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (n.type === 'custom_indicator') return true;
+    const children = (n as { children?: FilterNode[] }).children;
+    if (children) stack.push(...children);
+  }
+  return false;
+}
+
+/**
+ * 闸1：分页拉取全市场候选股票代码。
+ * 自编指标无法下推给后端，若策略树无其他可下推条件，候选池必须覆盖全市场，
+ * 否则达标票会因「最新一日涨幅 Top100」截断而缺席引擎算分。
+ * 预筛口径与选股视图 stage-1 完全一致：仅剔除 ST/退市（is_st + 名称兜底），
+ * 不做 is_new/成交额 等额外收紧——否则会把选股视图本该纳入的票错杀。
+ */
+async function fetchAllStockCodesPaginated(
+  mkt: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const codes: string[] = [];
+  let offset = 0;
+  for (;;) {
+    const params = new URLSearchParams();
+    params.set('limit', String(FULL_MARKET_PAGE_LIMIT));
+    params.set('offset', String(offset));
+    if (mkt !== 'cn') params.set('market', mkt);
+    const resp = await fetch(`/api/stocks/?${params.toString()}`, { signal });
+    const result = await resp.json();
+    const data = result.data ?? result;
+    const items: any[] = data.items ?? [];
+    for (const i of items) {
+      if (!i || !i.stock_code) continue;
+      // 与选股视图 stage-1 同口径：仅剔除 ST/退市（is_st 标志 + 名称兜底）。
+      // 不加 is_new/成交额等预筛——选股视图更宽，回测必须同口径，否则达标票会被错杀。
+      if (i.is_st) continue;
+      if (isExcludedStockName(i.stock_name ?? i.name)) continue;
+      codes.push(i.stock_code);
+    }
+    if (items.length < FULL_MARKET_PAGE_LIMIT) break;
+    if (items.length === 0) break;
+    offset += items.length;
+  }
+  return codes;
+}
+
+/** 合并并升序去重两个日期数组 */
+function mergeTradeDates(a: string[], b: string[]): string[] {
+  const set = new Set(a);
+  for (const d of b) set.add(d);
+  return Array.from(set).sort();
+}
+
 export async function loadBacktestData(
   filterTree: FilterNode,
   config: StrategyBacktestDefaults,
   startDate: string,
   endDate: string,
   signal?: AbortSignal,
+  onProgress?: (progress: number) => void,
 ): Promise<{ data: LoadedData; validation: ValidationResult }> {
   // 0. 校验 FilterNode 结构
   validateFilterNode(filterTree, 0);
@@ -476,28 +539,42 @@ export async function loadBacktestData(
   if (pushdownWidget.marketCapMax !== undefined) pushdownWidget.marketCapMax = pushdownWidget.marketCapMax * MARKET_CAP_UNIT;
   const pushdownQuery = pushdownToQueryString(pushdownWidget);
 
+  // 2.5 判定是否启用「全市场候选池」（方案 A）
+  // 自编指标无法下推，若策略树无任何可下推条件，候选池必须覆盖全市场，
+  // 否则 600032 等达标票会因「最新一日涨幅 Top100」截断而缺席引擎算分。
+  const hasCustomIndicator = hasCustomIndicatorNode(filterTree);
+  const fullMarketUniverse = pushdownQuery === '' && hasCustomIndicator;
+
   // 3. 调用后端 API 获取候选股票池
   let candidateCodes: string[] = [];
-  try {
-    const response = await fetch(
-      `/api/stocks/?${buildStocksQuery(pushdownQuery)}`,
-      { signal },
-    );
-    const result = await response.json();
-    // API 返回 {code, data: {items: [{stock_code, ...}], total: N}}，提取 stock_code 列表
-    const items = result.data?.items ?? [];
-    if (Array.isArray(items)) {
-      // 排除名称含 ST/*ST/退 的股票（自编指标公式层拿不到名称，须在候选池阶段剔除）
-      candidateCodes = items
-        .filter((i: any) => i && !isExcludedStockName(i.name ?? i.stock_name))
-        .map((i: any) => i.stock_code)
-        .filter(Boolean);
-    } else {
-      candidateCodes = [];
+  if (fullMarketUniverse) {
+    // 闸1（分页取码）+ 闸2（流动性/ST/次新预筛）
+    candidateCodes = await fetchAllStockCodesPaginated(mkt, signal);
+    if (candidateCodes.length === 0) {
+      warnings.push('全市场候选池为空，已回退默认候选池');
     }
-  } catch (err) {
-    if ((err as Error).name === 'AbortError') throw err;
-    console.warn('[DataLoader] 后端粗筛失败，降级为全量加载', err);
+  } else {
+    try {
+      const response = await fetch(
+        `/api/stocks/?${buildStocksQuery(pushdownQuery)}`,
+        { signal },
+      );
+      const result = await response.json();
+      // API 返回 {code, data: {items: [{stock_code, ...}], total: N}}，提取 stock_code 列表
+      const items = result.data?.items ?? [];
+      if (Array.isArray(items)) {
+        // 排除名称含 ST/*ST/退 的股票（自编指标公式层拿不到名称，须在候选池阶段剔除）
+        candidateCodes = items
+          .filter((i: any) => i && !isExcludedStockName(i.name ?? i.stock_name))
+          .map((i: any) => i.stock_code)
+          .filter(Boolean);
+      } else {
+        candidateCodes = [];
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') throw err;
+      console.warn('[DataLoader] 后端粗筛失败，降级为全量加载', err);
+    }
   }
 
   // 4. 拉取候选池的 OHLCV + 快照
@@ -557,7 +634,26 @@ export async function loadBacktestData(
     return { ohlcvMap, snapMap };
   }
 
-  if (candidateCodes.length > 0) {
+  if (fullMarketUniverse && candidateCodes.length > 0) {
+    // 闸3：全市场 OHLCV 分块加载 + 进度回调（避免单次超大响应）
+    allOhlcv = new Map<string, number[][]>();
+    snapshots = new Map<string, StockSnapshot>();
+    tradeDates = [];
+    for (let i = 0; i < candidateCodes.length; i += FULL_MARKET_OHLCV_CHUNK) {
+      const chunk = candidateCodes.slice(i, i + FULL_MARKET_OHLCV_CHUNK);
+      const params = new URLSearchParams();
+      params.set('codes', chunk.join(','));
+      if (marketParam) params.set('market', mkt);
+      const resp = await fetch(`/api/snapshot/all?${params.toString()}`, { signal });
+      const data = await resp.json();
+      const stocks = (data.data?.stocks ?? []).filter((s: any) => !isExcludedStockName(s.name));
+      const ex = extractFromStocks(stocks);
+      for (const [c, v] of ex.ohlcvMap) allOhlcv.set(c, v);
+      for (const [c, v] of ex.snapMap) snapshots.set(c, v);
+      tradeDates = mergeTradeDates(tradeDates, data.data?.trade_dates ?? []);
+      onProgress?.(Math.min(1, (i + FULL_MARKET_OHLCV_CHUNK) / candidateCodes.length));
+    }
+  } else if (candidateCodes.length > 0) {
     const codesParam = candidateCodes.join(',');
     const params = new URLSearchParams();
     params.set('codes', codesParam);

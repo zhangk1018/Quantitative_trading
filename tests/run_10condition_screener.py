@@ -18,9 +18,10 @@
     5) ADX(14) > 25
     6) EMA50 之上，且乖离率 < 6%（close ∈ (EMA50, EMA50×1.06)）
     7) MACD(12,26,9)：DIF > DEA
-    8) 收盘价 < 最近5日最高价
+    8) 回调低吸：close < 近5日最高价 且 close > 近5日最低价×1.02（不追顶、不接飞刀）
     9) 实体阳线（实体占振幅比例 > 40%）
     10) 收盘价 > 20日箱体的 70% 分位价（上三分之一强势区）
+硬过滤：收盘价 < 3 元的股票当日得分强制清零（低价股不参与打分）。
 
 用法
 ----
@@ -59,10 +60,13 @@ def calculate(open_prices, high_prices, low_prices, close_prices, volumes):
     volume = np.array(volumes, dtype=float)
 
     n = len(close)
-    if n < 50:
+    if n < 50:                       # 与 v1 一致，避免吞掉早期信号
         return [0] * n
 
     score = np.zeros(n)
+
+    # ===== 硬过滤标记：低价股(<3元)不参与打分 =====
+    valid_price = close >= 3.0
 
     def rolling_sma(arr, window):
         out = np.full(n, np.nan)
@@ -71,6 +75,18 @@ def calculate(open_prices, high_prices, low_prices, close_prices, volumes):
         for i in range(window - 1, n):
             if cnt[i] >= window:
                 out[i] = (cumsum[i] - (cumsum[i - window] if i >= window else 0)) / window
+        return out
+
+    def rolling_max(arr, window):
+        out = np.full(n, np.nan)
+        for i in range(window - 1, n):
+            out[i] = np.nanmax(arr[i - window + 1:i + 1])
+        return out
+
+    def rolling_min(arr, window):
+        out = np.full(n, np.nan)
+        for i in range(window - 1, n):
+            out[i] = np.nanmin(arr[i - window + 1:i + 1])
         return out
 
     def ema(arr, period):
@@ -89,7 +105,9 @@ def calculate(open_prices, high_prices, low_prices, close_prices, volumes):
                 out[j] = alpha * arr[j] + (1 - alpha) * out[j - 1]
         return out
 
-    # 条件 1：RSI(14) 介于 50 ~ 68
+    # ============================================================
+    # 条件 1：RSI(14) 介于 50 ~ 68（剔除弱势与过热）
+    # ============================================================
     rsi_period = 14
     deltas = np.diff(close, prepend=np.nan)
     gains = np.where(deltas > 0, deltas, 0.0)
@@ -102,13 +120,17 @@ def calculate(open_prices, high_prices, low_prices, close_prices, volumes):
         rsi[valid_rs] = 100.0 - 100.0 / (1.0 + sma_gain[valid_rs] / sma_loss[valid_rs])
     score[(rsi >= 50) & (rsi <= 68)] += 1
 
-    # 条件 2：1日动量 介于 1.5% ~ 4.5%
+    # ============================================================
+    # 条件 2：1日动量 介于 1.5% ~ 4.5%（剔除僵尸股与拉高出货）
+    # ============================================================
     if n >= 2:
         momentum = np.full(n, np.nan)
         momentum[1:] = (close[1:] - close[:-1]) / close[:-1] * 100
         score[(momentum >= 1.5) & (momentum <= 4.5)] += 1
 
+    # ============================================================
     # 条件 3：20日波动率 介于 4.5% ~ 9.0%
+    # ============================================================
     if n >= 21:
         daily_ret = np.full(n, np.nan)
         daily_ret[1:] = (close[1:] - close[:-1]) / close[:-1]
@@ -117,81 +139,102 @@ def calculate(open_prices, high_prices, low_prices, close_prices, volumes):
             vol_arr[i] = np.std(daily_ret[i - 19:i + 1]) * 100
         score[(vol_arr >= 4.5) & (vol_arr <= 9.0)] += 1
 
-    # 条件 4：成交量 > 20日均量 × 1.1 且 < 20日均量 × 3.0
+    # ============================================================
+    # 条件 4：成交量 > 20日均量×1.1 且 < 20日均量×3.0（防骗炮与天量出货）
+    # ============================================================
     vol_sma = rolling_sma(volume, 20)
     score[(volume > vol_sma * 1.1) & (volume < vol_sma * 3.0)] += 1
 
-    # 条件 5：ADX(14) > 25
+    # ============================================================
+    # 条件 5：ADX(14) > 25（趋势强度）
+    # ============================================================
     if n >= 28:
         high_low = high[1:] - low[1:]
         high_close_c = np.abs(high[1:] - close[:-1])
         low_close_c = np.abs(low[1:] - close[:-1])
         tr = np.maximum(high_low, np.maximum(high_close_c, low_close_c))
+
         up_move = high[1:] - high[:-1]
         down_move = low[:-1] - low[1:]
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
         atr = np.full(len(tr), np.nan)
         atr[13] = np.mean(tr[:14])
         for i in range(14, len(tr)):
             atr[i] = (atr[i - 1] * 13 + tr[i]) / 14
+
         plus_di = np.full(len(tr), np.nan)
         minus_di = np.full(len(tr), np.nan)
-        plus_di[13] = np.sum(plus_dm[:14]) / np.sum(tr[:14]) * 100 if np.sum(tr[:14]) != 0 else 0
-        minus_di[13] = np.sum(minus_dm[:14]) / np.sum(tr[:14]) * 100 if np.sum(tr[:14]) != 0 else 0
+        denom0 = np.sum(tr[:14])
+        plus_di[13] = np.sum(plus_dm[:14]) / denom0 * 100 if denom0 != 0 else 0
+        minus_di[13] = np.sum(minus_dm[:14]) / denom0 * 100 if denom0 != 0 else 0
         for i in range(14, len(tr)):
             plus_di[i] = (plus_di[i-1] * 13 + (plus_dm[i] / atr[i] * 100 if atr[i] != 0 else 0)) / 14
             minus_di[i] = (minus_di[i-1] * 13 + (minus_dm[i] / atr[i] * 100 if atr[i] != 0 else 0)) / 14
+
         dx = np.full(len(plus_di), np.nan)
         for i in range(13, len(plus_di)):
             denom = plus_di[i] + minus_di[i]
             dx[i] = np.abs(plus_di[i] - minus_di[i]) / denom * 100 if denom != 0 else 0
+
         adx = np.full(len(dx), np.nan)
         adx[27] = np.mean(dx[14:28])
         for i in range(28, len(dx)):
-            adx[i] = (adx[i-1] * 13 + dx[i]) / 14
+            adx[i] = (adx[i - 1] * 13 + dx[i]) / 14
+
         adx_aligned = np.full(n, np.nan)
         for j in range(27, len(adx)):
             adx_aligned[j + 1] = adx[j]
         score[adx_aligned > 25] += 1
 
-    # 条件 6：close ∈ (EMA50, EMA50 × 1.06)
+    # ============================================================
+    # 条件 6：价格 > EMA50 且 乖离率 < 6%（close ∈ (EMA50, EMA50×1.06)）
+    # ============================================================
     ema50 = ema(close, 50)
     cond6 = (close > ema50) & (close < 1.06 * ema50)
     score[cond6] += 1
 
-    # 条件 7：MACD(12,26,9)：DIF > DEA
+    # ============================================================
+    # 条件 7：MACD(12,26,9) DIF > DEA
+    # ============================================================
     ema12 = ema(close, 12)
     ema26 = ema(close, 26)
     dif = ema12 - ema26
     dea = ema(dif, 9)
     score[dif > dea] += 1
 
-    # 条件 8：close < 最近5日最高价
+    # ============================================================
+    # 条件 8：回调低吸（回滚追突破，并新增支撑保护）
+    #   收盘 < 近5日最高价          → 不追在顶部（回调确认）
+    #   收盘 > 近5日最低价 × 1.02   → 没跌破支撑（不接飞刀）
+    # ============================================================
     if n >= 5:
-        max5 = np.full(n, np.nan)
-        for i in range(4, n):
-            max5[i] = np.max(high[i-4:i+1])
-        score[close < max5] += 1
+        max5 = rolling_max(high, 5)      # 近5日最高（含当日）
+        min5 = rolling_min(low, 5)       # 近5日最低（含当日）
+        cond8 = (close < max5) & (close > min5 * 1.02)
+        score[cond8] += 1
 
-    # 条件 9：实体阳线（实体占振幅比例 > 40%）
+    # ============================================================
+    # 条件 9：实体阳线（实体/振幅 > 40%，防十字星/假阳骗炮）
+    # ============================================================
     body = close - open_p
     range_hl = high - low
     with np.errstate(divide='ignore', invalid='ignore'):
-        body_ratio = body / range_hl
-    cond_body = (body > 0) & (range_hl > 0) & (body_ratio > 0.4)
+        cond_body = (body > 0) & (range_hl > 0) & (body / range_hl > 0.4)
     score[cond_body] += 1
 
-    # 条件 10：close > 20日箱体 70% 分位价
+    # ============================================================
+    # 条件 10：价格处于20日箱体上三分之一（70%分位，确保强势区）
+    # ============================================================
     if n >= 20:
-        highest_20 = np.full(n, np.nan)
-        lowest_20 = np.full(n, np.nan)
-        for i in range(19, n):
-            highest_20[i] = np.max(high[i-19:i+1])
-            lowest_20[i] = np.min(low[i-19:i+1])
+        highest_20 = rolling_max(high, 20)
+        lowest_20 = rolling_min(low, 20)
         threshold_price = lowest_20 + 0.7 * (highest_20 - lowest_20)
         score[close > threshold_price] += 1
 
+    # ===== 收尾：低价股强制清零（硬过滤），NaN 归零 =====
+    score[~valid_price] = 0
     result = np.where(np.isnan(score), 0, score).astype(int)
     return result.tolist()
 

@@ -20,6 +20,10 @@ import { listCustomIndicators } from '../stock-picker/utils/customIndicatorStora
 import type { CustomIndicator } from '../stock-picker/types/customIndicator';
 import { fetchStocks } from '../stock-detail/api';
 import type { StockSearchItem } from '../stock-detail/api';
+import {
+  listCustomSellStrategies,
+  type CustomSellStrategy,
+} from './utils/customSellStrategyStorage';
 import { PRESET_CONDITIONS } from './backtestTypes';
 
 const { Text } = Typography;
@@ -68,6 +72,8 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
   const [backtestVersion, setBacktestVersion] = useState(0);
   const [watchlistNames, setWatchlistNames] = useState<Record<string, string>>({});
   const [customIndicators, setCustomIndicators] = useState<CustomIndicator[]>([]);
+  /** 自编卖出策略列表（卖出策略下拉「自编卖出策略」分组来源） */
+  const [customSellStrategies, setCustomSellStrategies] = useState<CustomSellStrategy[]>([]);
 
   const { state: watchlistState, allGroups: watchlistGroups } = useWatchlist();
 
@@ -135,6 +141,11 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('storage', handleStorageChange);
     };
+  }, []);
+
+  // 加载自编卖出策略列表（卖出策略下拉分组数据源）
+  useEffect(() => {
+    setCustomSellStrategies(listCustomSellStrategies());
   }, []);
 
   // 初始化 cascaderValue：优先在回测列表或自选股中定位默认股票
@@ -306,15 +317,25 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
   };
 
   const sellStrategyOptions = useMemo(
-    () =>
-      (Object.keys(SELL_STRATEGY_LABELS) as SellStrategy[]).map((key) => ({
-        value: key,
-        label: SELL_STRATEGY_LABELS[key],
-      })),
-    [],
+    () => [
+      {
+        label: '系统预设',
+        options: (Object.keys(SELL_STRATEGY_LABELS) as SellStrategy[])
+          .filter((s) => s !== 'custom')
+          .map((key) => ({ value: key, label: SELL_STRATEGY_LABELS[key] })),
+      },
+      ...(customSellStrategies.length > 0
+        ? [{
+            label: '自编卖出策略',
+            options: customSellStrategies.map((s) => ({ value: `custom_${s.id}`, label: s.name })),
+          }]
+        : []),
+    ],
+    [customSellStrategies],
   );
 
-  const [selectedSellStrategy, setSelectedSellStrategy] = useState<SellStrategy>(
+  // 可能为 custom_<id> 前缀（自编卖出策略），需放宽为 string
+  const [selectedSellStrategy, setSelectedSellStrategy] = useState<string>(
     (globalDefaults.sellStrategy as SellStrategy) ?? 'trailing_stop',
   );
 
@@ -325,7 +346,7 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
   const handleFinish = (values: BacktestFormValues) => {
     const [startDate, endDate] = (values.dateRange ?? []).map((d: dayjs.Dayjs) => d.format('YYYY-MM-DD'));
     const indicatorId = values.indicatorId;
-    const strategy = (values.sellStrategy as SellStrategy) ?? selectedSellStrategy;
+    const strategy = (values.sellStrategy as string) ?? selectedSellStrategy;
 
     // 构建买入条件：支持自编指标和系统预设
     let buyCondition: BacktestCondition;
@@ -350,6 +371,30 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
           }
         : { type: 'custom', indicatorId: '', indicatorName: '', formula: '' };
     }
+
+    // 构建卖出策略：内置策略 or 自编卖出策略（custom_<id>）
+    let sellStrategy: BacktestConfig['sellStrategy'] = strategy as BacktestConfig['sellStrategy'];
+    let customSellStrategy: BacktestConfig['customSellStrategy'];
+    if (strategy.startsWith('custom_')) {
+      const sid = strategy.slice('custom_'.length);
+      const found = customSellStrategies.find((s) => s.id === sid);
+      if (found) {
+        sellStrategy = 'custom';
+        customSellStrategy = {
+          type: 'custom',
+          strategyId: found.id,
+          strategyName: found.name,
+          formula: found.formula,
+          operator: found.operator,
+          threshold: found.defaultThreshold,
+        };
+      } else {
+        // 策略已被删除 → 回退内置，避免空公式
+        sellStrategy = 'trailing_stop';
+        customSellStrategy = undefined;
+      }
+    }
+
     const config: BacktestConfig = {
       stockCode: values.stockCode ?? '',
       stockName: values.stockName ?? '',
@@ -358,7 +403,8 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
       endDate,
       capital: values.capital ?? DEFAULT_BACKTEST_CONFIG.capital ?? 100000,
       buyCondition,
-      sellStrategy: strategy,
+      sellStrategy,
+      customSellStrategy,
       trailingStopPct: values.trailingStopPct ?? globalDefaults.trailingStopPct,
       atrPeriod: values.atrPeriod ?? globalDefaults.atrPeriod,
       atrMultiplier: values.atrMultiplier ?? globalDefaults.atrMultiplier,
@@ -376,7 +422,8 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
   };
 
   return (
-    <Form form={form} layout="vertical" initialValues={initialValues} onFinish={handleFinish}>
+    <>
+      <Form form={form} layout="vertical" initialValues={initialValues} onFinish={handleFinish}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {/* 股票选择 —— 级联菜单：回测列表（可删除）、自选股分组、搜索 */}
         <Card size="small" title="股票选择">
@@ -529,13 +576,30 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
             <Select
               placeholder="请选择卖出策略"
               options={sellStrategyOptions}
-              onChange={(val) => setSelectedSellStrategy(val as SellStrategy)}
+              onChange={(val) => setSelectedSellStrategy(val as string)}
               style={{ width: '100%' }}
             />
           </Form.Item>
 
-          {/* 高点回落参数（仅 trailing_stop 时显示） */}
-          {selectedSellStrategy === 'trailing_stop' && (
+          {/* 自编卖出策略：显示所选策略说明 */}
+          {selectedSellStrategy.startsWith('custom_') && (
+            <div className="mb-2">
+              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                {(() => {
+                  const s = customSellStrategies.find((x) => `custom_${x.id}` === selectedSellStrategy);
+                  return s ? (
+                    <>
+                      已选策略：<Text strong>{s.name}</Text>
+                      {s.description ? `（${s.description}）` : ''}
+                    </>
+                  ) : '所选策略已删除，将回退内置「高点回落移动止损」';
+                })()}
+              </Text>
+            </div>
+          )}
+
+          {/* 内置策略参数区（仅当选择内置 3 项之一时显示） */}
+          {!selectedSellStrategy.startsWith('custom_') && selectedSellStrategy === 'trailing_stop' && (
             <Form.Item
               name="trailingStopPct"
               label="回撤比例"
@@ -554,7 +618,7 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
           )}
 
           {/* ATR吊灯参数（仅 atr_chandelier 时显示） */}
-          {selectedSellStrategy === 'atr_chandelier' && (
+          {!selectedSellStrategy.startsWith('custom_') && selectedSellStrategy === 'atr_chandelier' && (
             <>
               <Form.Item
                 name="atrPeriod"
@@ -587,7 +651,7 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
           )}
 
           {/* 双均线参数（仅 ema_cross 时显示） */}
-          {selectedSellStrategy === 'ema_cross' && (
+          {!selectedSellStrategy.startsWith('custom_') && selectedSellStrategy === 'ema_cross' && (
             <>
               <Form.Item
                 name="emaShort"
@@ -619,9 +683,15 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
               </Form.Item>
             </>
           )}
+
+          {/* 管理入口已迁移至「系统设置 → 自编指标 → 卖出策略」 */}
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+            自编卖出策略可在「系统设置 → 自编指标 → 卖出策略」中管理。
+          </Text>
         </Card>
       </div>
-    </Form>
+      </Form>
+    </>
   );
 };
 

@@ -5,7 +5,7 @@
  * 遵循幂等设计：已存在时跳过，不重复写入。
  */
 
-import { saveCustomIndicator, listCustomIndicators, MOCK_USER_ID } from './customIndicatorStorage';
+import { saveCustomIndicator, listAllCustomIndicators, MOCK_USER_ID } from './customIndicatorStorage';
 
 // =====================================================================
 // 8条件选股改进 — 综合评分公式
@@ -163,9 +163,11 @@ def calculate(open_prices, high_prices, low_prices, close_prices, volumes):
  */
 export function seed8ConditionIndicator(): void {
   const name = '8条件选股改进';
-  const existing = listCustomIndicators(MOCK_USER_ID);
+  // 用 listAll（含软删除）判断：一旦该指标曾存在（含被软删除），即视为已初始化、
+  // 不再自动种回。这样软删除 = 用户彻底移除，重进页面/刷新也不会复活。
+  const existing = listAllCustomIndicators(MOCK_USER_ID);
   if (existing.some((i) => i.name === name)) {
-    return; // 已存在，跳过
+    return; // 已存在（含软删除记录），跳过
   }
 
   try {

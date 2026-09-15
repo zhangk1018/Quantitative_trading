@@ -11,14 +11,16 @@ import type { KlineBar } from '../../lib/indicators/indicators';
  * 策略一：高点回落移动止损 — 从持仓最高价回撤8%即卖出
  * 策略二：ATR吊灯止损 — 收盘价跌破(最高价-3×14日ATR)即卖出
  * 策略三：双均线死叉 — 10日EMA下穿30日EMA即卖出
+ * custom：自编卖出策略（Python 脚本），配合 customSellStrategy 使用
  */
-export type SellStrategy = 'trailing_stop' | 'atr_chandelier' | 'ema_cross';
+export type SellStrategy = 'trailing_stop' | 'atr_chandelier' | 'ema_cross' | 'custom';
 
 /** 卖出策略显示标签 */
 export const SELL_STRATEGY_LABELS: Record<SellStrategy, string> = {
   trailing_stop: '高点回落移动止损（8%回撤）',
   atr_chandelier: 'ATR吊灯止损（3×14日ATR）',
   ema_cross: '双均线死叉（10/30 EMA）',
+  custom: '自编卖出策略',
 };
 
 // ==================== 条件定义 ====================
@@ -68,6 +70,27 @@ export interface BacktestPresetCondition {
 }
 
 /**
+ * 自编卖出策略条件（纯信号协议）
+ *
+ * 脚本复用自编指标 Pyodide 执行管线：输入 OHLCV（+量比）一维数组，
+ * 输出每日卖出信号数组；引擎仅在持仓状态（state==='holding'）下消费。
+ * 持仓上下文（entry/peak/顺延）由引擎管理，脚本不可见。
+ */
+export interface BacktestCustomSellCondition {
+  type: 'custom';
+  /** 自编卖出策略 ID */
+  strategyId: string;
+  /** 自编卖出策略名称（用于 UI 展示和日志） */
+  strategyName: string;
+  /** 自编卖出策略脚本公式（Worker 内无法访问 localStorage，必须随配置传入） */
+  formula: string;
+  /** 判定算子（对齐自编指标口径），缺省 → score !== 0 */
+  operator?: BacktestIndicatorOperator;
+  /** 判定阈值。单值以 number 表示；range 用 [low, high]。缺省 → score !== 0 */
+  threshold?: BacktestIndicatorThreshold;
+}
+
+/**
  * 回测买入条件：支持自编指标和系统预设条件。
  * - 自编指标：Python 脚本在 Pyodide Worker 中执行，返回每日信号数组
  * - 系统预设：使用 condition-detector.ts 检测，与选股视图条件构建器逻辑一致
@@ -90,16 +113,8 @@ export interface PresetConditionDef {
   windowDays?: number;
 }
 
-/** 系统预设条件列表 */
-export const PRESET_CONDITIONS: PresetConditionDef[] = [
-  {
-    id: 'morningStarVolumeBreakout',
-    name: '晨星放量',
-    description: '早晨之星出现后3日内出现放量突破（量比≥1.5）',
-    conditionKeys: ['pattern_morning_star', 'volume_breakout'],
-    windowDays: 3,
-  },
-];
+/** 系统预设条件列表（当前为空：原「晨星放量」预设已按需求移除） */
+export const PRESET_CONDITIONS: PresetConditionDef[] = [];
 
 // ==================== 指标参数配置 ====================
 
@@ -158,6 +173,11 @@ export interface BacktestConfig {
   buyCondition: BacktestCondition;
   /** 卖出策略 */
   sellStrategy: SellStrategy;
+  /**
+   * 自编卖出策略条件（仅 sellStrategy==='custom' 时有效）。
+   * 旧配置缺省/无效时引擎自动回退内置策略。
+   */
+  customSellStrategy?: BacktestCustomSellCondition;
   /** 高点回落比例（仅trailing_stop），如 0.08 = 8% */
   trailingStopPct: number;
   /** ATR周期（仅atr_chandelier），默认14 */
@@ -202,6 +222,7 @@ export type BacktestEngineConfig = Pick<
   | 'endDate'
   | 'capital'
   | 'sellStrategy'
+  | 'customSellStrategy'
   | 'trailingStopPct'
   | 'atrPeriod'
   | 'atrMultiplier'

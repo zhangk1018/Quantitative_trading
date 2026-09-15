@@ -186,7 +186,19 @@ const StrategyBacktestView: React.FC = () => {
 
       // 加载数据
       setProgress({ stage: 'data', percent: 0.3, message: '加载候选股票池...' });
-      const { data, validation: v } = await loadBacktestData(filterTree, config, startDate, endDate, session.signal);
+      const { data, validation: v } = await loadBacktestData(
+        filterTree,
+        config,
+        startDate,
+        endDate,
+        session.signal,
+        (p) =>
+          setProgress({
+            stage: 'data',
+            percent: 0.3 + p * 0.3,
+            message: `加载候选股票池 OHLCV ${(p * 100).toFixed(0)}%...`,
+          }),
+      );
 
       if (!session.isActive()) return;
 

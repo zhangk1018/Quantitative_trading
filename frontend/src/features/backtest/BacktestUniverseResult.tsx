@@ -4,8 +4,8 @@
 // 底部为当前选中股票的详细回测结果（指标卡片 / K线图 / 资金曲线 / 交易明细 / 诊断）。
 
 import React, { useMemo } from 'react';
-import { Card, Table, Tabs, Tag, Collapse, Empty, Button, Typography } from 'antd';
-import { ArrowUpOutlined, ArrowDownOutlined, SwapOutlined } from '@ant-design/icons';
+import { Card, Table, Tabs, Tag, Collapse, Empty, Button, Typography, Dropdown, message } from 'antd';
+import { ArrowUpOutlined, ArrowDownOutlined, SwapOutlined, DownloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { BacktestUniverseResult as UniverseResult, BacktestSummary } from './backtestTypes';
 import BacktestWarningBar from './BacktestWarningBar';
@@ -14,6 +14,7 @@ import BacktestChart from './BacktestChart';
 import BacktestEquityCurve from './BacktestEquityCurve';
 import BacktestTradeLog from './BacktestTradeLog';
 import BacktestDiagnostics from './BacktestDiagnostics';
+import { buildTradeExportRows, downloadTradeExport, resolveStockNames, type TradeExportRow } from './utils/tradeExport';
 
 const { Text } = Typography;
 
@@ -167,6 +168,27 @@ const BacktestUniverseResult: React.FC<Props> = ({
     },
   ];
 
+  // 合并全部股票的交易记录（每条带股票代码/名称），供「导出全部交易」使用
+  const allTradeRows = useMemo(() => {
+    const rows: TradeExportRow[] = [];
+    for (const r of results) {
+      if (r.error || !r.output) continue;
+      const perStock = buildTradeExportRows(r.output.trades ?? [], r.stockCode, r.stockName);
+      rows.push(...perStock);
+    }
+    return rows;
+  }, [results]);
+
+  /** 导出全部股票交易明细（TXT/CSV）——先反查真实股票名称，避免名称被代码替代 */
+  const handleExportAll = async (ext: 'csv' | 'txt') => {
+    if (allTradeRows.length === 0) {
+      message.warning('暂无交易记录可导出');
+      return;
+    }
+    const rows = await resolveStockNames(allTradeRows);
+    downloadTradeExport(rows, ext, 'backtest-all-trades');
+  };
+
   // 当前选中股票的详细数据
   const active = results[activeIndex];
   const activeSummary = active?.output?.summary ?? null;
@@ -185,6 +207,18 @@ const BacktestUniverseResult: React.FC<Props> = ({
               平均总收益 {avgReturn >= 0 ? '+' : ''}{pct(avgReturn)}
             </Tag>
           )}
+          <div style={{ marginLeft: 'auto' }}>
+            <Dropdown
+              menu={{
+                items: [
+                  { key: 'csv', label: '导出全部交易 CSV', onClick: () => handleExportAll('csv') },
+                  { key: 'txt', label: '导出全部交易 TXT', onClick: () => handleExportAll('txt') },
+                ],
+              }}
+            >
+              <Button size="small" icon={<DownloadOutlined />}>导出全部交易</Button>
+            </Dropdown>
+          </div>
         </div>
         <Table<RowData>
           rowKey="index"
@@ -261,7 +295,11 @@ const BacktestUniverseResult: React.FC<Props> = ({
                   key: 'trades',
                   label: `交易明细 (${(active.output?.trades ?? []).filter((t) => t.direction !== 'buy').length} 笔)`,
                   children: (
-                    <BacktestTradeLog trades={active.output?.trades ?? []} />
+                    <BacktestTradeLog
+                      trades={active.output?.trades ?? []}
+                      stockCode={active.stockCode}
+                      stockName={active.stockName}
+                    />
                   ),
                 },
                 {

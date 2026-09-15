@@ -95,7 +95,7 @@ export const DEFAULT_STRATEGY_BACKTEST_DEFAULTS: StrategyBacktestDefaults = {
   // ---------- Card 2: 调仓与仓位 ----------
   rebalanceInterval: 5, // 每周（5个交易日）
   maxPositions: 10,
-  maxNewPerRebalance: 0, // 0 = 不限制（保持旧行为"无差别全买"）
+  maxNewPerRebalance: 5, // 单个调仓日最多新增建仓 5 只（依得分降序 Top 5；0 = 不限制）
   positionAlloc: 'equal',
   singleStockMaxPct: 1.0, // 100% = 不限制
   idleCashReturn: 'none',

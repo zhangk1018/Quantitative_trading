@@ -1,24 +1,45 @@
-// BacktestTradeLog.tsx — 交易明细表格（虚拟滚动 + 点击定位）
+// BacktestTradeLog.tsx — 交易明细表格（虚拟滚动 + 点击定位 + 导出 TXT/CSV）
 
 import React, { useMemo } from 'react';
-import { Table, Tag, Typography } from 'antd';
+import { Table, Tag, Typography, Button, Dropdown, message } from 'antd';
+import { DownloadOutlined } from '@ant-design/icons';
 import type { Trade } from './backtestTypes';
+import { buildTradeExportRows, downloadTradeExport, resolveStockNames } from './utils/tradeExport';
 
 const { Text } = Typography;
 
 interface TradeLogProps {
   trades: Trade[];
+  /** 股票代码（展示与导出用，批量回测时随单股变化） */
+  stockCode?: string;
+  /** 股票名称（展示与导出用） */
+  stockName?: string;
   /** 点击某笔交易时回调，返回该交易的买入日期 */
   onTradeClick?: (trade: Trade) => void;
 }
 
-const BacktestTradeLog: React.FC<TradeLogProps> = ({ trades, onTradeClick }) => {
+const BacktestTradeLog: React.FC<TradeLogProps> = ({ trades, onTradeClick, stockCode = '', stockName = '' }) => {
   const columns = useMemo(() => [
     {
       title: '#',
       dataIndex: 'id',
       key: 'id',
       width: 50,
+    },
+    {
+      title: '股票代码',
+      dataIndex: 'stockCode',
+      key: 'stockCode',
+      width: 80,
+      render: () => stockCode,
+    },
+    {
+      title: '股票名称',
+      dataIndex: 'stockName',
+      key: 'stockName',
+      width: 100,
+      ellipsis: true,
+      render: () => stockName,
     },
     {
       title: '方向',
@@ -103,7 +124,7 @@ const BacktestTradeLog: React.FC<TradeLogProps> = ({ trades, onTradeClick }) => 
         return val || record.entryReason;
       },
     },
-  ], [onTradeClick]);
+  ], [onTradeClick, stockCode, stockName]);
 
   // 过滤掉买入记录，只显示已完成的交易（卖出 + 清仓）
   const completedTrades = useMemo(
@@ -111,16 +132,50 @@ const BacktestTradeLog: React.FC<TradeLogProps> = ({ trades, onTradeClick }) => 
     [trades],
   );
 
+  /** 导出 TXT：制表符分隔，方便直接粘贴到文本文件 */
+  const handleExportTxt = async () => {
+    const rows = await resolveStockNames(buildTradeExportRows(trades, stockCode, stockName));
+    if (rows.length === 0) {
+      message.warning('暂无交易记录可导出');
+      return;
+    }
+    downloadTradeExport(rows, 'txt', 'backtest-trades');
+  };
+
+  /** 导出 CSV：逗号分隔 + BOM，兼容 Excel 中文 */
+  const handleExportCsv = async () => {
+    const rows = await resolveStockNames(buildTradeExportRows(trades, stockCode, stockName));
+    if (rows.length === 0) {
+      message.warning('暂无交易记录可导出');
+      return;
+    }
+    downloadTradeExport(rows, 'csv', 'backtest-trades');
+  };
+
   return (
-    <Table
-      dataSource={completedTrades}
-      columns={columns}
-      rowKey="id"
-      size="small"
-      pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (total) => `共 ${total} 笔` }}
-      scroll={{ y: 300 }}
-      locale={{ emptyText: '暂无交易记录' }}
-    />
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+        <Dropdown
+          menu={{
+            items: [
+              { key: 'csv', label: '导出 CSV（逗号分隔）', onClick: handleExportCsv },
+              { key: 'txt', label: '导出 TXT（制表符分隔）', onClick: handleExportTxt },
+            ],
+          }}
+        >
+          <Button size="small" icon={<DownloadOutlined />}>导出</Button>
+        </Dropdown>
+      </div>
+      <Table
+        dataSource={completedTrades}
+        columns={columns}
+        rowKey="id"
+        size="small"
+        pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (total) => `共 ${total} 笔` }}
+        scroll={{ y: 300 }}
+        locale={{ emptyText: '暂无交易记录' }}
+      />
+    </div>
   );
 };
 

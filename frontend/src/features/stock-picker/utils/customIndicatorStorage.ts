@@ -544,7 +544,8 @@ export function computeImportPreview(
 ): ImportResult {
   const result = createEmptyImportResult();
   const all = readAll(userId);
-  const existingIds = new Set(all.filter((i) => i.id).map((i) => i.id));
+  // ID 去重须排除软删除记录（与名称去重口径一致），否则删除过的指标经导出→导入会被误判为重复
+  const existingIds = new Set(all.filter((i) => i.id && !i.deleted).map((i) => i.id));
   const existingNames = new Set(all.filter((i) => !i.deleted).map((i) => i.name));
 
   file.indicators.forEach((ind, index) => {
@@ -606,7 +607,8 @@ export function importCustomIndicators(
   // K 反馈 #2：复用 _validationCache，不再调 validateIndicatorData。
   // 防御性 fallback：若 cache 中没有（理论上不会发生），则现场计算并补填 cache。
   const all = readAll(userId);
-  const existingIds = new Set(all.filter((i) => i.id).map((i) => i.id));
+  // 与 computeImportPreview 相同口径：ID 去重排除软删除记录
+  const existingIds = new Set(all.filter((i) => i.id && !i.deleted).map((i) => i.id));
   const existingNames = new Set(all.filter((i) => !i.deleted).map((i) => i.name));
   const addedIndicators: CustomIndicator[] = [];
 

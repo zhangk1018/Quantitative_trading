@@ -5,6 +5,7 @@ import React from 'react';
 import { Tag, Button } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import type { FilterNode } from '../types';
+import { getCustomIndicatorById } from '@/features/stock-picker/utils/customIndicatorStorage';
 
 interface ConditionsSummaryProps {
   filterTree: FilterNode | null;
@@ -89,6 +90,23 @@ function renderNode(node: FilterNode, depth = 0): React.ReactNode {
       return (
         <Tag key={Math.random()} color="orange">
           {klineLabels[node.pattern] ?? node.pattern} ({node.lookbackDays}日)
+        </Tag>
+      );
+    }
+    case 'custom_indicator': {
+      const indicator = getCustomIndicatorById(node.scriptId);
+      const name = indicator ? indicator.name : (node as { label?: string }).label || '自编指标';
+      const threshold =
+        node.min !== undefined && node.max !== undefined
+          ? `得分 ${node.min} ~ ${node.max}`
+          : node.min !== undefined
+            ? `得分 ≥ ${node.min}`
+            : node.max !== undefined
+              ? `得分 ≤ ${node.max}`
+              : '';
+      return (
+        <Tag key={Math.random()} color="cyan">
+          自编指标「{name}」{threshold}
         </Tag>
       );
     }
