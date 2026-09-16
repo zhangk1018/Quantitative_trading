@@ -1,9 +1,9 @@
 # 跨会话提醒
 
 ## 会话信息
-- 日期：2026-09-15
+- 日期：2026-09-16
 - 负责角色：方舟
-- 修改范围：① 新增「自编卖出策略」功能（自定义 Python 脚本卖出，纯信号协议复用自编指标 Pyodide 管线，回测引擎 custom 策略 + 失败回退内置机制）；② 自编卖出策略管理迁移至「系统设置→自编指标」并分「买入策略/卖出策略」Segmented 两区；③ 交易明细导出 TXT/CSV（单股 + 批量汇总导出全部交易，含股票代码/名称反查）；④ 修复自编指标导入 ID 去重 bug（排除软删除记录）；⑤ 浏览器自测《高胜率结构型卖出策略》全链路通过；⑥ 移除回测面板卖出入弹窗、删除旧 BacktestSellStrategyManager
+- 修改范围：① 回测分析股票名称反查优化——`BacktestConfigPanel`/`tradeExport` 的 `watchlistNames` 按市场（cn/hk/us）分桶并行请求，解决跨市场名称查不到；下拉/整组回测不再用 `|| code` 冒充名称（改 `?? ''`）；② 导入/导出升级——买/卖策略导出改为「选择 Modal + Checkbox 列表」（`ImportExportButtons` + 新增 `SellImportExportButtons`/`SellStrategyModal`），存储层 `exportCustomIndicators`/`exportCustomSellStrategies` 加 ids 过滤；③ **Safari 股票名称显示异常已定位为非代码问题**——后端 34 只 code 实测全返回中文名、前端逻辑/vite 源码正确，是 Safari 对 vite dev server 的 JS 强缓存，无痕窗口+清理网站数据后正常，未改代码
 - 待办：跟进控制台 IndexedDB `backtestStorage` object store 未初始化告警；财务指标库 `stock_fundamental_pit` 为空表（净利润/营收/ROE 无数据），如需展示需接入财务数据采集
 
 ## 今日通知记录（2026-09-15）

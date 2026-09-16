@@ -20,6 +20,7 @@ import { listCustomIndicators } from '../stock-picker/utils/customIndicatorStora
 import type { CustomIndicator } from '../stock-picker/types/customIndicator';
 import { fetchStocks } from '../stock-detail/api';
 import type { StockSearchItem } from '../stock-detail/api';
+import { inferMarketKey, type MarketKey } from '../watchlist/utils/stock-utils';
 import {
   listCustomSellStrategies,
   type CustomSellStrategy,
@@ -88,7 +89,7 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
     indicatorId: undefined,
   };
 
-  // 加载自选股名称（自选股只保存 code，需要反查 name）
+  // 加载自选股名称（自选股只保存 code，需要反查 name；按市场分组请求避免跨市场查不到）
   useEffect(() => {
     const codes = watchlistGroups.flatMap((g) => watchlistState.stocks[g] || []);
     if (codes.length === 0) {
@@ -96,19 +97,40 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
       return;
     }
     let cancelled = false;
-    fetchStocks({ stock_codes: codes.join(','), limit: codes.length })
-      .then((res) => {
-        if (cancelled) return;
-        const map: Record<string, string> = {};
-        for (const item of res.items) {
-          map[item.stock_code] = item.stock_name;
+
+    // 按市场分桶，避免单一 market 默认 cn 时港股/美股查不到
+    const buckets: Record<MarketKey, string[]> = { cn: [], hk: [], us: [] };
+    for (const c of codes) {
+      const mkt = inferMarketKey(c) ?? 'cn';
+      buckets[mkt].push(c);
+    }
+
+    (async () => {
+      const map: Record<string, string> = {};
+      try {
+        // 各市场分别请求（cn 不显式传 market 兼容旧后端默认值）
+        const tasks = (Object.keys(buckets) as MarketKey[])
+          .filter((m) => buckets[m].length > 0)
+          .map((m) =>
+            fetchStocks({
+              stock_codes: buckets[m].join(','),
+              limit: buckets[m].length,
+              ...(m !== 'cn' ? { market: m } : {}),
+            }).catch(() => ({ items: [] })),
+          );
+        const results = await Promise.all(tasks);
+        for (const res of results) {
+          for (const item of res.items ?? []) {
+            map[item.stock_code] = item.stock_name;
+          }
         }
-        setWatchlistNames(map);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+      } catch {
+        // 静默降级
+      }
+      if (!cancelled) setWatchlistNames(map);
+    })();
+
+    return () => { cancelled = true; };
   }, [watchlistGroups, watchlistState.stocks]);
 
   // 加载自编指标列表（每次组件显示时重新加载，确保与系统配置页同步）
@@ -248,10 +270,12 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
           },
           ...codes.map((code) => ({
             value: code,
-            label: `${code} ${watchlistNames[code] || code}`,
+            label: watchlistNames[code]
+              ? `${code} ${watchlistNames[code]}`
+              : code,
             stock: {
               stock_code: code,
-              stock_name: watchlistNames[code] || code,
+              stock_name: watchlistNames[code] ?? '',
             },
             isLeaf: true,
           })),
@@ -288,7 +312,7 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
       const codes = watchlistState.stocks[allGroupName] || [];
       const stocks: BacktestStock[] = codes.map((code) => ({
         stockCode: code,
-        stockName: watchlistNames[code] || code,
+        stockName: watchlistNames[code] ?? '',
       }));
       if (stocks.length === 0) return;
       setCascaderValue(value.map(String));

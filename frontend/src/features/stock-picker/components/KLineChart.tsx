@@ -317,11 +317,10 @@ const KLineChart: React.FC<KLineChartProps> = ({
   };
 
   // ---- ★ 核心修复：固定 K 线宽度 6px，左侧对齐，右侧预留 3 个空位 ----
+  // 数据量不足时自动放大 barSpacing 填满图表，避免 K 线挤在左侧
   const applyLeftAlign = () => {
     if (!chartRef.current || !containerRef.current) return;
     const ts = chartRef.current.timeScale();
-    // 确保 barSpacing 固定为 6px，rightOffset 作为辅助
-    ts.applyOptions({ rightOffset: 3, barSpacing: 6 });
 
     const dataCount = rawBarsRef.current.length;
     if (dataCount === 0) {
@@ -329,18 +328,18 @@ const KLineChart: React.FC<KLineChartProps> = ({
       return;
     }
 
-    // 计算可见范围内能容纳多少个逻辑位置（每个占 6px）
     const containerWidth = containerRef.current.clientWidth;
-    const barSpacingPx = 6;
-    // 可见逻辑点数（向下取整，保证不溢出）
-    const visibleCount = Math.floor(containerWidth / barSpacingPx);
-    // 数据本身占用的逻辑范围：从 0 到 dataCount - 1
-    // 右侧至少保留 3 个空位，所以最小右边界为 dataCount - 1 + 3
-    const minTo = dataCount - 1 + 3;
-    // 为了固定 K 线宽度，可见范围必须至少覆盖 visibleCount 个逻辑点（从 0 开始）
-    // 取两者较大值，确保右侧有足够的空位且 K 线宽度固定
-    const to = Math.max(minTo, visibleCount - 1);
-    // 左边界固定为 0
+    const minBarSpacing = 6;
+    const rightReserve = 3; // 右侧预留空位
+
+    // 计算填满图表所需的 barSpacing；数据多时取最小值 6px
+    const barSpacingForFill = containerWidth / (dataCount + rightReserve);
+    const actualBarSpacing = Math.max(minBarSpacing, barSpacingForFill);
+
+    ts.applyOptions({ rightOffset: rightReserve, barSpacing: actualBarSpacing });
+
+    // 可见范围：从第 0 根到最后一根 + 右侧预留
+    const to = dataCount - 1 + rightReserve;
     ts.setVisibleLogicalRange({ from: 0, to });
   };
 
@@ -415,21 +414,24 @@ const KLineChart: React.FC<KLineChartProps> = ({
 
     const volume = chart.addHistogramSeries(mkHistSeriesOptions({ priceScaleId: 'volume', priceFormat: { type: 'volume', precision: 0, minMove: 1 } }));
 
-    const dif = chart.addLineSeries(mkLineSeriesOptions({ color: MACD_COLORS.dif, priceScaleId: 'osc', title: 'DIF', visible: false }));
-    const dea = chart.addLineSeries(mkLineSeriesOptions({ color: MACD_COLORS.dea, priceScaleId: 'osc', title: 'DEA', visible: false }));
-    const macdHist = chart.addHistogramSeries(mkHistSeriesOptions({ priceScaleId: 'osc', visible: false }));
+    // MACD 独立价格坐标系（避免与 RSI/KDJ 互相干扰价格范围）
+    const dif = chart.addLineSeries(mkLineSeriesOptions({ color: MACD_COLORS.dif, priceScaleId: 'macd', title: 'DIF', visible: false }));
+    const dea = chart.addLineSeries(mkLineSeriesOptions({ color: MACD_COLORS.dea, priceScaleId: 'macd', title: 'DEA', visible: false }));
+    const macdHist = chart.addHistogramSeries(mkHistSeriesOptions({ priceScaleId: 'macd', visible: false }));
 
-    const rsi6 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi6, priceScaleId: 'osc', title: 'RSI6' }));
-    const rsi12 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi12, priceScaleId: 'osc', title: 'RSI12' }));
-    const rsi24 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi24, priceScaleId: 'osc', title: 'RSI24' }));
-    const rsi30 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1 }));
-    const rsi70 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1 }));
+    // RSI 独立价格坐标系
+    const rsi6 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi6, priceScaleId: 'rsi', title: 'RSI6' }));
+    const rsi12 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi12, priceScaleId: 'rsi', title: 'RSI12' }));
+    const rsi24 = chart.addLineSeries(mkLineSeriesOptions({ color: RSI_COLORS.rsi24, priceScaleId: 'rsi', title: 'RSI24' }));
+    const rsi30 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'rsi', lineStyle: LineStyle.Dashed, lineWidth: 1 }));
+    const rsi70 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'rsi', lineStyle: LineStyle.Dashed, lineWidth: 1 }));
 
-    const kdjK = chart.addLineSeries(mkLineSeriesOptions({ color: KDJ_COLORS.k, priceScaleId: 'osc', title: 'K', visible: false }));
-    const kdjD = chart.addLineSeries(mkLineSeriesOptions({ color: KDJ_COLORS.d, priceScaleId: 'osc', title: 'D', visible: false }));
-    const kdjJ = chart.addLineSeries(mkLineSeriesOptions({ color: KDJ_COLORS.j, priceScaleId: 'osc', title: 'J', visible: false }));
-    const kdj20 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1, visible: false }));
-    const kdj80 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'osc', lineStyle: LineStyle.Dashed, lineWidth: 1, visible: false }));
+    // KDJ 独立价格坐标系
+    const kdjK = chart.addLineSeries(mkLineSeriesOptions({ color: KDJ_COLORS.k, priceScaleId: 'kdj', title: 'K', visible: false }));
+    const kdjD = chart.addLineSeries(mkLineSeriesOptions({ color: KDJ_COLORS.d, priceScaleId: 'kdj', title: 'D', visible: false }));
+    const kdjJ = chart.addLineSeries(mkLineSeriesOptions({ color: KDJ_COLORS.j, priceScaleId: 'kdj', title: 'J', visible: false }));
+    const kdj20 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'kdj', lineStyle: LineStyle.Dashed, lineWidth: 1, visible: false }));
+    const kdj80 = chart.addLineSeries(mkLineSeriesOptions({ color: CHART_THEME.refLine, priceScaleId: 'kdj', lineStyle: LineStyle.Dashed, lineWidth: 1, visible: false }));
 
     seriesRef.current = {
       candle, ma5, ma10, ma20, ma60, bollUpper, bollMid, bollLower,
@@ -453,7 +455,11 @@ const KLineChart: React.FC<KLineChartProps> = ({
     // 设置边距
     chart.priceScale('left').applyOptions({ scaleMargins: { top: PANE_RATIOS.main.top, bottom: PANE_RATIOS.main.bottom }, minimumWidth: 60 });
     chart.priceScale('volume').applyOptions({ scaleMargins: { top: PANE_RATIOS.volume.top, bottom: PANE_RATIOS.volume.bottom }, visible: false });
-    chart.priceScale('osc').applyOptions({ scaleMargins: { top: PANE_RATIOS.osc.top, bottom: PANE_RATIOS.osc.bottom }, visible: true, minimumWidth: 65 });
+    // RSI/KDJ/MACD 各自独立价格坐标系，共享同一 pane 位置，避免值域互相干扰
+    const oscMargins = { top: PANE_RATIOS.osc.top, bottom: PANE_RATIOS.osc.bottom };
+    chart.priceScale('rsi').applyOptions({ scaleMargins: oscMargins, visible: true, minimumWidth: 65 });
+    chart.priceScale('kdj').applyOptions({ scaleMargins: oscMargins, visible: false, minimumWidth: 65 });
+    chart.priceScale('macd').applyOptions({ scaleMargins: oscMargins, visible: false, minimumWidth: 65 });
 
     // ---- 设置数据 ----
     safeSetData(candle, chartData.candles, 'candle');
@@ -606,6 +612,14 @@ const KLineChart: React.FC<KLineChartProps> = ({
     s.dif.applyOptions({ visible: showMacd });
     s.dea.applyOptions({ visible: showMacd });
     s.macdHist.applyOptions({ visible: showMacd });
+    // 同步切换对应价格坐标系可见性（独立坐标系互不干扰值域）
+    if (chartRef.current) {
+      try {
+        chartRef.current.priceScale('rsi').applyOptions({ visible: showRsi });
+        chartRef.current.priceScale('kdj').applyOptions({ visible: showKdj });
+        chartRef.current.priceScale('macd').applyOptions({ visible: showMacd });
+      } catch (_) { /* 价格坐标系可能尚未就绪 */ }
+    }
   }, [oscType]);
 
   // ---- 更新标记 ----

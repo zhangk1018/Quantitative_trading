@@ -3,6 +3,7 @@
 
 import type { Trade } from '../backtestTypes';
 import { fetchStocks } from '../../stock-detail/api';
+import { inferMarketKey, type MarketKey } from '../../watchlist/utils/stock-utils';
 
 /** 导出行类型 */
 export interface TradeExportRow extends Record<string, string | number> {
@@ -57,6 +58,7 @@ function isNameValid(row: TradeExportRow): boolean {
 /**
  * 反查股票名称：对名称无效（空/占位/被代码替代）的行，
  * 用 /api/stocks/?stock_codes=... 按代码批量反查真实名称并覆盖。
+ * 按 market 分组请求，避免跨市场（默认 cn）查不到港股/美股名称。
  * 网络失败/未命中时保留原值，不阻断导出。
  */
 export async function resolveStockNames(rows: TradeExportRow[]): Promise<TradeExportRow[]> {
@@ -64,14 +66,29 @@ export async function resolveStockNames(rows: TradeExportRow[]): Promise<TradeEx
   const codesToLookup = Array.from(new Set(rows.filter((r) => !isNameValid(r)).map((r) => r.stockCode)));
   if (codesToLookup.length === 0) return rows;
 
+  // 按市场分桶请求，与 useWatchlistQuotes / BacktestConfigPanel 一致
+  const buckets: Record<MarketKey, string[]> = { cn: [], hk: [], us: [] };
+  for (const c of codesToLookup) {
+    const mkt = inferMarketKey(c) ?? 'cn';
+    buckets[mkt].push(c);
+  }
+
   const nameByCode: Record<string, string> = {};
   try {
-    const res = await fetchStocks({
-      stock_codes: codesToLookup.join(','),
-      limit: codesToLookup.length,
-    });
-    for (const item of res.items) {
-      if (item.stock_code && item.stock_name) nameByCode[item.stock_code] = item.stock_name;
+    const tasks = (Object.keys(buckets) as MarketKey[])
+      .filter((m) => buckets[m].length > 0)
+      .map((m) =>
+        fetchStocks({
+          stock_codes: buckets[m].join(','),
+          limit: buckets[m].length,
+          ...(m !== 'cn' ? { market: m } : {}),
+        }).catch(() => ({ items: [] })),
+      );
+    const results = await Promise.all(tasks);
+    for (const res of results) {
+      for (const item of res.items ?? []) {
+        if (item.stock_code && item.stock_name) nameByCode[item.stock_code] = item.stock_name;
+      }
     }
   } catch {
     console.warn('[tradeExport] 股票名称反查失败，保持原值导出');

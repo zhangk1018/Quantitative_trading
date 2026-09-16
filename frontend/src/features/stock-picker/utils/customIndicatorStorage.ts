@@ -386,13 +386,20 @@ function emptyErrorSummary(): Record<ImportErrorType, number> {
   };
 }
 
-/** 导出当前用户全部自编指标为 JSON 文件 */
-export function exportCustomIndicators(userId: string = MOCK_USER_ID): IndicatorExportFile {
+/** 导出自编指标为 JSON 文件；传入 ids 则只导出指定条目，不传入导出全部 */
+export function exportCustomIndicators(
+  userId: string = MOCK_USER_ID,
+  ids?: string[],
+): IndicatorExportFile {
+  const all = listCustomIndicators(userId);
+  const filtered = ids && ids.length > 0
+    ? all.filter((i) => ids.includes(i.id))
+    : all;
   return {
     version: EXPORT_FORMAT_VERSION,
     exportedAt: nowIso(),
     userId,
-    indicators: listCustomIndicators(userId),
+    indicators: filtered,
   };
 }
 

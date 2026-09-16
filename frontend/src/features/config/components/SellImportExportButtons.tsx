@@ -1,20 +1,9 @@
 /**
- * 自编指标导入/导出按钮组件（P3.2）
+ * 卖出策略导入/导出按钮组件（对齐 ImportExportButtons 设计风格）
  *
- * 设计要点（K 2026-06-17 决策）：
- * - 导入流程：Preview 弹窗确认制（按错误类型分组展示明细）
- *   1) 触发隐藏 file input 选择 .json
- *   2) FileReader 读取为文本
- *   3) parseImportFile 校验：file-level 错误（版本/格式）→ 直接 alert
- *   4) 进入 Preview 弹窗：显示新增/跳过/错误统计 + 错误明细（按 type 分组）
- *   5) 用户点击"确认导入" → importCustomIndicators 写入 + dispatch
- * - 导出流程：调用 exportCustomIndicators → Blob URL → 触发下载
- *   文件名格式：custom-indicators-YYYY-MM-DD.json
- *
- * 复用约束：
- * - 不修改 customIndicatorStorage.ts（K 决策：导入导出 API 已落地 P1.2）
- * - 不修改 types/customIndicator.ts（K 决策：IndicatorExportFile + ImportResult 已落地）
- * - 仅消费既有 API，新增 UI 层
+ * 复用同架构：
+ * - 导入：Preview 弹窗确认制（按错误类型分组展示明细）
+ * - 导出：选择 Modal 勾选后触发下载
  */
 
 import React, { useRef, useState } from 'react';
@@ -26,28 +15,27 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import {
-  exportCustomIndicators,
-  parseImportFile,
-  importCustomIndicators,
-  computeImportPreview,
+  exportCustomSellStrategies,
+  parseSellStrategyImportFile,
+  importCustomSellStrategies,
+  computeSellStrategyImportPreview,
   MOCK_USER_ID,
-  ImportErrorType,
-  ImportErrorDetail,
-  ImportResult,
-} from '../utils/customIndicatorStorage';
-import { IndicatorExportFile, EXPORT_FORMAT_VERSION } from '../types/customIndicator';
+  SellImportErrorType,
+  SellImportErrorDetail,
+  SellImportResult,
+  SellStrategyExportFile,
+  SELL_STRATEGY_EXPORT_VERSION,
+} from '../../backtest/utils/customSellStrategyStorage';
 
-interface ImportExportButtonsProps {
-  /** 当前 customIndicators（用于显示导出数量 + 决定导出按钮可用性） */
-  customIndicators: ReadonlyArray<{ id: string; name: string }>;
-  /** 当前 user_id（V1.0 mock） */
+interface SellImportExportButtonsProps {
+  /** 当前卖出策略（用于显示导出数量 + 决定导出按钮可用性） */
+  strategies: ReadonlyArray<{ id: string; name: string }>;
   userId?: string;
-  /** 导入成功回调：父组件 dispatch IMPORT_CUSTOM_INDICATORS */
-  onImportSuccess: (indicators: IndicatorExportFile['indicators']) => void;
+  /** 导入成功回调 */
+  onImportSuccess?: (addedCount: number) => void;
 }
 
-// 错误类型 → 中文标签 + Tag 颜色（K 偏好：明确显示覆盖率异常及原因）
-const ERROR_TYPE_META: Record<ImportErrorType, { label: string; color: string }> = {
+const ERROR_TYPE_META: Record<SellImportErrorType, { label: string; color: string }> = {
   name_invalid: { label: '名称格式错误', color: 'red' },
   name_duplicate: { label: '名称重复已跳过', color: 'orange' },
   field_invalid: { label: '字段缺失/类型错误', color: 'volcano' },
@@ -56,10 +44,8 @@ const ERROR_TYPE_META: Record<ImportErrorType, { label: string; color: string }>
 
 interface PreviewState {
   visible: boolean;
-  file: IndicatorExportFile | null;
-  /** 预览阶段的错误明细（parseImportFile 抛错时为空） */
-  errors: ImportErrorDetail[];
-  /** 解析后预计的 added/skipped（由 parseImportFile 给出） */
+  file: SellStrategyExportFile | null;
+  errors: SellImportErrorDetail[];
   previewAdded: number;
   previewSkipped: number;
 }
@@ -72,8 +58,8 @@ const initialPreviewState: PreviewState = {
   previewSkipped: 0,
 };
 
-export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
-  customIndicators,
+export const SellImportExportButtons: React.FC<SellImportExportButtonsProps> = ({
+  strategies,
   userId = MOCK_USER_ID,
   onImportSuccess,
 }) => {
@@ -84,18 +70,17 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
   // 导出选择 Modal 状态
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportSelected, setExportSelected] = useState<string[]>([]);
-  const exportAllChecked = exportSelected.length === customIndicators.length && customIndicators.length > 0;
+  const exportAllChecked = exportSelected.length === strategies.length && strategies.length > 0;
   const exportIndeterminate = exportSelected.length > 0 && !exportAllChecked;
 
   // 打开导出选择 Modal：默认全选
   const handleOpenExportModal = () => {
-    setExportSelected(customIndicators.map((i) => i.id));
+    setExportSelected(strategies.map((s) => s.id));
     setExportModalOpen(true);
   };
 
-  // 全选/取消全选
   const handleToggleSelectAll = (e: { target: { checked: boolean } }) => {
-    setExportSelected(e.target.checked ? customIndicators.map((i) => i.id) : []);
+    setExportSelected(e.target.checked ? strategies.map((s) => s.id) : []);
   };
 
   const handleCancelExport = () => {
@@ -105,12 +90,12 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
 
   // 真正执行导出
   const doExport = (ids: string[]) => {
-    const data = exportCustomIndicators(userId, ids);
+    const data = exportCustomSellStrategies(userId, ids);
     const json = JSON.stringify(data, null, 2);
     const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const today = new Date().toISOString().slice(0, 10);
-    const filename = `custom-indicators-${today}.json`;
+    const filename = `custom-sell-strategies-${today}.json`;
 
     const a = document.createElement('a');
     a.href = url;
@@ -120,38 +105,27 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    message.success(`已导出 ${data.indicators.length} 条自编指标到 ${filename}`);
+    message.success(`已导出 ${data.strategies.length} 条卖出策略到 ${filename}`);
   };
 
   const handleConfirmExport = () => {
     if (exportSelected.length === 0) {
-      message.warning('请至少选择 1 条指标');
+      message.warning('请至少选择 1 条策略');
       return;
     }
     doExport(exportSelected);
     handleCancelExport();
   };
 
-  /**
-   * 触发文件选择对话框
-   */
   const handleImportClick = () => {
     fileInputRef.current?.click();
   };
 
-  /**
-   * 文件选择后处理：
-   * 1) FileReader 读取文本
-   * 2) parseImportFile 校验 → file-level 错误则 alert 不进入预览
-   * 3) 计算预计 added/skipped（基于 name 去重），构造预览数据
-   */
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    // 重置 input value 允许重复选择同一文件
     if (e.target) e.target.value = '';
     if (!file) return;
 
-    // 文件大小硬限制：5MB（localStorage 同等限制）
     if (file.size > 5 * 1024 * 1024) {
       message.error(`文件过大（${(file.size / 1024 / 1024).toFixed(2)}MB），最大支持 5MB`);
       return;
@@ -166,29 +140,20 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
       }
       processImportText(text);
     };
-    reader.onerror = () => {
-      message.error('文件读取失败');
-    };
+    reader.onerror = () => message.error('文件读取失败');
     reader.readAsText(file);
   };
 
-  /**
-   * 解析导入文本：file-level 错误弹错；否则进入 Preview 弹窗
-   */
   const processImportText = (text: string) => {
-    let parsed: IndicatorExportFile;
+    let parsed: SellStrategyExportFile;
     try {
-      parsed = parseImportFile(text);
+      parsed = parseSellStrategyImportFile(text);
     } catch (e) {
-      // file-level 错误：版本不支持 / 格式无效 / indicators 非数组
       message.error((e as Error).message);
       return;
     }
 
-    // K 2026-06-18 反馈 #5：直接调用 storage 的 computeImportPreview 函数，
-    // 与 importCustomIndicators 走同一套校验/去重逻辑，
-    // 彻底消除预览/实际导入数量可能不一致的问题。
-    const previewResult = computeImportPreview(parsed, userId);
+    const previewResult = computeSellStrategyImportPreview(parsed, userId);
     setPreview({
       visible: true,
       file: parsed,
@@ -198,21 +163,12 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
     });
   };
 
-  /**
-   * 确认导入：写入 localStorage + 通知父组件 dispatch
-   * K 2026-06-18 反馈 #17：使用 importCustomIndicators 返回的 addedIndicators
-   * 直接拿到实际新增的指标列表（带新 id/createdAt/updatedAt），
-   * 不再依赖 localStorage 按 updatedAt 倒序推断（之前可能错拿其他操作的指标）。
-   * K 2026-06-18 反馈 #3：ImportResult 已统一包含 addedIndicators 字段，
-   * 调用方无需再断言或类型转换。
-   */
   const handleConfirmImport = () => {
     if (!preview.file) return;
     setImporting(true);
     try {
-      const result: ImportResult = importCustomIndicators(preview.file, userId);
-      const newlyAdded = result.addedIndicators;
-      onImportSuccess(newlyAdded);
+      const result: SellImportResult = importCustomSellStrategies(preview.file, userId);
+      onImportSuccess?.(result.added);
       message.success(
         `导入完成：新增 ${result.added} 条，跳过 ${result.skipped} 条，错误 ${result.errors.length} 条`,
       );
@@ -224,23 +180,12 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
     }
   };
 
-  /**
-   * 取消导入
-   */
-  const handleCancelImport = () => {
-    setPreview(initialPreviewState);
-  };
+  const handleCancelImport = () => setPreview(initialPreviewState);
 
-  const exportDisabled = customIndicators.length === 0;
+  const exportDisabled = strategies.length === 0;
 
-  // 错误明细表格列
   const errorColumns = [
-    {
-      title: '索引',
-      dataIndex: 'index',
-      key: 'index',
-      width: 80,
-    },
+    { title: '索引', dataIndex: 'index', key: 'index', width: 80 },
     {
       title: '名称',
       dataIndex: 'name',
@@ -253,25 +198,21 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
       dataIndex: 'type',
       key: 'type',
       width: 160,
-      render: (type: ImportErrorType) => (
+      render: (type: SellImportErrorType) => (
         <Tag color={ERROR_TYPE_META[type].color}>{ERROR_TYPE_META[type].label}</Tag>
       ),
     },
-    {
-      title: '说明',
-      dataIndex: 'message',
-      key: 'message',
-    },
+    { title: '说明', dataIndex: 'message', key: 'message' },
   ];
 
   return (
     <>
-      <div className="flex items-center gap-2" data-testid="import-export-buttons">
+      <div className="flex items-center gap-2" data-testid="sell-import-export-buttons">
         <Button
           size="small"
           icon={<UploadOutlined />}
           onClick={handleImportClick}
-          data-testid="import-export-import-btn"
+          data-testid="sell-import-export-import-btn"
         >
           导入
         </Button>
@@ -280,22 +221,21 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
           icon={<DownloadOutlined />}
           onClick={handleOpenExportModal}
           disabled={exportDisabled}
-          data-testid="import-export-export-btn"
+          data-testid="sell-import-export-export-btn"
         >
-          导出{customIndicators.length > 0 ? `(${customIndicators.length})` : ''}
+          导出{strategies.length > 0 ? `(${strategies.length})` : ''}
         </Button>
-        {/* 隐藏的 file input：accept 限定 .json 避免用户选错文件 */}
         <input
           ref={fileInputRef}
           type="file"
           accept="application/json,.json"
           onChange={handleFileChange}
           style={{ display: 'none' }}
-          data-testid="import-export-file-input"
+          data-testid="sell-import-export-file-input"
         />
       </div>
 
-      {/* Preview 弹窗：按错误类型分组展示明细 */}
+      {/* 导入 Preview 弹窗 */}
       <Modal
         open={preview.visible}
         title="导入预览"
@@ -304,70 +244,49 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
         maskClosable={false}
         width={720}
         footer={[
-          <Button
-            key="cancel"
-            onClick={handleCancelImport}
-            data-testid="import-export-preview-cancel"
-          >
-            取消
-          </Button>,
+          <Button key="cancel" onClick={handleCancelImport}>取消</Button>,
           <Button
             key="confirm"
             type="primary"
             loading={importing}
             onClick={handleConfirmImport}
             disabled={!preview.file}
-            data-testid="import-export-preview-confirm"
           >
             确认导入{preview.previewAdded > 0 ? `（${preview.previewAdded} 条）` : ''}
           </Button>,
         ]}
-        data-testid="import-export-preview-modal"
+        data-testid="sell-import-preview-modal"
       >
         {preview.file && (
           <Space direction="vertical" size="middle" className="w-full">
-            {/* 文件元信息 */}
             <div className="text-text-secondary text-sm">
-              <div>
-                导出时间：<span className="text-text-primary">{preview.file.exportedAt}</span>
-              </div>
-              <div>
-                来源用户：<span className="text-text-primary">{preview.file.userId}</span>
-              </div>
+              <div>导出时间：<span className="text-text-primary">{preview.file.exportedAt}</span></div>
+              <div>来源用户：<span className="text-text-primary">{preview.file.userId}</span></div>
               <div>
                 格式版本：<span className="text-text-primary">v{preview.file.version}</span>
-                （当前 v{EXPORT_FORMAT_VERSION}）
+                （当前 v{SELL_STRATEGY_EXPORT_VERSION}）
               </div>
-              <div>
-                包含指标：<span className="text-text-primary">{preview.file.indicators.length} 条</span>
-              </div>
+              <div>包含策略：<span className="text-text-primary">{preview.file.strategies.length} 条</span></div>
             </div>
 
-            {/* 预计结果统计 */}
             <Space size="large" className="w-full">
-              <div className="flex items-center gap-2" data-testid="import-export-preview-added">
+              <div className="flex items-center gap-2">
                 <CheckCircleOutlined className="text-color-up" />
                 <span>将新增：<strong>{preview.previewAdded}</strong> 条</span>
               </div>
-              <div className="flex items-center gap-2" data-testid="import-export-preview-skipped">
+              <div className="flex items-center gap-2">
                 <WarningOutlined className="text-color-warn" />
                 <span>将跳过：<strong>{preview.previewSkipped}</strong> 条</span>
               </div>
-              <div className="flex items-center gap-2" data-testid="import-export-preview-errors">
+              <div className="flex items-center gap-2">
                 <WarningOutlined className="text-color-down" />
                 <span>错误：<strong>{preview.errors.length}</strong> 条</span>
               </div>
             </Space>
 
-            {/* 错误明细（按类型分组） */}
             {preview.errors.length > 0 ? (
               <div>
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="以下指标将无法导入（按错误类型分组）"
-                  className="mb-2"
-                />
+                <Alert type="warning" showIcon message="以下策略将无法导入（按错误类型分组）" className="mb-2" />
                 <Table
                   size="small"
                   dataSource={preview.errors}
@@ -375,11 +294,10 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
                   rowKey={(r) => `${r.type}-${r.index}`}
                   pagination={false}
                   scroll={{ y: 240 }}
-                  data-testid="import-export-preview-errors-table"
                 />
               </div>
             ) : (
-              <Alert type="success" showIcon message="全部指标可正常导入" />
+              <Alert type="success" showIcon message="全部策略可正常导入" />
             )}
           </Space>
         )}
@@ -388,7 +306,7 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
       {/* 导出选择 Modal：勾选要导出的条目 */}
       <Modal
         open={exportModalOpen}
-        title="选择要导出的自编指标"
+        title="选择要导出的卖出策略"
         onCancel={handleCancelExport}
         destroyOnHidden
         maskClosable={false}
@@ -400,12 +318,12 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
             type="primary"
             onClick={handleConfirmExport}
             disabled={exportSelected.length === 0}
-            data-testid="import-export-export-confirm"
+            data-testid="sell-import-export-export-confirm"
           >
             导出{exportSelected.length > 0 ? `（${exportSelected.length} 条）` : ''}
           </Button>,
         ]}
-        data-testid="import-export-export-modal"
+        data-testid="sell-import-export-export-modal"
       >
         {/* 全选行 */}
         <div className="flex items-center justify-between py-2 border-b border-border-color mb-2">
@@ -413,12 +331,11 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
             checked={exportAllChecked}
             indeterminate={exportIndeterminate}
             onChange={handleToggleSelectAll}
-            data-testid="import-export-select-all"
           >
             {exportAllChecked ? '取消全选' : '全选'}
           </Checkbox>
           <span className="text-text-secondary text-xs">
-            已选 {exportSelected.length} / {customIndicators.length}
+            已选 {exportSelected.length} / {strategies.length}
           </span>
         </div>
         {/* 可滚动的 Checkbox 列表 */}
@@ -429,14 +346,13 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
             className="w-full"
           >
             <Space direction="vertical" size="small" className="w-full">
-              {customIndicators.map((ind) => (
+              {strategies.map((s) => (
                 <Checkbox
-                  key={ind.id}
-                  value={ind.id}
+                  key={s.id}
+                  value={s.id}
                   className="w-full text-text-primary"
-                  data-testid={`import-export-select-${ind.id}`}
                 >
-                  {ind.name}
+                  {s.name}
                 </Checkbox>
               ))}
             </Space>
@@ -447,4 +363,4 @@ export const ImportExportButtons: React.FC<ImportExportButtonsProps> = ({
   );
 };
 
-export default ImportExportButtons;
+export default SellImportExportButtons;

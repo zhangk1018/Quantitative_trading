@@ -13,7 +13,15 @@ import {
   validateFormula,
   type IndicatorOperator,
 } from '../../stock-picker/types/customIndicator';
-import type { BacktestIndicatorOperator, BacktestIndicatorThreshold } from '../backtestTypes';
+import type { BacktestIndicatorOperator, BacktestIndicatorThreshold } from '../../backtest/backtestTypes';
+
+const VALID_OPERATORS: readonly BacktestIndicatorOperator[] = [
+  '>', '>=', '<', '<=', '==', 'range', 'cross_up', 'cross_down',
+];
+
+function isValidOperator(v: string): v is BacktestIndicatorOperator {
+  return (VALID_OPERATORS as readonly string[]).includes(v);
+}
 
 export const MOCK_USER_ID = 'mock_user_default';
 const STORAGE_KEY_PREFIX = 'qt_custom_sell_strategies_v1_';
@@ -205,6 +213,186 @@ export function validateSellStrategyFormula(
   formula: string,
 ): { valid: boolean; errors: string[]; warnings: string[] } {
   return validateFormula(formula, 'python_talib');
+}
+
+// =====================================================================
+// JSON 导入导出 schema（对齐 IndicatorExportFile 格式，strategies 替换 indicators）
+// =====================================================================
+
+export const SELL_STRATEGY_EXPORT_VERSION = 1;
+
+/** 卖出策略导出文件 */
+export interface SellStrategyExportFile {
+  version: number;
+  exportedAt: string;
+  userId: string;
+  strategies: CustomSellStrategy[];
+}
+
+/** 导入过程中的错误类型 */
+export type SellImportErrorType = 'name_invalid' | 'name_duplicate' | 'field_invalid' | 'parse_error';
+
+/** 单条导入错误明细 */
+export interface SellImportErrorDetail {
+  index: number;
+  name?: string;
+  type: SellImportErrorType;
+  message: string;
+}
+
+/** 导入预览 / 结果 */
+export interface SellImportResult {
+  added: number;
+  skipped: number;
+  errors: SellImportErrorDetail[];
+  addedStrategies: CustomSellStrategy[];
+}
+
+/** 校验单条卖出策略数据（导入时使用） */
+export function validateSellStrategyData(raw: unknown): { valid: boolean; errors: string[]; data?: CustomSellStrategy } {
+  const errors: string[] = [];
+  if (!raw || typeof raw !== 'object') {
+    return { valid: false, errors: ['记录不是有效的对象'] };
+  }
+  const r = raw as Record<string, unknown>;
+  const name = typeof r.name === 'string' ? r.name : '';
+  const formula = typeof r.formula === 'string' ? r.formula : '';
+  const operatorRaw = typeof r.operator === 'string' ? r.operator : '';
+  const defaultThreshold = r.defaultThreshold as BacktestIndicatorThreshold | undefined;
+
+  const nameErr = validateIndicatorName(name);
+  if (nameErr) errors.push(nameErr);
+  if (!formula) errors.push('公式不能为空');
+  if (!operatorRaw || !isValidOperator(operatorRaw)) errors.push('算子不能为空或无效');
+  if (defaultThreshold === undefined || defaultThreshold === null) errors.push('阈值不能为空');
+
+  if (errors.length > 0) return { valid: false, errors };
+
+  const operator = operatorRaw as BacktestIndicatorOperator;
+  const data: CustomSellStrategy = {
+    id: typeof r.id === 'string' ? r.id : `sell_import_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    userId: typeof r.userId === 'string' ? r.userId : MOCK_USER_ID,
+    name,
+    formula,
+    operator,
+    defaultThreshold: defaultThreshold as BacktestIndicatorThreshold,
+    description: typeof r.description === 'string' ? r.description : '',
+    deleted: false,
+    deletedAt: undefined,
+    createdAt: typeof r.createdAt === 'string' ? r.createdAt : nowIso(),
+    updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : nowIso(),
+  };
+  return { valid: true, errors, data };
+}
+
+/** 解析导入 JSON 文本，返回 SellStrategyExportFile 或抛错 */
+export function parseSellStrategyImportFile(jsonText: string): SellStrategyExportFile {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch (e) {
+    throw new Error(`JSON 解析失败：${(e as Error).message}`);
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('文件根节点不是对象');
+  }
+  const root = parsed as Record<string, unknown>;
+  const version = typeof root.version === 'number' ? root.version : 0;
+  if (version !== SELL_STRATEGY_EXPORT_VERSION) {
+    throw new Error(`不支持的导出格式版本 v${version}（当前支持 v${SELL_STRATEGY_EXPORT_VERSION}）`);
+  }
+  if (!Array.isArray(root.strategies)) {
+    throw new Error('文件缺少 strategies 数组');
+  }
+  return {
+    version,
+    exportedAt: typeof root.exportedAt === 'string' ? root.exportedAt : nowIso(),
+    userId: typeof root.userId === 'string' ? root.userId : MOCK_USER_ID,
+    strategies: root.strategies as CustomSellStrategy[],
+  };
+}
+
+/** 导出自编卖出策略为 JSON；传入 ids 则只导出指定条目，不传入导出全部 */
+export function exportCustomSellStrategies(
+  userId: string = MOCK_USER_ID,
+  ids?: string[],
+): SellStrategyExportFile {
+  const all = readAll(userId).filter(s => !s.deleted);
+  const filtered = ids && ids.length > 0
+    ? all.filter((s) => ids.includes(s.id))
+    : all;
+  return {
+    version: SELL_STRATEGY_EXPORT_VERSION,
+    exportedAt: nowIso(),
+    userId,
+    strategies: filtered,
+  };
+}
+
+/** 计算导入预览（added/skipped/errors 明细，不写入） */
+export function computeSellStrategyImportPreview(
+  file: SellStrategyExportFile,
+  userId: string = MOCK_USER_ID,
+): SellImportResult {
+  const existing = listAllCustomSellStrategies(userId).filter(s => !s.deleted);
+  const errors: SellImportErrorDetail[] = [];
+  let added = 0;
+  let skipped = 0;
+  const addedStrategies: CustomSellStrategy[] = [];
+
+  file.strategies.forEach((raw, index) => {
+    const v = validateSellStrategyData(raw);
+    if (!v.valid || !v.data) {
+      errors.push({
+        index,
+        name: typeof raw.name === 'string' ? raw.name : undefined,
+        type: 'field_invalid',
+        message: v.errors.join('；'),
+      });
+      return;
+    }
+    // 名称重复检查
+    if (existing.some(e => e.name === v.data!.name)) {
+      errors.push({
+        index,
+        name: v.data.name,
+        type: 'name_duplicate',
+        message: `卖出策略名称"${v.data.name}"已存在，将跳过`,
+      });
+      skipped++;
+      return;
+    }
+    added++;
+    addedStrategies.push(v.data);
+  });
+
+  return { added, skipped, errors, addedStrategies };
+}
+
+/** 执行导入（写入 localStorage），返回实际导入结果 */
+export function importCustomSellStrategies(
+  file: SellStrategyExportFile,
+  userId: string = MOCK_USER_ID,
+): SellImportResult {
+  const preview = computeSellStrategyImportPreview(file, userId);
+  if (preview.added === 0) return preview;
+
+  const all = readAll(userId);
+  const now = nowIso();
+  for (const incoming of preview.addedStrategies) {
+    const created: CustomSellStrategy = {
+      ...incoming,
+      id: incoming.id.startsWith('sell_import_') ? incoming.id : `sell_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      userId,
+      deleted: false,
+      createdAt: incoming.createdAt || now,
+      updatedAt: now,
+    };
+    all.push(created);
+  }
+  writeAll(userId, all);
+
+  return preview;
 }
 
 /** 复导出自编指标算子类型（管理 UI 复用 INDICATOR_OPERATORS 选项） */
