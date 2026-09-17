@@ -186,8 +186,8 @@ export function validateFormula(formula: string, _syntax: IndicatorSyntax): Form
     return { valid: false, errors, warnings };
   }
 
-  if (formula.length > 8000) {
-    errors.push('公式长度不能超过 8000 字符');
+  if (formula.length > 20000) {
+    errors.push('公式长度不能超过 20000 字符');
   }
 
   // 括号配对检查

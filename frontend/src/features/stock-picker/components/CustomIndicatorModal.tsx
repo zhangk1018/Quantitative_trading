@@ -197,7 +197,7 @@ export const CustomIndicatorModal: React.FC<CustomIndicatorModalProps> = ({
   /**
    * 公式 OnBlur 校验
    * - 非空校验
-   * - 长度限制（≤ 8000 字符）
+   * - 长度限制（≤ 20000 字符）
    * - 危险关键字检测（import/exec/eval 等）
    * - calculate 函数签名校验
    * - 常见错误模式检测

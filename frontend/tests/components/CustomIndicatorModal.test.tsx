@@ -260,15 +260,15 @@ describe('CustomIndicatorModal - 公式 OnBlur 校验', () => {
     });
   });
 
-  it('onDidBlurEditorWidget 触发时校验长度（> 8000 字符）', async () => {
+  it('onDidBlurEditorWidget 触发时校验长度（> 20000 字符）', async () => {
     const user = userEvent.setup();
     renderModal();
     const editor = getFormulaEditor();
-    // 直接设置值（避免 type 8001 字符耗时）
-    fireEvent.change(editor, { target: { value: 'A'.repeat(8001) } });
+    // 直接设置值（避免 type 20001 字符耗时）
+    fireEvent.change(editor, { target: { value: 'A'.repeat(20001) } });
     triggerMonacoBlur();
     await waitFor(() => {
-      expect(screen.getByText(/公式长度不能超过 8000 字符/)).toBeInTheDocument();
+      expect(screen.getByText(/公式长度不能超过 20000 字符/)).toBeInTheDocument();
     });
   });
 });
