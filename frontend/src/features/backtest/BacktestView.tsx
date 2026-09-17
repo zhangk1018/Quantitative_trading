@@ -143,7 +143,17 @@ const BacktestView: React.FC = () => {
       low: Number(item.low),
       close: Number(item.close),
       volume: Number(item.volume),
-    }));
+      ma20: item.ma20 != null ? Number(item.ma20) : null,
+    })).map((bar, idx, arr) => {
+      // 后端 stock_indicators.ma_20 前 20 根经常为 NULL（标准 rolling 无 min_periods），
+      // 若 ma20 缺失则用 close 自算 SMA20（窗口 20、含当前根，与后端前复权口径一致），
+      // 保证 MA20 叠加线全程绘制。
+      if (bar.ma20 != null && Number.isFinite(bar.ma20)) return bar;
+      let sum = 0;
+      const cnt = Math.min(20, idx + 1);
+      for (let k = idx - cnt + 1; k <= idx; k++) sum += arr[k].close;
+      return { ...bar, ma20: sum / cnt };
+    });
   }, []);
 
   /** 构造引擎配置（批量模式下每只股票替换 stockCode） */

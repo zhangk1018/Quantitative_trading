@@ -9,6 +9,8 @@ export interface KlineBar {
   low: number;
   close: number;
   volume: number;
+  /** 20日均线（可选，前端绘制 MA20 叠加线用；后端数据不足段可能为 null/缺失） */
+  ma20?: number | null;
 }
 
 export interface CalculatedIndicators {

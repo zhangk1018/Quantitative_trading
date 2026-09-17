@@ -122,6 +122,8 @@ export interface KLineItem {
   close: number;
   volume: number;
   amount: number;
+  /** 20日均线（后端 stock_indicators.ma_20，可能为空数组段为 null） */
+  ma20?: number | null;
   pe_ttm: number | null;
   turnover_rate: number | null;
 }
@@ -231,6 +233,7 @@ export const fetchKLineData = async (
       close: Number(item.close),
       volume: Number(item.volume),
       amount: item.amount != null ? Number(item.amount) : 0,
+      ma20: item.ma20 != null ? Number(item.ma20) : null,
       pe_ttm: item.pe_ttm != null ? Number(item.pe_ttm) : null,
       turnover_rate: item.turnover_rate != null ? Number(item.turnover_rate) : null,
     }))

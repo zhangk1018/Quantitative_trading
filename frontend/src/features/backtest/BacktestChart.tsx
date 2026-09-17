@@ -104,6 +104,28 @@ const BacktestChart: React.FC<BacktestChartProps> = ({
       ctx.fillRect(x - candleWidth / 2, Math.min(y1, y2), candleWidth, bodyH);
     }
 
+    // 绘制 MA20 叠加线（跳过无值段）
+    ctx.strokeStyle = '#ff9800';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let maStarted = false;
+    for (let i = 0; i < visibleBars; i++) {
+      const ma20 = bars[i].ma20;
+      if (ma20 == null || !Number.isFinite(ma20)) {
+        maStarted = false;
+        continue;
+      }
+      const x = scaleX(i);
+      const y = scaleY(ma20);
+      if (!maStarted) {
+        ctx.moveTo(x, y);
+        maStarted = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+
     // 绘制买卖标记
     for (const marker of markers) {
       const idx = bars.findIndex((b) => b.time === marker.time);
