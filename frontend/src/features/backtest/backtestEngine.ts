@@ -23,6 +23,7 @@ import {
   type ProgressInfo,
   type DiagnosticEntry,
   type SellStrategy,
+  DEFAULT_LAYERED_TP_PARAMS,
 } from './backtestTypes';
 import { getCustomIndicatorRunner } from '../strategy-backtest/utils/customIndicatorRunner';
 import { detectConditions } from '../../lib/indicators/condition-detector';
@@ -698,6 +699,7 @@ export async function runBacktest(
     capital,
     sellStrategy,
     customSellStrategy,
+    layeredTPParams,
     trailingStopPct,
     atrPeriod,
     atrMultiplier,
@@ -866,6 +868,19 @@ export async function runBacktest(
   let currentEntryPrice = 0;
   /** 持仓期间的最高价（用于移动止盈策略） */
   let peakPriceSinceEntry = 0;
+  /**
+   * 分层止盈状态机（仅 sellStrategy==='layered_take_profit' 时维护）。
+   * 单仓模型：一次只持一个价位分组，分批卖出通过 shares 递减 + 状态 phase 推进实现。
+   */
+  let layeredTP: {
+    phase: 'initial' | 'tp1_done' | 'tp2_done' | 'closed';
+    groupId: number;         // 买入发生时的 bar index（用于聚合多次分批卖出）
+    entryPrice: number;      // 原始买入价（成本，前复权）
+    totalBuyShares: number;  // 原始买入总股数（分批比例基准）
+    peakPrice: number;       // 持仓期间最高价（含当日）
+    maBreakDays: number;     // 连续收盘跌破均线天数
+    committedSellShares: number; // 当日已承诺卖出股数（同日 TP1+TP2 股数计算用）
+  } | null = null;
 
   // 诊断计数器 + 结构化日志
   let buySignalCount = 0;
@@ -948,6 +963,18 @@ export async function runBacktest(
             currentEntryPrice = execPrice;
             peakPriceSinceEntry = execPrice;
             state = 'holding';
+            // 分层止盈：初始化状态（groupId=买入 bar index，用于分批聚合）
+            if (sellStrategy === 'layered_take_profit') {
+              layeredTP = {
+                phase: 'initial',
+                groupId: i,
+                entryPrice: execPrice,
+                totalBuyShares: buyShares,
+                peakPrice: execPrice,
+                maBreakDays: 0,
+                committedSellShares: 0,
+              };
+            }
             diagnostics.push({
               time: bar.time,
               event: 'buy_executed',
@@ -968,6 +995,7 @@ export async function runBacktest(
               isForcedClose: false,
               entryReason: buildEntryReason(buyCondition),
               exitReason: '',
+              groupId: sellStrategy === 'layered_take_profit' ? i : undefined,
             });
           } else {
             insufficientFundCount++;
@@ -1070,9 +1098,159 @@ export async function runBacktest(
           isForcedClose: true,
           entryReason: buildEntryReason(buyCondition),
           exitReason: '期末强制清仓',
+          groupId: sellStrategy === 'layered_take_profit' && layeredTP ? layeredTP.groupId : undefined,
         });
         shares = 0;
         state = 'closed';
+        if (sellStrategy === 'layered_take_profit') layeredTP = null;
+      }
+
+      // ==================== 分层止盈：当日即时分批卖出（单仓，逐笔成交） ====================
+      if (sellStrategy === 'layered_take_profit' && state === 'holding' && layeredTP) {
+        const lp = layeredTPParams ?? DEFAULT_LAYERED_TP_PARAMS;
+        const t = layeredTP;
+        const holdDays = i - currentEntryIdx;
+        const pnlPct = (bar.close - t.entryPrice) / t.entryPrice;
+
+        // 更新持仓峰值（用当日最高价）
+        if (bar.high > t.peakPrice) t.peakPrice = bar.high;
+        // 当日已承诺卖出清零（同 bar 内 TP1+TP2 累加）
+        t.committedSellShares = 0;
+
+        // 收集当日卖出动作（支持同日 TP1+TP2 两笔部分卖出）
+        const todayActions: { shares: number; price: number; reason: string }[] = [];
+
+        // ---- 建仓期（initial）：初始止损 / 买入失效止损 ----
+        if (t.phase === 'initial') {
+          const stopPrice = t.entryPrice * (1 + lp.initialStopLossPct);
+          // 1a 开盘跳空保护：开盘已破止损，以开盘价扣滑点成交
+          if (bar.open <= stopPrice) {
+            todayActions.push({ shares, price: bar.open * (1 - lp.stopSlippagePct), reason: '初始止损(开盘跳空)' });
+            t.phase = 'closed';
+          }
+          // 1b 盘中触及止损：以止损价扣滑点成交（最低不高于当日 low）
+          else if (bar.low <= stopPrice) {
+            todayActions.push({ shares, price: Math.max(stopPrice * (1 - lp.stopSlippagePct), bar.low), reason: '初始止损' });
+            t.phase = 'closed';
+          }
+          // 买入失效止损：3-5 天不涨即走（买点动能衰竭）
+          else if (holdDays >= 3 && holdDays <= 5 && pnlPct < 0) {
+            todayActions.push({ shares, price: bar.close, reason: '买入失效止损(不涨即走)' });
+            t.phase = 'closed';
+          }
+          // 时间止损：建仓期持有天数达上限且未触发止盈
+          else if (holdDays >= lp.maxHoldDays) {
+            todayActions.push({ shares, price: bar.close, reason: `时间止损(${lp.maxHoldDays}日)` });
+            t.phase = 'closed';
+          }
+        }
+
+        // ---- 第一止盈（TP1，仅 initial）：高价触及后卖 firstSellPct 比例 → tp1_done ----
+        if (t.phase === 'initial') {
+          const tp1Price = t.entryPrice * (1 + lp.firstProfitPct);
+          if (bar.high >= tp1Price) {
+            const sellShares = Math.floor((t.totalBuyShares * lp.firstSellPct) / LOT_SIZE) * LOT_SIZE;
+            if (sellShares > 0 && sellShares <= shares) {
+              todayActions.push({ shares: sellShares, price: tp1Price, reason: '第一止盈TP1(卖25%)' });
+              t.phase = 'tp1_done';
+              t.committedSellShares += sellShares;
+            }
+          }
+        }
+
+        // ---- TP1 后保本止损 + 第二止盈（TP2）----
+        if (t.phase === 'tp1_done') {
+          const bePrice = t.entryPrice * (1 + lp.breakevenStopPct);
+          if (bar.low <= bePrice) {
+            todayActions.push({ shares, price: Math.max(bePrice * (1 - lp.stopSlippagePct), bar.low), reason: 'TP1后保本止损' });
+            t.phase = 'closed';
+          } else {
+            // TP2：合计卖出 firstSellPct+secondSellPct，卖到目标比例
+            const tp2Price = t.entryPrice * (1 + lp.secondProfitPct);
+            if (bar.high >= tp2Price) {
+              const targetTotal = Math.floor((t.totalBuyShares * (lp.firstSellPct + lp.secondSellPct)) / LOT_SIZE) * LOT_SIZE;
+              const alreadyCommitted = t.committedSellShares;
+              const remaining = shares - alreadyCommitted;
+              const rounded = Math.floor(Math.min(Math.max(targetTotal - alreadyCommitted, 0), remaining) / LOT_SIZE) * LOT_SIZE;
+              if (rounded > 0 && rounded <= remaining) {
+                todayActions.push({ shares: rounded, price: tp2Price, reason: '第二止盈TP2(卖25%)' });
+                t.phase = 'tp2_done';
+                t.committedSellShares += rounded;
+              }
+            }
+          }
+        }
+
+        // ---- TP2 后三重保护（锁定利润+峰值回撤 / 硬底线 / 均线兜底）----
+        if (t.phase === 'tp2_done') {
+          const lockPrice = t.entryPrice * (1 + lp.lockProfitPct);
+          const trailingPrice = t.peakPrice * (1 - lp.trailingDrawdownPct);
+          const dynamicStop = Math.max(lockPrice, trailingPrice);
+          if (bar.low <= dynamicStop) {
+            todayActions.push({ shares, price: Math.max(dynamicStop * (1 - lp.stopSlippagePct), bar.low), reason: `跟踪止盈(峰值${t.peakPrice.toFixed(2)})` });
+            t.phase = 'closed';
+          } else {
+            const hardFloor = t.entryPrice * (1 + lp.hardFloorPct);
+            if (bar.low <= hardFloor) {
+              todayActions.push({ shares, price: Math.max(hardFloor * (1 - lp.stopSlippagePct), bar.low), reason: '硬底线止损' });
+              t.phase = 'closed';
+            } else {
+              // 均线兜底（连续跌破确认 / 单日暴跌例外）
+              const ma = cache.ma20[i];
+              if (ma !== null && Number.isFinite(ma)) {
+                const dayDrop = (bar.close - prevClose) / prevClose;
+                if (dayDrop <= -lp.maExceptionDropPct) {
+                  todayActions.push({ shares, price: bar.close, reason: '单日暴跌例外清仓' });
+                  t.phase = 'closed';
+                } else {
+                  if (bar.close < ma) t.maBreakDays += 1;
+                  else t.maBreakDays = 0;
+                  if (t.maBreakDays >= lp.maConfirmDays) {
+                    todayActions.push({ shares, price: bar.close, reason: `跌破MA${lp.maPeriod}清仓` });
+                    t.phase = 'closed';
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // ---- 执行当日卖出动作（逐笔成交，支持部分递减）----
+        for (const a of todayActions) {
+          if (a.shares <= 0 || shares < a.shares) continue;
+          const execPrice = a.price;
+          const sellProceeds = execPrice * a.shares * (1 - feeRate);
+          const buyCost = currentEntryPrice * a.shares * (1 + feeRate);
+          const actualProfit = sellProceeds - buyCost;
+          cash += sellProceeds;
+          diagnostics.push({
+            time: bar.time,
+            event: 'sell_executed',
+            reason: `${a.reason}，卖出 ${a.shares} 股 @ ${execPrice}`,
+            data: { shares: a.shares, price: execPrice, profit: actualProfit },
+          });
+          trades.push({
+            id: tradeId++,
+            direction: 'sell',
+            entryTime: bars[currentEntryIdx].time,
+            exitTime: bar.time,
+            entryPrice: currentEntryPrice,
+            exitPrice: execPrice,
+            shares: a.shares,
+            profit: actualProfit,
+            profitPct: (actualProfit / capital) * 100,
+            holdDays: i - currentEntryIdx - 1,
+            isForcedClose: false,
+            entryReason: buildEntryReason(buyCondition),
+            exitReason: a.reason,
+            groupId: t.groupId,
+          });
+          shares -= a.shares;
+          if (shares === 0) {
+            state = 'idle';
+            layeredTP = null;
+          }
+        }
       }
 
       // --- 信号检测 ---
@@ -1098,7 +1276,7 @@ export async function runBacktest(
         }
       }
 
-      if (state === 'holding' && pendingSellSignal === null) {
+      if (sellStrategy !== 'layered_take_profit' && state === 'holding' && pendingSellSignal === null) {
         if (customSellSignals !== null && !customSellFailed && i < customSellSignals.length) {
           // 自编卖出策略（纯信号协议）：持仓状态下消费预计算信号，不依赖 peak/entry 上下文
           if (customSellSignals[i]) {
@@ -1183,8 +1361,10 @@ export async function runBacktest(
       isForcedClose: true,
       entryReason: buildEntryReason(buyCondition),
       exitReason: '期末强制清仓',
+      groupId: sellStrategy === 'layered_take_profit' && layeredTP ? layeredTP.groupId : undefined,
     });
     shares = 0;
+    if (sellStrategy === 'layered_take_profit') layeredTP = null;
   } else if (pendingBuySignal !== null) {
     unexecutedBuyCount++;
     diagnostics.push({
@@ -1235,6 +1415,29 @@ function buildEntryReason(condition: BacktestCondition): string {
   return getConditionName(condition) || '买入条件';
 }
 
+/**
+ * 把卖出交易聚合法为若干"完整交易（Round Trip）"。
+ * - 分层止盈等一次建仓分多批卖出的（同 groupId）合并为一条：总盈亏 = Σ各笔profit，持有天数 = 末次卖出最长，股数 = Σ
+ * - 无 groupId 的普通交易各自独立为一条
+ * 返回数组用于计算 winRate / 连亏 / 平均持有等全局指标（不破坏底层 Trade 明细展示）。
+ */
+export function aggregateTradesByGroupId(trades: Trade[]): { profit: number; holdDays: number; shares: number }[] {
+  const byGroup = new Map<string | number, { profit: number; holdDays: number; shares: number }>();
+  const order: (string | number)[] = [];
+  for (const t of trades) {
+    const key = t.groupId !== undefined ? t.groupId : `__ind_${t.id}`;
+    if (!byGroup.has(key)) {
+      byGroup.set(key, { profit: 0, holdDays: 0, shares: 0 });
+      order.push(key);
+    }
+    const g = byGroup.get(key)!;
+    g.profit += t.profit;
+    g.shares += t.shares;
+    if (t.holdDays > g.holdDays) g.holdDays = t.holdDays;
+  }
+  return order.map((k) => byGroup.get(k)!);
+}
+
 function buildEmptySummary(): BacktestSummary {
   return {
     totalReturn: 0,
@@ -1275,7 +1478,8 @@ function computeSummary(
     ? (1 + totalReturn) ** (TRADING_DAYS_PER_YEAR / tradingDays) - 1
     : 0;
 
-  const closedTrades = trades.filter((t) => t.direction === 'sell');
+  // 聚合同一建仓（groupId）的多次分批卖出为一次完整交易，避免拆散胜负/连亏/持有统计
+  const closedTrades = aggregateTradesByGroupId(trades.filter((t) => t.direction === 'sell'));
   const forcedCloses = trades.filter((t) => t.isForcedClose);
   const totalClosedTrades = closedTrades.length;
 

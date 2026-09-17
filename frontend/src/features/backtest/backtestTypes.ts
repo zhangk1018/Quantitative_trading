@@ -12,8 +12,9 @@ import type { KlineBar } from '../../lib/indicators/indicators';
  * 策略二：ATR吊灯止损 — 收盘价跌破(最高价-3×14日ATR)即卖出
  * 策略三：双均线死叉 — 10日EMA下穿30日EMA即卖出
  * custom：自编卖出策略（Python 脚本），配合 customSellStrategy 使用
+ * layered_take_profit：分层止盈（分批卖出），配合 layeredTPParams 使用
  */
-export type SellStrategy = 'trailing_stop' | 'atr_chandelier' | 'ema_cross' | 'custom';
+export type SellStrategy = 'trailing_stop' | 'atr_chandelier' | 'ema_cross' | 'custom' | 'layered_take_profit';
 
 /** 卖出策略显示标签 */
 export const SELL_STRATEGY_LABELS: Record<SellStrategy, string> = {
@@ -21,6 +22,62 @@ export const SELL_STRATEGY_LABELS: Record<SellStrategy, string> = {
   atr_chandelier: 'ATR吊灯止损（3×14日ATR）',
   ema_cross: '双均线死叉（10/30 EMA）',
   custom: '自编卖出策略',
+  layered_take_profit: '分层止盈（分批卖出）',
+};
+
+// ==================== 分层止盈（分批卖出） ====================
+
+/**
+ * 分层止盈参数（对齐「策略回测-选股条件分层止盈」语义，K 审阅 v2）
+ * 阶段：建仓期(initial) 初始止损 + 买入失效止损 + TP1 → tp1_done 保本 + TP2 → tp2_done 底仓跟踪止盈 + 均线兜底
+ */
+export interface LayeredTPParams {
+  /** 初始止损比例（-0.05 = -5%） */
+  initialStopLossPct: number;
+  /** 第一止盈目标涨幅（0.05 = +5%） */
+  firstProfitPct: number;
+  /** 第一止盈卖出比例（0.25 = 25%） */
+  firstSellPct: number;
+  /** 第二止盈目标涨幅（0.12 = +12%） */
+  secondProfitPct: number;
+  /** 第二止盈卖出比例（0.25 = 25%，与 firstSellPct 合计卖出部分） */
+  secondSellPct: number;
+  /** TP1 后保本止损比例（0.00 = 成本价） */
+  breakevenStopPct: number;
+  /** TP2 后锁定利润比例（0.04 = +4%，跟踪线下限） */
+  lockProfitPct: number;
+  /** TP2 后硬性底线安全阀（0.02 = +2%） */
+  hardFloorPct: number;
+  /** TP2 后峰值回撤阈值（0.04 = 4%） */
+  trailingDrawdownPct: number;
+  /** 均线兜底周期（20） */
+  maPeriod: number;
+  /** 均线破位确认天数（2） */
+  maConfirmDays: number;
+  /** 均线例外单日跌幅（0.06 = 6%） */
+  maExceptionDropPct: number;
+  /** 建仓期时间止损天数（10） */
+  maxHoldDays: number;
+  /** 止损成交价滑点（0.005 = 0.5%） */
+  stopSlippagePct: number;
+}
+
+/** 分层止盈默认参数（与策略回测 DEFAULT_LAYERED_TP_PARAMS 一致） */
+export const DEFAULT_LAYERED_TP_PARAMS: LayeredTPParams = {
+  initialStopLossPct: -0.05,
+  firstProfitPct: 0.05,
+  firstSellPct: 0.25,
+  secondProfitPct: 0.12,
+  secondSellPct: 0.25,
+  breakevenStopPct: 0.00,
+  lockProfitPct: 0.04,
+  hardFloorPct: 0.02,
+  trailingDrawdownPct: 0.04,
+  maPeriod: 20,
+  maConfirmDays: 2,
+  maExceptionDropPct: 0.06,
+  maxHoldDays: 10,
+  stopSlippagePct: 0.005,
 };
 
 // ==================== 条件定义 ====================
@@ -178,6 +235,8 @@ export interface BacktestConfig {
    * 旧配置缺省/无效时引擎自动回退内置策略。
    */
   customSellStrategy?: BacktestCustomSellCondition;
+  /** 分层止盈参数（仅 sellStrategy==='layered_take_profit' 时有效，缺省用 DEFAULT_LAYERED_TP_PARAMS） */
+  layeredTPParams?: LayeredTPParams;
   /** 高点回落比例（仅trailing_stop），如 0.08 = 8% */
   trailingStopPct: number;
   /** ATR周期（仅atr_chandelier），默认14 */
@@ -223,6 +282,7 @@ export type BacktestEngineConfig = Pick<
   | 'capital'
   | 'sellStrategy'
   | 'customSellStrategy'
+  | 'layeredTPParams'
   | 'trailingStopPct'
   | 'atrPeriod'
   | 'atrMultiplier'
@@ -255,6 +315,8 @@ export interface BacktestFormValues {
   dateRange?: [Dayjs, Dayjs];
   /** 卖出策略（表单中使用字符串，提交时转为 SellStrategy） */
   sellStrategy?: string;
+  /** 分层止盈参数（仅选分层止盈时提交） */
+  layeredTPParams?: LayeredTPParams;
   /** 高点回落比例 */
   trailingStopPct?: number;
   /** ATR周期 */
@@ -292,6 +354,11 @@ export interface Trade {
   isForcedClose: boolean;
   entryReason: string;
   exitReason: string;
+  /**
+   * 分组标识：同一笔建仓（一次买入）发生时的 bar index。
+   * 用于分层止盈等「一次建仓多次分批卖出」时，把多次卖出聚合为一个完整交易统计。
+   */
+  groupId?: number;
 }
 
 export interface EquityPoint {

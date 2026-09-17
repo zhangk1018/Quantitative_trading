@@ -164,6 +164,7 @@ const BacktestView: React.FC = () => {
     capital: config.capital,
     sellStrategy: config.sellStrategy,
     customSellStrategy: config.customSellStrategy,
+    layeredTPParams: config.layeredTPParams,
     trailingStopPct: config.trailingStopPct,
     atrPeriod: config.atrPeriod,
     atrMultiplier: config.atrMultiplier,

@@ -1,10 +1,22 @@
 # 跨会话提醒
 
 ## 会话信息
-- 日期：2026-09-16
+- 日期：2026-09-18
 - 负责角色：方舟
-- 修改范围：① 回测分析股票名称反查优化——`BacktestConfigPanel`/`tradeExport` 的 `watchlistNames` 按市场（cn/hk/us）分桶并行请求，解决跨市场名称查不到；下拉/整组回测不再用 `|| code` 冒充名称（改 `?? ''`）；② 导入/导出升级——买/卖策略导出改为「选择 Modal + Checkbox 列表」（`ImportExportButtons` + 新增 `SellImportExportButtons`/`SellStrategyModal`），存储层 `exportCustomIndicators`/`exportCustomSellStrategies` 加 ids 过滤；③ **Safari 股票名称显示异常已定位为非代码问题**——后端 34 只 code 实测全返回中文名、前端逻辑/vite 源码正确，是 Safari 对 vite dev server 的 JS 强缓存，无痕窗口+清理网站数据后正常，未改代码
-- 待办：跟进控制台 IndexedDB `backtestStorage` object store 未初始化告警；财务指标库 `stock_fundamental_pit` 为空表（净利润/营收/ROE 无数据），如需展示需接入财务数据采集
+- 修改范围：回测分析页签「分层止盈」移植——`backtestTypes` 新增 `layered_take_profit` 策略类型/`LayeredTPParams`/`Trade.groupId`；`backtestEngine` 实现当日即时分批卖出状态机（TP1 卖25%→保本→TP2 再卖→底仓跟踪止盈/均线兜底）+ 部分卖出（shares 递减、state 保持）+ `aggregateTradesByGroupId` 指标聚合；`BacktestConfigPanel` 分组折叠参数表单+恢复默认；`BacktestView` 透传参数。测试 `backtestEngine.layered.test.ts` 11 用例全过，tsc 0 错误
+- 待办：浏览器端到端复测平安银行（000001，买"多因子蓄势突破"卖"分层止盈"）确认交易记录分批卖出
+
+## 今日通知记录（2026-09-18）
+
+[方舟→K 2026-09-18] 回测分析「分层止盈」已按 K 审阅 v2 完成移植（K 审阅四维意见：手续费=引擎无最低佣金按比例计费不翻倍；跌停成交取 max(stop,low) 为 Known Issue 保留原语义；前复权价格无需除权调整；groupId 用买入 bar index；聚合函数统计时合并不拆 Trade 明细）。引擎+UI+11 单测完成，待浏览器端到端终验。
+
+## 昨日会话信息（2026-09-17）
+
+- 日期：2026-09-17
+- 负责角色：方舟
+- 修改范围：① 预置卖出策略「调仓换股」「分层止盈」自动种入系统设置；② 我的策略导入导出（JSON 可选导出/确认制导入）；③ 回测 K 线叠加 MA20；④ 公式长度上限 8000→20000
+- 待办：跟进控制台 IndexedDB `backtestStorage` object store 未初始化告警；财务指标库 `stock_fundamental_pit` 为空表
+
 
 ## 今日通知记录（2026-09-15）
 

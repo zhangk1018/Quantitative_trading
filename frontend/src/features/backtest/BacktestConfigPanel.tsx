@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Card, Select, DatePicker, Input, InputNumber, Cascader, Spin, Space, Button,
-  Tag, Tooltip, Typography, Form,
+  Tag, Tooltip, Typography, Form, Collapse,
 } from 'antd';
 import { CloseOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -11,6 +11,7 @@ import type { BacktestConfig, BacktestCondition, BacktestFormValues, BacktestSto
 import {
   DEFAULT_BACKTEST_CONFIG,
   SELL_STRATEGY_LABELS,
+  DEFAULT_LAYERED_TP_PARAMS,
 } from './backtestTypes';
 import { useStockSearch } from './useStockSearch';
 import { getBacktestList, removeFromBacktestList } from './backtestListStorage';
@@ -429,6 +430,10 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
       buyCondition,
       sellStrategy,
       customSellStrategy,
+      layeredTPParams:
+        strategy === 'layered_take_profit'
+          ? (values.layeredTPParams ?? DEFAULT_LAYERED_TP_PARAMS)
+          : undefined,
       trailingStopPct: values.trailingStopPct ?? globalDefaults.trailingStopPct,
       atrPeriod: values.atrPeriod ?? globalDefaults.atrPeriod,
       atrMultiplier: values.atrMultiplier ?? globalDefaults.atrMultiplier,
@@ -705,6 +710,110 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
                   addonAfter="日"
                 />
               </Form.Item>
+            </>
+          )}
+
+          {/* 分层止盈参数（仅 layered_take_profit 时显示，分组折叠） */}
+          {!selectedSellStrategy.startsWith('custom_') && selectedSellStrategy === 'layered_take_profit' && (
+            <>
+              <div className="flex items-center justify-between mb-1">
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  分层止盈：TP1 卖 firstSellPct → 保本 → TP2 再卖 → 底仓跟踪止盈
+                </Text>
+                <Button
+                  size="small"
+                  onClick={() => form.setFieldsValue({ layeredTPParams: { ...DEFAULT_LAYERED_TP_PARAMS } })}
+                >
+                  恢复默认参数
+                </Button>
+              </div>
+              <Collapse
+                ghost
+                size="small"
+                items={[
+                  {
+                    key: 'c1',
+                    label: '建仓期 — 风控参数',
+                    children: (
+                      <div className="space-y-2">
+                        <Form.Item name={['layeredTPParams', 'initialStopLossPct']} label="初始止损比例" initialValue={DEFAULT_LAYERED_TP_PARAMS.initialStopLossPct}
+                          tooltip="买入后跌破该比例即止损离场">
+                          <InputNumber style={{ width: '100%' }} min={-0.3} max={-0.01} step={0.01} />
+                        </Form.Item>
+                        <Form.Item name={['layeredTPParams', 'maxHoldDays']} label="时间止损（交易日）" initialValue={DEFAULT_LAYERED_TP_PARAMS.maxHoldDays}
+                          tooltip="仅建仓期生效：买入后 N 个交易日未触发止盈则平仓">
+                          <InputNumber style={{ width: '100%' }} min={5} max={60} step={1} addonAfter="日" />
+                        </Form.Item>
+                      </div>
+                    ),
+                  },
+                  {
+                    key: 'c2',
+                    label: '第一锁定（TP1）— 收回本金',
+                    children: (
+                      <div className="space-y-2">
+                        <Form.Item name={['layeredTPParams', 'firstProfitPct']} label="触发涨幅" initialValue={DEFAULT_LAYERED_TP_PARAMS.firstProfitPct}>
+                          <InputNumber style={{ width: '100%' }} min={0.02} max={0.2} step={0.01} />
+                        </Form.Item>
+                        <Form.Item name={['layeredTPParams', 'firstSellPct']} label="卖出比例" initialValue={DEFAULT_LAYERED_TP_PARAMS.firstSellPct}>
+                          <InputNumber style={{ width: '100%' }} min={0.1} max={0.5} step={0.05} />
+                        </Form.Item>
+                        <Text type="secondary" style={{ fontSize: 11 }}>卖出后止损自动上移至成本价（保本）</Text>
+                      </div>
+                    ),
+                  },
+                  {
+                    key: 'c3',
+                    label: '第二锁定（TP2）— 锁定满意利润',
+                    children: (
+                      <div className="space-y-2">
+                        <Form.Item name={['layeredTPParams', 'secondProfitPct']} label="触发涨幅" initialValue={DEFAULT_LAYERED_TP_PARAMS.secondProfitPct}>
+                          <InputNumber style={{ width: '100%' }} min={0.05} max={0.4} step={0.01} />
+                        </Form.Item>
+                        <Form.Item name={['layeredTPParams', 'secondSellPct']} label="卖出比例" initialValue={DEFAULT_LAYERED_TP_PARAMS.secondSellPct}>
+                          <InputNumber style={{ width: '100%' }} min={0.1} max={0.5} step={0.05} />
+                        </Form.Item>
+                        <Text type="secondary" style={{ fontSize: 11 }}>卖出后止损线上移，保证这笔交易至少赚 lockProfitPct</Text>
+                      </div>
+                    ),
+                  },
+                  {
+                    key: 'c4',
+                    label: '无限续航 — 底仓跟踪止盈',
+                    children: (
+                      <div className="space-y-2">
+                        <Form.Item name={['layeredTPParams', 'lockProfitPct']} label="锁定利润" initialValue={DEFAULT_LAYERED_TP_PARAMS.lockProfitPct}>
+                          <InputNumber style={{ width: '100%' }} min={0.01} max={0.15} step={0.01} />
+                        </Form.Item>
+                        <Form.Item name={['layeredTPParams', 'trailingDrawdownPct']} label="峰值回撤" initialValue={DEFAULT_LAYERED_TP_PARAMS.trailingDrawdownPct}>
+                          <InputNumber style={{ width: '100%' }} min={0.02} max={0.15} step={0.01} />
+                        </Form.Item>
+                        <Form.Item name={['layeredTPParams', 'maPeriod']} label="均线周期" initialValue={DEFAULT_LAYERED_TP_PARAMS.maPeriod}>
+                          <Select
+                            options={[
+                              { value: 5, label: 'MA5' },
+                              { value: 10, label: 'MA10' },
+                              { value: 20, label: 'MA20' },
+                              { value: 60, label: 'MA60' },
+                            ]}
+                          />
+                        </Form.Item>
+                        <Form.Item name={['layeredTPParams', 'maConfirmDays']} label="均线确认天数" initialValue={DEFAULT_LAYERED_TP_PARAMS.maConfirmDays}>
+                          <InputNumber style={{ width: '100%' }} min={1} max={5} step={1} addonAfter="日" />
+                        </Form.Item>
+                        <Form.Item name={['layeredTPParams', 'maExceptionDropPct']} label="均线例外跌幅" initialValue={DEFAULT_LAYERED_TP_PARAMS.maExceptionDropPct}
+                          tooltip="单日跌幅超过此值不等确认直接卖">
+                          <InputNumber style={{ width: '100%' }} min={0.03} max={0.15} step={0.01} />
+                        </Form.Item>
+                        <Form.Item name={['layeredTPParams', 'stopSlippagePct']} label="止损滑点" initialValue={DEFAULT_LAYERED_TP_PARAMS.stopSlippagePct}>
+                          <InputNumber style={{ width: '100%' }} min={0} max={0.05} step={0.005} />
+                        </Form.Item>
+                        <Text type="secondary" style={{ fontSize: 11 }}>跟踪线 = max(锁定利润, 峰值回撤)，谁先触发谁出场</Text>
+                      </div>
+                    ),
+                  },
+                ]}
+              />
             </>
           )}
 
