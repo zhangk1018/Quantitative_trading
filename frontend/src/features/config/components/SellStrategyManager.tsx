@@ -20,6 +20,7 @@ import {
   validateSellStrategyFormula,
   type CustomSellStrategy,
 } from '../../backtest/utils/customSellStrategyStorage';
+import { seedDefaultSellStrategies } from '../../backtest/utils/customSellStrategySeed';
 import { INDICATOR_OPERATORS } from '../../stock-picker/types/customIndicator';
 import type { BacktestIndicatorOperator, BacktestIndicatorThreshold } from '../../backtest/backtestTypes';
 
@@ -51,6 +52,8 @@ const SellStrategyManager: React.FC = () => {
   const reload = useCallback(() => setStrategies(listCustomSellStrategies()), []);
 
   useEffect(() => {
+    // 首次挂载时注入预置卖出策略（幂等：名称已存在——含软删除——时跳过）
+    seedDefaultSellStrategies();
     reload();
   }, [reload]);
 
