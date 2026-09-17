@@ -105,3 +105,4 @@ yfinance-main/
 .DS_Store
 Thumbs.db
 default.profraw
+*.tsbuildinfo
