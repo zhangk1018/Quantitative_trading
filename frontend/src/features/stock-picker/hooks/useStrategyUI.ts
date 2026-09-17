@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { App } from 'antd';
 import { useScreener } from '../context/ScreenerContext';
-import { useSavedStrategies } from './useSavedStrategies';
+import { useSavedStrategies, type SavedStrategy } from './useSavedStrategies';
 
 /**
  * 策略 UI 状态管理 Hook
@@ -14,7 +14,7 @@ import { useSavedStrategies } from './useSavedStrategies';
 export function useStrategyUI() {
   const { message } = App.useApp();
   const screenerState = useScreener();
-  const { strategies, saveStrategy, updateStrategyName, deleteStrategy } = useSavedStrategies();
+  const { strategies, saveStrategy, updateStrategyName, deleteStrategy, importStrategies } = useSavedStrategies();
 
   const [saveModalVisible, setSaveModalVisible] = useState(false);
   const [strategyDrawerVisible, setStrategyDrawerVisible] = useState(false);
@@ -51,10 +51,20 @@ export function useStrategyUI() {
     [deleteStrategy, message],
   );
 
+  const handleImportStrategy = useCallback(
+    (incoming: SavedStrategy[]) => {
+      const result = importStrategies(incoming);
+      if (!result.ok) {
+        message.error(result.error || '导入失败');
+      }
+    },
+    [importStrategies, message],
+  );
+
   return {
     saveModalVisible, setSaveModalVisible,
     strategyDrawerVisible, setStrategyDrawerVisible,
     strategies,
-    handleSaveStrategy, handleRenameStrategy, handleDeleteStrategy,
+    handleSaveStrategy, handleRenameStrategy, handleDeleteStrategy, handleImportStrategy,
   } as const;
 }

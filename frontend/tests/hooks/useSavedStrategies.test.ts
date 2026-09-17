@@ -4,6 +4,11 @@ import {
   useSavedStrategies,
   sanitizeName,
   serializeState,
+  buildStrategyExportFile,
+  parseStrategyImportFile,
+  validateStrategyImportData,
+  computeStrategyImportPreview,
+  mergeImportedStrategies,
   LocalStorageStrategyStorage,
   type IStrategyStorage,
   type SavedStrategy,
@@ -273,5 +278,155 @@ describe('useSavedStrategies', () => {
       result.current.saveStrategy('策略C', mockState);
     });
     expect(result.current.strategies.map(s => s.name)).toEqual(['策略A', '策略B', '策略C']);
+  });
+});
+
+// ============ buildStrategyExportFile 导出文件构造 ============
+describe('buildStrategyExportFile', () => {
+  const make = (id: string, name: string): SavedStrategy => ({
+    id,
+    name,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    version: 1,
+    state: {
+      market: { selectedMarket: 'cn', selectedBoards: ['all'], stockRange: 'all' },
+      marketIndicators: { selected: [], ranges: {} },
+      financialIndicators: { selected: [], ranges: {} },
+      technical: { selected: {}, openModalId: null },
+      patterns: { selected: {}, panelCollapsed: true },
+      condition: { filterGroup: null, nextOp: 'AND' },
+      custom: { indicators: [], activeTab: 'system' },
+      factor: { weights: {} },
+    } as unknown as SavedStrategy['state'],
+  });
+
+  it('不传 ids 时导出全部策略', () => {
+    const strategies = [make('s1', '策略A'), make('s2', '策略B')];
+    const file = buildStrategyExportFile(strategies);
+    expect(file.version).toBe(1);
+    expect(file.exportedAt).toBeTruthy();
+    expect(file.strategies).toHaveLength(2);
+  });
+
+  it('传入 ids 只导出指定策略（保持原顺序）', () => {
+    const strategies = [make('s1', '策略A'), make('s2', '策略B'), make('s3', '策略C')];
+    const file = buildStrategyExportFile(strategies, ['s2', 's1']);
+    expect(file.strategies.map((s) => s.name)).toEqual(['策略A', '策略B']);
+  });
+
+  it('ids 为空数组等价于导出全部', () => {
+    const strategies = [make('s1', '策略A')];
+    expect(buildStrategyExportFile(strategies, []).strategies).toHaveLength(1);
+  });
+
+  it('策略内容完整保留（含 state 快照）', () => {
+    const strategies = [make('s1', '策略A')];
+    const file = buildStrategyExportFile(strategies);
+    expect(file.strategies[0]).toEqual(strategies[0]);
+    expect(file.strategies[0].state).toBeDefined();
+  });
+});
+
+// ============ 导入纯函数 ============
+describe('导入纯函数', () => {
+  const state = {
+    market: { selectedMarket: 'cn', selectedBoards: ['all'], stockRange: 'all' },
+    marketIndicators: { selected: [], ranges: {} },
+    financialIndicators: { selected: [], ranges: {} },
+    technical: { selected: {}, openModalId: null },
+    patterns: { selected: {}, panelCollapsed: true },
+    condition: { filterGroup: null, nextOp: 'AND' },
+    custom: { indicators: [], activeTab: 'system' },
+    factor: { weights: {} },
+  };
+
+  const makeStrategy = (id: string, name: string): SavedStrategy => ({
+    id,
+    name,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    version: 1,
+    state: state as SavedStrategy['state'],
+  });
+
+  describe('parseStrategyImportFile', () => {
+    it('合法 JSON 解析成功', () => {
+      const file = parseStrategyImportFile(
+        JSON.stringify({ version: 1, exportedAt: '2026-01-02T00:00:00Z', strategies: [makeStrategy('s1', '策略A')] }),
+      );
+      expect(file.version).toBe(1);
+      expect(file.strategies).toHaveLength(1);
+    });
+
+    it('非法 JSON 抛错', () => {
+      expect(() => parseStrategyImportFile('not json')).toThrow(/JSON 解析失败/);
+    });
+
+    it('版本不匹配抛错', () => {
+      expect(() =>
+        parseStrategyImportFile(JSON.stringify({ version: 99, strategies: [] })),
+      ).toThrow(/版本/);
+    });
+
+    it('缺少 strategies 数组抛错', () => {
+      expect(() =>
+        parseStrategyImportFile(JSON.stringify({ version: 1 })),
+      ).toThrow(/strategies/);
+    });
+  });
+
+  describe('validateStrategyImportData', () => {
+    it('字段完整时通过', () => {
+      const v = validateStrategyImportData(makeStrategy('s1', '策略A'));
+      expect(v.valid).toBe(true);
+      expect(v.data?.name).toBe('策略A');
+    });
+
+    it('缺字段时不通过', () => {
+      const v = validateStrategyImportData({ id: 's1', name: '策略A' });
+      expect(v.valid).toBe(false);
+      expect(v.errors.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('computeStrategyImportPreview', () => {
+    it('全部可新增', () => {
+      const existing = [makeStrategy('s1', '已有')];
+      const file = { version: 1, exportedAt: '', strategies: [makeStrategy('s2', '新增A'), makeStrategy('s3', '新增B')] };
+      const r = computeStrategyImportPreview(file, existing);
+      expect(r.added).toBe(2);
+      expect(r.skipped).toBe(0);
+      expect(r.errors).toHaveLength(0);
+    });
+
+    it('重名策略计入跳过', () => {
+      const existing = [makeStrategy('s1', '同名')];
+      const file = { version: 1, exportedAt: '', strategies: [makeStrategy('s9', '同名')] };
+      const r = computeStrategyImportPreview(file, existing);
+      expect(r.added).toBe(0);
+      expect(r.skipped).toBe(1);
+      expect(r.errors[0].type).toBe('name_duplicate');
+    });
+
+    it('字段无效计入错误', () => {
+      const existing: SavedStrategy[] = [];
+      const file = { version: 1, exportedAt: '', strategies: [{ id: 'x' } as SavedStrategy] };
+      const r = computeStrategyImportPreview(file, existing);
+      expect(r.added).toBe(0);
+      expect(r.errors[0].type).toBe('field_invalid');
+    });
+  });
+
+  describe('mergeImportedStrategies', () => {
+    it('新增策略重新生成 id，重名跳过', () => {
+      const existing = [makeStrategy('s1', '同名')];
+      const file = { version: 1, exportedAt: '', strategies: [makeStrategy('s9', '同名'), makeStrategy('s10', '新策略')] };
+      const { added, skipped } = mergeImportedStrategies(file, existing);
+      expect(added).toHaveLength(1);
+      expect(added[0].name).toBe('新策略');
+      expect(added[0].id).not.toBe('s10'); // id 已重新生成
+      expect(skipped).toBe(1);
+    });
   });
 });

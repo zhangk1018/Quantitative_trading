@@ -236,6 +236,7 @@ const StockPickerContent: React.FC = () => {
         }}
         onRename={actions.handleRenameStrategy}
         onDelete={actions.handleDeleteStrategy}
+        onImport={actions.handleImportStrategy}
       />
     </div>
   );

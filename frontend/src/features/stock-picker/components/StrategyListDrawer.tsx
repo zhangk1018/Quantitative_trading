@@ -1,9 +1,32 @@
-import { useState } from 'react';
-import { Drawer, List, Button, Popconfirm, Typography, Empty, message } from 'antd';
-import { DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
-import type { SavedStrategy } from '../hooks/useSavedStrategies';
+import { useRef, useState } from 'react';
+import { Drawer, List, Button, Popconfirm, Typography, Empty, message, Modal, Checkbox, Space, Table, Tag, Alert } from 'antd';
+import {
+  DeleteOutlined,
+  EditOutlined,
+  ReloadOutlined,
+  DownloadOutlined,
+  UploadOutlined,
+  CheckCircleOutlined,
+  WarningOutlined,
+} from '@ant-design/icons';
+import {
+  buildStrategyExportFile,
+  parseStrategyImportFile,
+  computeStrategyImportPreview,
+  mergeImportedStrategies,
+  type SavedStrategy,
+  type StrategyImportErrorDetail,
+  type StrategyImportErrorType,
+  type StrategyExportFile,
+} from '../hooks/useSavedStrategies';
 
 const { Text } = Typography;
+
+const IMPORT_ERROR_TYPE_META: Record<StrategyImportErrorType, { label: string; color: string }> = {
+  name_duplicate: { label: '名称重复已跳过', color: 'orange' },
+  field_invalid: { label: '字段缺失/类型错误', color: 'volcano' },
+  parse_error: { label: '解析失败', color: 'magenta' },
+};
 
 interface StrategyListDrawerProps {
   visible: boolean;
@@ -12,6 +35,8 @@ interface StrategyListDrawerProps {
   onLoad: (strategy: SavedStrategy) => void;
   onRename: (id: string, newName: string) => void;
   onDelete: (id: string) => void;
+  /** 批量导入策略（UI 层已去重/重命名，hook 负责持久化） */
+  onImport: (strategies: SavedStrategy[]) => void;
 }
 
 /**
@@ -77,9 +102,25 @@ export function StrategyListDrawer({
   onLoad,
   onRename,
   onDelete,
+  onImport,
 }: StrategyListDrawerProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renamingText, setRenamingText] = useState('');
+  // 导出选择 Modal 状态
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportSelected, setExportSelected] = useState<string[]>([]);
+  const exportAllChecked = exportSelected.length === strategies.length && strategies.length > 0;
+  const exportIndeterminate = exportSelected.length > 0 && !exportAllChecked;
+  // 导入 Preview 状态
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importPreview, setImportPreview] = useState<{
+    visible: boolean;
+    file: StrategyExportFile | null;
+    errors: StrategyImportErrorDetail[];
+    previewAdded: number;
+    previewSkipped: number;
+  }>({ visible: false, file: null, errors: [], previewAdded: 0, previewSkipped: 0 });
+  const [importing, setImporting] = useState(false);
 
   if (!visible) {
     return null;
@@ -104,14 +145,165 @@ export function StrategyListDrawer({
     message.success('已删除策略');
   };
 
+  // 打开导出选择 Modal：默认全选
+  const handleOpenExportModal = () => {
+    setExportSelected(strategies.map((s) => s.id));
+    setExportModalOpen(true);
+  };
+
+  const handleToggleSelectAll = (e: { target: { checked: boolean } }) => {
+    setExportSelected(e.target.checked ? strategies.map((s) => s.id) : []);
+  };
+
+  const handleCancelExport = () => {
+    setExportModalOpen(false);
+    setExportSelected([]);
+  };
+
+  // 真正执行导出下载
+  const doExport = (ids: string[]) => {
+    const file = buildStrategyExportFile(strategies, ids);
+    const json = JSON.stringify(file, null, 2);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const today = new Date().toISOString().slice(0, 10);
+    const filename = `screener-strategies-${today}.json`;
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    message.success(`已导出 ${file.strategies.length} 条策略到 ${filename}`);
+  };
+
+  const handleConfirmExport = () => {
+    if (exportSelected.length === 0) {
+      message.warning('请至少选择 1 条策略');
+      return;
+    }
+    doExport(exportSelected);
+    handleCancelExport();
+  };
+
+  const handleCloseDrawer = () => {
+    setExportModalOpen(false);
+    setExportSelected([]);
+    setImportPreview({ visible: false, file: null, errors: [], previewAdded: 0, previewSkipped: 0 });
+    onClose();
+  };
+
+  // ========== 导入 ==========
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (e.target) e.target.value = '';
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      message.error(`文件过大（${(file.size / 1024 / 1024).toFixed(2)}MB），最大支持 5MB`);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result;
+      if (typeof text !== 'string') {
+        message.error('文件读取失败');
+        return;
+      }
+      processImportText(text);
+    };
+    reader.onerror = () => message.error('文件读取失败');
+    reader.readAsText(file);
+  };
+
+  const processImportText = (text: string) => {
+    let parsed: StrategyExportFile;
+    try {
+      parsed = parseStrategyImportFile(text);
+    } catch (e) {
+      message.error((e as Error).message);
+      return;
+    }
+
+    const previewResult = computeStrategyImportPreview(parsed, strategies);
+    setImportPreview({
+      visible: true,
+      file: parsed,
+      errors: previewResult.errors,
+      previewAdded: previewResult.added,
+      previewSkipped: previewResult.skipped,
+    });
+  };
+
+  const handleConfirmImport = () => {
+    if (!importPreview.file) return;
+    setImporting(true);
+    try {
+      const { added, skipped } = mergeImportedStrategies(importPreview.file, strategies);
+      if (added.length > 0) {
+        onImport(added);
+      }
+      message.success(
+        `导入完成：新增 ${added.length} 条${skipped > 0 ? `，跳过 ${skipped} 条` : ''}`,
+      );
+      setImportPreview({ visible: false, file: null, errors: [], previewAdded: 0, previewSkipped: 0 });
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '导入失败');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleCancelImport = () => {
+    setImportPreview({ visible: false, file: null, errors: [], previewAdded: 0, previewSkipped: 0 });
+  };
+
   return (
-    <Drawer
-      title="我的策略"
-      open={visible}
-      onClose={onClose}
-      width={420}
-      data-testid="strategy-list-drawer"
-    >
+    <>
+      <Drawer
+        title="我的策略"
+        open={visible}
+        onClose={handleCloseDrawer}
+        width={420}
+        extra={
+          <Space size={4}>
+            <Button
+              size="small"
+              icon={<UploadOutlined />}
+              onClick={handleImportClick}
+              data-testid="strategy-import-btn"
+            >
+              导入
+            </Button>
+            <Button
+              size="small"
+              icon={<DownloadOutlined />}
+              onClick={handleOpenExportModal}
+              disabled={strategies.length === 0}
+              data-testid="strategy-export-btn"
+            >
+              导出{strategies.length > 0 ? `(${strategies.length})` : ''}
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={handleFileChange}
+              style={{ display: 'none' }}
+              data-testid="strategy-import-file-input"
+            />
+          </Space>
+        }
+        data-testid="strategy-list-drawer"
+      >
       {strategies.length === 0 ? (
         <Empty description="暂无保存的策略" />
       ) : (
@@ -197,6 +389,153 @@ export function StrategyListDrawer({
           )}
         />
       )}
-    </Drawer>
+      </Drawer>
+
+      {/* 导出选择 Modal：勾选要导出的策略 */}
+      <Modal
+        open={exportModalOpen}
+        title="选择要导出的策略"
+        onCancel={handleCancelExport}
+        destroyOnHidden
+        maskClosable={false}
+        width={480}
+        footer={[
+          <Button key="cancel" onClick={handleCancelExport}>取消</Button>,
+          <Button
+            key="confirm"
+            type="primary"
+            onClick={handleConfirmExport}
+            disabled={exportSelected.length === 0}
+            data-testid="strategy-export-confirm"
+          >
+            导出{exportSelected.length > 0 ? `（${exportSelected.length} 条）` : ''}
+          </Button>,
+        ]}
+        data-testid="strategy-export-modal"
+      >
+        {/* 全选行 */}
+        <div className="flex items-center justify-between py-2 border-b border-border-color mb-2">
+          <Checkbox
+            checked={exportAllChecked}
+            indeterminate={exportIndeterminate}
+            onChange={handleToggleSelectAll}
+          >
+            {exportAllChecked ? '取消全选' : '全选'}
+          </Checkbox>
+          <span className="text-text-secondary text-xs">
+            已选 {exportSelected.length} / {strategies.length}
+          </span>
+        </div>
+        {/* 可滚动的 Checkbox 列表 */}
+        <div className="max-h-[320px] overflow-y-auto pr-1">
+          <Checkbox.Group
+            value={exportSelected}
+            onChange={(vals) => setExportSelected(vals as string[])}
+            className="w-full"
+          >
+            <Space direction="vertical" size="small" className="w-full">
+              {strategies.map((s) => (
+                <Checkbox
+                  key={s.id}
+                  value={s.id}
+                  className="w-full text-text-primary"
+                >
+                  {s.name}
+                </Checkbox>
+              ))}
+            </Space>
+          </Checkbox.Group>
+        </div>
+      </Modal>
+
+      {/* 导入 Preview 弹窗：确认制导入 */}
+      <Modal
+        open={importPreview.visible}
+        title="导入预览"
+        onCancel={handleCancelImport}
+        destroyOnHidden
+        maskClosable={false}
+        width={720}
+        footer={[
+          <Button key="cancel" onClick={handleCancelImport}>取消</Button>,
+          <Button
+            key="confirm"
+            type="primary"
+            loading={importing}
+            onClick={handleConfirmImport}
+            disabled={!importPreview.file || importPreview.previewAdded === 0}
+          >
+            确认导入{importPreview.previewAdded > 0 ? `（${importPreview.previewAdded} 条）` : ''}
+          </Button>,
+        ]}
+        data-testid="strategy-import-preview-modal"
+      >
+        {importPreview.file && (
+          <Space direction="vertical" size="middle" className="w-full">
+            <div className="text-text-secondary text-sm">
+              <div>导出时间：<span className="text-text-primary">{importPreview.file.exportedAt}</span></div>
+              <div>
+                格式版本：<span className="text-text-primary">v{importPreview.file.version}</span>
+              </div>
+              <div>包含策略：<span className="text-text-primary">{importPreview.file.strategies.length} 条</span></div>
+            </div>
+
+            <Space size="large" className="w-full">
+              <div className="flex items-center gap-2">
+                <CheckCircleOutlined className="text-color-up" />
+                <span>将新增：<strong>{importPreview.previewAdded}</strong> 条</span>
+              </div>
+              {importPreview.previewSkipped > 0 && (
+                <div className="flex items-center gap-2">
+                  <WarningOutlined className="text-color-warn" />
+                  <span>将跳过：<strong>{importPreview.previewSkipped}</strong> 条</span>
+                </div>
+              )}
+              {importPreview.errors.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <WarningOutlined className="text-color-down" />
+                  <span>错误：<strong>{importPreview.errors.length}</strong> 条</span>
+                </div>
+              )}
+            </Space>
+
+            {importPreview.errors.length > 0 ? (
+              <div>
+                <Alert type="warning" showIcon message="以下策略将无法导入（按错误类型分组）" className="mb-2" />
+                <Table
+                  size="small"
+                  dataSource={importPreview.errors}
+                  columns={[
+                    { title: '索引', dataIndex: 'index', key: 'index', width: 80 },
+                    {
+                      title: '名称',
+                      dataIndex: 'name',
+                      key: 'name',
+                      width: 160,
+                      render: (v: string | undefined) => v ?? <span className="text-text-secondary">—</span>,
+                    },
+                    {
+                      title: '错误类型',
+                      dataIndex: 'type',
+                      key: 'type',
+                      width: 160,
+                      render: (type: StrategyImportErrorType) => (
+                        <Tag color={IMPORT_ERROR_TYPE_META[type].color}>{IMPORT_ERROR_TYPE_META[type].label}</Tag>
+                      ),
+                    },
+                    { title: '说明', dataIndex: 'message', key: 'message' },
+                  ]}
+                  rowKey={(r: StrategyImportErrorDetail) => `${r.type}-${r.index}`}
+                  pagination={false}
+                  scroll={{ y: 240 }}
+                />
+              </div>
+            ) : (
+              <Alert type="success" showIcon message="全部策略可正常导入" />
+            )}
+          </Space>
+        )}
+      </Modal>
+    </>
   );
 }
