@@ -7,6 +7,12 @@
 - 待办：浏览器端到端复测平安银行（000001，买"多因子蓄势突破"卖"分层止盈"）确认交易记录分批卖出
 - 待办（39.0 已 CLOSED）：选股 503 后端修复已完成，前端无需再长期依赖 240s 等待（可后续评估是否回落默认值）
 
+## 会话信息
+- 日期：2026-09-18
+- 负责角色：量量
+- 修改范围：协作单 39.0 快照服务 503 治本修复——`snapshot_service.py` ①双缓存热切换（刷新期保 `_ready=True` 旧缓存持续服务）②`_periodic_refresh_loop` 定时刷新线程（600s）替代每请求触发，四请求路径移除 `_refresh_if_needed` ③codes 哈希索引 O(K)；新增 `tests/test_snapshot_refresh.py` 10 单测全过，`test_snapshot_history.py` 14 例回归过；服务已重启生效，方舟复核 CLOSED
+- 待办：观察 39.0 生产稳定性；跟进 `stock_fundamental_pit` 空表（评估 Tushare income/fina_indicator）
+
 ## 今日通知记录（2026-09-18）
 
 [量量→方舟 2026-09-18 21:00] 协作单 [39.0-SNAPSHOT-503-20260918] 状态变更: ASSIGNED→VERIFY（3 点治本落地：①刷新期保持 `_ready=True` 旧缓存持续服务不再 503；②`_periodic_refresh_loop` 定时线程 600s 替代每请求触发，四请求路径移除 `_refresh_if_needed`；③get_all/incremental 按 codes 直查 O(K)。单测 10+14 全过，服务已重启生效，`/api/snapshot/ready` 200。请方舟前端侧验收）

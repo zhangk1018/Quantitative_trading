@@ -155,6 +155,8 @@ class SnapshotService:
 
         # 启动后台加载
         threading.Thread(target=self._load_all_async, daemon=True).start()
+        # 启动独立定时刷新线程：请求路径不再触发刷新判断（协作单 39.0）
+        threading.Thread(target=self._periodic_refresh_loop, daemon=True).start()
         logger.info("SnapshotService 初始化完成，数据后台加载中...")
 
     # ================================================================
@@ -506,12 +508,12 @@ class SnapshotService:
             if self._reload_mutex.acquire(blocking=False):
                 try:
                     logger.info("🔄 检测到数据变更，触发后台刷新...")
-                    # 更新元数据（原子）
+                    # 更新元数据（原子）；刷新期间保持 _ready=True，旧缓存继续对外服务
+                    # （双缓存热切换：新数据就绪后由 _reload_async 原子替换）
                     with self._state_lock:
                         self._latest_trade_date = latest
                         self._cached_row_hash = row_hash
                         self._loading = True
-                        self._ready = False
                         self._load_error = None
                     # 启动异步刷新线程
                     threading.Thread(target=self._reload_async, daemon=True).start()
@@ -519,6 +521,20 @@ class SnapshotService:
                     self._reload_mutex.release()
             else:
                 logger.debug("刷新锁已被占用，跳过")
+
+    def _periodic_refresh_loop(self) -> None:
+        """后台独立线程：按固定周期检查数据变更并刷新（协作单 39.0）
+
+        与请求量解耦：请求路径只读缓存、不触发刷新判断；
+        数据变更检测与全量重建仅在此线程内发生，高峰期不再反复触发。
+        """
+        logger.info("🔁 后台定时刷新线程启动（周期 %d 秒）", CACHE_CHECK_INTERVAL)
+        while True:
+            time.sleep(CACHE_CHECK_INTERVAL)
+            try:
+                self._refresh_if_needed()
+            except Exception as e:
+                logger.warning("定时刷新检查异常: %s", e)
 
     def _reload_async(self) -> None:
         """异步刷新：使用双缓存加载新数据，完成后原子替换"""
@@ -694,7 +710,6 @@ class SnapshotService:
             if not industry.isalnum() and not all(c in "_- " for c in industry):
                 raise ValueError("industry 包含非法字符")
 
-        self._refresh_if_needed()
         self._ensure_ready()
         # 延迟加载 OHLCV（首次 API 请求时按需加载，避免启动内存峰值）
         self._ensure_ohlcv_loaded()
@@ -707,8 +722,13 @@ class SnapshotService:
         code_set = set(codes) if codes else None
         stocks = []
         date_set = set()
-        for code, row in snapshot_cache.items():
-            if code_set and code not in code_set:
+        # 按 codes 哈希索引直接读取（O(K)），未传 codes 时全量遍历（O(N)）（协作单 39.0）
+        iterable = (
+            ((c, snapshot_cache.get(c)) for c in code_set)
+            if code_set is not None else snapshot_cache.items()
+        )
+        for code, row in iterable:
+            if row is None:
                 continue
             # 按市场过滤（A股6位→cn / 港股带.HK→hk / 美股字母→us）
             if market and infer_market(code) != market:
@@ -746,7 +766,6 @@ class SnapshotService:
             if not industry.isalnum() and not all(c in "_- " for c in industry):
                 raise ValueError("industry 包含非法字符")
 
-        self._refresh_if_needed()
         self._ensure_ready()
         # 延迟加载 OHLCV（首次 API 请求时按需加载，避免启动内存峰值）
         self._ensure_ohlcv_loaded()
@@ -759,8 +778,13 @@ class SnapshotService:
         code_set = set(codes) if codes else None
         stocks = []
         days_set = set()
-        for code, row in snapshot_cache.items():
-            if code_set and code not in code_set:
+        # 按 codes 哈希索引直接读取（O(K)），未传 codes 时全量遍历（O(N)）（协作单 39.0）
+        iterable = (
+            ((c, snapshot_cache.get(c)) for c in code_set)
+            if code_set is not None else snapshot_cache.items()
+        )
+        for code, row in iterable:
+            if row is None:
                 continue
             # 按市场过滤（A股6位→cn / 港股带.HK→hk / 美股字母→us）
             if market and infer_market(code) != market:
@@ -791,7 +815,6 @@ class SnapshotService:
 
     @property
     def latest_trade_date(self) -> Optional[str]:
-        self._refresh_if_needed()
         self._ensure_ready()
         with self._state_lock:
             return self._latest_trade_date
@@ -866,7 +889,6 @@ class SnapshotService:
             field_list = list(HISTORY_SNAPSHOT_FIELDS)
 
         # --- 日期缺省与校验 ---
-        self._refresh_if_needed()
         self._ensure_ready()
         with self._state_lock:
             latest = self._latest_trade_date
