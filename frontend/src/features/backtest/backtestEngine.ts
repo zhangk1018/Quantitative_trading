@@ -1107,10 +1107,10 @@ export async function runBacktest(
 
       // ==================== 分层止盈：当日即时分批卖出（单仓，逐笔成交） ====================
       if (sellStrategy === 'layered_take_profit' && state === 'holding' && layeredTP) {
+
         const lp = layeredTPParams ?? DEFAULT_LAYERED_TP_PARAMS;
         const t = layeredTP;
         const holdDays = i - currentEntryIdx;
-        const pnlPct = (bar.close - t.entryPrice) / t.entryPrice;
 
         // 更新持仓峰值（用当日最高价）
         if (bar.high > t.peakPrice) t.peakPrice = bar.high;
@@ -1119,28 +1119,37 @@ export async function runBacktest(
 
         // 收集当日卖出动作（支持同日 TP1+TP2 两笔部分卖出）
         const todayActions: { shares: number; price: number; reason: string }[] = [];
+        // 当日已累计卖出股数（同 bar 内多次部分卖出累加，用于裁剪不超可卖）
+        let todaySold = 0;
+        // 统一入账：将卖出动作推入 todayActions，并用当日剩余可卖裁剪，推进今日累计卖出
+        // 返回是否真的推入（requested>0 且剩余可卖>0）
+        const pushSell = (requested: number, price: number, exitReason: string): boolean => {
+          const cap = shares - todaySold;
+          const n = Math.floor(Math.min(Math.max(requested, 0), cap) / LOT_SIZE) * LOT_SIZE;
+          if (n <= 0) return false;
+          todayActions.push({ shares: n, price, reason: exitReason });
+          todaySold += n;
+          return true;
+        };
 
-        // ---- 建仓期（initial）：初始止损 / 买入失效止损 ----
+        // ---- 建仓期（initial）：初始止损 / 时间止损 ----
+        // 注意：已废除「买入失效止损(不涨即走)」。突破策略常见回踩洗盘，早期微亏是健康信号，
+        // 不应在第 3-5 天就把仓位震出局；纯以初始止损（跌破 entry×(1+initialStopLossPct)）逻辑证伪。
         if (t.phase === 'initial') {
           const stopPrice = t.entryPrice * (1 + lp.initialStopLossPct);
           // 1a 开盘跳空保护：开盘已破止损，以开盘价扣滑点成交
           if (bar.open <= stopPrice) {
-            todayActions.push({ shares, price: bar.open * (1 - lp.stopSlippagePct), reason: '初始止损(开盘跳空)' });
+            pushSell(shares, bar.open * (1 - lp.stopSlippagePct), '初始止损(开盘跳空)');
             t.phase = 'closed';
           }
           // 1b 盘中触及止损：以止损价扣滑点成交（最低不高于当日 low）
           else if (bar.low <= stopPrice) {
-            todayActions.push({ shares, price: Math.max(stopPrice * (1 - lp.stopSlippagePct), bar.low), reason: '初始止损' });
+            pushSell(shares, Math.max(stopPrice * (1 - lp.stopSlippagePct), bar.low), '初始止损');
             t.phase = 'closed';
           }
-          // 买入失效止损：3-5 天不涨即走（买点动能衰竭）
-          else if (holdDays >= 3 && holdDays <= 5 && pnlPct < 0) {
-            todayActions.push({ shares, price: bar.close, reason: '买入失效止损(不涨即走)' });
-            t.phase = 'closed';
-          }
-          // 时间止损：建仓期持有天数达上限且未触发止盈
+          // 时间止损：建仓期持有天数达上限且未触发止盈（仅作为防死扛兜底）
           else if (holdDays >= lp.maxHoldDays) {
-            todayActions.push({ shares, price: bar.close, reason: `时间止损(${lp.maxHoldDays}日)` });
+            pushSell(shares, bar.close, `时间止损(${lp.maxHoldDays}日)`);
             t.phase = 'closed';
           }
         }
@@ -1150,32 +1159,69 @@ export async function runBacktest(
           const tp1Price = t.entryPrice * (1 + lp.firstProfitPct);
           if (bar.high >= tp1Price) {
             const sellShares = Math.floor((t.totalBuyShares * lp.firstSellPct) / LOT_SIZE) * LOT_SIZE;
-            if (sellShares > 0 && sellShares <= shares) {
-              todayActions.push({ shares: sellShares, price: tp1Price, reason: '第一止盈TP1(卖25%)' });
+            if (pushSell(sellShares, tp1Price, '第一止盈TP1(卖25%)')) {
               t.phase = 'tp1_done';
-              t.committedSellShares += sellShares;
+              t.committedSellShares = todaySold;
             }
           }
         }
 
-        // ---- TP1 后保本止损 + 第二止盈（TP2）----
+        // ---- TP1 后：保本止损 + 第二止盈（TP2）+ 底仓主动离场保护 ----
+        // 修复痛点：TP1 卖 25% 后，若价格既不涨到 TP2 又不跌破保本价、长期横盘，原逻辑会让
+        // 剩余底仓无限期死扛到期末强制清仓。保护原则：TP2 优先分批卖出，仅在当日未触及 TP2
+        // 时启用均线兜底离场，防止底仓死扛，同时不抢跑、不破坏正常分批流程。
         if (t.phase === 'tp1_done') {
           const bePrice = t.entryPrice * (1 + lp.breakevenStopPct);
+          // 保本止损始终优先（防亏）：跌破成本即清剩余底仓
           if (bar.low <= bePrice) {
-            todayActions.push({ shares, price: Math.max(bePrice * (1 - lp.stopSlippagePct), bar.low), reason: 'TP1后保本止损' });
+            pushSell(shares, Math.max(bePrice * (1 - lp.stopSlippagePct), bar.low), 'TP1后保本止损');
             t.phase = 'closed';
-          } else {
-            // TP2：合计卖出 firstSellPct+secondSellPct，卖到目标比例
+          } else if (todaySold < shares) {
+            // 第二止盈（TP2）：优先推进分批。合计卖出 firstSellPct+secondSellPct，卖到目标比例
             const tp2Price = t.entryPrice * (1 + lp.secondProfitPct);
             if (bar.high >= tp2Price) {
               const targetTotal = Math.floor((t.totalBuyShares * (lp.firstSellPct + lp.secondSellPct)) / LOT_SIZE) * LOT_SIZE;
-              const alreadyCommitted = t.committedSellShares;
-              const remaining = shares - alreadyCommitted;
-              const rounded = Math.floor(Math.min(Math.max(targetTotal - alreadyCommitted, 0), remaining) / LOT_SIZE) * LOT_SIZE;
-              if (rounded > 0 && rounded <= remaining) {
-                todayActions.push({ shares: rounded, price: tp2Price, reason: '第二止盈TP2(卖25%)' });
+              // 全程已累计卖出 = 原始买入 - 当前剩余（跨 bar 也正确）
+              const soldSoFar = t.totalBuyShares - shares;
+              // TP2 本次应卖 = 目标累计量扣去已卖，再裁剪到当日可卖剩余
+              const rounded = Math.min(Math.max(targetTotal - soldSoFar, 0), shares - todaySold);
+              if (pushSell(rounded, tp2Price, '第二止盈TP2(卖30%)')) {
                 t.phase = 'tp2_done';
-                t.committedSellShares += rounded;
+                t.committedSellShares = soldSoFar + rounded;
+              }
+            } else {
+              // 未触及 TP2：底仓主动离场保护。
+              // 主导：从持仓期最高点回撤 baseTrailingPct（默认 8%）追踪止盈——给足爆发空间，
+              //      又比 MA 等迟钝指标更能及时锁利，契合右侧突破策略。
+              // 底线：跌回成本即走（用 breakeven 而非 tp2 后的 lockProfit，避免 TP1 当日振幅误清）。
+              // 辅助：均线兜底（跌破 maPeriod 均线）作兜底。
+              const trailingBase = Math.max(
+                t.peakPrice * (1 - lp.baseTrailingPct),
+                t.entryPrice * (1 + lp.breakevenStopPct),
+              );
+              const ma =
+                lp.maPeriod === 5 ? cache.ma5[i] :
+                lp.maPeriod === 10 ? cache.ma10[i] :
+                lp.maPeriod === 60 ? cache.ma60[i] :
+                cache.ma20[i];
+              const canUseMa = ma !== null && Number.isFinite(ma);
+              const dayDrop = canUseMa ? (bar.close - prevClose) / prevClose : 0;
+              const isBelowMa = canUseMa ? bar.close < ma : false;
+              const maBreakNow = canUseMa &&
+                (dayDrop <= -lp.maExceptionDropPct
+                  ? true
+                  : (isBelowMa ? t.maBreakDays + 1 : 0) >= lp.maConfirmDays);
+
+              if (bar.low <= trailingBase) {
+                pushSell(shares, Math.max(trailingBase * (1 - lp.stopSlippagePct), bar.low), `TP1后回撤追踪(峰值${t.peakPrice.toFixed(2)})`);
+                t.phase = 'closed';
+              } else if (maBreakNow) {
+                pushSell(shares, bar.close, dayDrop <= -lp.maExceptionDropPct ? 'TP1后单日暴跌清仓' : `TP1后跌破MA${lp.maPeriod}清仓`);
+                t.phase = 'closed';
+              } else if (canUseMa) {
+                // 未触发离场：更新均线连续跌破计数（供下一日判定）
+                if (isBelowMa || dayDrop <= -lp.maExceptionDropPct) t.maBreakDays += 1;
+                else t.maBreakDays = 0;
               }
             }
           }
@@ -1187,26 +1233,30 @@ export async function runBacktest(
           const trailingPrice = t.peakPrice * (1 - lp.trailingDrawdownPct);
           const dynamicStop = Math.max(lockPrice, trailingPrice);
           if (bar.low <= dynamicStop) {
-            todayActions.push({ shares, price: Math.max(dynamicStop * (1 - lp.stopSlippagePct), bar.low), reason: `跟踪止盈(峰值${t.peakPrice.toFixed(2)})` });
+            pushSell(shares, Math.max(dynamicStop * (1 - lp.stopSlippagePct), bar.low), `跟踪止盈(峰值${t.peakPrice.toFixed(2)})`);
             t.phase = 'closed';
           } else {
             const hardFloor = t.entryPrice * (1 + lp.hardFloorPct);
             if (bar.low <= hardFloor) {
-              todayActions.push({ shares, price: Math.max(hardFloor * (1 - lp.stopSlippagePct), bar.low), reason: '硬底线止损' });
+              pushSell(shares, Math.max(hardFloor * (1 - lp.stopSlippagePct), bar.low), '硬底线止损');
               t.phase = 'closed';
             } else {
               // 均线兜底（连续跌破确认 / 单日暴跌例外）
-              const ma = cache.ma20[i];
+              const ma =
+                lp.maPeriod === 5 ? cache.ma5[i] :
+                lp.maPeriod === 10 ? cache.ma10[i] :
+                lp.maPeriod === 60 ? cache.ma60[i] :
+                cache.ma20[i];
               if (ma !== null && Number.isFinite(ma)) {
                 const dayDrop = (bar.close - prevClose) / prevClose;
                 if (dayDrop <= -lp.maExceptionDropPct) {
-                  todayActions.push({ shares, price: bar.close, reason: '单日暴跌例外清仓' });
+                  pushSell(shares, bar.close, '单日暴跌例外清仓');
                   t.phase = 'closed';
                 } else {
                   if (bar.close < ma) t.maBreakDays += 1;
                   else t.maBreakDays = 0;
                   if (t.maBreakDays >= lp.maConfirmDays) {
-                    todayActions.push({ shares, price: bar.close, reason: `跌破MA${lp.maPeriod}清仓` });
+                    pushSell(shares, bar.close, `跌破MA${lp.maPeriod}清仓`);
                     t.phase = 'closed';
                   }
                 }

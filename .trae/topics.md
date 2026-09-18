@@ -3,10 +3,19 @@
 ## 会话信息
 - 日期：2026-09-18
 - 负责角色：方舟
-- 修改范围：回测分析页签「分层止盈」移植——`backtestTypes` 新增 `layered_take_profit` 策略类型/`LayeredTPParams`/`Trade.groupId`；`backtestEngine` 实现当日即时分批卖出状态机（TP1 卖25%→保本→TP2 再卖→底仓跟踪止盈/均线兜底）+ 部分卖出（shares 递减、state 保持）+ `aggregateTradesByGroupId` 指标聚合；`BacktestConfigPanel` 分组折叠参数表单+恢复默认；`BacktestView` 透传参数。测试 `backtestEngine.layered.test.ts` 11 用例全过，tsc 0 错误
+- 修改范围：回测分析页签「分层止盈」移植+参数4-3-3演进+废除「买入失效止损」；今日另优化选股 503——`CustomIndicatorService.ts` OHLCV 就绪等待 120→240s + 超时改为友好提示——`backtestTypes` 新增 `layered_take_profit` 策略类型/`LayeredTPParams`/`Trade.groupId`；`backtestEngine` 实现当日即时分批卖出状态机（TP1 卖25%→保本→TP2 再卖→底仓跟踪止盈/均线兜底）+ 部分卖出（shares 递减、state 保持）+ `aggregateTradesByGroupId` 指标聚合；`BacktestConfigPanel` 分组折叠参数表单+恢复默认；`BacktestView` 透传参数。测试 `backtestEngine.layered.test.ts` 11 用例全过，tsc 0 错误
 - 待办：浏览器端到端复测平安银行（000001，买"多因子蓄势突破"卖"分层止盈"）确认交易记录分批卖出
+- 待办（39.0 已 CLOSED）：选股 503 后端修复已完成，前端无需再长期依赖 240s 等待（可后续评估是否回落默认值）
 
 ## 今日通知记录（2026-09-18）
+
+[量量→方舟 2026-09-18 21:00] 协作单 [39.0-SNAPSHOT-503-20260918] 状态变更: ASSIGNED→VERIFY（3 点治本落地：①刷新期保持 `_ready=True` 旧缓存持续服务不再 503；②`_periodic_refresh_loop` 定时线程 600s 替代每请求触发，四请求路径移除 `_refresh_if_needed`；③get_all/incremental 按 codes 直查 O(K)。单测 10+14 全过，服务已重启生效，`/api/snapshot/ready` 200。请方舟前端侧验收）
+
+[量量→方舟 2026-09-18 20:45] 协作单 [39.0-SNAPSHOT-503-20260918] 状态变更: NEW→ASSIGNED（量量认领，开始治本修复：双缓存热切换+独立定时刷新+codes索引）
+
+[方舟→量量 2026-09-18 21:35] 协作单 [39.0-SNAPSHOT-503-20260918] 状态变更: VERIFY→CLOSED（方舟复核通过）：3 点治本全部落地（双缓存热切换保 ready / 独立定时刷新替代每请求触发 / codes 哈希索引 O(K)），量量单测 10+14 例过，后端日志确认 `_periodic_refresh_loop` 600s 周期线程已启动。选股 503 根因已消除。
+
+[方舟→量量 2026-09-18] 协作单 [39.0-SNAPSHOT-503-20260918] 提单（NEW）: 选股报「数据服务未就绪：HTTP 503（等待超过120s）」，根因=快照全量刷新期 `_ready=False` 致服务短暂不可用 + 每请求触发刷新。请量量治本（3点）：① 双缓存热切换刷新期不中断服务；② 独立定时刷新替代每请求触发；③ `/api/snapshot/all` 按 codes 哈希索引避免全表遍历。前端已做缓解过渡（等240s+友好提示）。
 
 [方舟→K 2026-09-18] 回测分析「分层止盈」已按 K 审阅 v2 完成移植（K 审阅四维意见：手续费=引擎无最低佣金按比例计费不翻倍；跌停成交取 max(stop,low) 为 Known Issue 保留原语义；前复权价格无需除权调整；groupId 用买入 bar index；聚合函数统计时合并不拆 Trade 明细）。引擎+UI+11 单测完成，待浏览器端到端终验。
 

@@ -53,8 +53,10 @@ const OHLCV_BATCH_SIZE = 200;
 const OHLCV_MAX_RETRIES = 2;
 /** 首次重试延迟（毫秒），后续指数退避 */
 const OHLCV_RETRY_BASE_DELAY = 500;
-/** 后端数据服务（数据刷新/加载中返回 503）就绪等待最大时长（毫秒） */
-const OHLCV_READY_WAIT_MS = 120_000;
+/** 后端数据服务（数据刷新/加载中返回 503）就绪等待最大时长（毫秒）。
+ * 后端全量快照重建（全市场 OHLCV）可能超过 120s，适当放宽避免选股被误报超时。
+ */
+const OHLCV_READY_WAIT_MS = 240_000;
 /** 就绪探测轮询间隔（毫秒） */
 const READY_POLL_INTERVAL_MS = 1000;
 
@@ -221,6 +223,7 @@ export class CustomIndicatorService {
       try {
         const resp = await fetch('/api/snapshot/ready', { signal });
         if (resp.ok) return true;
+        // 非 2xx（后端仍 503）：继续轮询，等待后端刷新完成
       } catch (err) {
         if (signal?.aborted) throw new Error('已取消');
         // 连接类瞬态错误：继续轮询
@@ -254,7 +257,7 @@ export class CustomIndicatorService {
         if (resp.status === 503) {
           const ready = await this.waitReady(OHLCV_READY_WAIT_MS, signal);
           if (!ready) {
-            throw new Error(`数据服务未就绪：HTTP ${resp.status}（等待超过 ${OHLCV_READY_WAIT_MS / 1000}s）`);
+            throw new Error(`数据服务仍在后台刷新（已等待 ${OHLCV_READY_WAIT_MS / 1000}s），请稍后重试或换个时间再选股`);
           }
           lastError = new Error(`HTTP ${resp.status}`);
           attempt = -1; // 就绪后重置计数，重新走一次完整请求

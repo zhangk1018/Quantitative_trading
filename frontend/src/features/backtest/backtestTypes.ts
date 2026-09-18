@@ -29,7 +29,9 @@ export const SELL_STRATEGY_LABELS: Record<SellStrategy, string> = {
 
 /**
  * 分层止盈参数（对齐「策略回测-选股条件分层止盈」语义，K 审阅 v2）
- * 阶段：建仓期(initial) 初始止损 + 买入失效止损 + TP1 → tp1_done 保本 + TP2 → tp2_done 底仓跟踪止盈 + 均线兜底
+ * 阶段：建仓期(initial) 初始止损/时间止损 + TP1 → tp1_done 保本 + 回撤/均线保护 + TP2 → tp2_done 底仓三重保护
+ * 注意：已废除「买入失效止损(不涨即走)」——突破策略常见回踩洗盘，早期微亏是健康信号，
+ *       建仓期仅以初始止损(跌破 entry×(1+initialStopLossPct))和 maxHoldDays 时间止损兜底。
  */
 export interface LayeredTPParams {
   /** 初始止损比例（-0.05 = -5%） */
@@ -50,6 +52,12 @@ export interface LayeredTPParams {
   hardFloorPct: number;
   /** TP2 后峰值回撤阈值（0.04 = 4%） */
   trailingDrawdownPct: number;
+  /**
+   * TP1 后底仓跟踪回撤阈值（0.08 = 8%）。
+   * 右侧突破策略需给足底仓爆发空间，故该阈值比 TP2 后（trailingDrawdownPct）更宽松，
+   * 避免用迟钝的 MA 指标做底仓主退出导致利润大幅回撤。
+   */
+  baseTrailingPct: number;
   /** 均线兜底周期（20） */
   maPeriod: number;
   /** 均线破位确认天数（2） */
@@ -63,16 +71,18 @@ export interface LayeredTPParams {
 }
 
 /** 分层止盈默认参数（与策略回测 DEFAULT_LAYERED_TP_PARAMS 一致） */
+/** 4-3-3 方案（K 2026-09-18 决策）：TP1 触发+10%卖40%、TP2 触发+18%卖30%、底仓8%回撤追踪 */
 export const DEFAULT_LAYERED_TP_PARAMS: LayeredTPParams = {
   initialStopLossPct: -0.05,
-  firstProfitPct: 0.05,
-  firstSellPct: 0.25,
-  secondProfitPct: 0.12,
-  secondSellPct: 0.25,
+  firstProfitPct: 0.10,
+  firstSellPct: 0.40,
+  secondProfitPct: 0.18,
+  secondSellPct: 0.30,
   breakevenStopPct: 0.00,
   lockProfitPct: 0.04,
   hardFloorPct: 0.02,
   trailingDrawdownPct: 0.04,
+  baseTrailingPct: 0.08,
   maPeriod: 20,
   maConfirmDays: 2,
   maExceptionDropPct: 0.06,

@@ -32,10 +32,10 @@ import {
 
 interface LayeredTPParams {
   initialStopLossPct: number;     // 初始止损比例（-0.05 = -5%）
-  firstProfitPct: number;         // 第一止盈目标（0.05 = +5%）
-  firstSellPct: number;           // 第一止盈卖出比例（0.25 = 25%）
-  secondProfitPct: number;        // 第二止盈目标（0.12 = +12%）
-  secondSellPct: number;          // 第二止盈卖出比例（0.25 = 25%）
+  firstProfitPct: number;         // 第一止盈目标（0.10 = +10%）
+  firstSellPct: number;           // 第一止盈卖出比例（0.40 = 40%）
+  secondProfitPct: number;        // 第二止盈目标（0.18 = +18%）
+  secondSellPct: number;          // 第二止盈卖出比例（0.30 = 30%）
   breakevenStopPct: number;       // TP1后保本止损比例（0.00 = 成本价，固定）
   lockProfitPct: number;          // TP2后锁定利润比例（0.04 = +4%）
   hardFloorPct: number;           // TP2后硬性底线安全阀（0.02 = +2%）
@@ -49,10 +49,10 @@ interface LayeredTPParams {
 
 const DEFAULT_LAYERED_TP_PARAMS: LayeredTPParams = {
   initialStopLossPct: -0.05,
-  firstProfitPct: 0.05,
-  firstSellPct: 0.25,
-  secondProfitPct: 0.12,
-  secondSellPct: 0.25,
+  firstProfitPct: 0.10,
+  firstSellPct: 0.40,
+  secondProfitPct: 0.18,
+  secondSellPct: 0.30,
   breakevenStopPct: 0.00,
   lockProfitPct: 0.04,
   hardFloorPct: 0.02,

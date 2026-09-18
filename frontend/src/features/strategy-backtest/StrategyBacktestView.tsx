@@ -111,10 +111,10 @@ const StrategyBacktestView: React.FC = () => {
   const [strategyType, setStrategyType] = useState<'filterTree' | 'filterTreeLayeredTP'>('filterTree');
   const [layeredTPParams, setLayeredTPParams] = useState({
     initialStopLossPct: -0.05,
-    firstProfitPct: 0.05,
-    firstSellPct: 0.25,
-    secondProfitPct: 0.12,
-    secondSellPct: 0.25,
+    firstProfitPct: 0.10,
+    firstSellPct: 0.40,
+    secondProfitPct: 0.18,
+    secondSellPct: 0.30,
     breakevenStopPct: 0.00,
     lockProfitPct: 0.04,
     hardFloorPct: 0.02,

@@ -1202,10 +1202,10 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
 
         const lp = layeredTPParams ?? {
           initialStopLossPct: -0.05,         // 收紧（原-0.06）
-          firstProfitPct: 0.05,              // 调低（原0.08）
-          firstSellPct: 0.25,                // 保持不变
-          secondProfitPct: 0.12,             // 跟随调低（原0.15）
-          secondSellPct: 0.25,               // 保持不变
+          firstProfitPct: 0.10,              // 4-3-3 方案：TP1 触发 +10%
+          firstSellPct: 0.40,                // 4-3-3 方案：TP1 卖 40%
+          secondProfitPct: 0.18,             // 4-3-3 方案：TP2 触发 +18%
+          secondSellPct: 0.30,               // 4-3-3 方案：TP2 卖 30%
           breakevenStopPct: 0.00,            // 保持不变
           lockProfitPct: 0.04,               // 跟随调低（原0.06）
           hardFloorPct: 0.02,                // 跟随调低（原0.03）
@@ -1262,21 +1262,7 @@ export function runStrategyBacktest(input: StrategyBacktestInput): StrategyBackt
           }
         }
 
-        // ========== 【新增】买入逻辑失效止损（3-5天不涨即走）==========
-        // 仅在建仓期（initial）且持有天数在 3~5 天时生效
-        if (tpState.phase === 'initial' && pos.holdDays >= 3 && pos.holdDays <= 5) {
-          // 如果累计涨幅不足 0%（不赚钱），说明买点动能衰竭，立即清仓
-          if (pnlPct < 0.00) {
-            const execPrice = closePrice;
-            intradayActions.push({
-              code, reason: 'timeout', shares: pos.shares, execPrice,
-            });
-            tpState.phase = 'closed';
-            continue;
-          }
-        }
-
-        // ========== 【新增】持仓期间动态评分检查 ==========
+        // ========== 持仓期间动态评分检查 ==========
         // 每5天重新评估一次，如果当前得分低于阈值，说明条件已衰减，主动离场
         // 使用 evaluateFilterScore 返回满足条件的个数，阈值取总条件数的一半（至少 3）
         if (tpState.phase === 'initial' && pos.holdDays > 0 && pos.holdDays % 5 === 0) {

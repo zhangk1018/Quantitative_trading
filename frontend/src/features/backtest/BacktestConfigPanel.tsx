@@ -785,7 +785,11 @@ const BacktestConfigPanel: React.FC<ConfigPanelProps> = ({ onStart, form }) => {
                         <Form.Item name={['layeredTPParams', 'lockProfitPct']} label="锁定利润" initialValue={DEFAULT_LAYERED_TP_PARAMS.lockProfitPct}>
                           <InputNumber style={{ width: '100%' }} min={0.01} max={0.15} step={0.01} />
                         </Form.Item>
-                        <Form.Item name={['layeredTPParams', 'trailingDrawdownPct']} label="峰值回撤" initialValue={DEFAULT_LAYERED_TP_PARAMS.trailingDrawdownPct}>
+                        <Form.Item name={['layeredTPParams', 'baseTrailingPct']} label="TP1后底仓回撤" initialValue={DEFAULT_LAYERED_TP_PARAMS.baseTrailingPct}
+                          tooltip="TP1 卖出后剩余底仓从持仓期最高点回撤该比例即清仓。给足爆发空间并快速锁利，默认 8%">
+                          <InputNumber style={{ width: '100%' }} min={0.03} max={0.2} step={0.01} />
+                        </Form.Item>
+                        <Form.Item name={['layeredTPParams', 'trailingDrawdownPct']} label="TP2后峰值回撤" initialValue={DEFAULT_LAYERED_TP_PARAMS.trailingDrawdownPct}>
                           <InputNumber style={{ width: '100%' }} min={0.02} max={0.15} step={0.01} />
                         </Form.Item>
                         <Form.Item name={['layeredTPParams', 'maPeriod']} label="均线周期" initialValue={DEFAULT_LAYERED_TP_PARAMS.maPeriod}>

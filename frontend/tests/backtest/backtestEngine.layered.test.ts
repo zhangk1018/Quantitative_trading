@@ -252,15 +252,15 @@ describe('分层止盈（分批卖出）', () => {
     for (let i = 0; i < WARMUP + 10; i++) prices.push(10); // 0..69
     prices.push(10.0);   // 70 信号日
     prices.push(10.0);   // 71 买入日（entry=10.0）
-    prices.push(10.6);   // 72 TP1(+6% > 5%)
-    prices.push(11.4);   // 73 TP2(+14% > 12%)
-    prices.push(12.0);   // 74 冲高峰值
-    prices.push(10.5);   // 75
-    prices.push(9.5);    // 76
-    prices.push(9.0);    // 77
-    prices.push(8.5);    // 78
-    prices.push(8.2);    // 79
-    prices.push(8.0);    // 80 深跌，收盘 < MA20 → 均线兜底
+    prices.push(11.2);   // 72 TP1(+12% > 10%)
+    prices.push(11.8);   // 73 TP2(+18%)
+    prices.push(13.0);   // 74 冲高峰值
+    prices.push(11.5);   // 75
+    prices.push(10.5);   // 76
+    prices.push(10.0);   // 77
+    prices.push(9.5);    // 78
+    prices.push(9.0);    // 79
+    prices.push(8.5);    // 80 深跌，收盘 < MA20 → 均线兜底
     const bars = makeBars(prices);
     mockExecuteSingle.mockResolvedValue(buySignal(bars.length));
 
@@ -278,25 +278,210 @@ describe('分层止盈（分批卖出）', () => {
     expect(hasMaSell).toBe(true);
   });
 
-  it('TP2 后从峰值回撤超过阈值清仓', async () => {
-    // TP1/TP2 后冲高形成峰值，再缓慢阴跌（非单日暴跌）使回撤超阈值 → 动态跟踪止盈
+  it('TP2 后均线兜底按 maPeriod 参数取对应均线（MA10 生效）', async () => {
+    // 买入后触发 TP1/TP2 进入 tp2_done，此后价格跌至 9.5（< MA10≈9.9、> MA5≈9.6? 需构造确认）
+    // 构造：TP2 后横盘 10 天让 MA10 与 MA5 明显分离，再跌破 MA10 触发
     const prices: number[] = [];
-    for (let i = 0; i < WARMUP + 10; i++) prices.push(10);
-    prices.push(10.1);   // 买入日
-    prices.push(10.8);   // TP1
-    prices.push(11.5);   // TP2
-    prices.push(13.0);   // 冲高形成峰值
-    prices.push(12.6);   // 缓慢回落（日跌约 -3%，不触发单日暴跌例外）
-    prices.push(12.2);
-    prices.push(11.9);   // 后续触发跟踪止盈
-    prices.push(11.5);
+    for (let i = 0; i < WARMUP + 10; i++) prices.push(10); // 0..69
+    prices.push(10.0);   // 70 信号日
+    prices.push(10.0);   // 71 买入日（entry=10.0）
+    prices.push(11.2);   // 72 TP1(+12% > 10%)
+    prices.push(11.8);   // 73 TP2(+18%)
+    prices.push(11.5);   // 74 回落横盘
+    prices.push(11.4);
+    prices.push(11.3);
+    prices.push(11.2);
+    prices.push(11.1);
+    prices.push(11.0);   // 79
+    prices.push(10.9);   // 80 缓慢阴跌，MA10≈11.0 附近
+    prices.push(10.8);
+    prices.push(10.7);
+    prices.push(10.6);
+    prices.push(10.5);   // 84 收盘 < MA10（连续 3 天，满足 maConfirmDays=2）
     const bars = makeBars(prices);
     mockExecuteSingle.mockResolvedValue(buySignal(bars.length));
 
     const result = await runBacktest(makeInput(bars, {
-      layeredTPParams: { ...DEFAULT_LAYERED_TP_PARAMS, trailingDrawdownPct: 0.1, maConfirmDays: 99, maxHoldDays: 1000 },
+      layeredTPParams: {
+        ...DEFAULT_LAYERED_TP_PARAMS,
+        maPeriod: 10,
+        maConfirmDays: 2,
+        trailingDrawdownPct: 0.9,   // 关闭跟踪止盈，隔离均线兜底
+        lockProfitPct: -0.5,
+        hardFloorPct: -0.9,
+        maExceptionDropPct: 0.2,
+        maxHoldDays: 1000,
+      },
+    }));
+    const hasMa10Sell = result.trades.some((t) => t.direction === 'sell' && /MA10|均线|跌破/.test(t.exitReason));
+    expect(hasMa10Sell).toBe(true);
+  });
+
+  it('TP2 后从峰值回撤超过阈值清仓', async () => {
+    // 买入 10 → TP1(+8%) → TP2(+16%) 进入 tp2_done，冲高至 12.5 形成峰值，
+    // 再缓慢阴跌（非单日暴跌）使回撤超 trailingDrawdownPct → 触发动态跟踪止盈清底仓。
+    // 显式使用大 firstSell 让触发后仍有底仓可供跟踪止盈回收。
+    const prices: number[] = [];
+    for (let i = 0; i < WARMUP + 10; i++) prices.push(9.0); // 0..69 横盘
+    prices.push(9.0);   // 70 信号日
+    prices.push(10.0);  // 71 买入日（next_open 开盘成交 @10.0）
+    prices.push(10.8);  // 72 触发 TP1（+8% > 5%）
+    prices.push(11.6);  // 73 触发 TP2（+16% > 12%）
+    prices.push(12.5);  // 74 冲高形成峰值
+    prices.push(12.0);  // 75 缓慢回落（日跌约 -4%，不触发单日暴跌例外）
+    prices.push(11.7);
+    prices.push(11.4);  // 77 跌破峰值 12.5×(1-10%)=11.25 附近 → 触发跟踪止盈
+    prices.push(11.2);
+    const bars = makeBars(prices);
+    mockExecuteSingle.mockResolvedValue(buySignal(bars.length));
+
+    const result = await runBacktest(makeInput(bars, {
+      layeredTPParams: {
+        ...DEFAULT_LAYERED_TP_PARAMS,
+        firstProfitPct: 0.05,
+        firstSellPct: 0.40,
+        secondProfitPct: 0.12,
+        secondSellPct: 0.20,   // 留足底仓（60%），供 TP2 后走跟踪止盈回收
+        trailingDrawdownPct: 0.1, maConfirmDays: 99, maxHoldDays: 1000,
+      },
     }));
     const hasTrailing = result.trades.some((t) => t.direction === 'sell' && t.exitReason.includes('跟踪止盈'));
     expect(hasTrailing).toBe(true);
+  });
+
+  it('用户场景回归：中水渔业 TP1/TP2 后冲高回落，底仓触发跟踪止盈而非死扛到期末', async () => {
+    // 复现用户回测（2025-06-05 买入 7.34 → TP1/TP2 → 冲高 16 回落）：
+    // 期望 tp2_done 三重保护让底仓及时退出，不出现「期末强制清仓（315天）」锁仓
+    const prices: number[] = [];
+    for (let i = 0; i < WARMUP + 10; i++) prices.push(7.0); // 0..69
+    prices.push(7.0);   // 70 信号日
+    prices.push(7.34);  // 71 买入日
+    prices.push(8.1);   // 72 触发 TP1（+10.3% > 10%）
+    prices.push(8.7);   // 73 触发 TP2（+18.5% > 18%）
+    prices.push(9.5);   // 74 冲高
+    prices.push(12.0);  // 75
+    prices.push(14.0);  // 76
+    prices.push(16.0);  // 77 峰值
+    prices.push(15.5);  // 78 回落
+    prices.push(15.0);  // 79 跌破 4% 跟踪线
+    prices.push(14.0);  // 80
+    prices.push(13.0);  // 81
+    prices.push(12.0);  // 82
+    prices.push(11.0);  // 83
+    prices.push(10.0);  // 84
+    const bars = makeBars(prices);
+    mockExecuteSingle.mockResolvedValue(buySignal(bars.length));
+
+    const result = await runBacktest(makeInput(bars));
+    const sells = result.trades.filter((t) => t.direction === 'sell');
+    const reasons = sells.map((s) => s.exitReason).join(' | ');
+
+    expect(reasons).toContain('第一止盈TP1');
+    expect(reasons).toContain('第二止盈TP2');
+    expect(reasons).toContain('跟踪止盈');
+    // 底仓已退出 → 该建仓不应再有期末强制清仓
+    const groupSells = sells.filter((s) => s.groupId !== undefined);
+    const forcedForThisGroup = result.trades.filter(
+      (t) => t.isForcedClose && t.groupId === groupSells[0]?.groupId,
+    );
+    expect(forcedForThisGroup.length).toBe(0);
+    expect(groupSells.reduce((s, t) => s + t.shares, 0)).toBeGreaterThan(0);
+  });
+
+  it('回归：TP1 后价格长期横盘不涨不跌，主动离场防止底仓死扛到期末', async () => {
+    // 场景：买入 10 后触发 TP1，此后价格在成本与 TP2 之间长期窄幅横盘，
+    // 既不涨到 TP2 也不跌破成本。原逻辑会让剩余底仓死扛到期末强制清仓。
+    // 修复后，tp1_done 通过「回撤追踪」或「均线兜底」主动离场，不再死扛到期末。
+    const prices: number[] = [];
+    for (let i = 0; i < WARMUP + 10; i++) prices.push(10); // 0..69
+    prices.push(10.0);  // 70 信号日
+    prices.push(10.0);  // 71 买入日（entry=10.0）
+    prices.push(11.0);  // 72 触发 TP1（+10%）
+    // 73 起价格自 TP1 后逐步走低并长期横盘：稳定在 10.2（+2%）附近，
+    // 不触 TP2(+12%)、不破成本；但收盘持续低于 MA20 → 触发均线兜底主动离场
+    for (let i = 0; i < 50; i++) prices.push(10.5);  // TP1 后短暂高位
+    for (let i = 0; i < 150; i++) prices.push(10.2); // 跌破 MA20 并长期维持
+    const bars = makeBars(prices);
+    mockExecuteSingle.mockResolvedValue(buySignal(bars.length));
+
+    const result = await runBacktest(makeInput(bars));
+    const sells = result.trades.filter((t) => t.direction === 'sell');
+    const reasons = sells.map((s) => s.exitReason).join(' | ');
+
+    // 必须仍触发 TP1（分批保底）
+    expect(reasons).toContain('第一止盈TP1');
+    // 底仓应通过「回撤追踪」或「均线兜底」主动离场，不再死扛到期末
+    const hasExit = sells.some((s) => /回撤追踪|跌破MA|均线/.test(s.exitReason));
+    expect(hasExit).toBe(true);
+    // 期末不应再出现整仓强制清仓
+    const forced = result.trades.filter((t) => t.isForcedClose && t.exitReason === '期末强制清仓');
+    expect(forced.length).toBe(0);
+  });
+
+  it('TP1 后底仓按 baseTrailingPct 从峰值回撤清仓（而非死扛或迟钝均线）', async () => {
+    // 场景：买入 10 后冲高触发 TP1(+6%)，形成峰值 10.8×1.01；随后回落从峰值回撤超过 baseTrailingPct(8%)
+    // 但不跌破成本、也不到 TP2。期望底仓通过「TP1后回撤追踪」主动清仓，而非死扛到期末。
+    const prices: number[] = [];
+    for (let i = 0; i < WARMUP + 10; i++) prices.push(10); // 0..69
+    prices.push(10.0);  // 70 信号日
+    prices.push(10.0);  // 71 买入日（entry=10.0）
+    prices.push(10.6);  // 72 触发 TP1（+6% > 5%）→ peakPrice≈10.706
+    prices.push(11.0);  // 73 冲高到 +10%（仍低于 TP2 12%，不触发 TP2）→ peakPrice≈11.11
+    // 74 起从峰值 11.11 回撤：8% 线 = 11.11×0.92≈10.22，跌破即触发 TP1后回撤追踪
+    prices.push(10.5);
+    prices.push(10.2);   // 回撤 ≈ -8.2%，触及追踪线
+    prices.push(10.0);
+    prices.push(9.8);
+    prices.push(9.5);
+    const bars = makeBars(prices);
+    mockExecuteSingle.mockResolvedValue(buySignal(bars.length));
+
+    // 关闭均线兜底干扰：maConfirmDays 调大
+    const result = await runBacktest(makeInput(bars, {
+      layeredTPParams: { ...DEFAULT_LAYERED_TP_PARAMS, baseTrailingPct: 0.08, maConfirmDays: 99, maxHoldDays: 1000 },
+    }));
+    const sells = result.trades.filter((t) => t.direction === 'sell');
+    const reasons = sells.map((s) => s.exitReason).join(' | ');
+
+    expect(reasons).toContain('第一止盈TP1');
+    expect(reasons).toContain('TP1后回撤追踪');
+    const hasTrailingExit = sells.some((s) => s.exitReason.includes('TP1后回撤追踪'));
+    expect(hasTrailingExit).toBe(true);
+    // 不应再出现期末整仓强制清仓（底仓已主动退出）
+    const forced = result.trades.filter((t) => t.isForcedClose && t.exitReason === '期末强制清仓');
+    expect(forced.length).toBe(0);
+  });
+
+  it('回归：突破后回踩洗盘 2 天微亏不再触发卖出（废除「买入失效不涨即走」）', async () => {
+    // 场景复现用户痛点：买入 10 → 前 2 天回踩洗盘微亏（-1.5%、-2%）但不跌破 5% 初始止损，
+    // 第 3 天起启动主升浪突破 TP1/TP2。旧逻辑会在 3-5 天见微亏即「买入失效」清仓震出局；
+    // 新逻辑应给足容错空间，不在回踩期主动卖出，让该仓吃到后续主升浪。
+    const prices: number[] = [];
+    for (let i = 0; i < WARMUP + 10; i++) prices.push(10); // 0..69 横盘
+    prices.push(10.0);  // 70 信号日
+    prices.push(10.0);  // 71 买入日（entry=10.0）
+    prices.push(9.85);  // 72 回踩洗盘 -1.5%
+    prices.push(9.8);   // 73 回踩 -2%（未破 5% 初始止损 9.5）
+    prices.push(10.2);  // 74 小幅回升
+    prices.push(11.2);  // 75 启动主升 → 触发 TP1（+12% > 10%）
+    prices.push(11.9);  // 76 → TP2（+19% > 18%）
+    prices.push(12.5);  // 77 冲高
+    const bars = makeBars(prices);
+    mockExecuteSingle.mockResolvedValue(buySignal(bars.length));
+
+    const result = await runBacktest(makeInput(bars));
+    const sells = result.trades.filter((t) => t.direction === 'sell');
+    const reasons = sells.map((s) => s.exitReason).join(' | ');
+
+    // 回踩期（67/68 天微亏）不应发生任何卖出
+    const noExitInPullback = result.trades.filter(
+      (t) => t.direction === 'sell' && t.exitTime && t.exitTime <= bars[73].time,
+    );
+    expect(noExitInPullback.length).toBe(0);
+    // 后续主升应正常触发 TP1/TP2
+    expect(reasons).toContain('第一止盈TP1');
+    expect(reasons).toContain('第二止盈TP2');
+    // 不再出现「买入失效止损(不涨即走)」
+    expect(reasons).not.toContain('买入失效止损');
   });
 });
