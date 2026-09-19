@@ -9,7 +9,8 @@ const RangeSelector: React.FC = () => {
   const stockRange = useScreenerSelector(s => s.market.stockRange);
   const selectedMarket = useScreenerSelector(s => s.market.selectedMarket);
   const selectedBoards = useScreenerSelector(s => s.market.selectedBoards);
-const dispatch = useScreenerDispatch();
+  const collapsedPanels = useScreenerSelector(s => s.panels.collapsed);
+  const dispatch = useScreenerDispatch();
   const currentMarketConfig = MARKET_CONFIG[selectedMarket];
   const availableBoardValues = currentMarketConfig?.boards.map((b) => b.value) || [];
   // 上市地（板块）是 A股特有筛选空间：hk/us 无板块，隐藏该区（M6 T3 市场隔离）
@@ -70,6 +71,8 @@ const dispatch = useScreenerDispatch();
     dispatch({ type: 'SET_STOCK_RANGE', payload: value });
   };
 
+  const activeKey = collapsedPanels.range ? [] : ['range'];
+
   // 用于展示的已选项：如果当前是 "全部" 状态，则显示 "all" 及所有具体板块（便于用户取消任意具体板块）
   const displayBoards = selectedBoards.includes('all')
     ? ['all', ...availableBoardValues]
@@ -77,9 +80,10 @@ const dispatch = useScreenerDispatch();
 
   return (
     <Collapse
-      defaultActiveKey={['range']}
+      activeKey={activeKey}
       ghost
       className="border-b border-border-color"
+      onChange={() => dispatch({ type: 'TOGGLE_PANEL', payload: 'range' })}
       items={[
         {
           key: 'range',

@@ -4,7 +4,6 @@ export const PANEL_KEYS = {
   MARKET: 'market',
   FINANCIAL: 'financial',
   TECHNICAL: 'technical',
-  FACTOR: 'factor',
   CONDITION: 'condition',
   PATTERN: 'pattern',
 } as const;
@@ -138,16 +137,3 @@ export const LOOKBACK_OPTIONS = [
   { value: '10', label: '10天' },
 ] as const;
 
-// ==================== 因子配置 ====================
-export interface FactorItem {
-  id: string;
-  label: string;
-  defaultWeight: number;
-  color: string;
-}
-
-export const FACTOR_CONFIG = [
-  { id: 'turnover', label: '换手率', defaultWeight: 30, color: '#26A69A' },
-  { id: 'ma_trend', label: 'MA趋势', defaultWeight: 40, color: '#2962FF' },
-  { id: 'volume', label: '成交量', defaultWeight: 30, color: '#FFD700' },
-] as const satisfies readonly FactorItem[];

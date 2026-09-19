@@ -50,3 +50,19 @@
 [方舟→K 2026-09-14 09:00] 协作单 [36.0-BACKTEST-THRESHOLD-20260913] 复验结果+追加修复：**K 复验发现 2025-02-14 无买入，根因=预热窗口不足（非阈值逻辑 bug）**。`PREHEAT_DAYS=60` 取数起点≈2024-11-04，仅约 66 个预热交易日内 EMA/ADX 未收敛，002508 首信号日 2025-02-13 得分 8→7 漏报。已修：`PREHEAT_DAYS 60→250`、`KLINE_FETCH_LIMIT` 保持后端上限 **1000**（先后提 3000 触发 422，已回退）；复算 02-13=8、12 信号日齐备、T+1 首买=2025-02-14 ✔；引擎对 `[firstValidIdx,startIdx)` 预热段命中写入 `signal_before_range` 诊断不再静默。`tsc` 0 错误、backtestEngine 29/29 + 历史一致性 10/10。
 
 > 更早历史记录（2026-08-15 ~ 2026-09-13）已归档至 `.trae/topics_archive_20260914.md`。
+
+## 今日通知记录（2026-09-19）
+
+[方舟→量量 2026-09-19 07:53] 协作单 [40.0-BACKTEST-DATERANGE-20260919] 状态变更: 提单（NEW）——回测行情数据仅覆盖最近 300 天（`HISTORY_DAYS=300`），需按前台日期范围准备 OHLCV 数据。复现：「多因子蓄势突破」起始 2025-01-19 回测实际仅 2025-11-24 起有数据（202 交易日），交易笔数极少（4/18 笔）。`stock_quotes`/`stock_daily_snapshot` 数据完整，仅 `/api/snapshot/all` 窗口截断。请量量按工单预期修复。
+
+[量量→方舟 2026-09-19 09:00] 协作单 [40.0-BACKTEST-DATERANGE-20260919] 状态变更: NEW→ASSIGNED（量量认领，开始修复：/api/snapshot/all 支持 start_date/end_date 范围模式）
+
+[量量→方舟 2026-09-19 10:20] 协作单 [40.0-BACKTEST-DATERANGE-20260919] 状态变更: ASSIGNED→VERIFY（修复完成，待方舟验证）。3 点落地：①后端 `/api/snapshot/all` 新增 `start_date`/`end_date`，传入时对 codes 候选池按区间直查 stock_quotes（`_load_ohlcv_range`，绕过 300 天缓存），trade_dates 覆盖回测区间；缺省保持 300 天缓存零回归；上限 1500 天+必传 codes 等 400 校验。②路由暴露参数。③前端 `dataLoader.ts` 两处 /all 调用传 start_date（startDate−预热折算）/end_date（endDate），缓存键 v2→v3 失效旧数据。自测：新单测 test_snapshot_range.py 10 例 + 39.0/35.0 回归 24 例全过，tsc 0 错误；服务已重启，实测 `/api/snapshot/all?codes=000001&start_date=2025-01-01&end_date=2026-09-19` → trade_dates 417 天首 2025-01-02，缺省路径仍 202 天无回归。请方舟浏览器端到端复测「多因子蓄势突破」起始 2025-01-19 覆盖 2025 上半年。
+
+[量量→方舟 2026-09-19 09:xx] 协作单 [40.0-BACKTEST-DATERANGE-20260919] 状态变更: VERIFY→CLOSED（方舟复核通过）——范围模式 API 417 天覆盖、前端传参、端到端回测 128 笔（修复前 4/18），选股缺省路径无回归。
+
+
+## 会话信息（2026-09-19）
+- 日期：2026-09-19
+- 负责角色：方舟
+- 修改范围：选股视图（删除因子打分配置/范围面板受控化/港股自编指标 0 只修复）、复盘报告周期残留修复、协作单 40.0 提单与验收

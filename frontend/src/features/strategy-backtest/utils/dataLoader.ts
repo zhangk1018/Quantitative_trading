@@ -89,8 +89,8 @@ export function computeCacheHash(
     hash = ((hash << 5) - hash) + char;
     hash |= 0; // Convert to 32bit integer
   }
-  // v2：整体失效历史缓存（v1 payload 无 historyRowsByCode 字段，字段/Date 键口径已重构）
-  return `v2_${Math.abs(hash).toString(16)}`;
+  // v3：OHLCV 改为按回测区间拉取（协作单 40.0），整体失效 v2 缓存（旧 payload 仅 300 天窗口）
+  return `v3_${Math.abs(hash).toString(16)}`;
 }
 
 /** 尝试从缓存恢复 */
@@ -500,6 +500,27 @@ function mergeTradeDates(a: string[], b: string[]): string[] {
   return Array.from(set).sort();
 }
 
+/** 将 YYYY-MM-DD 日期往前/往后推 offset 自然日（本地时区） */
+function shiftDate(dateStr: string, offsetDays: number): string {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + offsetDays);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * 计算 OHLCV 拉取区间（协作单 40.0：/api/snapshot/all 支持 start_date/end_date 直查）。
+ * 起点 = startDate 前推预热交易日数折算自然日（自编指标最长周期 200 + 安全余量），
+ * 保证 trade_dates 覆盖回测预热窗口，不再被后端 300 天缓存窗口截断。
+ */
+function ohlcvRangeDates(startDate: string, endDate: string, warmupDays: number): { start: string; end: string } {
+  // 预热交易日 → 自然日：×1.5（周末/节假日余量）+ 额外缓冲
+  const warmupCalendarDays = Math.ceil(Math.max(warmupDays, 200) * 1.5) + 30;
+  return { start: shiftDate(startDate, -warmupCalendarDays), end: endDate };
+}
+
 export async function loadBacktestData(
   filterTree: FilterNode,
   config: StrategyBacktestDefaults,
@@ -518,6 +539,9 @@ export async function loadBacktestData(
     if (mkt === 'cn' || /[?&]market=/.test(q)) return q;
     return q ? `${q}&market=${mkt}` : `market=${mkt}`;
   };
+
+  // 协作单 40.0：OHLCV 按回测区间拉取（含预热），不再受后端 300 天缓存窗口截断
+  const { start: ohlcvStartDate, end: ohlcvEndDate } = ohlcvRangeDates(startDate, endDate, config.warmupDays);
 
   const warnings: string[] = [];
   const softErrors: string[] = [];
@@ -644,6 +668,9 @@ export async function loadBacktestData(
       const params = new URLSearchParams();
       params.set('codes', chunk.join(','));
       if (marketParam) params.set('market', mkt);
+      // 协作单 40.0：按回测区间（含预热）拉取 OHLCV
+      params.set('start_date', ohlcvStartDate);
+      params.set('end_date', ohlcvEndDate);
       const resp = await fetch(`/api/snapshot/all?${params.toString()}`, { signal });
       const data = await resp.json();
       const stocks = (data.data?.stocks ?? []).filter((s: any) => !isExcludedStockName(s.name));
@@ -658,6 +685,9 @@ export async function loadBacktestData(
     const params = new URLSearchParams();
     params.set('codes', codesParam);
     if (marketParam) params.set('market', mkt);
+    // 协作单 40.0：按回测区间（含预热）拉取 OHLCV
+    params.set('start_date', ohlcvStartDate);
+    params.set('end_date', ohlcvEndDate);
     const ohlcvResp = await fetch(`/api/snapshot/all?${params.toString()}`, { signal });
 
     const ohlcvData = await ohlcvResp.json();

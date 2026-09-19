@@ -23,20 +23,30 @@ LARGE_DATA_WARN_COUNT = 4000
 
 router = APIRouter(tags=["全量快照接口"])
 
-@router.get("/all", summary="全量快照（300天OHLCV+指标）", response_model=ApiResponse[SnapshotAllData])
+@router.get("/all", summary="全量快照（300天OHLCV+指标，支持日期区间）", response_model=ApiResponse[SnapshotAllData])
 def get_all_snapshot(
     snapshot: SnapshotServiceDep,
     market: str | None = Query(None, description="市场过滤 cn/hk/us"),
     board: str | None = Query(None, description="板块过滤 main_board/gem/beijing"),
     industry: str | None = Query(None, description="行业名称过滤"),
-    codes: str | None = Query(None, description="股票代码过滤，逗号分隔，如 000001,600000")
+    codes: str | None = Query(None, description="股票代码过滤，逗号分隔，如 000001,600000"),
+    start_date: str | None = Query(None, description="起始日期 YYYY-MM-DD（含）；传入时对 codes 按区间直查 OHLCV（回测用）"),
+    end_date: str | None = Query(None, description="结束日期 YYYY-MM-DD（含）；缺省为最新交易日"),
 ):
     mkt = validate_market(market)
     # 港美股无 A 股板块概念，board 过滤直接忽略
     board = validate_board(board) if mkt in ('cn', None) else None
     code_list = codes.split(",") if codes else None
+    start_val = validate_optional_date(start_date, label="start_date") if start_date else None
+    end_val = validate_optional_date(end_date, label="end_date") if end_date else None
     start = time.time()
-    result = snapshot.get_all_snapshot(market=mkt, board=board, industry=industry, codes=code_list)
+    try:
+        result = snapshot.get_all_snapshot(
+            market=mkt, board=board, industry=industry, codes=code_list,
+            start_date=start_val, end_date=end_val,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     elapsed = time.time() - start
 
     if elapsed > SLOW_REQUEST_THRESHOLD:

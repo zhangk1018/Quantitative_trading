@@ -10,7 +10,6 @@ import {
   useScreenerSelector,
   type ScreenerState,
 } from '@/features/stock-picker/context/ScreenerContext';
-import { FACTOR_CONFIG } from '@/features/stock-picker/config/indicatorConfig';
 import { CustomIndicator } from '@/features/stock-picker/types/customIndicator';
 
 // ============ 工具：构造初始 state ============
@@ -26,19 +25,12 @@ const getInitialState = (): ScreenerState => ({
   patterns: { selected: {}, panelCollapsed: true },
   condition: { filterGroup: null, nextOp: 'AND' },
   custom: { indicators: [], activeTab: 'system' },
-  factor: {
-    weights: FACTOR_CONFIG.reduce(
-      (acc, f) => ({ ...acc, [f.id]: f.defaultWeight }),
-      {} as Record<string, number>
-    ),
-  },
   panels: {
     collapsed: {
       range: true,
       market: true,
       financial: true,
       technical: true,
-      factor: true,
       condition: false,
       pattern: true,
     },
@@ -182,13 +174,6 @@ describe('screenerReducer', () => {
       expect(after.market.selectedBoards).toEqual([]);
     });
 
-    it('切换市场时保留 factorWeights', () => {
-      let state = getInitialState();
-      state = screenerReducer(state, { type: 'TOGGLE_MARKET_INDICATOR', payload: 'price' });
-      const beforeWeights = { ...state.factor.weights };
-      const after = screenerReducer(state, { type: 'SET_MARKET', payload: 'hk' });
-      expect(after.factor.weights).toEqual(beforeWeights);
-    });
   });
 
   describe('TOGGLE_PANEL（折叠面板）', () => {
@@ -226,8 +211,6 @@ describe('screenerReducer', () => {
       expect(after.marketIndicators.selected).toEqual([]);
       expect(after.marketIndicators.ranges).toEqual({});
       expect(after.panels.collapsed).toEqual(initial.panels.collapsed);
-      // RESET_ALL 保留 custom 状态，factor.weights 也被重置
-      expect(after.factor.weights).toEqual(initial.factor.weights);
     });
   });
 
@@ -675,7 +658,6 @@ describe('screenerReducer - LOAD_STRATEGY', () => {
     patterns: { selected: {}, panelCollapsed: true },
     condition: { filterGroup: null, nextOp: 'AND' },
     custom: { indicators: [], activeTab: 'system' },
-    factor: { weights: {} },
     panels: { collapsed: {} },
   });
 

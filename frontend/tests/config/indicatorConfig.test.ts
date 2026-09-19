@@ -3,9 +3,7 @@ import {
   MARKET_INDICATORS,
   FINANCIAL_INDICATORS,
   TECHNICAL_INDICATORS,
-  FACTOR_CONFIG,
   type IndicatorItem,
-  type FactorItem,
 } from '@/features/stock-picker/config/indicatorConfig';
 
 describe('indicatorConfig', () => {
@@ -85,46 +83,6 @@ describe('indicatorConfig', () => {
     it('field 为 undefined（技术指标由配置面板单独管理，无单一后端字段）', () => {
       TECHNICAL_INDICATORS.forEach((indicator) => {
         expect(indicator.field).toBeUndefined();
-      });
-    });
-  });
-
-  describe('FACTOR_CONFIG', () => {
-    it('权重和为 100', () => {
-      const totalWeight = FACTOR_CONFIG.reduce(
-        (sum: number, f: FactorItem) => sum + f.defaultWeight,
-        0
-      );
-      expect(totalWeight).toBe(100);
-    });
-
-    it('每个因子有 id/label/defaultWeight/color 字段', () => {
-      FACTOR_CONFIG.forEach((factor: FactorItem) => {
-        expect(factor).toHaveProperty('id');
-        expect(factor).toHaveProperty('label');
-        expect(factor).toHaveProperty('defaultWeight');
-        expect(factor).toHaveProperty('color');
-        expect(typeof factor.id).toBe('string');
-        expect(typeof factor.label).toBe('string');
-        expect(typeof factor.defaultWeight).toBe('number');
-      });
-    });
-
-    it('color 是有效的 6 位 hex 值', () => {
-      FACTOR_CONFIG.forEach((factor) => {
-        expect(factor.color).toMatch(/^#[0-9A-Fa-f]{6}$/);
-      });
-    });
-
-    it('id 唯一', () => {
-      const ids = FACTOR_CONFIG.map((f) => f.id);
-      expect(new Set(ids).size).toBe(ids.length);
-    });
-
-    it('defaultWeight 在 0-100 之间', () => {
-      FACTOR_CONFIG.forEach((factor) => {
-        expect(factor.defaultWeight).toBeGreaterThanOrEqual(0);
-        expect(factor.defaultWeight).toBeLessThanOrEqual(100);
       });
     });
   });

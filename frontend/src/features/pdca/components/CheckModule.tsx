@@ -62,9 +62,15 @@ const CheckModule: React.FC = () => {
         if (reportData !== null) {
           setReport(reportData);
           setReportContent(reportData?.report_content || '');
+        } else {
+          // 新周期无复盘报告时清空上一周期残留（K 2026-09-19：切换周期显示旧周期内容）
+          setReport(null);
+          setReportContent('');
         }
         if (summaryData !== null) {
           setExecSummary(summaryData);
+        } else {
+          setExecSummary(null);
         }
       } catch (err: unknown) {
         if (!fetchingRef.current) return;  // 请求已过期，忽略错误

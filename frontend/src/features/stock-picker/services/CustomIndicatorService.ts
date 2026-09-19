@@ -14,6 +14,7 @@
  */
 
 import { getCustomIndicatorRunner } from '@/features/strategy-backtest/utils/customIndicatorRunner';
+import { inferMarketKey } from '@/features/watchlist/utils/stock-utils';
 import type { CustomIndicator } from '../types/customIndicator';
 
 // ==================== 类型定义 ====================
@@ -252,7 +253,11 @@ export class CustomIndicatorService {
       }
 
       try {
-        const resp = await fetch(`/api/snapshot/all?codes=${codes.join(',')}`, { signal });
+        // 按候选 codes 推断市场（.HK→hk / 字母→us / 否则 cn）并显式传 market：
+        // /api/snapshot/all 缺省按 cn 过滤，港股/美股候选不传会全部被后端剔除（K 2026-09-19 港股自编指标筛 0 只）
+        const mk = codes.length > 0 ? inferMarketKey(codes[0]) : undefined;
+        const marketParam = mk && mk !== 'cn' ? `&market=${mk}` : '';
+        const resp = await fetch(`/api/snapshot/all?codes=${codes.join(',')}${marketParam}`, { signal });
         // 数据刷新/加载中：等待后端就绪后重置重试计数，重新发起本轮请求
         if (resp.status === 503) {
           const ready = await this.waitReady(OHLCV_READY_WAIT_MS, signal);

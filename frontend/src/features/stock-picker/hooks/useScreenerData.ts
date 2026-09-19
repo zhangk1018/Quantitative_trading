@@ -159,7 +159,10 @@ function computeMaxLookback(
     }
   }
 
-  return values.length > 0 ? Math.max(...values) : 30;
+  // 加安全余量（+5）：指标公式往往需要「最大周期+1」根数据才能产生首个非零值
+  // （如 MA5 需 range(5, n) 至少 n=6），仅按公式最大数字切片会导致全部算出 0
+  // 被过滤（K 2026-09-19：港股自编指标「港股核心量比/close>ma5」选股 0 只）。
+  return (values.length > 0 ? Math.max(...values) : 30) + 5;
 }
 
 /** 分批拉取最大轮次保护（200只/批 × 50批 = 10000只上限） */

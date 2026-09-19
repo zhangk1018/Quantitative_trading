@@ -10,7 +10,6 @@ import {
 import { MARKET_CONFIG, STOCK_RANGE_OPTIONS } from '../config/marketConfig';
 import {
   PATTERN_INDICATORS,
-  FACTOR_CONFIG,
   DEFAULT_LOOKBACK_DAYS,
   type PanelKey,
   type TechnicalOptionValue,
@@ -80,10 +79,6 @@ interface CustomState {
   activeTab: 'system' | 'custom';
 }
 
-interface FactorState {
-  weights: Record<string, number>;
-}
-
 interface PanelState {
   collapsed: Record<PanelKey, boolean>;
 }
@@ -96,7 +91,6 @@ export interface ScreenerState {
   patterns: PatternState;
   condition: ConditionState;
   custom: CustomState;
-  factor: FactorState;
   panels: PanelState;
 }
 
@@ -150,8 +144,6 @@ type CustomAction =
   | { type: 'SET_INDICATOR_TAB'; payload: 'system' | 'custom' }
   | { type: 'IMPORT_CUSTOM_INDICATORS'; payload: CustomIndicator[] };
 
-type FactorAction = { type: 'SET_FACTOR_WEIGHT'; payload: { factorId: string; weight: number } };
-
 type PanelAction = { type: 'TOGGLE_PANEL'; payload: PanelKey };
 
 type ResetAction = { type: 'RESET_ALL' };
@@ -166,7 +158,6 @@ export type ScreenerAction =
   | PatternAction
   | ConditionAction
   | CustomAction
-  | FactorAction
   | PanelAction
   | ResetAction
   | LoadStrategyAction;
@@ -439,22 +430,6 @@ function customReducer(state: CustomState, action: CustomAction): CustomState {
   }
 }
 
-function factorReducer(state: FactorState, action: FactorAction): FactorState {
-  switch (action.type) {
-    case 'SET_FACTOR_WEIGHT': {
-      const { factorId, weight } = action.payload;
-      if (weight < 0 || weight > 100) {
-        console.warn('[Screener] 权重超出范围 0-100');
-        return state;
-      }
-      if (state.weights[factorId] === weight) return state;
-      return { weights: { ...state.weights, [factorId]: weight } };
-    }
-    default:
-      return state;
-  }
-}
-
 function panelReducer(state: PanelState, action: PanelAction): PanelState {
   switch (action.type) {
     case 'TOGGLE_PANEL': {
@@ -483,7 +458,6 @@ const subReducerMap: SubReducerMap = {
   patterns: patternReducer,
   condition: conditionReducer,
   custom: customReducer,
-  factor: factorReducer,
   panels: panelReducer,
 };
 
@@ -517,7 +491,6 @@ const actionToSubReducer: Record<ScreenerAction['type'], keyof ScreenerState> = 
   REMOVE_CUSTOM_INDICATOR: 'custom',
   SET_INDICATOR_TAB: 'custom',
   IMPORT_CUSTOM_INDICATORS: 'custom',
-  SET_FACTOR_WEIGHT: 'factor',
   TOGGLE_PANEL: 'panels',
   RESET_ALL: 'panels',
   LOAD_STRATEGY: 'panels',
@@ -626,16 +599,12 @@ function createInitialState(preserveCustom = false): ScreenerState {
       indicators: preserveCustom ? [] : [],
       activeTab: 'system',
     },
-    factor: {
-      weights: FACTOR_CONFIG.reduce((acc, f) => ({ ...acc, [f.id]: f.defaultWeight }), {}),
-    },
     panels: {
       collapsed: {
         range: true,
         market: true,
         financial: true,
         technical: true,
-        factor: true,
         condition: false,
         pattern: true,
       },

@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 # 常量配置（集中管理）
 # ================================================================
 HISTORY_DAYS = 300
+RANGE_MAX_DAYS = 1500               # /api/snapshot/all 范围模式（start_date/end_date）自然日上限（协作单 40.0）
 FETCH_BATCH_SIZE = 10000
 CACHE_CHECK_INTERVAL = 10 * 60          # 缓存检查防抖：10分钟
 RELOAD_RETRY_COUNT = 3                  # 数据库重试次数
@@ -652,6 +653,60 @@ class SnapshotService:
             self._pool.putconn(conn)
 
     # ================================================================
+    # 范围模式 OHLCV 加载（协作单 40.0：/api/snapshot/all 按回测区间直查，绕过 300 天缓存）
+    # ================================================================
+    def _load_ohlcv_range(
+        self,
+        codes: List[str],
+        start_date: date,
+        end_date: date,
+    ) -> Dict[str, List[List[float]]]:
+        """按 codes + [start_date, end_date] 从 stock_quotes 直查 OHLCV（仅范围模式使用）。
+
+        与 `_load_raw_data` 的 bar 格式保持一致：[ts, open, high, low, close, volume]（6 列，
+        前端 fillPreClose 自行补第 7 列 pre_close）。服务端游标 + 向量化分组，无逐行循环。
+        """
+        conn = self._pool.getconn()
+        try:
+            ohlcv_dict: Dict[str, List[List[float]]] = {}
+            total_bars = 0
+            with conn.cursor(name="ohlcv_range_cursor") as cur:
+                cur.execute(
+                    """
+                    SELECT code,
+                           EXTRACT(EPOCH FROM trade_date) AS ts,
+                           open, high, low, close, volume
+                    FROM stock_quotes
+                    WHERE cycle = '1d'
+                      AND code = ANY(%s)
+                      AND trade_date BETWEEN %s AND %s
+                    ORDER BY code, trade_date
+                    """,
+                    (codes, start_date, end_date),
+                )
+                while True:
+                    batch = cur.fetchmany(FETCH_BATCH_SIZE)
+                    if not batch:
+                        break
+                    batch_df = pd.DataFrame(
+                        batch,
+                        columns=["code", "ts", "open", "high", "low", "close", "volume"],
+                    )
+                    for code, group in batch_df.groupby("code"):
+                        bars = group[["ts", "open", "high", "low", "close", "volume"]].fillna(0).values.tolist()
+                        if code in ohlcv_dict:
+                            ohlcv_dict[code].extend(bars)
+                        else:
+                            ohlcv_dict[code] = bars
+                        total_bars += len(bars)
+                    del batch_df
+                    gc.collect()
+            logger.info("📊 范围 OHLCV 加载完成：%d 只股票，%d 条K线", len(ohlcv_dict), total_bars)
+            return ohlcv_dict
+        finally:
+            self._pool.putconn(conn)
+
+    # ================================================================
     # 状态与辅助方法
     # ================================================================
     def _ensure_ready(self) -> None:
@@ -701,7 +756,8 @@ class SnapshotService:
     # 公开 API（入参校验完整）
     # ================================================================
     def get_all_snapshot(self, market: Optional[str] = None, board: Optional[str] = None, industry: Optional[str] = None,
-                         codes: Optional[List[str]] = None) -> SnapshotAllData:
+                         codes: Optional[List[str]] = None,
+                         start_date: Optional[str] = None, end_date: Optional[str] = None) -> SnapshotAllData:
         if board is not None and board not in BOARD_VALUES:
             raise ValueError(f"board 参数无效，允许值: {BOARD_VALUES}")
         if industry is not None:
@@ -709,6 +765,15 @@ class SnapshotService:
                 raise ValueError("industry 必须为字符串且长度不超过100")
             if not industry.isalnum() and not all(c in "_- " for c in industry):
                 raise ValueError("industry 包含非法字符")
+
+        # 范围模式（协作单 40.0）：start_date/end_date 任一传入时，按 [start_date, end_date]
+        # 对 codes 候选池直查 stock_quotes，返回区间内 OHLCV 与 trade_dates（回测早期区间不再被
+        # 300 天缓存窗口截断）。缺省（均未传）保持现状：使用 300 天缓存，选股等现有调用无回归。
+        if start_date is not None or end_date is not None:
+            return self._get_all_snapshot_range(
+                market=market, board=board, industry=industry, codes=codes,
+                start_date=start_date, end_date=end_date,
+            )
 
         self._ensure_ready()
         # 延迟加载 OHLCV（首次 API 请求时按需加载，避免启动内存峰值）
@@ -742,6 +807,63 @@ class SnapshotService:
                 ts = float(bar[OHLCV_TIME])
                 date_str = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
                 date_set.add(date_str)
+            stocks.append(self._build_stock_snapshot(code, row, ohlcv))
+
+        trade_dates = sorted(date_set)
+        return SnapshotAllData(
+            latest_trade_date=latest or '',
+            total=len(stocks),
+            trade_dates=trade_dates,
+            stocks=stocks,
+        )
+
+    def _get_all_snapshot_range(self, market: Optional[str], board: Optional[str], industry: Optional[str],
+                                codes: Optional[List[str]], start_date: Optional[str], end_date: Optional[str]) -> SnapshotAllData:
+        """范围模式实现（协作单 40.0）：codes 候选池 + [start_date, end_date] 直查 stock_quotes。
+
+        仅对传入 codes 拉取区间 OHLCV（O(K)，避免全市场全量加载），快照元数据仍复用
+        `_snapshot_cache`（最新交易日行，与缺省路径同口径）；trade_dates 由区间 K 线推导。
+        """
+        if not codes:
+            raise ValueError("start_date/end_date 模式必须同时传入 codes（候选池），避免全市场全量拉取")
+        try:
+            start = datetime.strptime(start_date, '%Y-%m-%d').date() if start_date else None
+            end = datetime.strptime(end_date, '%Y-%m-%d').date() if end_date else None
+        except ValueError:
+            raise ValueError("start_date/end_date 格式必须为 YYYY-MM-DD")
+
+        self._ensure_ready()
+        with self._state_lock:
+            snapshot_cache = self._snapshot_cache
+            latest = self._latest_trade_date
+        if end is None:
+            end = datetime.strptime(latest[:10], '%Y-%m-%d').date() if latest else datetime.now().date()
+        if start is None:
+            start = end - timedelta(days=HISTORY_DAYS)
+        if start > end:
+            raise ValueError("start_date 不能晚于 end_date")
+        if (end - start).days > RANGE_MAX_DAYS:
+            raise ValueError(f"日期区间超过上限 {RANGE_MAX_DAYS} 天，请缩小范围")
+
+        ohlcv_range = self._load_ohlcv_range(list(dict.fromkeys(codes)), start, end)
+        stocks = []
+        date_set = set()
+        for code in dict.fromkeys(codes):
+            ohlcv = ohlcv_range.get(code)
+            if not ohlcv:
+                continue
+            if market and infer_market(code) != market:
+                continue
+            row = snapshot_cache.get(code)
+            if row is None:
+                continue  # 与缺省路径口径一致：无最新快照行则跳过
+            if board and row.get('listed_board', '') != board:
+                continue
+            if industry and row.get('industry', '') != industry:
+                continue
+            for bar in ohlcv:
+                ts = float(bar[OHLCV_TIME])
+                date_set.add(datetime.fromtimestamp(ts).strftime('%Y-%m-%d'))
             stocks.append(self._build_stock_snapshot(code, row, ohlcv))
 
         trade_dates = sorted(date_set)

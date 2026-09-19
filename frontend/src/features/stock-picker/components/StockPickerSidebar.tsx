@@ -6,7 +6,6 @@ import IndicatorFilter from './IndicatorFilter';
 import FinancialFilter from './FinancialFilter';
 import TechnicalFilter from './TechnicalFilter';
 import ConditionBuilder from './ConditionBuilder';
-import FactorScoringConfig from './FactorScoringConfig';
 
 interface StockPickerSidebarProps {
   loading: boolean;
@@ -17,7 +16,7 @@ interface StockPickerSidebarProps {
 /**
  * 选股器左侧筛选面板
  *
- * 包含所有筛选组件（RangeSelector / IndicatorFilter / FinancialFilter / TechnicalFilter / ConditionBuilder / FactorScoringConfig）
+ * 包含所有筛选组件（RangeSelector / IndicatorFilter / FinancialFilter / TechnicalFilter / ConditionBuilder）
  * 底部固定开始选股 & 重置按钮
  */
 export const StockPickerSidebar: React.FC<StockPickerSidebarProps> = React.memo(({
@@ -32,7 +31,6 @@ export const StockPickerSidebar: React.FC<StockPickerSidebarProps> = React.memo(
       <FinancialFilter />
       <TechnicalFilter />
       <ConditionBuilder />
-      <FactorScoringConfig />
     </div>
     <div className="p-3 border-t border-border-color bg-bg-panel">
       <div className="flex gap-2">
