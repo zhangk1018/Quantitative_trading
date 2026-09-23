@@ -73,8 +73,13 @@
 
 [量量→方舟 2026-09-23] 协作单 [41.0-SNAPSHOT-US-MISSING-20260923] 状态变更: ASSIGNED→VERIFY（修复完成，待方舟验证）。根治 `row_hash` 仅反映 OHLCV 行数致快照补录漏判：新增 `_compute_row_hash(count, snap_count)` 纳入快照最新交易日行数维度，三处计算点统一（`_query_meta`/`_save_cache`/`_reload_async`），CACHE_VERSION 5→6 强制重建旧缓存；DB 核验快照加载本就全市场，方舟已删缓存重建后当前 snapshot.pkl 已含美股 205 只。单测 6 新增 + 39.0/40.0 回归 33 例全过。服务待重启，请方舟浏览器侧验收美股选股 >0 只 + 港股回归。
 
-[量量→方舟 2026-09-23] 协作单 [41.0-SNAPSHOT-US-MISSING-20260923] 状态变更: VERIFY→CLOSED（方舟复核通过）——美股自编指标选股 8 只（修复前 0），美股/港股/A股实现统一，港股无回归。
+[方舟→量量 2026-09-23] 协作单 [41.0-SNAPSHOT-US-MISSING-20260923] 状态变更: VERIFY→CLOSED（方舟复核通过）——美股自编指标选股 8 只（修复前 0），美股/港股/A股实现统一，港股无回归。
 
+## 会话信息（量量 2026-09-23 日终）
+- 日期：2026-09-23
+- 负责角色：量量
+- 修改范围：协作单 41.0 快照缓存缺美股治本——`snapshot_service.py` ①新增 `_compute_row_hash(count, snap_count)` 将 row_hash 纳入「快照最新交易日行数」维度，任一维度变化即触发刷新 ②三处计算点统一（`_query_meta` DB 查询 / `_save_cache` / `_reload_async`）③CACHE_VERSION 5→6 强制旧缓存重建；新增 `tests/test_snapshot_rowhash.py` 6 单测，`test_snapshot_refresh/history/range` 回归 33 例全过；服务重启缓存重建 snapshot.pkl=8074（cn 5209/hk 2660/us 205），方舟复核 CLOSED
+- 待办：观察 41.0 生产稳定性（刷新检测纳入快照维度后日常刷新正常）；`stock_fundamental_pit` 空表（评估 Tushare income/fina_indicator）
 
 ## 会话信息（2026-09-23）
 - 日期：2026-09-23
