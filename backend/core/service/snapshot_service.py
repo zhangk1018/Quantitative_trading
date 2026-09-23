@@ -57,7 +57,7 @@ CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "cache")
 OHLCV_CACHE_FILE = os.path.join(CACHE_DIR, "ohlcv.pkl")
 SNAPSHOT_CACHE_FILE = os.path.join(CACHE_DIR, "snapshot.pkl")
 CACHE_META_FILE = os.path.join(CACHE_DIR, "cache_meta.json")
-CACHE_VERSION = 5                       # v5: _load_from_db + _load_raw_data 新增 pre_close 字段
+CACHE_VERSION = 6                       # v6: row_hash 纳入快照维度（协作单 41.0，旧缓存不兼容需重建）
 
 # HMAC 密钥（生产环境应通过环境变量注入）
 HMAC_KEY = os.environ.get("CACHE_HMAC_KEY", "change_me_in_production").encode()
@@ -161,6 +161,19 @@ class SnapshotService:
         logger.info("SnapshotService 初始化完成，数据后台加载中...")
 
     # ================================================================
+    # 缓存状态哈希（纳入 OHLCV 与快照两个维度，协作单 41.0）
+    # ================================================================
+    @staticmethod
+    def _compute_row_hash(count: int, snap_count: int) -> str:
+        """行数哈希，同时反映 stock_quotes（OHLCV）与 stock_daily_snapshot（快照）的变化。
+
+        修复协作单 41.0：此前 row_hash 仅基于 OHLCV 行数，导致"仅快照补录
+        （如美股 205 只）而 OHLCV 行数未变"时刷新检测漏判，快照缓存滞留旧数据。
+        现纳入快照维度（最新交易日行数），任一变化即触发缓存重建。
+        """
+        return hashlib.md5(f"{count}:{snap_count}".encode()).hexdigest()
+
+    # ================================================================
     # 元数据查询（轻量级，仅查询最新交易日和行数哈希）
     # ================================================================
     def _query_meta(self) -> Tuple[str, str, int]:
@@ -181,7 +194,13 @@ class SnapshotService:
                       AND trade_date <= %s
                 """, (latest, f'{HISTORY_DAYS} days', latest))
                 count = cur.fetchone()[0]
-                row_hash = hashlib.md5(str(count).encode()).hexdigest()
+                # 快照维度：最新交易日全市场行数（无 market 过滤，快照缓存本就含 cn/hk/us）
+                cur.execute(
+                    "SELECT COUNT(*) FROM stock_daily_snapshot WHERE trade_date = %s",
+                    (latest,),
+                )
+                snap_count = cur.fetchone()[0]
+                row_hash = self._compute_row_hash(count, snap_count)
                 return latest, row_hash, count
         finally:
             self._pool.putconn(conn)
@@ -294,7 +313,7 @@ class SnapshotService:
         self._write_with_signature(OHLCV_CACHE_FILE, ohlcv_bytes)
         self._write_with_signature(SNAPSHOT_CACHE_FILE, snap_bytes)
 
-        row_hash = hashlib.md5(str(count).encode()).hexdigest()
+        row_hash = self._compute_row_hash(count, len(snapshot))
         meta = {
             "version": CACHE_VERSION,
             "latest_trade_date": latest,
@@ -568,7 +587,7 @@ class SnapshotService:
             snap_bytes = pickle.dumps(new_snapshot)
             self._write_with_signature(OHLCV_CACHE_FILE, ohlcv_bytes)
             self._write_with_signature(SNAPSHOT_CACHE_FILE, snap_bytes)
-            row_hash_new = hashlib.md5(str(count).encode()).hexdigest()
+            row_hash_new = self._compute_row_hash(count, len(new_snapshot))
             meta = {
                 "version": CACHE_VERSION,
                 "latest_trade_date": latest,
