@@ -25,12 +25,20 @@ def verify_access_key(provided: str) -> bool:
     return hmac.compare_digest(provided.encode("utf-8"), settings.access_key.encode("utf-8"))
 
 
-def create_session_token() -> str:
-    """签发 JWT 会话 token（仅含过期时间，密钥不落 token）。"""
+def create_session_token(sub: str, ver: int) -> str:
+    """签发 JWT 会话 token，携带用户身份与 token 版本。
+
+    Args:
+        sub: 用户名（JWT subject）。
+        ver: users.token_version，改密/重置/禁用时递增使旧会话失效。
+
+    Returns:
+        编码后的 JWT 字符串。
+    """
     if not settings.session_secret:
         raise ValueError("API_SESSION_SECRET 未配置，无法签发会话")
     expire = datetime.now(timezone.utc) + timedelta(seconds=settings.auth_cookie_max_age)
-    payload = {"exp": expire}
+    payload = {"sub": sub, "ver": int(ver), "exp": expire}
     return jwt.encode(payload, settings.session_secret, algorithm=_ALGORITHM)
 
 

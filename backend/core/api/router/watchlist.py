@@ -6,12 +6,13 @@ router/watchlist.py - 自选股 CRUD 路由
 """
 
 import logging
-from fastapi import APIRouter, Query, Path, HTTPException
+from fastapi import APIRouter, Depends, Path, HTTPException
 from typing import Optional
 
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from core.api.dependencies import CurrentUser, get_current_user
 from core.api.models.schemas import ApiResponse
 from collector.db.database import get_db_session
 from utils.stock_code_utils import normalize_db_code, normalize_code
@@ -52,9 +53,10 @@ class WatchlistUpdateRequest(BaseModel):
 
 @router.get("/", summary="获取自选股列表")
 def get_watchlist(
-    user_id: str = Query("default", description="用户ID"),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    """获取用户自选股列表，按 sort_order 升序排列"""
+    """获取当前登录用户自选股列表，按 sort_order 升序排列"""
+    user_id = current_user.username
     try:
         with get_db_session() as db:
             result = db.execute(
@@ -87,14 +89,15 @@ def get_watchlist(
 @router.post("/", summary="添加自选股")
 def add_watchlist(
     body: WatchlistAddRequest,
-    user_id: str = Query("default", description="用户ID"),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """
     添加股票到自选股。
 
     - code 自动归一化为库内代码（A股6位 / 港股 0001.HK / 美股 AAPL），并按市场存储
-    - 重复添加返回 409 冲突
+    - 按当前登录用户隔离，重复添加返回 409 冲突
     """
+    user_id = current_user.username
     # 归一化 + 推断市场：A股剥 .SH/.SZ/.BJ，港股/美股原样
     db_code, market = normalize_db_code(body.code)
     # A股需满足 6 位数字规则（保留旧严格校验），港/美按原样接受
@@ -168,9 +171,10 @@ def add_watchlist(
 @router.delete("/{code}", summary="移除自选股")
 def delete_watchlist(
     code: str = Path(..., description="股票代码（A股6位 / 港股0001.HK / 美股AAPL）"),
-    user_id: str = Query("default", description="用户ID"),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    """从自选股中移除指定股票"""
+    """从当前登录用户自选股中移除指定股票"""
+    user_id = current_user.username
     # 归一化 + 推断市场（与添加口径一致）
     db_code, market = normalize_db_code(code)
     if market == 'cn' and normalize_code(code) is None:
@@ -205,9 +209,10 @@ def delete_watchlist(
 def update_watchlist(
     body: WatchlistUpdateRequest,
     code: str = Path(..., description="股票代码（A股6位 / 港股0001.HK / 美股AAPL）"),
-    user_id: str = Query("default", description="用户ID"),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
-    """更新自选股的分组名称或排序序号"""
+    """更新当前登录用户自选股的分组名称或排序序号"""
+    user_id = current_user.username
     # 归一化 + 推断市场（与添加口径一致）
     db_code, market = normalize_db_code(code)
     if market == 'cn' and normalize_code(code) is None:

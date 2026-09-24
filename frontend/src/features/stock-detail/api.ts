@@ -1,5 +1,6 @@
 // src/features/stock-detail/api.ts
 import axios from 'axios';
+import { attachSessionWatcher } from '@/features/auth/session';
 
 // ==================== 1. 通用响应结构 ====================
 interface ApiResponse<T> {
@@ -165,6 +166,9 @@ export interface StockDetailInfo {
 
 // ==================== 3. API 封装 ====================
 const api = axios.create({ baseURL: '/api', withCredentials: true });
+
+// 会话失效（401 unauthenticated）统一捕获 → 踢下线跳登录
+attachSessionWatcher(api);
 
 export const fetchStocks = async (
   params: StockListParams = {},

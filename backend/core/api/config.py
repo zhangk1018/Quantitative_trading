@@ -46,13 +46,20 @@ class APISettings(BaseSettings):
         description="日志格式"
     )
     
-    # 认证配置（单密钥门禁 + HttpOnly Cookie）
+    # 认证配置（多用户账号体系 + HttpOnly Cookie）
     auth_enabled: bool = Field(default=True, description="是否启用认证门禁")
-    access_key: str = Field(default="", description="登录访问密钥（API_ACCESS_KEY）")
+    access_key: str = Field(default="", description="兼容旧版门禁访问密钥（API_ACCESS_KEY，可保留）")
     session_secret: str = Field(default="", description="JWT 签名密钥（API_SESSION_SECRET）")
     auth_cookie_name: str = Field(default="access_token", description="会话 Cookie 名")
     auth_cookie_max_age: int = Field(default=2592000, description="会话有效期（秒，默认 30 天）")
     auth_cookie_secure: bool = Field(default=False, description="Cookie Secure 属性（生产 HTTPS 置 True）")
+
+    # 多用户账号体系配置
+    admin_username: str = Field(default="admin", description="首启 bootstrap 创建的初始管理员用户名（API_ADMIN_USERNAME）")
+    admin_password: str = Field(default="", description="初始管理员密码（API_ADMIN_PASSWORD），为空则跳过自动创建")
+    auth_allow_register: bool = Field(default=False, description="是否开放自助注册（API_AUTH_ALLOW_REGISTER），默认关闭")
+    register_rate_limit: int = Field(default=10, description="同 IP 注册限流：滑动窗口允许次数（默认 10 次/窗口）")
+    register_rate_window: int = Field(default=3600, description="注册限流滑动窗口（秒，默认 1 小时）")
     
     class Config:
         env_file = ".env"

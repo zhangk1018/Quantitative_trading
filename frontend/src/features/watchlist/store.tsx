@@ -5,10 +5,14 @@
  * - customGroups: 用户自建的分组名列表
  * - stocks: { groupName: [code, ...] } — 分组 → 股票代码列表
  * - 系统分组（全部/沪深/港股/美股）由代码派生存算，不持久化
+ *
+ * 多账号（协作单 42.0）：存储键按登录账号命名空间隔离（`watchlist:<username>`），
+ * A/B 账号互不可见；多账号改造前的全局键 `watchlist` 由管理员首次登录承接一次。
  */
 
 import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
 import { SYSTEM_GROUPS, SYSTEM_GROUP_SET, detectMarketGroup, isValidStockCode } from './utils/stock-utils';
+import { useOptionalAuth } from '@/features/auth/AuthContext';
 
 export { SYSTEM_GROUP_SET, detectMarketGroup };
 export type { SystemGroup } from './utils/stock-utils';
@@ -16,8 +20,20 @@ export type { SystemGroup } from './utils/stock-utils';
 // ============================================
 // Storage key & schema version
 // ============================================
-const STORAGE_KEY = 'watchlist';
+/** 多账号改造前的全局键（无账号维度），仅管理员首次登录承接一次 */
+const LEGACY_STORAGE_KEY = 'watchlist';
+const STORAGE_KEY_PREFIX = 'watchlist:';
 const STORAGE_VERSION = 1;
+
+/** 按账号取存储键（未启用认证门禁时回退老全局键） */
+export function storageKeyFor(username: string): string {
+  return username ? `${STORAGE_KEY_PREFIX}${username}` : LEGACY_STORAGE_KEY;
+}
+
+/** 空数据结构 */
+function emptyStorage(): WatchlistStorage {
+  return { version: STORAGE_VERSION, customGroups: [], stocks: {} };
+}
 
 // ============================================
 // 持久化结构
@@ -28,14 +44,14 @@ interface WatchlistStorage {
   stocks: Record<string, string[]>;
 }
 
-function loadStorage(): WatchlistStorage {
+function loadStorage(storageKey: string): WatchlistStorage {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (raw) {
       const parsed = JSON.parse(raw);
       // Schema 校验：版本号不匹配或结构无效时降级为空
       if (!parsed || typeof parsed.version !== 'number' || parsed.version !== STORAGE_VERSION) {
-        return { version: STORAGE_VERSION, customGroups: [], stocks: {} };
+        return emptyStorage();
       }
       return {
         version: STORAGE_VERSION,
@@ -46,24 +62,42 @@ function loadStorage(): WatchlistStorage {
   } catch {
     console.warn('[Watchlist] localStorage 读取自选股数据失败，使用空数据');
   }
-  return { version: STORAGE_VERSION, customGroups: [], stocks: {} };
+  return emptyStorage();
 }
 
-function saveStorage(data: WatchlistStorage): void {
+function saveStorage(storageKey: string, data: WatchlistStorage): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(storageKey, JSON.stringify(data));
   } catch (e) {
     console.warn('Failed to save watchlist to localStorage', e);
   }
 }
 
+/**
+ * 承接多账号改造前的全局键数据（仅管理员首次登录调用一次）。
+ * 承接后删除老键，避免其它账号读到管理员的自选股。
+ */
+function takeLegacyStorage(): WatchlistStorage | null {
+  const legacy = loadStorage(LEGACY_STORAGE_KEY);
+  if (legacy.customGroups.length === 0 && Object.keys(legacy.stocks).length === 0) {
+    return null;
+  }
+  try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  } catch {
+    console.warn('[Watchlist] 清理旧全局自选股键失败');
+  }
+  return legacy;
+}
+
 // ============================================
 // Bridge: 同步旧后端数据 → localStorage
-// 首次加载时读取旧接口数据，写入 localStorage
+// 某账号首次加载且本地无数据时读取该账号的后端自选股
+// （后端按会话身份隔离，故只取当前登录账号的数据）
 // ============================================
 async function migrateFromBackend(): Promise<WatchlistStorage | null> {
   try {
-    const resp = await fetch('/api/watchlist/?user_id=default');
+    const resp = await fetch('/api/watchlist/');
     const json = await resp.json();
     if (json.code === 200 && Array.isArray(json.data) && json.data.length > 0) {
       const stocks: Record<string, string[]> = {};
@@ -84,9 +118,8 @@ async function migrateFromBackend(): Promise<WatchlistStorage | null> {
         if (!stocks[market].includes(code)) stocks[market].push(code);
       }
       const customGroups = Object.keys(stocks).filter((g) => !SYSTEM_GROUP_SET.has(g));
-      const data: WatchlistStorage = { version: STORAGE_VERSION, customGroups, stocks };
-      saveStorage(data);
-      return data;
+      // 持久化由 Provider 统一按账号键写入
+      return { version: STORAGE_VERSION, customGroups, stocks };
     }
   } catch {
     console.warn('[Watchlist] 后端数据迁移失败，使用本地数据');
@@ -102,10 +135,13 @@ interface WatchlistState {
   stocks: Record<string, string[]>;
   loading: boolean;
   migrated: boolean;
+  /** 当前 state 对应的账号存储键（切账号时用于阻止串写） */
+  loadedFor: string | null;
 }
 
 type WatchlistAction =
-  | { type: 'LOAD'; payload: WatchlistStorage }
+  | { type: 'LOAD'; payload: WatchlistStorage; loadedFor: string }
+  | { type: 'RESET' }
   | { type: 'ADD_STOCK'; payload: { code: string; groupName: string } }
   | { type: 'BATCH_ADD_STOCKS'; payload: { codes: string[]; groupName: string } }
   | { type: 'REMOVE_FROM_GROUP'; payload: { code: string; groupName: string } }
@@ -119,12 +155,23 @@ export const INITIAL_STATE: WatchlistState = {
   stocks: {},
   loading: true,
   migrated: false,
+  loadedFor: null,
 };
 
 export function watchlistReducer(state: WatchlistState, action: WatchlistAction): WatchlistState {
   switch (action.type) {
     case 'LOAD':
-      return { ...state, ...action.payload, loading: false, migrated: true };
+      return {
+        ...state,
+        ...action.payload,
+        loading: false,
+        migrated: true,
+        loadedFor: action.loadedFor,
+      };
+
+    // 切换账号：清空内存态，避免上一账号数据被短暂展示/串写
+    case 'RESET':
+      return { ...INITIAL_STATE };
 
     case 'ADD_STOCK': {
       const { code, groupName } = action.payload;
@@ -326,43 +373,62 @@ export function useWatchlist(): WatchlistContextValue {
 // Provider
 // ============================================
 export function WatchlistProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(watchlistReducer, {
-    customGroups: [],
-    stocks: {},
-    loading: true,
-    migrated: false,
-  });
-  const migratedRef = useRef(false);
+  // 账号隔离：按当前登录用户名取存储键
+  // - 无 AuthProvider（纯本地/单测）与未启用认证门禁 → 老全局键
+  // - 登录态未解析/未登录 → 空键（先不加载不持久化，避免暂用老全局键造成串号）
+  const auth = useOptionalAuth();
+  const isAdmin = auth?.user?.role === 'admin';
+  const username = auth?.user?.username ?? '';
+  const storageKey = !auth
+    ? LEGACY_STORAGE_KEY
+    : auth.authDisabled
+      ? LEGACY_STORAGE_KEY
+      : username
+        ? storageKeyFor(username)
+        : '';
 
-  const persist = useCallback((s: WatchlistState) => {
-    saveStorage({ version: STORAGE_VERSION, customGroups: s.customGroups, stocks: s.stocks });
-  }, []);
+  const [state, dispatch] = useReducer(watchlistReducer, INITIAL_STATE);
+  const loadedKeyRef = useRef<string | null>(null);
 
-  // 初始化：从 localStorage 加载，或从后端迁移
+  // 初始化/切换账号：加载该账号本地数据；无数据时先承接管理员的老全局键，再回落到后端迁移
   useEffect(() => {
-    if (migratedRef.current) return;
-    migratedRef.current = true;
-    (async () => {
-      const local = loadStorage();
-      if (local.customGroups.length > 0 || Object.keys(local.stocks).length > 0) {
-        dispatch({ type: 'LOAD', payload: local });
-      } else {
-        const migrated = await migrateFromBackend();
-        if (migrated) {
-          dispatch({ type: 'LOAD', payload: migrated });
-        } else {
-          dispatch({ type: 'LOAD', payload: { version: STORAGE_VERSION, customGroups: [], stocks: {} } });
-        }
+    if (!storageKey || loadedKeyRef.current === storageKey) return;
+    loadedKeyRef.current = storageKey;
+    dispatch({ type: 'RESET' });
+
+    const deliver = (data: WatchlistStorage) => {
+      // 只在仍停留在该账号键时派发，避免切换账号过程中的旧请求串号
+      if (loadedKeyRef.current === storageKey) {
+        dispatch({ type: 'LOAD', payload: data, loadedFor: storageKey });
       }
-    })();
-  }, []);
+    };
 
-  // 状态变化时持久化
+    (async () => {
+      const local = loadStorage(storageKey);
+      if (local.customGroups.length > 0 || Object.keys(local.stocks).length > 0) {
+        deliver(local);
+        return;
+      }
+      // 多账号改造前的老全局数据：仅管理员首次承接（方案 §6.1 老数据归首个 admin）
+      const legacy = username && isAdmin ? takeLegacyStorage() : null;
+      if (legacy) {
+        deliver(legacy);
+        return;
+      }
+      deliver((await migrateFromBackend()) ?? emptyStorage());
+    })();
+  }, [storageKey, username, isAdmin]);
+
+  // 状态变化时持久化（仅当 state 对应当前账号键，避免切号瞬间串写）
   useEffect(() => {
-    if (state.migrated) {
-      persist(state);
+    if (storageKey && state.migrated && state.loadedFor === storageKey) {
+      saveStorage(storageKey, {
+        version: STORAGE_VERSION,
+        customGroups: state.customGroups,
+        stocks: state.stocks,
+      });
     }
-  }, [state.customGroups, state.stocks, state.migrated, persist]);
+  }, [state.customGroups, state.stocks, state.migrated, state.loadedFor, storageKey]);
 
   const allGroups = [
     ...SYSTEM_GROUPS.filter((g) => state.stocks[g] && state.stocks[g].length > 0),
@@ -456,9 +522,9 @@ export function WatchlistProvider({ children }: { children: React.ReactNode }) {
   );
 
   const refresh = useCallback(() => {
-    const local = loadStorage();
-    dispatch({ type: 'LOAD', payload: local });
-  }, []);
+    const local = loadStorage(storageKey);
+    dispatch({ type: 'LOAD', payload: local, loadedFor: storageKey });
+  }, [storageKey]);
 
   return (
     <WatchlistContext.Provider value={{ state, allGroups, addOne, addMany, removeOne, removeMany, createGroup, deleteGroup, refresh }}>

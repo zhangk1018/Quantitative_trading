@@ -14,6 +14,9 @@ import psycopg2
 from psycopg2 import pool as pg_pool
 from fastapi import Depends, HTTPException, Request
 from jose import JWTError
+from sqlalchemy import text as sa_text
+from sqlalchemy.exc import SQLAlchemyError
+from collector.db.database import get_db_session
 from collector.db.loader import DataLoader
 from collector.db.loader import get_loader as _collector_get_loader  # 多市场 loader 工厂（避免与下方 cn get_loader 重名）
 from utils.stock_code_utils import normalize_db_code, infer_market, to_display_code
@@ -257,21 +260,80 @@ def validate_board(board: Optional[str]) -> Optional[str]:
     return b
 
 # ============================================
-# 认证依赖（单密钥门禁 + HttpOnly Cookie）
+# 认证依赖（多用户账号 + HttpOnly Cookie）
 # ============================================
-def get_current_user(request: Request) -> None:
-    """校验会话 Cookie，未认证抛 401。
+@dataclass
+class CurrentUser:
+    """当前登录用户（由 get_current_user 每请求从 DB 查询得出，不写进 JWT）。"""
 
-    通过 FastAPI 依赖注入挂载到业务路由；登录/登出/探活接口不挂载。
-    auth_enabled=False 时门禁关闭，直接放行。
+    username: str
+    role: str
+    is_active: bool
+    token_version: int
+
+
+def _unauthorized(code: str, message: str) -> HTTPException:
+    """构造带业务 code 的 401（前端据此区分「未认证」与「密码错」等语义）。"""
+    return HTTPException(status_code=401, detail={"code": code, "message": message})
+
+
+def get_current_user(request: Request) -> Optional[CurrentUser]:
+    """校验会话 Cookie 并从 DB 查询当前用户。
+
+    每请求执行 `SELECT ... FROM users WHERE username = token.sub`，校验：
+    - 用户存在 && is_active && token.ver == token_version，否则 401。
+    - DB 连接故障返回 503（避免把基础设施故障误报成认证失败）。
+    返回当前用户对象（含 role，供 require_admin 判权限，零额外查询）。
+
+    Returns:
+        认证成功返回 CurrentUser；auth_enabled=False 时返回 None 放行。
     """
     if not settings.auth_enabled:
         return None
     token = request.cookies.get(settings.auth_cookie_name)
     if not token:
-        raise HTTPException(status_code=401, detail="未认证，请先登录")
+        raise _unauthorized("unauthenticated", "未认证，请先登录")
     try:
-        decode_session_token(token)
+        payload = decode_session_token(token)
     except JWTError:
-        raise HTTPException(status_code=401, detail="会话无效或已过期")
-    return None
+        raise _unauthorized("unauthenticated", "会话无效或已过期，请重新登录")
+    username = payload.get("sub")
+    ver = payload.get("ver")
+    if not username or ver is None:
+        raise _unauthorized("unauthenticated", "会话缺少用户身份，请重新登录")
+    try:
+        with get_db_session() as db:
+            row = db.execute(
+                sa_text("SELECT username, role, is_active, token_version "
+                        "FROM users WHERE username = :username"),
+                {"username": username},
+            ).fetchone()
+    except SQLAlchemyError as exc:
+        logger.error("[auth] DB 查询失败：%s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "db_unavailable", "message": "认证服务暂时不可用，请稍后重试"},
+        )
+    if not row:
+        raise _unauthorized("unauthenticated", "账号不存在，请重新登录")
+    role, is_active, token_version = row[1], row[2], int(row[3])
+    if not is_active:
+        raise _unauthorized("disabled", "账号已被禁用，请联系管理员")
+    if token_version != int(ver):
+        raise _unauthorized("unauthenticated", "会话已失效（密码已修改或账号被重置），请重新登录")
+    return CurrentUser(
+        username=row[0],
+        role=role,
+        is_active=is_active,
+        token_version=token_version,
+    )
+
+
+def require_admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """要求当前用户为 admin，否则 403。基于 get_current_user 返回值判断，零额外查询。"""
+    if current_user is None or current_user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "forbidden", "message": "无管理员权限"},
+        )
+    return current_user

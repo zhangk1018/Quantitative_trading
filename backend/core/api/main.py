@@ -24,6 +24,7 @@ load_dotenv(os.path.join(_project_root, ".env"))
 
 from core.api.config import settings
 from core.api.dependencies import init_pg_pool, close_pg_pool, get_loader, get_screener_service, get_snapshot_service, get_current_user
+from core.api.bootstrap import bootstrap_auth
 from core.api.router import auth, meta, stocks, kline, signals, monitor, watchlist, snapshot, fx
 from core.api.router.pdca import router as pdca_router
 from utils.logger import configure_root_logging
@@ -45,6 +46,9 @@ async def lifespan(app: FastAPI):
 
     # 1. 初始化数据库连接池
     init_pg_pool()
+
+    # 1.1 多用户账号 bootstrap：建初始 admin + 迁移老自选股归属
+    bootstrap_auth()
 
     # 2. 预加载基础行情数据
     loader = get_loader()
@@ -100,7 +104,8 @@ app.include_router(stocks.router, prefix="/api/stocks", tags=["股票筛选"], d
 app.include_router(kline.router, prefix="/api/kline", tags=["K线数据"], dependencies=_auth_deps)
 app.include_router(signals.router, prefix="/api/signals", tags=["买卖信号"], dependencies=_auth_deps)
 app.include_router(monitor.router, prefix="/api", tags=["数据监控"], dependencies=_auth_deps)
-app.include_router(watchlist.router, prefix="/api/watchlist", tags=["自选股管理"], dependencies=_auth_deps)
+# 自选股按账号隔离，各 handler 内部依赖 get_current_user（不挂 router 级，避免重复查库）
+app.include_router(watchlist.router, prefix="/api/watchlist", tags=["自选股管理"])
 app.include_router(snapshot.router, prefix="/api/snapshot", tags=["全量快照"], dependencies=_auth_deps)
 app.include_router(fx.router, prefix="/api/fx", tags=["汇率"], dependencies=_auth_deps)
 app.include_router(pdca_router, dependencies=_auth_deps)

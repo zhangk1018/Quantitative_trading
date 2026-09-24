@@ -1,9 +1,10 @@
 import React from 'react';
-import { Layout, Typography, Space } from 'antd';
+import { Layout, Typography, Space, Dropdown, Avatar, Tag, Modal, message } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { DashboardOutlined, StockOutlined, StarOutlined, LineChartOutlined, SettingOutlined, ExperimentOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { DashboardOutlined, StockOutlined, StarOutlined, LineChartOutlined, SettingOutlined, ExperimentOutlined, CheckCircleOutlined, UserOutlined, LogoutOutlined, SafetyOutlined, TeamOutlined, DownOutlined } from '@ant-design/icons';
 import { ScreenerProvider } from '@/features/stock-picker/context/ScreenerContext';
 import { WatchlistProvider } from '@/features/watchlist/store';
+import { useAuth } from '@/features/auth/AuthContext';
 
 const { Header, Content } = Layout;
 const { Text } = Typography;
@@ -11,6 +12,7 @@ const { Text } = Typography;
 const AppLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, isAdmin, authDisabled, logout } = useAuth();
 
   const menuItems = [
     { key: '/picker', icon: <StockOutlined />, label: '选股视图' },
@@ -19,9 +21,42 @@ const AppLayout: React.FC = () => {
     { key: '/strategy-backtest', icon: <ExperimentOutlined />, label: '策略回测' },
     { key: '/pdca', icon: <CheckCircleOutlined />, label: '交易室' },
     { key: '/config', icon: <SettingOutlined />, label: '系统配置' },
+    // 管理员页入口按 role 控制（非 admin 不显示）
+    ...(isAdmin ? [{ key: '/users', icon: <TeamOutlined />, label: '用户管理' }] : []),
   ];
 
   const selectedKey = location.pathname;
+
+  const displayName = user?.display_name || user?.username || (authDisabled ? '认证未启用' : '未登录');
+
+  const handleLogout = () => {
+    Modal.confirm({
+      title: '退出登录',
+      content: '确认退出当前账号？',
+      okText: '退出',
+      cancelText: '取消',
+      onOk: async () => {
+        await logout();
+        message.success('已退出登录');
+        navigate('/login', { replace: true });
+      },
+    });
+  };
+
+  const userMenuItems = [
+    { key: 'change-password', icon: <SafetyOutlined />, label: '修改密码' },
+    ...(isAdmin ? [{ key: 'users', icon: <TeamOutlined />, label: '用户管理' }] : []),
+    { type: 'divider' as const },
+    { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
+  ];
+
+  const onUserMenuClick = ({ key }: { key: string }) => {
+    if (key === 'logout') {
+      handleLogout();
+      return;
+    }
+    navigate(`/${key}`);
+  };
 
   return (
     // K 2026-06-17 决策：ScreenerProvider 上移到 AppLayout 层，让 /config 和 /picker
@@ -69,8 +104,20 @@ const AppLayout: React.FC = () => {
           </div>
         </div>
 
-        {/* 右侧：系统状态 */}
+        {/* 右侧：当前用户 + role + 账号操作 */}
         <Space size="middle" className="text-text-secondary text-sm flex-shrink-0">
+          <Dropdown menu={{ items: userMenuItems, onClick: onUserMenuClick }} trigger={['click']}>
+            <div className="flex items-center gap-2 cursor-pointer px-2 py-1 rounded hover:bg-bg-card/60" data-testid="topbar-user">
+              <Avatar size={24} icon={<UserOutlined />} className="bg-bg-card" />
+              <Text className="text-text-primary">{displayName}</Text>
+              {user && (
+                <Tag color={isAdmin ? 'blue' : 'default'} className="!mr-0">
+                  {isAdmin ? '管理员' : '普通用户'}
+                </Tag>
+              )}
+              <DownOutlined className="text-xs" />
+            </div>
+          </Dropdown>
         </Space>
       </Header>
 
