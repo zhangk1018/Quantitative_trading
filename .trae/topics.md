@@ -111,3 +111,9 @@
 - 负责角色：方舟
 - 修改范围：协作单 42.0 多用户账号体系**前台部分**实施 + **后台验收复核**——新增 `frontend/src/features/auth/{api,session,AuthContext,Login,Register,ChangePassword,UsersAdmin}`（11 接口客户端/会话失效统一捕获(401 unauthenticated|disabled, axios+fetch)/`/auth/me` 缓存/登录注册改密页/管理员页+防自锁）；改造 `App.tsx`(AuthProvider 上移)、`router.tsx`(守卫用缓存登录态 + AdminGuard)、`AppLayout.tsx`(顶栏用户+role+登出+管理员入口)、`watchlist/{api,store}.tsx`(去 user_id=default + 存储键按账号 `watchlist:<username>` 隔离)；新增 54 例单测全过、tsc 0 错误、全量回归零新增失败；浏览器端到端 + live API 完成前台验收 1~6 与后台验收 1~6；发现并推动后台 P1 缺陷（logout 未清 Cookie）修复，复核通过后 42.0 **CLOSED** 并归档（39.0/40.0/41.0 一并归档）
 - 待办：①观察多用户体系实际使用（K 建号/分配角色）；②`.env` 的 `API_ADMIN_PASSWORD` 与库中 admin 当前口令不一致（bootstrap 仅首建读取，不影响运行），建议对齐；③复核 logout-all 递增了 admin `token_version`，此前浏览器会话需重登；④5 个既有失败前端测试（CustomIndicatorManager/CustomIndicatorModal/ImportExportButtons/StrategyLoadingAndScreening/useBacktestWorker）待修复；⑤temp/ 下有两个一次性复核脚本（auth_api_verify_20260924.sh、verify_42_logout_fix.py），按规矩可由周末清理
+
+## 会话信息（2026-09-24）
+- 日期：2026-09-24
+- 负责角色：量量
+- 修改范围：协作单 42.0 多用户账号体系**后台部分**实施 + REOPENED 缺陷修复——新增 `backend/core/api/{passwords.py,bootstrap.py}`、`V014_add_users.sql`(users+migration_flags)、`tests/{test_auth.py,test_watchlist_isolation.py}`；改造 `security.py`(token 带 sub/ver)、`config.py`(admin/注册开关/限流)、`dependencies.py`(get_current_user 每请求查 DB + require_admin + DB 故障 503)、`router/auth.py`(11 接口 + 401/403 code + 内存限流)、`router/watchlist.py`(按账号隔离)、`main.py`(lifespan bootstrap)。修复方舟提单的 P1：`logout`/`logout-all` 未下发清 Cookie 头（根因：FastAPI 注入的 Response 被新建对象替换致 headers 丢弃）；落地服务端防自锁 `400 cannot_modify_self`；契约校准（403 disabled / cannot_modify_self / 信封状态码口径）。另按 K 指示轮换 `API_SESSION_SECRET`。单测 31 例全过；服务已重启，live 全链路回归通过；量量以 API 视角验证前台契约消费正确。42.0 经方舟独立复核后 **CLOSED**，本日看板已无进行中工单
+- 待办：①对齐 `.env` 的 `API_ADMIN_PASSWORD` 与库中 admin 实际口令（bootstrap 仅首建读取，不影响运行）；②跟进 `stock_fundamental_pit` 空表（评估 Tushare income/fina_indicator）；③注册开关开启态未做浏览器实测（由 4 例前端单测 + API 视角核对覆盖），如需实测需临时改 `.env` + 重启后端
