@@ -235,7 +235,8 @@ describe('useBacktestWorker - 生命周期', () => {
     });
 
     expect(result.current.isRunning).toBe(false);
-    expect(onError).toHaveBeenCalledWith('Worker 异常崩溃');
+    // hook 会带上 Worker 上报的具体错误信息（便于定位崩溃原因）
+    expect(onError).toHaveBeenCalledWith('Worker 异常崩溃: Worker 崩溃');
   });
 });
 

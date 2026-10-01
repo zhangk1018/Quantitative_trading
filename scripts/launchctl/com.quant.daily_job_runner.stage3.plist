@@ -5,8 +5,13 @@
     <key>Label</key>
     <string>com.quant.daily-job-runner.stage3</string>
 
+    <!-- caffeinate 包裹：任务运行期间阻止系统休眠，避免休眠导致触发延迟/进程被冻结（2026-10-01 美股事故） -->
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
+        <string>-s</string>
+        <string>--</string>
         <string>/Volumes/MyData/Quantitative_trading/venv/bin/python</string>
         <string>/Volumes/MyData/Quantitative_trading/backend/cron/daily_job_runner.py</string>
         <string>--stage</string>

@@ -10,9 +10,9 @@ import {
   type ScreenerState,
 } from '@/features/stock-picker/context/ScreenerContext';
 import { buildScreeningParams } from '@/features/stock-picker/utils/screener';
-import { FACTOR_CONFIG } from '@/features/stock-picker/config/indicatorConfig';
 
 // ============ 工具：构造初始 state ============
+// 注：K 2026-09-23 决策删除「因子打分配置」，ScreenerState 已无 factor 字段，此处同步移除
 function getInitialState(): ScreenerState {
   return {
     market: {
@@ -26,19 +26,12 @@ function getInitialState(): ScreenerState {
     patterns: { selected: {}, panelCollapsed: true },
     condition: { filterGroup: null, nextOp: 'AND' },
     custom: { indicators: [], activeTab: 'system' },
-    factor: {
-      weights: FACTOR_CONFIG.reduce(
-        (acc, f) => ({ ...acc, [f.id]: f.defaultWeight }),
-        {} as Record<string, number>,
-      ),
-    },
     panels: {
       collapsed: {
         range: true,
         market: true,
         financial: true,
         technical: true,
-        factor: true,
         condition: false,
         pattern: true,
       },

@@ -56,9 +56,12 @@ describe('ImportExcel Debug', () => {
 
   it('API direct call with axios works', async () => {
     const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'test.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    // pdca axios client 的响应拦截器已自动解包信封（code=200 时直接返回 body.data），
+    // 故此处拿到的是 ImportParseResult 本体，而非 {code, data}
     const res = await parseImportExcel(file, 'ht');
-    expect(res.code).toBe(200);
-    expect(res.data.total_rows).toBe(6);
+    expect(res.total_rows).toBe(6);
+    expect(res.valid_rows).toBe(5);
+    expect(res.error_rows).toBe(1);
   });
 
   it('DOM after upload and parse', async () => {

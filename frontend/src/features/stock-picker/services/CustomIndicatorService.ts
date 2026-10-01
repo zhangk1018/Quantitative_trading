@@ -337,6 +337,15 @@ export class CustomIndicatorService {
       return emptyResult;
     }
 
+    // 候选股全部无 K 线时（后端 /api/snapshot/all 未覆盖该市场，如快照缓存按单一最新交易日加载
+    // 导致最新快照日滞后的市场整市缺失），脚本对每只股票只会算出空值 → 静默返回 0 只，
+    // 与"选股条件太严"混为一谈（K 2026-09-29：沪深自编指标全部选不出股票）。
+    // 此处显式抛错，由调用方转成用户可见提示。
+    const codesWithBars = stockCodes.filter((c) => (ohlcvMap.get(c)?.length ?? 0) > 0);
+    if (codesWithBars.length === 0) {
+      throw new Error('候选股票均无K线数据（行情快照缺失），自编指标无法计算，请稍后重试');
+    }
+
     const runner = getCustomIndicatorRunner();
     if (!runner.isReady()) {
       await runner.init();

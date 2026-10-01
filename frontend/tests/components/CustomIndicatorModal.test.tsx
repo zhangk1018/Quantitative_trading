@@ -282,11 +282,12 @@ describe('CustomIndicatorModal - 字段插入按钮', () => {
     const user = userEvent.setup();
     renderModal();
     // Monaco 已被 mock，executeEdits 会触发 onChange 追加文本
+    // 注：V1.1 起公式统一为 numpy 签名，close 字段插入文本为 close_prices（不再是 close[stock_idx]）
     const closeBtn = screen.getByTestId('custom-indicator-modal-insert-close');
     await user.click(closeBtn);
     await waitFor(() => {
       const editor = getFormulaEditor();
-      expect(editor.value).toContain('close[stock_idx]');
+      expect(editor.value).toContain('close_prices');
     });
   });
 
@@ -393,8 +394,12 @@ describe('CustomIndicatorModal - 提交逻辑', () => {
     renderModal({ onConfirm });
     await user.type(getNameInput(), '我的指标');
     const editor = getFormulaEditor();
+    // V1.1 公式需定义 calculate(open_prices, high_prices, low_prices, close_prices, volumes) 签名，
+    // 旧写法（如 'close > 0'）会被签名校验拦截 → onConfirm 不触发
+    const validFormula =
+      'def calculate(open_prices, high_prices, low_prices, close_prices, volumes):\n    return [0] * len(close_prices)';
     // 直接 fireEvent.change（比 user.type 快）
-    fireEvent.change(editor, { target: { value: 'close > 0' } });
+    fireEvent.change(editor, { target: { value: validFormula } });
     await waitFor(() => {
       expect(getConfirmButton()).not.toBeDisabled();
     });
@@ -403,7 +408,7 @@ describe('CustomIndicatorModal - 提交逻辑', () => {
       expect(onConfirm).toHaveBeenCalledWith(
         expect.objectContaining({
           name: '我的指标',
-          formula: 'close > 0',
+          formula: validFormula,
           syntax: 'python_talib',
         }),
       );

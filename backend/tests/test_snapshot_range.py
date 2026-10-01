@@ -27,6 +27,7 @@ def _make_service() -> SnapshotService:
     svc._ohlcv_cache = {}
     svc._snapshot_cache = {}
     svc._latest_trade_date = '2026-09-18'
+    svc._market_latest = {'cn': '2026-09-18'}
     svc._cached_row_hash = 'stub'
     svc._ready = True
     svc._loading = False

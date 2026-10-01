@@ -57,7 +57,7 @@ CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "cache")
 OHLCV_CACHE_FILE = os.path.join(CACHE_DIR, "ohlcv.pkl")
 SNAPSHOT_CACHE_FILE = os.path.join(CACHE_DIR, "snapshot.pkl")
 CACHE_META_FILE = os.path.join(CACHE_DIR, "cache_meta.json")
-CACHE_VERSION = 6                       # v6: row_hash 纳入快照维度（协作单 41.0，旧缓存不兼容需重建）
+CACHE_VERSION = 7                       # v7: 快照按各市场各自最新交易日加载（协作单 43.0，旧缓存不兼容需重建）
 
 # HMAC 密钥（生产环境应通过环境变量注入）
 HMAC_KEY = os.environ.get("CACHE_HMAC_KEY", "change_me_in_production").encode()
@@ -130,6 +130,8 @@ class SnapshotService:
         self._ohlcv_cache: Dict[str, List[List[float]]] = {}
         self._snapshot_cache: Dict[str, dict] = {}
         self._latest_trade_date: Optional[str] = None
+        # 各市场各自最新交易日 {market: date}（协作单 43.0，快照按此加载）
+        self._market_latest: Dict[str, str] = {}
         self._cached_row_hash: Optional[str] = None
         self._ready = False
         self._loading = False
@@ -147,10 +149,11 @@ class SnapshotService:
 
         # 初始化元数据（不阻塞）
         try:
-            latest, row_hash, _ = self._query_meta()
+            latest, row_hash, _, market_latest = self._query_meta()
             with self._state_lock:
                 self._latest_trade_date = latest
                 self._cached_row_hash = row_hash
+                self._market_latest = market_latest
         except Exception as e:
             logger.error("初始元数据查询失败: %s", e)
 
@@ -164,28 +167,81 @@ class SnapshotService:
     # 缓存状态哈希（纳入 OHLCV 与快照两个维度，协作单 41.0）
     # ================================================================
     @staticmethod
-    def _compute_row_hash(count: int, snap_count: int) -> str:
+    def _compute_row_hash(count: int, snap_count: int,
+                          market_latest: Optional[Dict[str, str]] = None) -> str:
         """行数哈希，同时反映 stock_quotes（OHLCV）与 stock_daily_snapshot（快照）的变化。
 
         修复协作单 41.0：此前 row_hash 仅基于 OHLCV 行数，导致"仅快照补录
         （如美股 205 只）而 OHLCV 行数未变"时刷新检测漏判，快照缓存滞留旧数据。
         现纳入快照维度（最新交易日行数），任一变化即触发缓存重建。
+
+        修复协作单 43.0：快照改为按各市场"各自最新交易日"加载，故哈希再纳入
+        各市场日期签名。否则会出现「各市场日期整体前移、行数恰好不变 → 哈希不变
+        → 不刷新」的漏判（如 cn 由 9/25 前进到 9/28 且当日行数与 9/25 相同）。
         """
-        return hashlib.md5(f"{count}:{snap_count}".encode()).hexdigest()
+        signature = "|".join(
+            f"{m}={d}" for m, d in sorted((market_latest or {}).items())
+        )
+        return hashlib.md5(f"{count}:{snap_count}:{signature}".encode()).hexdigest()
+
+    @staticmethod
+    def _derive_market_latest(rows) -> Dict[str, str]:
+        """由已加载的快照行反推各市场最新交易日（与加载查询口径构造性一致）。
+
+        rows 需含 `market` / `trade_date` 列；供 `_load_from_db` / `_load_raw_data`
+        在加载后回填 `_market_latest`，避免哈希与元数据查询之间出现口径漂移。
+        """
+        result: Dict[str, str] = {}
+        for r in rows:
+            market = r.get("market")
+            if not market:
+                continue
+            d = str(r["trade_date"])
+            if market not in result or d > result[market]:
+                result[market] = d
+        return result
 
     # ================================================================
     # 元数据查询（轻量级，仅查询最新交易日和行数哈希）
     # ================================================================
-    def _query_meta(self) -> Tuple[str, str, int]:
-        """返回 (latest_trade_date, row_hash, count)"""
+    def _query_meta(self) -> Tuple[str, str, int, Dict[str, str]]:
+        """返回 (latest_trade_date, row_hash, count, market_latest)
+
+        - latest_trade_date：各市场最新交易日中的最大值（与旧版全局 MAX 语义一致，
+          用于 OHLCV 窗口上界与 API 回显），保证不早于任一市场的快照最新日；
+        - market_latest：{market: 该市场各自最新交易日}（协作单 43.0）。
+
+        修复协作单 43.0：此前 `SELECT MAX(trade_date)` 取全表单一日期，而快照加载
+        用等值日期过滤，导致「最新快照日 ≠ 全局 latest」的市场被整市剔除——
+        美股次日 08:30 才跑天然滞后一天、A 股遇节假日休市亦滞后，其自编指标选股
+        与回测均筛 0 只（表现为 /api/snapshot/all?market=us → total=0）。
+        """
         conn = self._pool.getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT MAX(trade_date) FROM stock_daily_snapshot")
-                row = cur.fetchone()
-                if not row or not row[0]:
+                # 快照维度：各市场各自最新交易日 + 该日行数（单条 CTE，避免多次往返）
+                cur.execute("""
+                    WITH m AS (
+                        SELECT market, MAX(trade_date) AS d
+                        FROM stock_daily_snapshot
+                        WHERE market IS NOT NULL
+                        GROUP BY market
+                    )
+                    SELECT m.market, m.d,
+                           (SELECT COUNT(DISTINCT s.code)
+                              FROM stock_daily_snapshot s
+                             WHERE s.market = m.market AND s.trade_date = m.d) AS cnt
+                    FROM m
+                    ORDER BY m.market
+                """)
+                meta_rows = cur.fetchall()
+                if not meta_rows:
                     raise RuntimeError("stock_daily_snapshot 表无数据")
-                latest = str(row[0])
+                market_latest: Dict[str, str] = {str(m): str(d) for m, d, _ in meta_rows}
+                latest = max(market_latest.values())
+                # 与 _snapshot_cache（按 code 去重的 dict）口径对齐，避免重复行导致
+                # 「哈希恒定不匹配 → 无限重建」
+                snap_count = sum(int(c or 0) for _, _, c in meta_rows)
 
                 cur.execute("""
                     SELECT COUNT(*) FROM stock_quotes
@@ -194,14 +250,9 @@ class SnapshotService:
                       AND trade_date <= %s
                 """, (latest, f'{HISTORY_DAYS} days', latest))
                 count = cur.fetchone()[0]
-                # 快照维度：最新交易日全市场行数（无 market 过滤，快照缓存本就含 cn/hk/us）
-                cur.execute(
-                    "SELECT COUNT(*) FROM stock_daily_snapshot WHERE trade_date = %s",
-                    (latest,),
-                )
-                snap_count = cur.fetchone()[0]
-                row_hash = self._compute_row_hash(count, snap_count)
-                return latest, row_hash, count
+
+                row_hash = self._compute_row_hash(count, snap_count, market_latest)
+                return latest, row_hash, count, market_latest
         finally:
             self._pool.putconn(conn)
 
@@ -268,6 +319,8 @@ class SnapshotService:
         with self._state_lock:
             self._snapshot_cache = snapshot
             self._latest_trade_date = meta["latest_trade_date"]
+            # 各市场最新交易日（协作单 43.0；旧版 meta 无此字段时回退空映射）
+            self._market_latest = meta.get("market_latest") or {}
             self._cached_row_hash = meta["row_count_hash"]
             self._load_time = time.time()
             self._ready = True
@@ -307,16 +360,18 @@ class SnapshotService:
             ohlcv = self._ohlcv_cache
             snapshot = self._snapshot_cache
             latest = self._latest_trade_date
+            market_latest = dict(self._market_latest)
         # 序列化并签名
         ohlcv_bytes = pickle.dumps(ohlcv)
         snap_bytes = pickle.dumps(snapshot)
         self._write_with_signature(OHLCV_CACHE_FILE, ohlcv_bytes)
         self._write_with_signature(SNAPSHOT_CACHE_FILE, snap_bytes)
 
-        row_hash = self._compute_row_hash(count, len(snapshot))
+        row_hash = self._compute_row_hash(count, len(snapshot), market_latest)
         meta = {
             "version": CACHE_VERSION,
             "latest_trade_date": latest,
+            "market_latest": market_latest,
             "row_count_hash": row_hash,
             "created_at": time.time(),
         }
@@ -378,23 +433,35 @@ class SnapshotService:
                     self._load_total = total_bars
                     self._load_progress = 1.0
 
-                # 加载快照
+                # 加载快照（协作单 43.0：按各市场"各自最新交易日"加载，
+                # 而非全表单一 MAX(trade_date)——滞后市场（美股次日 08:30 跑、
+                # A股节假日休市）否则会被整市剔除）
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute("""
+                        WITH m AS (
+                            SELECT market, MAX(trade_date) AS d
+                            FROM stock_daily_snapshot
+                            WHERE market IS NOT NULL
+                            GROUP BY market
+                        )
                         SELECT
-                            code, stock_name, listed_board, industry, trade_date,
-                            close, change_pct, market_cap, turnover_rate, pe_ttm, pb,
-                            ma5, ma10, ma20, ma60,
-                            rsi_6, rsi_12, rsi_24,
-                            dif, dea, macd,
-                            boll_upper, boll_mid, boll_lower,
-                            is_macd_golden_cross, is_macd_dead_cross
-                        FROM stock_daily_snapshot
-                        WHERE trade_date = %s
-                    """, (self._latest_trade_date,))
+                            s.code, s.stock_name, s.listed_board, s.industry, s.trade_date, s.market,
+                            s.close, s.change_pct, s.market_cap, s.turnover_rate, s.pe_ttm, s.pb,
+                            s.ma5, s.ma10, s.ma20, s.ma60,
+                            s.rsi_6, s.rsi_12, s.rsi_24,
+                            s.dif, s.dea, s.macd,
+                            s.boll_upper, s.boll_mid, s.boll_lower,
+                            s.is_macd_golden_cross, s.is_macd_dead_cross
+                        FROM stock_daily_snapshot s
+                        JOIN m ON m.market = s.market AND m.d = s.trade_date
+                    """)
                     rows = cur.fetchall()
                     self._snapshot_cache = {r["code"]: dict(r) for r in rows}
-                    logger.info("📋 快照加载完成：%d 只股票", len(self._snapshot_cache))
+                    market_latest = self._derive_market_latest(rows)
+                    with self._state_lock:
+                        self._market_latest = market_latest
+                    logger.info("📋 快照加载完成：%d 只股票（各市场最新日：%s）",
+                                len(self._snapshot_cache), market_latest)
 
                 # 数据一致性校验
                 missing_ohlcv = set(self._snapshot_cache.keys()) - set(self._ohlcv_cache.keys())
@@ -442,10 +509,11 @@ class SnapshotService:
         """主加载流程：尝试缓存，否则数据库加载，并原子切换双缓存"""
         # 先读取元数据（可能已存在）
         if self._latest_trade_date is None or self._cached_row_hash is None:
-            latest, row_hash, _ = self._query_meta()
+            latest, row_hash, _, market_latest = self._query_meta()
             with self._state_lock:
                 self._latest_trade_date = latest
                 self._cached_row_hash = row_hash
+                self._market_latest = market_latest
 
         # 尝试从缓存加载（缓存加载直接修改当前缓存，因为此时尚未对外服务）
         if self._is_cache_valid(self._latest_trade_date, self._cached_row_hash):
@@ -510,7 +578,7 @@ class SnapshotService:
 
         # 检查元数据是否变化
         try:
-            latest, row_hash, _ = self._query_meta()
+            latest, row_hash, _, market_latest = self._query_meta()
         except Exception as e:
             logger.warning("刷新检查查询元数据失败: %s", e)
             return
@@ -533,6 +601,7 @@ class SnapshotService:
                     with self._state_lock:
                         self._latest_trade_date = latest
                         self._cached_row_hash = row_hash
+                        self._market_latest = market_latest
                         self._loading = True
                         self._load_error = None
                     # 启动异步刷新线程
@@ -576,7 +645,7 @@ class SnapshotService:
                 # 但为了清晰，我们重新实现一段加载代码（略重复，但保持独立）
                 # 实际可抽取公共加载函数，但这里为了简洁，直接内联
                 # 为避免重复，我们调用一个私有方法 _load_raw_data()
-                new_ohlcv, new_snapshot = self._load_raw_data(latest)
+                new_ohlcv, new_snapshot, market_latest = self._load_raw_data(latest)
             finally:
                 self._pool.putconn(conn)
 
@@ -587,10 +656,11 @@ class SnapshotService:
             snap_bytes = pickle.dumps(new_snapshot)
             self._write_with_signature(OHLCV_CACHE_FILE, ohlcv_bytes)
             self._write_with_signature(SNAPSHOT_CACHE_FILE, snap_bytes)
-            row_hash_new = self._compute_row_hash(count, len(new_snapshot))
+            row_hash_new = self._compute_row_hash(count, len(new_snapshot), market_latest)
             meta = {
                 "version": CACHE_VERSION,
                 "latest_trade_date": latest,
+                "market_latest": market_latest,
                 "row_count_hash": row_hash_new,
                 "created_at": time.time(),
             }
@@ -602,6 +672,7 @@ class SnapshotService:
                 self._ohlcv_cache = new_ohlcv
                 self._snapshot_cache = new_snapshot
                 self._latest_trade_date = latest
+                self._market_latest = market_latest
                 self._cached_row_hash = row_hash_new
                 self._load_time = time.time()
                 self._ready = True
@@ -616,8 +687,8 @@ class SnapshotService:
                 # 保持旧缓存继续服务（_ready 保持不变）
             logger.error("刷新失败: %s", e, exc_info=True)
 
-    def _load_raw_data(self, latest_trade_date: str) -> Tuple[Dict[str, List[List[float]]], Dict[str, dict]]:
-        """加载原始数据，返回 (ohlcv_dict, snapshot_dict)"""
+    def _load_raw_data(self, latest_trade_date: str) -> Tuple[Dict[str, List[List[float]]], Dict[str, dict], Dict[str, str]]:
+        """加载原始数据，返回 (ohlcv_dict, snapshot_dict, market_latest)"""
         conn = self._pool.getconn()
         try:
             # 使用服务端游标流式读取（需要事务上下文）
@@ -654,20 +725,26 @@ class SnapshotService:
                     gc.collect()
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
+                    WITH m AS (
+                        SELECT market, MAX(trade_date) AS d
+                        FROM stock_daily_snapshot
+                        WHERE market IS NOT NULL
+                        GROUP BY market
+                    )
                     SELECT
-                        code, stock_name, listed_board, industry, trade_date,
-                        close, change_pct, market_cap, turnover_rate, pe_ttm, pb,
-                        ma5, ma10, ma20, ma60,
-                        rsi_6, rsi_12, rsi_24,
-                        dif, dea, macd,
-                        boll_upper, boll_mid, boll_lower,
-                        is_macd_golden_cross, is_macd_dead_cross
-                    FROM stock_daily_snapshot
-                    WHERE trade_date = %s
-                """, (latest_trade_date,))
+                        s.code, s.stock_name, s.listed_board, s.industry, s.trade_date, s.market,
+                        s.close, s.change_pct, s.market_cap, s.turnover_rate, s.pe_ttm, s.pb,
+                        s.ma5, s.ma10, s.ma20, s.ma60,
+                        s.rsi_6, s.rsi_12, s.rsi_24,
+                        s.dif, s.dea, s.macd,
+                        s.boll_upper, s.boll_mid, s.boll_lower,
+                        s.is_macd_golden_cross, s.is_macd_dead_cross
+                    FROM stock_daily_snapshot s
+                    JOIN m ON m.market = s.market AND m.d = s.trade_date
+                """)
                 rows = cur.fetchall()
                 snapshot_dict = {r["code"]: dict(r) for r in rows}
-            return ohlcv_dict, snapshot_dict
+            return ohlcv_dict, snapshot_dict, self._derive_market_latest(rows)
         finally:
             self._pool.putconn(conn)
 
@@ -802,6 +879,7 @@ class SnapshotService:
             snapshot_cache = self._snapshot_cache
             ohlcv_cache = self._ohlcv_cache
             latest = self._latest_trade_date
+            market_latest = dict(self._market_latest)
 
         code_set = set(codes) if codes else None
         stocks = []
@@ -827,6 +905,16 @@ class SnapshotService:
                 date_str = datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
                 date_set.add(date_str)
             stocks.append(self._build_stock_snapshot(code, row, ohlcv))
+
+        # 显式告警（协作单 43.0）：指定 market 且候选 codes 非空但命中 0，
+        # 是"快照缺该市场数据"的典型特征（如美股快照滞后被整市剔除），
+        # 不静默返回空结果（项目规则：异常显式化）。
+        if market and code_set and not stocks:
+            logger.warning(
+                "⚠️ /api/snapshot/all market=%s 指定 %d 只候选股但快照命中 0"
+                "（缓存各市场最新日: %s）",
+                market, len(code_set), market_latest,
+            )
 
         trade_dates = sorted(date_set)
         return SnapshotAllData(

@@ -82,7 +82,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 <div class="header">
   <div><h1>📊 量化系统监控看板</h1></div>
   <div class="header-actions">
-    <span id="autoRefreshIndicator" style="font-size:11px;color:var(--text-dim);">60s 自动刷新</span>
+    <span id="autoRefreshIndicator" style="font-size:11px;color:var(--text-dim);">2min 自动刷新</span>
     <button id="manualRefreshBtn">🔄 手动刷新</button>
   </div>
 </div>
@@ -284,12 +284,27 @@ function renderTaskChain(chain, market) {
   const totalCnt = tasks.length;
   $('taskChainTitle').textContent = `（${mkt}，${successCnt}/${totalCnt} 完成）`;
 
+  // 日线覆盖度「残日」提示：当日覆盖标的数 vs 近 20 交易日中位数（港/美股端点返回该字段；沪深无）
+  const cov = chain?.coverage;
+  let covHtml = '';
+  if (cov && cov.message) {
+    const covColor = cov.alert ? 'var(--red)' : 'var(--text-dim)';
+    const covText = (cov.count == null || cov.baseline_median == null)
+      ? `日线覆盖 ${cov.count ?? '--'}${cov.message ? `（${cov.message}）` : ''}`
+      : `日线覆盖 ${cov.count}/${cov.baseline_median} · ${cov.ratio}%`;
+    covHtml = `
+      <span style="margin-left:auto;font-size:12px;font-weight:${cov.alert ? 600 : 400};color:${covColor};"
+            title="${cov.message || ''}">${cov.alert ? '⚠️ 疑似残日 · ' : ''}${covText}</span>
+    `;
+  }
+
   let html = `
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;padding:8px 12px;background:var(--bg);border-radius:8px;border-left:3px solid ${overallColor};">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px;padding:8px 12px;background:var(--bg);border-radius:8px;border-left:3px solid ${overallColor};">
       <span style="font-size:16px;">${overallIcon}</span>
       <span style="font-size:13px;font-weight:600;color:${overallColor};">${overallLabel}</span>
       <span style="font-size:12px;color:var(--text-dim);">${successCnt}/${totalCnt} 任务完成</span>
-      <span style="margin-left:auto;font-size:12px;color:#64748b;">${date}</span>
+      ${covHtml}
+      <span style="font-size:12px;color:#64748b;${covHtml ? '' : 'margin-left:auto;'}">${date}</span>
     </div>
     <div class="pipeline-grid">
   `;
@@ -552,15 +567,18 @@ $('toggleQualityBtn')?.addEventListener('click', async function() {
   }
 });
 
-// ===== 自动刷新 60s =====
+// ===== 自动刷新 120s =====
+// 必须小于后端重查询端点的缓存 TTL（monitor.py HEAVY_CACHE_TTL_SECONDS=300），
+// 否则每次轮询都落在缓存过期之后、缓存形同失效（原 60s 轮询 == 60s TTL 即为此坑）。
+const AUTO_REFRESH_MS = 120000;
 function startAutoRefresh() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   autoRefreshTimer = setInterval(async () => {
     const indicator = $('autoRefreshIndicator');
     indicator.textContent = '刷新中...';
     await refreshAll();
-    indicator.textContent = '60s 自动刷新';
-  }, 60000);
+    indicator.textContent = '2min 自动刷新';
+  }, AUTO_REFRESH_MS);
 }
 
 // ===== 手动刷新 =====

@@ -169,14 +169,22 @@ describe('ImportExportButtons - 基础渲染', () => {
 // ============================================================================
 
 describe('ImportExportButtons - 导出', () => {
-  it('点击导出按钮创建 Blob URL 并触发下载', async () => {
+  it('点击导出 → 勾选弹窗（默认全选）确认后创建 Blob URL 并触发下载', async () => {
     const user = userEvent.setup();
-    // 预先 seed storage（exportCustomIndicators 实际从 storage 读取）
-    storage.saveCustomIndicator(makeIndicator({ id: undefined as any, name: '指标A' }) as any);
-    storage.saveCustomIndicator(makeIndicator({ id: undefined as any, name: '指标B' }) as any);
-    const indicators = [makeIndicator({ name: '指标A' }), makeIndicator({ name: '指标B' })];
-    renderButtons({ customIndicators: indicators });
+    // 组件现在先弹「选择要导出的自编指标」，确认后才下载；
+    // 且导出数量取 storage 中命中的条目 → 需保证 storage 与 props 的 id 一致
+    const { id: _idA, ...payloadA } = makeIndicator({ name: '指标A' });
+    const { id: _idB, ...payloadB } = makeIndicator({ name: '指标B' });
+    const indA = storage.saveCustomIndicator(payloadA);
+    const indB = storage.saveCustomIndicator(payloadB);
+    renderButtons({ customIndicators: [indA, indB] });
+
     await user.click(screen.getByTestId('import-export-export-btn'));
+
+    // 勾选弹窗打开，默认全选 2 条
+    const confirmBtn = await screen.findByTestId('import-export-export-confirm');
+    expect(confirmBtn).toHaveTextContent('导出（2 条）');
+    await user.click(confirmBtn);
 
     await waitFor(() => {
       expect(URL.createObjectURL).toHaveBeenCalled();

@@ -28,6 +28,15 @@ const Wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <App>{children}</App>
 );
 
+/**
+ * 保存按钮：必须按可访问名定位。
+ * 注意：表单内的「新增卖出」按钮同为 ant-btn-primary 且 DOM 位置更靠前，
+ * 用 document.querySelector('.ant-btn-primary') 会点错按钮（历史失败原因）。
+ */
+function getSaveButton(): HTMLElement {
+  return screen.getByRole('button', { name: /^保\s*存$/ });
+}
+
 const mockOnClose = vi.fn();
 const mockOnSuccess = vi.fn();
 
@@ -132,7 +141,7 @@ describe('TradingRecordForm', () => {
     await user.type(priceInput, '35.20');
 
     // 点击保存按钮（通过 Modal footer 中的 primary button）
-    const saveBtn = document.querySelector<HTMLButtonElement>('.ant-btn-primary')!;
+    const saveBtn = getSaveButton();
     await user.click(saveBtn);
 
     // 验证 onSuccess 在 API 成功后调用
@@ -159,7 +168,7 @@ describe('TradingRecordForm', () => {
     await screen.findByText('新增交易记录');
 
     // 点击保存按钮
-    const saveBtn = document.querySelector<HTMLButtonElement>('.ant-btn-primary')!;
+    const saveBtn = getSaveButton();
     await user.click(saveBtn);
 
     // 验证必填校验提示出现
@@ -199,7 +208,7 @@ describe('TradingRecordForm', () => {
     await user.type(priceInput, '35.20');
 
     // 点击保存
-    const saveBtn = document.querySelector<HTMLButtonElement>('.ant-btn-primary')!;
+    const saveBtn = getSaveButton();
     await user.click(saveBtn);
 
     // 验证 onSuccess 未被调用

@@ -28,7 +28,7 @@ import sys
 import argparse
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 import psycopg2
@@ -46,6 +46,9 @@ from collector.etl.market_download_common import (  # noqa: E402
     set_market_last_processed_code,
     resume_codes,
     rate_limit_sleep,
+    market_window_key,
+    trading_days_between,
+    coverage_gaps,
 )
 
 # 日志治理（见 .trae/rules/量化交易.md）：港股日线导入的逐只明细（清洗/写入/回退等）
@@ -61,6 +64,10 @@ CYCLE = '1d'
 ADJUST_TYPE = 'adj'            # stock_quotes 成交价列存的复权口径（adj_close=后复权）
 HOT = 'Asia/Hong_Kong'         # 港股收盘时区
 MARKET_CLOSE_HHMM = '16:00:00'  # 港股收盘时间（生成 trade_datetime）
+
+# 回写增量进度前的窗口覆盖度阈值：窗口内每个港股交易日入库标的数 / 港股标的总数
+# 低于该比例即判定「本轮未真正覆盖全市场」，不推进 last_sync_date（下次增量重跑补缺口）。
+COVERAGE_MIN_RATIO = 0.90
 
 # 港交所官方「Dividends & Other Entitlements」全市场除权除息名单（单请求，日更）。
 # 用于批量快照路径的**权威除权路由**：当日 Ex-Date（除净日）命中的股票无条件回退逐只
@@ -882,6 +889,78 @@ def _probe_src_latest(src: AkShareDataSource, end: str) -> str:
     return end
 
 
+def _hk_trading_days_in_window(src: AkShareDataSource, start: str, end_excl: str) -> Optional[Set[date]]:
+    """取 [start, end_excl) 半开区间内的港股真实交易日集合。
+
+    港股交易日以**数据源为准**（见 AkShareDataSource.download_hk_trade_dates），不得用
+    `weekday()` 或 A 股 trade_calendar 推断：港股有本地独有假日（佛诞/重阳/7·1/圣诞等），
+    且与 A 股日历不一致（如中秋：A 股休市、港股开市）。
+
+    Args:
+        src: AkShare 数据源适配器
+        start: 起始日期（YYYY-MM-DD，含）
+        end_excl: 结束日期（YYYY-MM-DD，不含）
+
+    Returns:
+        交易日集合；数据源探测失败返回 None（调用方须保守退回逐只路径）
+    """
+    return trading_days_between(src.download_hk_trade_dates(), start, end_excl)
+
+
+def _hk_trading_days_between(src: AkShareDataSource, start: str, end_incl: str) -> Optional[Set[date]]:
+    """取 [start, end_incl] **闭区间**内的港股真实交易日集合（用于窗口覆盖度校验）。
+
+    与 `_hk_trading_days_in_window` 的半开语义相对：窗口终点 end 当天本身也是需要校验
+    覆盖度的交易日（批量快照仅覆盖 end 当天），故此处包含 end。
+
+    Args:
+        src: AkShare 数据源适配器
+        start: 起始日期（YYYY-MM-DD，含）
+        end_incl: 结束日期（YYYY-MM-DD，含）
+
+    Returns:
+        交易日集合；数据源探测失败返回 None
+    """
+    end_excl = (datetime.strptime(end_incl, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+    return _hk_trading_days_in_window(src, start, end_excl)
+
+
+def _window_coverage_ok(conn: psycopg2.extensions.connection, days: Optional[Set[date]]) -> bool:
+    """校验窗口内每个港股交易日已入库覆盖率是否达标（防静默缺口）。
+
+    断点游标与回写 last_sync_date 组合下，被游标跳过的标的会**永久缺失**该窗口数据且
+    无任何报错（静默缺口）。故推进增量进度前必须逐交易日校验入库覆盖率：若不达标的
+    交易日存在，说明本轮未真正覆盖全市场，此时**不得**推进 last_sync_date（下次增量
+    重跑整个窗口补齐），并清空游标避免继续跳过。
+
+    Args:
+        conn: psycopg2 连接
+        days: 需要校验的港股交易日集合；None/空集（日历探测失败）视为不可校验
+
+    Returns:
+        True 表示全部达标（可安全推进 last_sync_date）；False 表示存在不达标交易日
+        或日历不可用（两种情况下调用方均不得推进进度）
+    """
+    if not days:
+        logger.warning('⚠️ 无待校验的港股交易日（日历探测失败），保守不推进增量进度')
+        return False
+    try:
+        gaps = coverage_gaps(conn, MARKET, days, COVERAGE_MIN_RATIO, CYCLE)
+    except psycopg2.DatabaseError as e:
+        logger.warning(f"⚠️ 窗口覆盖度校验失败（数据库错误），保守不推进进度: {e}")
+        return False
+    if gaps:
+        for d, n, ratio, total in gaps:
+            logger.warning(
+                f"⚠️ {d} 覆盖 {n}/{total}（{ratio:.1%}）低于阈值 "
+                f"{COVERAGE_MIN_RATIO:.0%}，本轮未完整覆盖该交易日"
+            )
+        return False
+    logger.info(f"✅ 窗口覆盖度校验通过：{sorted(str(d) for d in days)} "
+                f"均 ≥{COVERAGE_MIN_RATIO:.0%}")
+    return True
+
+
 def _window_is_single_day(src: AkShareDataSource, start: str, end: str) -> bool:
     """批量快照可用性判定：增量窗口是否仅覆盖最新单交易日 `end`。
 
@@ -889,9 +968,9 @@ def _window_is_single_day(src: AkShareDataSource, start: str, end: str) -> bool:
     交易日（即 last_sync 到数据源最新之间无待补缺口）时才启用批量路径；若期间跨了
     交易日但未同步（存在缺口），必须回退逐只拉取，避免静默跳过中间交易日造成数据缺口。
 
-    统一以批量快照源判定（与生产路径一致，逐只日线源滞后一天不可用）：
-    - 快照最新交易日 == end，且 [start, end) 内不含工作日（仅周末/节假日可跳过）→ 启用批量
-    - 快照不可用 / 最新日 ≠ end / 窗口内存在工作日缺口 → 保守逐只
+    统一以批量快照源 + **港股交易日历**判定（逐只日线源滞后一天不可用）：
+    - 快照最新交易日 == end，且 [start, end) 内不含港股交易日（仅周末/港股假日可跳过）→ 启用批量
+    - 快照不可用 / 最新日 ≠ end / 窗口内存在港股交易日缺口 / 日历探测失败 → 保守逐只
 
     Args:
         src: AkShare 数据源适配器
@@ -911,14 +990,13 @@ def _window_is_single_day(src: AkShareDataSource, start: str, end: str) -> bool:
         logger.warning(f"⚠️ 批量快照最新交易日 {latest} ≠ 窗口终点 {end}，"
                        f"需要补历史缺口，沿用逐只增量路径")
         return False
-    s = datetime.strptime(start, '%Y-%m-%d').date()
-    e = datetime.strptime(end, '%Y-%m-%d').date()
-    # [start, end) 内存在工作日 → 有交易日缺口，必须逐只补全
-    has_weekday = any((s + timedelta(days=i)).weekday() < 5
-                      for i in range(max(0, (e - s).days)))
-    if has_weekday:
-        logger.warning(f"⚠️ 增量窗口 {start}~{end} 内存在工作日（需补历史缺口），"
-                       f"沿用逐只增量路径")
+    gap_days = _hk_trading_days_in_window(src, start, end)
+    if gap_days is None:
+        logger.warning("⚠️ 港股交易日历探针不可用，无法判定窗口缺口，保守沿用逐只增量路径")
+        return False
+    if gap_days:
+        logger.warning(f"⚠️ 增量窗口 {start}~{end} 内存在港股交易日 "
+                       f"{sorted(str(d) for d in gap_days)}（需补历史缺口），沿用逐只增量路径")
         return False
     logger.info(f"⚡ 批量快照已覆盖最新交易日 {latest} 且窗口内无待补缺口，可启用批量快照")
     return True
@@ -945,18 +1023,22 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
 
     # 新浪切片为半开区间 [start, end)（不含 end），终点 +1 天以包含数据源最新交易日 end 当天
     end_excl = (datetime.strptime(end, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+    # 断点游标与日期窗口绑定：游标仅在窗口一致时可复用，避免跨窗口复用导致
+    # 被跳过的标的永久缺失该窗口数据（静默缺口）
+    window_key = market_window_key(start, end)
     codes = _list_hk_codes(conn) if not dry_run else ['700.HK']
     if limit:
         codes = codes[:limit]
 
     cfg = src.cfg
-    # 断点续传：加载游标，跳过已处理的标的
+    # 断点续传：加载游标，跳过已处理的标的（仅当游标属同一日期窗口）
     if not dry_run:
-        last_proc = get_market_last_processed_code(conn, MARKET)
+        last_proc = get_market_last_processed_code(conn, MARKET, window=window_key)
         if last_proc:
             before = len(codes)
             codes = resume_codes(codes, last_proc)
-            logger.info(f"🔁 断点续传：上次处理至 {last_proc}，跳过 {before - len(codes)} 只，剩余 {len(codes)} 只")
+            logger.info(f"🔁 断点续传：上次处理至 {last_proc}（窗口 {window_key}），"
+                        f"跳过 {before - len(codes)} 只，剩余 {len(codes)} 只")
 
     stats = {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0, 'max_trade_date': None}
     logger.info(f"🚀 [incremental] 增量导入 {len(codes)} 只港股，区间 {start} ~ {end}")
@@ -978,10 +1060,15 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
                 stats['quotes'] += batch['direct']
             stats['max_trade_date'] = end
             # 整批处理完，清断点游标并回写增量进度至数据源最新交易日
-            set_market_last_processed_code(conn, MARKET, None)
+            set_market_last_processed_code(conn, MARKET, None, window=window_key)
             if stats['quotes'] > 0:
-                set_last_sync_date(conn, end)
-                logger.info(f"📝 批量快照对齐后 last_sync_date 回写至 {end}")
+                # 覆盖度校验：快照仅覆盖 end 单日，仍须确认当日接近全市场（防部分缺失被当作已同步）
+                if _window_coverage_ok(conn, {datetime.strptime(end, '%Y-%m-%d').date()}):
+                    set_last_sync_date(conn, end)
+                    logger.info(f"📝 批量快照对齐后 last_sync_date 回写至 {end}")
+                else:
+                    logger.warning(f"⚠️ 批量快照当日覆盖度不达标，不推进 last_sync_date"
+                                   f"（保持 {last_str}），下次增量将重跑窗口补缺口")
             else:
                 logger.warning('⚠️ 批量快照直写为空（全部回退亦无价），保留原 last_sync_date')
             logger.info(f"✅ incremental(批量) 完成: 直写 {batch['direct']}")
@@ -1005,21 +1092,28 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
             logger.error(f"  {code}: 导入失败: {e}")
         # 限流：每个标处理后随机休眠，降低数据源请求频率（防「拉取为空」限流）
         rate_limit_sleep(cfg)
-        # 断点续传：回写当前已处理游标（中断后可从其之后继续）
+        # 断点续传：回写当前已处理游标（中断后可从其之后继续；窗口随游标一并落库）
         if not dry_run:
-            set_market_last_processed_code(conn, MARKET, code)
+            set_market_last_processed_code(conn, MARKET, code, window=window_key)
         if i % 50 == 0:
             logger.info(f"  进度 {i}/{len(codes)}")
     if not dry_run:
         # 整批遍历完，清空游标（本轮目标已处理完，下次运行重新从 batch 起点续日期窗口）
-        set_market_last_processed_code(conn, MARKET, None)
+        set_market_last_processed_code(conn, MARKET, None, window=window_key)
         # 仅在成功写入时才回写，且回写【实际覆盖的最后交易日】而非 date.today()：
         # 1) 失败轮次不回写，保留旧进度，下次增量可重试补缺口；
         # 2) 盘中/盘前未收盘时拉到的是前一交易日数据，回写实际覆盖日，避免把未来日期推进为已同步。
         if stats['quotes'] > 0:
             write_back = stats['max_trade_date'] or today
-            set_last_sync_date(conn, write_back)
-            logger.info(f"📝 本轮成功写入 {stats['quotes']} 条，last_sync_date 回写至 {write_back}")
+            # 覆盖度校验：游标跳过的标的会造成静默缺口，故仅当窗口内每个港股交易日
+            # 都已真正覆盖全市场时才推进进度；否则保持旧进度，下次增量重跑窗口补齐。
+            covered = _hk_trading_days_between(src, start, end)
+            if _window_coverage_ok(conn, covered):
+                set_last_sync_date(conn, write_back)
+                logger.info(f"📝 本轮成功写入 {stats['quotes']} 条，last_sync_date 回写至 {write_back}")
+            else:
+                logger.warning(f"⚠️ 窗口 {start}~{end} 覆盖度不达标，不推进 last_sync_date"
+                               f"（保持 {last_str}）；已清空游标，下次增量将重跑该窗口补齐缺口")
         else:
             logger.warning('⚠️ 本轮无成功写入，跳过回写 last_sync_date（保留旧进度，下次增量可重试补缺口）')
     logger.info(f"✅ incremental 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "

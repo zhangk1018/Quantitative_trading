@@ -1,0 +1,39 @@
+-- =====================================================================
+-- V017: 删除冗余索引 idx_quotes_market_code_date（被 V016 覆盖索引取代）
+-- 依赖方: V016 引入 idx_quotes_market_code_date_cycle 后的收尾清理（2026-09-29）
+-- =====================================================================
+-- 背景: V016 新增 idx_quotes_market_code_date_cycle (market, code, trade_date, cycle)，
+--       其前 3 列与既有 idx_quotes_market_code_date (market, code, trade_date) 完全相同
+--       → 旧索引沦为「严格前缀子集」，任何可由旧索引服务的访问路径都能由新索引
+--       等价（且更优）地服务：新索引对同一列序可做同样的 Index Scan，需要 cycle
+--       时还能转为 Index Only Scan 免回表。
+--
+-- 实测依据（2026-09-29，EXPLAIN ANALYZE BUFFERS，stock_quotes 69 个分区）:
+--   - 主要访问路径已改用新索引：
+--     · data-summary「近 730 天活跃股票数」COUNT(DISTINCT code)：2024/2025/2026
+--       三个分区均走 Index Only Scan using stock_quotes_YYYY_market_code_trade_date_cycle_idx
+--     · system_monitor 覆盖面（cn 最新日 COUNT(*)）：2026 分区走新索引 Index Only Scan
+--   - 剩余仍引用旧索引的分区（如 2024 分区在 system_monitor 计划中）均为
+--     「never executed」分支，实际不消耗
+--   - 旧索引在 pg_stat 中累计扫描数很高（38.48M，2024 分区 22.07M），但该计数
+--     跨重启持久化、时间跨度远长于新索引存在时长，不代表新索引无法承接；
+--     新索引上线约 1.5h 即累计 17.6 万次扫描，说明规划器已稳定选用
+--
+-- 收益: 释放约 513 MB 索引空间（旧 513 MB / 新 636 MB）；stock_quotes 每个分区
+--       由 13 个索引降为 12 个 → 每次 INSERT/UPDATE 少维护一个索引，ETL 写入
+--       （日线导入、回填）随之提速。新索引未新增列序，查询计划零回归。
+--
+-- 删除方式: 分区表只需 DROP 父索引，子分区索引由 PG 自动一并删除（PG 11+ 语义）。
+--   DROP INDEX 不做全表扫描，仅目录变更 + 文件 unlink，锁窗口为秒级
+--   （远小于 V016 CREATE INDEX 的 1~2 分钟），但仍会取 ACCESS EXCLUSIVE，
+--   建议避开 ETL 写入时段（16:30~19:00）执行。
+--   ⚠️ 回滚 = 重新 CREATE INDEX idx_quotes_market_code_date
+--      ON stock_quotes(market, code, trade_date)，需 1~2 分钟且再次取锁。
+--
+-- 遗留: stock_quotes 上另有若干候选冗余（idx_quotes_cycle_date 与
+--       idx_quotes_cycle_trade_date 列定义完全相同；idx_quotes_cycle 是它们的
+--       前缀等），本次不处理，另行评估（见 .trae/rules/ETL_PIPELINE.md）。
+--
+-- 数据库: PostgreSQL 18.6（stock_quotes 按年分区，共 69 个分区）
+-- =====================================================================
+DROP INDEX IF EXISTS public.idx_quotes_market_code_date;

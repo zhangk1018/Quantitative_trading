@@ -105,11 +105,16 @@ def _write_task_run_log(engine, status: str, data_date: str, rows_affected: int,
         logger.warning(f"写入 task_run_log 失败（不影响导出）: {e}")
 
 
-def export_to_parquet(market: str = 'cn'):
+def export_to_parquet(market: str = 'cn') -> bool:
     """按市场导出最新交易日数据到 Parquet 文件。
 
     Args:
         market: 市场标识（cn/hk/us），决定查询过滤与输出文件路径。
+
+    Returns:
+        True 表示导出成功；False 表示失败（连接失败 / 表为空 / 当日无数据 / 导出异常）。
+        失败须由调用方以非 0 退出码上报，否则 runner 会把失败当成功、既不重试也不告警
+        （2026-10-01 美股 Parquet 导出因 Cross-device link 失败即被掩盖）。
     """
     market = _validate_market(market)
     config = load_config()
@@ -123,7 +128,7 @@ def export_to_parquet(market: str = 'cn'):
     except Exception as e:
         logger.error(f"数据库连接失败: {e}")
         print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": {"error": "db_connect_failed", "detail": str(e)}})}')
-        return
+        return False
 
     try:
         with engine.connect() as conn:
@@ -139,7 +144,7 @@ def export_to_parquet(market: str = 'cn'):
                 _write_task_run_log(engine, "failed", "unknown", 0,
                                     f"stock_daily_snapshot 表为空（market={market}）")
                 print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": {"error": "empty_table", "market": market}})}')
-                return
+                return False
 
             print(f"📅 导出日期: {latest_date}（market={market}）")
 
@@ -155,7 +160,7 @@ def export_to_parquet(market: str = 'cn'):
                 _write_task_run_log(engine, "failed", str(latest_date), 0,
                                     f"{latest_date} 无数据（market={market}）")
                 print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": {"error": "no_data", "date": str(latest_date)}})}')
-                return
+                return False
 
             # 转换日期格式为YYYYMMDD
             df['trade_date'] = df['trade_date'].apply(lambda x: x.strftime('%Y%m%d') if x else '')
@@ -177,7 +182,7 @@ def export_to_parquet(market: str = 'cn'):
             data_date = "unknown"
         _write_task_run_log(engine, "failed", data_date, 0, f"{type(e).__name__}: {e}")
         print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": {"error": "export_failed", "detail": str(e)}})}')
-        return
+        return False
 
     # 导出成功：写入 task_run_log
     extra = {"columns": len(df.columns), "date": str(latest_date), "market": market}
@@ -194,6 +199,8 @@ def export_to_parquet(market: str = 'cn'):
     for col in sorted(pattern_cols):
         count = df[col].sum() if df[col].dtype in ['int64', 'bool'] else 0
         print(f"  - {col}: {count}")
+
+    return True
 
 
 def _rotate_backups(filepath: str):
@@ -216,4 +223,4 @@ if __name__ == '__main__':
     parser.add_argument('--market', default='cn', choices=SUPPORTED_MARKETS,
                         help='市场标识：cn（默认）/ hk / us')
     args = parser.parse_args()
-    export_to_parquet(market=args.market)
+    sys.exit(0 if export_to_parquet(market=args.market) else 1)

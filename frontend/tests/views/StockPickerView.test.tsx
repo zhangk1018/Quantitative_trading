@@ -358,8 +358,16 @@ describe('StockPickerView 集成测试（行情指标 + runScreening）', () => 
       const user = userEvent.setup();
       renderView();
 
+      // K 2026-09-23 决策：范围面板默认收起，且 Collapse 懒渲染面板内容
+      // → 需先展开「范围」面板才能点到市场 radio
+      const rangeHeader = Array.from(
+        document.querySelectorAll<HTMLElement>('.ant-collapse-header'),
+      ).find((h) => h.textContent?.includes('范围'));
+      expect(rangeHeader).toBeTruthy();
+      await user.click(rangeHeader!);
+
       // 点击"港股"radio（默认沪深），触发 SET_MARKET
-      await user.click(screen.getByText('港股'));
+      await user.click(await screen.findByText('港股'));
 
       await user.click(screen.getByTestId('start-screener'));
 

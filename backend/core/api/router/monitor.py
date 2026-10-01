@@ -10,6 +10,7 @@ import re
 import sys
 import time
 import queue
+import statistics
 import threading
 import functools
 import logging
@@ -328,6 +329,13 @@ class _CacheEntry:
 # 各端点缓存
 _cache = {}
 
+# 重查询端点（data-summary / task-chain / coverage-trend）的缓存 TTL。
+# 看板 monitor.html 的自动刷新间隔为 120s，TTL 必须显著大于该间隔，否则每次轮询
+# 都落在缓存过期之后，缓存形同失效——原 data_summary 的 60s TTL 与当时 60s 的
+# 轮询间隔恰好相等，导致每次刷新都重算（缓冲热 15~28s，冷启 48~65s），长请求占满
+# 浏览器同源并发（上限 6），其余接口报 Failed to fetch、页面导航 ERR_ABORTED。
+HEAVY_CACHE_TTL_SECONDS = 300
+
 
 def _cached(key: str, ttl_seconds: int = 60):
     """缓存装饰器：缓存函数返回值，TTL 秒内有效"""
@@ -419,7 +427,7 @@ def _query_scalar(sql: str, params: tuple = None, conn=None):
 # ============================================
 
 @router.get("/monitor/data-summary/", summary="数据完整性总览")
-@_cached("data_summary:{market}", ttl_seconds=60)
+@_cached("data_summary:{market}", ttl_seconds=HEAVY_CACHE_TTL_SECONDS)
 def get_data_summary(market: str = Query("cn", pattern="^(cn|hk|us)$")):
     """
     返回四张核心表的最新数据日期、股票覆盖数、覆盖率等。
@@ -604,7 +612,7 @@ def get_data_summary(market: str = Query("cn", pattern="^(cn|hk|us)$")):
 # ============================================
 
 @router.get("/monitor/coverage-trend/", summary="覆盖率趋势")
-@_cached("coverage_trend:{market}:{days}", ttl_seconds=60)
+@_cached("coverage_trend:{market}:{days}", ttl_seconds=HEAVY_CACHE_TTL_SECONDS)
 def get_coverage_trend(days: int = Query(30, ge=1, le=365),
                        market: str = Query("cn", pattern="^(cn|hk|us)$")):
     """返回最近 N 天每日的股票覆盖数。
@@ -1187,7 +1195,7 @@ def _extract_error_msg(content: str) -> str:
 
 
 @router.get("/monitor/task-chain/", summary="每日任务链 A→I 状态")
-@_cached("task_chain", ttl_seconds=60)
+@_cached("task_chain", ttl_seconds=HEAVY_CACHE_TTL_SECONDS)
 def get_task_chain_status():
     """
     返回每日盘后 A→I 任务链的执行状态（按实际执行顺序排列）。
@@ -1367,7 +1375,7 @@ def get_sync_checkpoints(
 
 
 @router.get("/monitor/health-check/", summary="系统健康状态")
-@_cached("health_check:{market}", ttl_seconds=60)
+@_cached("health_check:{market}", ttl_seconds=HEAVY_CACHE_TTL_SECONDS)
 def get_health_check(market: str = Query("cn", pattern="^(cn|hk|us)$")):
     """返回数据库连接、数据源可用性、分区覆盖等系统健康状态
 
@@ -2381,7 +2389,7 @@ def get_alerts(
 
 
 @router.get("/monitor/markets/", summary="各市场数据健康概览（分市场展示）")
-@_cached("monitor_markets", ttl_seconds=60)
+@_cached("monitor_markets", ttl_seconds=HEAVY_CACHE_TTL_SECONDS)
 def get_markets():
     """
     按 cn/hk/us 分开返回各市场数据健康概览，用于看板定位"哪个市场出问题"
@@ -2479,6 +2487,100 @@ _MARKET_COVERAGE_TABLES = {
     "stock_list_sync", "daily_import", "daily_basic_sync", "indicators_compute",
     "signal_precompute", "snapshot_sync", "weekly_aggregation", "monthly_aggregation",
 }
+
+# 日线覆盖度「残日」判定：当日覆盖标的数 vs 近 N 个交易日**中位数**，比值跌破阈值即告警。
+# 用中位数而非 stock_basic 总数作基准，是因为挂牌数含大量长期停牌/退市标的，正常日也只有 ~94%，
+# 而中位数反映「本市场近期真实可得的覆盖水平」，残日（如港股逐只路径日 ~80%）会立刻凸显。
+COVERAGE_MEDIAN_LOOKBACK = 20
+COVERAGE_MEDIAN_THRESHOLD = 0.90
+COVERAGE_MEDIAN_MIN_HISTORY = 5   # 可比历史交易日少于该值时不判告警，仅展示原始覆盖数
+
+
+def _market_quotes_coverage(conn, market: str, lookback: int = COVERAGE_MEDIAN_LOOKBACK,
+                            threshold: float = COVERAGE_MEDIAN_THRESHOLD,
+                            in_progress: bool = False) -> Dict[str, Any]:
+    """计算某市场「当日 stock_quotes 覆盖标的数」相对「近 N 个交易日中位数」的覆盖比。
+
+    用途：中断/降级（如港股缺一天后走进逐只路径）会造成某日覆盖数骤降约 17%，且下游链路
+    仍全部 success，肉眼无从察觉。此处用中位数作基准显式量化该衰减，跌破阈值即在看板告警。
+
+    Args:
+        conn: psycopg2 连接
+        market: 市场标识（cn/hk/us）
+        lookback: 计算中位数的可比交易日数量（不含当日）
+        threshold: 覆盖比告警阈值（当日/中位数）
+        in_progress: 该市场当日导入是否仍在运行。运行中覆盖数正从 0 逐只增长，此刻的低覆盖
+            不代表残缺（否则每日跑批期间必然假报，告警会被无视），故只展示不告警。
+
+    Returns:
+        dict：date/count（当日覆盖标的数）、baseline_median（近 N 日中位数）、
+        baseline_days（实际参与中位数的交易日数）、ratio（覆盖比百分比，保留 1 位）、
+        threshold（阈值百分比）、alert（是否告警）、message（告警文案）、level（red/green）。
+        无数据时 count/baseline_median/ratio 为 None，alert 为 False。
+    """
+    # 只需最近 lookback+1 个交易日，窗口取 lookback×2 个自然日（长约 1.4 倍交易日数，留足长假余量）。
+    # 实测窗口宽度对耗时影响不大（hk 120 天与 40 天均约 1.2s），瓶颈是逐日 COUNT(DISTINCT code)
+    # 对 stock_quotes 的聚合（该表无 (cycle, market, trade_date, code) 组合索引），故不再额外放大窗口。
+    sql = """
+        WITH latest AS (
+            SELECT MAX(trade_date) AS d FROM stock_quotes
+            WHERE market = %s AND cycle = '1d'
+        )
+        SELECT q.trade_date, COUNT(DISTINCT q.code) AS cnt
+        FROM stock_quotes q, latest
+        WHERE q.market = %s AND q.cycle = '1d'
+          AND latest.d IS NOT NULL AND q.trade_date >= latest.d - (%s * INTERVAL '1 day')
+        GROUP BY q.trade_date
+        ORDER BY q.trade_date DESC
+        LIMIT %s
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (market, market, lookback * 2, lookback + 1))
+            rows = cur.fetchall()
+    except Exception as exc:  # noqa: BLE001 - 监控端点不应因单指标查询失败而整体 500
+        logging.getLogger(__name__).warning(f"日线覆盖度查询失败（market={market}）: {exc}")
+        rows = []
+
+    base = {
+        "date": None, "count": None, "baseline_median": None, "baseline_days": 0,
+        "ratio": None, "threshold": round(threshold * 100, 1), "alert": False,
+        "message": "暂无日线数据", "level": "green",
+    }
+    if not rows:
+        return base
+
+    latest_date, count = rows[0][0], int(rows[0][1])
+    prev = [int(r[1]) for r in rows[1:]]
+    base.update(date=str(latest_date), count=count)
+    if len(prev) < COVERAGE_MEDIAN_MIN_HISTORY:
+        base["message"] = f"可比历史交易日仅 {len(prev)} 天，不足以判定残日"
+        return base
+
+    median = float(statistics.median(prev))
+    ratio = count / median if median else 0.0
+    alert = ratio < threshold
+    if alert and in_progress:
+        return {
+            **base,
+            "baseline_median": median, "baseline_days": len(prev),
+            "ratio": round(ratio * 100, 1),
+            "message": (f"{latest_date} 日线覆盖 {count}/{median:.0f}（{ratio * 100:.1f}%），"
+                        f"导入进行中，覆盖数仍在增长"),
+        }
+    base.update(
+        baseline_median=median, baseline_days=len(prev),
+        ratio=round(ratio * 100, 1),
+        alert=alert,
+        level="red" if alert else "green",
+        message=(
+            f"⚠️ {latest_date} 日线覆盖仅 {count}/{median:.0f}（{ratio * 100:.1f}%，"
+            f"近 {len(prev)} 日中位数 {median:.0f}），当日数据疑似残缺"
+            if alert else
+            f"{latest_date} 日线覆盖 {count}/{median:.0f}（{ratio * 100:.1f}%），正常"
+        ),
+    )
+    return base
 
 
 @router.get("/monitor/market-chain/", summary="港/美股任务链状态（分市场）")
@@ -2578,9 +2680,22 @@ def get_market_chain(market: str = Query('hk', pattern='^(hk|us)$')):
         overall = "pending"
     else:
         overall = "success" if tasks else "pending"
+
+    # 日线覆盖度「残日」检测：与任务链状态解耦——链路各步全 success 时当日标的覆盖仍可能骤降
+    # （如港股缺一天后走进逐只路径），此处单独量化。导入运行中不告警（覆盖数正逐只增长）。
+    coverage: Dict[str, Any] = {}
+    conn = _get_db_conn()
+    try:
+        coverage = _market_quotes_coverage(conn, market, in_progress=(overall == "running"))
+    except Exception as exc:  # noqa: BLE001 - 监控端点不应因单指标失败而整体 500
+        logging.getLogger(__name__).warning(f"日线覆盖度计算失败（market={market}）: {exc}")
+    finally:
+        _put_db_conn(conn)
+
     return ApiResponse(code=200, message="success", data={
         "date": _now_beijing().strftime("%Y-%m-%d"),
         "market": market,
         "overall": overall,
+        "coverage": coverage,
         "tasks": tasks,
     })

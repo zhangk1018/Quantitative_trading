@@ -24,6 +24,7 @@ def _make_service() -> SnapshotService:
     svc._ohlcv_cache = {}
     svc._snapshot_cache = {}
     svc._latest_trade_date = '2026-09-11'
+    svc._market_latest = {'cn': '2026-09-11'}
     svc._cached_row_hash = 'stub'
     svc._ready = True
     svc._loading = False
@@ -64,7 +65,8 @@ class TestRefreshHotSwitch:
         svc = _make_service()
         svc._last_check_time = 0  # 强制进入检查
         monkeypatch.setattr(svc, '_is_etl_window', lambda: False)
-        monkeypatch.setattr(svc, '_query_meta', lambda: ('2026-09-12', 'new_hash', 100))
+        monkeypatch.setattr(svc, '_query_meta',
+                            lambda: ('2026-09-12', 'new_hash', 100, {'cn': '2026-09-12'}))
         # 打桩异步刷新入口（不真正加载数据），验证线程被调度
         reloaded = []
         monkeypatch.setattr(svc, '_reload_async', lambda: reloaded.append(1))
@@ -83,7 +85,7 @@ class TestRefreshHotSwitch:
         monkeypatch.setattr(svc, '_is_etl_window', lambda: False)
         monkeypatch.setattr(
             svc, '_query_meta',
-            lambda: (svc._latest_trade_date, svc._cached_row_hash, 100),
+            lambda: (svc._latest_trade_date, svc._cached_row_hash, 100, svc._market_latest),
         )
         svc._refresh_if_needed()
         assert svc._ready is True
@@ -94,9 +96,26 @@ class TestRefreshHotSwitch:
         svc = _make_service()
         svc._last_check_time = 0
         monkeypatch.setattr(svc, '_is_etl_window', lambda: True)
-        monkeypatch.setattr(svc, '_query_meta', lambda: ('2026-09-12', 'new_hash', 100))
+        monkeypatch.setattr(svc, '_query_meta',
+                            lambda: ('2026-09-12', 'new_hash', 100, {'cn': '2026-09-12'}))
         svc._refresh_if_needed()
         assert svc._loading is False
+
+    def test_market_date_change_triggers_refresh(self, monkeypatch):
+        """协作单 43.0：latest 与 row_hash 均变化时触发刷新（美股滞后被剔除的修复入口）"""
+        svc = _make_service()
+        svc._last_check_time = 0
+        monkeypatch.setattr(svc, '_is_etl_window', lambda: False)
+        monkeypatch.setattr(svc, '_query_meta',
+                            lambda: ('2026-09-12', 'new_hash', 100,
+                                     {'cn': '2026-09-12', 'us': '2026-09-12'}))
+        reloaded = []
+        monkeypatch.setattr(svc, '_reload_async', lambda: reloaded.append(1))
+        svc._refresh_if_needed()
+        time.sleep(0.2)
+        assert reloaded == [1]
+        # _market_latest 已在触发时同步更新，供刷新期间旧缓存与新元数据口径一致
+        assert svc._market_latest == {'cn': '2026-09-12', 'us': '2026-09-12'}
 
 
 class TestRequestPathNoRefresh:
