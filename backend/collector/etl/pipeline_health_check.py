@@ -226,15 +226,21 @@ def check_directories(result: HealthCheckResult):
                 result.warn(name, f'不存在且无法创建: {e}')
 
 
-def _period_daily_count(cur, market: str, target_date: str, cycle: str) -> int:
-    """统计 target_date 所在周/月周期内、**指定市场**有日线数据的去重股票数。
+def _period_range(cur, market: str, target_date, cycle: str):
+    """返回 target_date 所在周/月周期的区间 (start, end)。
 
-    与 compute_bar_aggregation.py 的 get_period_range 口径一致：
-    周线按 trade_calendar 连续交易日分组（week_id），月线按自然月。
-    返回该周期内 stock_quotes cycle='1d' 的去重 code 数，
-    作为周线/月线聚合的「应覆盖股票数」分母（避免用全市场 stock_basic
-    总数导致港/美股混入分母而覆盖率虚低）。
+    周期口径按市场区分（与 compute_bar_aggregation.py 保持一致）：
+    - cn：A 股 trade_calendar 连续交易日分组（week_id）/ 自然月；
+    - hk/us：ISO 周（周一~周日）/ 自然月。港美股已改为按各自数据源交易日历聚合，
+      若这里仍用 A 股日历区间去算分母会错位（例：国庆周港/美股周线打标 10-02，
+      而 A 股该周止于 09-30，导致覆盖率被算成偏低而误报）。
     """
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+    if market in ('hk', 'us'):
+        from collector.etl.compute_bar_aggregation import _bucket_key, _bucket_span
+        return _bucket_span(cycle, _bucket_key(cycle, target_date))
+
     if cycle == '1w':
         cur.execute("""
             WITH trade_weeks AS (
@@ -255,8 +261,21 @@ def _period_daily_count(cur, market: str, target_date: str, cycle: str) -> int:
         """, (target_date,))
     row = cur.fetchone()
     if not row or row[0] is None or row[1] is None:
+        return None
+    return row[0], row[1]
+
+
+def _period_daily_count(cur, market: str, target_date: str, cycle: str) -> int:
+    """统计 target_date 所在周/月周期内、**指定市场**有日线数据的去重股票数。
+
+    返回该周期内 stock_quotes cycle='1d' 的去重 code 数，
+    作为周线/月线聚合的「应覆盖股票数」分母（避免用全市场 stock_basic
+    总数导致港/美股混入分母而覆盖率虚低）。
+    """
+    period = _period_range(cur, market, target_date, cycle)
+    if not period:
         return 0
-    start, end = row
+    start, end = period
     cur.execute(
         "SELECT COUNT(DISTINCT code) FROM stock_quotes"
         " WHERE cycle='1d' AND market=%s AND trade_date BETWEEN %s AND %s",

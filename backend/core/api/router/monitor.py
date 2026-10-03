@@ -183,6 +183,31 @@ def _is_trade_day_cn_hk(d: datetime.date) -> bool:
     return d.weekday() < 5
 
 
+def _is_trade_day(market: str, trade_days: Optional[frozenset], day: datetime.date) -> bool:
+    """按市场交易日历判定 day 是否交易日；日历不可用时降级（us 用硬编码休市日，cn/hk 仅周末）。"""
+    day_str = day.isoformat()
+    if trade_days is not None:
+        return day_str in trade_days
+    if market == "us":
+        return not (day.weekday() >= 5 or day_str in US_HOLIDAYS_2026)
+    return _is_trade_day_cn_hk(day)
+
+
+def _last_trade_day_on_or_before(market: str, day: datetime.date) -> str:
+    """按市场交易日历返回 <= day 的最近一个交易日（不含「是否已过收盘钟点」判断）。
+
+    与 `_get_last_trade_date` 的区别：本函数对"传入日"本身不做收盘钟点判定，
+    纯粹求区间内最后一个交易日，供周期打标（周K/月K）推算期望日使用。
+    """
+    cal_code, _ = _MARKET_CAL_CODES.get(market, ("SSE", 0))
+    trade_days = _load_trade_days(cal_code)
+    target = day
+    while True:
+        if _is_trade_day(market, trade_days, target):
+            return target.isoformat()
+        target -= timedelta(days=1)
+
+
 def _get_last_trade_date(market: str, ref_dt: datetime) -> str:
     """计算指定市场的期望（最近已收盘）交易日。
 
@@ -206,36 +231,60 @@ def _get_last_trade_date(market: str, ref_dt: datetime) -> str:
     # 市场当地时钟（us 相对北京滞后 12h/EDT，故空格加负小时；cn/hk 与北京一致）
     local_now = ref_dt + timedelta(hours=tz_hours)
     day = local_now.date()
-    day_str = day.isoformat()
 
     trade_days = _load_trade_days(cal_code)
-    if trade_days is not None:
-        is_open = day_str in trade_days
-    else:
-        # 降级：美股用硬编码休市日，沪深/港股仅周末判定
-        if market == "us":
-            is_open = not (day.weekday() >= 5 or day_str in US_HOLIDAYS_2026)
-        else:
-            is_open = _is_trade_day_cn_hk(day)
-
-    if is_open and local_now.hour >= close_hour:
-        return day_str
+    if _is_trade_day(market, trade_days, day) and local_now.hour >= close_hour:
+        return day.isoformat()
 
     # 当天休市，或未到收盘钟点 -> 向前回退到最近一个交易日
-    target = day - timedelta(days=1)
-    while True:
-        ts = target.isoformat()
-        if trade_days is not None:
-            if ts in trade_days:
-                return ts
-        else:
-            if market == "us":
-                if not (target.weekday() >= 5 or ts in US_HOLIDAYS_2026):
-                    return ts
-            else:
-                if _is_trade_day_cn_hk(target):
-                    return ts
-        target -= timedelta(days=1)
+    return _last_trade_day_on_or_before(market, day - timedelta(days=1))
+
+
+def _expected_period_label(cycle: str, market: str, ref_dt: datetime) -> str:
+    """计算 cycle 任务（周K/月K）的期望打标日 = 该周期**应产出的最后一个交易日**。
+
+    为什么不能用「最近交易日」：周K/月K 的数据行以「周期最后一个交易日」打标
+    （见 compute_bar_aggregation.py 的聚合口径），而周期未结束时该行天然不存在 ——
+    月K 在当月月末才结算，周K（港/美股）要到该周周六才结算。若沿用最近交易日作期望日，
+    则每月 1 号到月末三市场的月K、每周一~四的周K 都会恒报「数据未更新」的假 pending。
+
+    故当前周期未到结算时点（周 = 该 ISO 周的周六已到；月 = 自然月末已到）时，期望回退上一周期。
+    （结算判据与 compute_bar_aggregation.py 的 `_bucket_settleable` 保持一致。）
+
+    Args:
+        cycle: '1w' / '1m'
+        market: 市场标识，cn/hk/us
+        ref_dt: 当前北京时间（带时区）
+
+    Returns:
+        str: 期望打标日（YYYY-MM-DD）
+    """
+    _, tz_hours = _MARKET_CAL_CODES.get(market, ("SSE", 0))
+    today = (ref_dt + timedelta(hours=tz_hours)).date()
+
+    if cycle == "1w":
+        monday = today - timedelta(days=today.weekday())
+        if monday + timedelta(days=5) <= today:      # 该 ISO 周的周六已到 → 本周可结算
+            return _last_trade_day_on_or_before(market, monday + timedelta(days=6))
+        return _last_trade_day_on_or_before(market, monday - timedelta(days=1))
+
+    first_day = today.replace(day=1)
+    month_end = (first_day + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    if month_end <= today:                            # 自然月末已到 → 本月可结算
+        return _last_trade_day_on_or_before(market, month_end)
+    return _last_trade_day_on_or_before(market, first_day - timedelta(days=1))
+
+
+def _expected_date_for_task(cfg: Dict[str, Any], market: str, ref_dt: datetime) -> str:
+    """任务期望日期统一入口。
+
+    - cycle 任务（周K/月K，配置了 cycle_col/cycle_val）：期望 = 该周期**应产出的最后一个交易日**
+      （见 _expected_period_label，周期未结算则回退上一周期）；
+    - 其余任务：期望 = 最近已收盘交易日（见 _get_last_trade_date）。
+    """
+    if cfg.get("cycle_col"):
+        return _expected_period_label(cfg["cycle_val"], market, ref_dt)
+    return _get_last_trade_date(market, ref_dt)
 
 
 def _get_db_conn():
@@ -846,7 +895,7 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
         if _chain_label:
             task_run_log_name = f"{market}:{_chain_label}"
     try:
-        expected_trade_date = _get_last_trade_date(market, _now_beijing())
+        expected_trade_date = _expected_date_for_task(cfg, market, _now_beijing())
     except Exception:  # pragma: no cover - 日历异常降级
         logger.warning(f"计算期望交易日失败（{market}），回退按今日执行记录判断")
         expected_trade_date = None
@@ -867,7 +916,7 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
                 # 实际数据未更新到最新交易日时误报成功（沪深的 Parquet、港/美股等受此影响）。
                 # stock_list_sync 为元数据表，非每日更新，跳过日期比较（与下方回退分支一致）。
                 if expected_trade_date is None:
-                    expected_trade_date = _get_last_trade_date(market, _now_beijing())
+                    expected_trade_date = _expected_date_for_task(cfg, market, _now_beijing())
                 if task_key != "stock_list_sync" and str(log_data_date) < expected_trade_date:
                     return {
                         "status": "pending",
@@ -939,9 +988,10 @@ def _check_task_from_db(task_key: str, market: str = "cn") -> Dict[str, Any]:
 
     latest_str = str(latest_date)
 
-    # 判断最新数据是否已更新到期望的交易日（沪深/港股/美股共用统一日历逻辑，避免误报）
+    # 判断最新数据是否已更新到期望的交易日（沪深/港股/美股共用统一日历逻辑，避免误报；
+    # 周K/月K 的期望日由 _expected_date_for_task 按「周期最后一个交易日」推算，避免假 pending）
     today_beijing = _now_beijing()
-    expected_trade_date = _get_last_trade_date(market, today_beijing)
+    expected_trade_date = _expected_date_for_task(cfg, market, today_beijing)
 
     # stock_list_sync 为元数据表，非每日更新，跳过日期比较
     if task_key != "stock_list_sync" and str(latest_date) < expected_trade_date:
@@ -2473,7 +2523,9 @@ MARKET_CHAIN = [
     {"name": "交易信号", "label": "信号", "key": "signal_precompute"},
     {"name": "宽表", "label": "宽表", "key": "snapshot_sync"},
     {"name": "Parquet", "label": "Parquet", "key": "snapshot_sync", "freshness": "snapshot_sync"},  # Parquet 为宽表导出，复用宽表快照新鲜度检查（含期望交易日门禁）
-    # 周K/月K（独立 launchd：周二~六 09:30 周K / 10:00 月K，由 bar_aggregation 全市场聚合，不写 task_run_log）
+    # 周K/月K（不写 task_run_log，故按 stock_quotes 的 cycle 新鲜度判定）：
+    # cn 由 bar_aggregation 周一~五 18:30/18:45 的 plist 按 A 股日历聚合（含 index）；
+    # hk/us 由 overseas plist 周二~六 09:30 周K / 10:00 月K，按各自数据源日历（HSI/.IXIC）聚合。
     {"name": "周K", "label": "周K", "key": "weekly_aggregation"},
     {"name": "月K", "label": "月K", "key": "monthly_aggregation"},
 ]

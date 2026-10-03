@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quant.bar-aggregation.overseas.monthly</string>
+
+    <!-- 港/美股月线聚合：按各自数据源交易日历（HSI / .IXIC）划分自然月并聚合。
+         触发时点：周二~六 10:00 —— 月桶在「自然月末已到」且当月全部交易日齐备时才结算，
+         美股月末最后 1~2 天的数据 T+1 08:30 才落库，故必须等次日（10:00 在美股导入之后）。
+         每次运行回看重算最近 3 个月，迟到/修正数据会被自动吸收。
+         caffeinate 包裹：任务运行期间阻止系统休眠（2026-10-01 美股事故约定）。 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
+        <string>-s</string>
+        <string>--</string>
+        <string>/Volumes/MyData/Quantitative_trading/venv/bin/python</string>
+        <string>/Volumes/MyData/Quantitative_trading/backend/collector/etl/compute_bar_aggregation.py</string>
+        <string>--cycle</string>
+        <string>1m</string>
+        <string>--market</string>
+        <string>hk,us</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Volumes/MyData/Quantitative_trading</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Volumes/MyData/Quantitative_trading/venv/bin</string>
+        <key>PYTHONPATH</key>
+        <string>/Volumes/MyData/Quantitative_trading/backend</string>
+        <key>APP_ENV</key>
+        <string>dev</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Volumes/MyData/Quantitative_trading/logs/cron/overseas_monthly_aggregation.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Volumes/MyData/Quantitative_trading/logs/cron/overseas_monthly_aggregation.stderr.log</string>
+
+    <!-- Weekday: 2=周二 ... 6=周六 -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key><integer>2</integer>
+            <key>Hour</key><integer>10</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>3</integer>
+            <key>Hour</key><integer>10</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>4</integer>
+            <key>Hour</key><integer>10</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>5</integer>
+            <key>Hour</key><integer>10</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>6</integer>
+            <key>Hour</key><integer>10</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+
+    <key>ThrottleInterval</key>
+    <integer>0</integer>
+    <key>NumberOfRetries</key>
+    <integer>0</integer>
+</dict>
+</plist>
