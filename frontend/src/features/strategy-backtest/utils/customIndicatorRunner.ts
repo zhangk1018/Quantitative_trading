@@ -59,76 +59,162 @@ export function buildCustomValueByDate(
   return out;
 }
 
-// 默认分批大小
-const BATCH_SIZE = 100;
-// 默认超时（毫秒）
-const DEFAULT_TIMEOUT = 30_000;
+// 单批股票数：配合多 Worker 池，批次更小 → 并行负载更均衡、单批更快更不易超时
+const BATCH_SIZE = 50;
+// 单批超时（毫秒）：全市场重公式单批可能数十秒，放宽避免误杀整轮选股
+const DEFAULT_TIMEOUT = 120_000;
 // Worker 单次返回的最大元素数（防止恶意脚本产出巨量数据撑爆内存）
 const MAX_OUTPUT_ELEMENTS = 500_000;
 
+/**
+ * Pyodide Worker 池大小。
+ *
+ * 单个 Worker 串行执行 Python，而纯 Python 循环型重公式（如多因子/ADX 打分）
+ * 在全市场 5000+ 只股票上需数分钟；用少量多 Worker 并行可近似线性提速。
+ * 上限 4 以兼顾内存（每个 Pyodide + numpy 约数十 MB）。
+ */
+function getPoolSize(): number {
+  const cores = (typeof navigator !== 'undefined' && Number(navigator.hardwareConcurrency)) || 4;
+  return Math.min(4, Math.max(2, cores - 1));
+}
+
+/** worker 回传的单批消息 */
+interface WorkerBatchMessage {
+  type: 'result' | 'error';
+  batchId: string;
+  results?: { id: string; values?: unknown; error?: string | null }[];
+  error?: string;
+}
+
+interface BatchResponse {
+  values?: ((number | null)[] | number | null)[];
+  error?: string;
+}
+
 export class CustomIndicatorRunner {
-  private worker: Worker | null = null;
+  private workers: Worker[] = [];
   private ready = false;
   private initPromise: Promise<void> | null = null;
   private batchIdCounter = 0;
+  /** batchId → 该批的 resolve/reject/timer（多 Worker 并行时按 batchId 分发结果） */
+  private pending = new Map<
+    string,
+    { resolve: (r: BatchResponse) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
 
-  /** Worker 是否已就绪 */
+  /** Worker 池是否已就绪 */
   isReady(): boolean {
     return this.ready;
   }
 
-  /** 初始化 Worker（加载 Pyodide） */
+  /** 初始化 Worker 池（每个 Worker 各自加载 Pyodide） */
   async init(): Promise<void> {
     if (this.ready) return;
     if (this.initPromise) return this.initPromise;
 
-    this.initPromise = new Promise<void>((resolve, reject) => {
+    this.initPromise = (async () => {
+      const created: Worker[] = [];
       try {
-        if (!this.worker) {
-          this.worker = new Worker('/pyodide-worker.js', { type: 'classic' });
-        }
-
-        const timeout = setTimeout(() => {
-          this.cleanup();
-          this.initPromise = null;
-          reject(new Error('Pyodide Worker 初始化超时（60s），请检查网络连接'));
-        }, 60_000);
-
-        this.worker.onmessage = (event) => {
-          const { type, error } = event.data;
-          if (type === 'ready') {
-            clearTimeout(timeout);
-            this.ready = true;
-            this.initPromise = null;
-            resolve();
-          } else if (type === 'error') {
-            clearTimeout(timeout);
-            this.cleanup();
-            this.initPromise = null;
-            reject(new Error(error || 'Pyodide Worker 初始化失败'));
-          }
-        };
-
-        this.worker.onerror = (err) => {
-          clearTimeout(timeout);
-          this.cleanup();
-          this.initPromise = null;
-          reject(new Error('Worker 加载错误: ' + err.message));
-        };
+        await Promise.all(
+          Array.from({ length: getPoolSize() }, () => this.spawnWorker(created)),
+        );
+        this.workers = created;
+        this.ready = true;
       } catch (err) {
-        this.cleanup();
+        created.forEach((w) => {
+          try { w.terminate(); } catch { /* ignore */ }
+        });
+        this.workers = [];
+        this.ready = false;
+        throw err;
+      } finally {
         this.initPromise = null;
-        reject(err);
       }
-    });
+    })();
 
     return this.initPromise;
+  }
+
+  /** 创建一个 Worker 并等待其 Pyodide ready */
+  private spawnWorker(sink: Worker[]): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let worker: Worker;
+      try {
+        worker = new Worker('/pyodide-worker.js', { type: 'classic' });
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      sink.push(worker);
+
+      const timeout = setTimeout(() => {
+        this.detachWorker(worker);
+        reject(new Error('Pyodide Worker 初始化超时（60s），请检查网络连接'));
+      }, 60_000);
+
+      worker.onmessage = (event) => {
+        const { type, error } = event.data ?? {};
+        if (type === 'ready') {
+          clearTimeout(timeout);
+          worker.onmessage = this.handleWorkerMessage;
+          resolve();
+        } else if (type === 'error') {
+          clearTimeout(timeout);
+          this.detachWorker(worker);
+          reject(new Error(error || 'Pyodide Worker 初始化失败'));
+        }
+      };
+
+      worker.onerror = (err) => {
+        clearTimeout(timeout);
+        this.detachWorker(worker);
+        reject(new Error('Worker 加载错误: ' + err.message));
+      };
+    });
+  }
+
+  /** 终止单个 Worker（并从池中摘除） */
+  private detachWorker(worker: Worker): void {
+    try { worker.terminate(); } catch { /* ignore */ }
+    const i = this.workers.indexOf(worker);
+    if (i >= 0) this.workers.splice(i, 1);
+  }
+
+  /** 结果分发：按 batchId 找到对应批次的 resolve */
+  private handleWorkerMessage = (event: MessageEvent): void => {
+    const msg = event.data as WorkerBatchMessage | undefined;
+    if (!msg || (msg.type !== 'result' && msg.type !== 'error')) return;
+    const entry = this.pending.get(msg.batchId);
+    if (!entry) return;
+    this.pending.delete(msg.batchId);
+    clearTimeout(entry.timer);
+    entry.resolve(this.parseWorkerMessage(msg));
+  };
+
+  /** 解析 worker 回传的单批消息（含输出规模上限保护） */
+  private parseWorkerMessage(msg: WorkerBatchMessage): BatchResponse {
+    if (msg.type === 'error') return { error: msg.error };
+    const result = msg.results?.[0];
+    if (result?.error) return { error: result.error };
+    if (result?.values) {
+      const totalElements = (result.values as unknown[]).reduce(
+        (sum: number, arr) => sum + (Array.isArray(arr) ? arr.length : 1),
+        0,
+      );
+      if (totalElements > MAX_OUTPUT_ELEMENTS) {
+        this.cleanup();
+        this.init().catch(() => {});
+        return { error: `脚本输出超出上限（${totalElements} > ${MAX_OUTPUT_ELEMENTS}），Worker 已重建` };
+      }
+      return { values: result.values as BatchResponse['values'] };
+    }
+    return { error: '脚本未返回有效结果' };
   }
 
   /** 获取初始化进度（用于 UI 展示） */
   getInitProgress(): { loaded: boolean; message: string } {
     if (this.ready) return { loaded: true, message: 'Pyodide 已就绪' };
-    if (this.worker) return { loaded: false, message: '正在加载 Python 解释器（~12MB）...' };
+    if (this.workers.length > 0) return { loaded: false, message: '正在加载 Python 解释器（~12MB）...' };
     return { loaded: false, message: '正在启动 Worker...' };
   }
 
@@ -153,7 +239,8 @@ export class CustomIndicatorRunner {
     },
     timeoutMs: number = 60_000,
   ): Promise<(number | null)[]> {
-    if (!this.ready || !this.worker) {
+    const worker = this.workers[0];
+    if (!this.ready || !worker) {
       throw new Error('Pyodide Worker 未就绪，请先调用 init()');
     }
 
@@ -176,7 +263,7 @@ export class CustomIndicatorRunner {
       stockData.volRatio5 = [data.volRatio5.map((v) => (Number.isFinite(v) ? v : null))];
     }
 
-    const result = await this.executeSingleBatch(scriptCode, stockData, batchId, timeoutMs);
+    const result = await this.executeSingleBatch(worker, scriptCode, stockData, batchId, timeoutMs);
     if (result.error) {
       throw new Error(result.error);
     }
@@ -229,12 +316,13 @@ export class CustomIndicatorRunner {
     }[],
     onProgress?: (progress: BatchProgress) => void,
   ): Promise<Map<string, ScriptResult>> {
-    if (!this.ready || !this.worker) {
+    if (!this.ready || this.workers.length === 0) {
       throw new Error('Pyodide Worker 未就绪，请先调用 init()');
     }
 
     const results = new Map<string, ScriptResult>();
     const totalScripts = scripts.length;
+    const poolSize = this.workers.length;
 
     for (let si = 0; si < scripts.length; si++) {
       const script = scripts[si];
@@ -247,80 +335,78 @@ export class CustomIndicatorRunner {
         message: `正在计算 [${name}]（${stockCodes.length} 只股票）...`,
       });
 
-      // 分批处理股票
+      // 分批后轮转分发给各 Worker：Worker 之间并行、单个 Worker 内串行
       const stockBatches = this.chunkArray(stockCodes, BATCH_SIZE);
       const allValues = new Map<string, (number | null)[]>();
       const errors: string[] = [];
-      let batchId = `batch_${this.batchIdCounter++}`;
+      let completedBatches = 0;
 
-      // 每批按自身最大天数补齐，避免全量全局最大天数导致内存膨胀
-      for (let bi = 0; bi < stockBatches.length; bi++) {
-        const batchCodes = stockBatches[bi];
-        let batchMaxDays = 0;
-        for (const code of batchCodes) {
-          const bars = allOhlcv.get(code);
-          if (bars && bars.length > batchMaxDays) {
-            batchMaxDays = bars.length;
-          }
-        }
-        const batchData = this.prepareBatchData(batchCodes, allOhlcv, batchMaxDays);
-        const daysCount = batchData.close[0]?.length ?? 0;
+      const queues: string[][][] = Array.from({ length: poolSize }, () => []);
+      stockBatches.forEach((batch, i) => queues[i % poolSize].push(batch));
 
-        const scriptResult = await this.executeSingleBatch(
-          code,
-          batchData,
-          batchId,
-          DEFAULT_TIMEOUT,
-        );
+      await Promise.all(
+        this.workers.map((worker, wi) =>
+          (async () => {
+            for (const batchCodes of queues[wi]) {
+              // 每只股票使用自身 K 线长度（不做补齐）：worker 逐只调用 calculate，
+              // 前导 null 补齐会按位置从 0 起算的公式（如 ADX 预热 tr[:14]）静默失效。
+              const batchData = this.prepareBatchData(batchCodes, allOhlcv);
+              const batchId = `batch_${this.batchIdCounter++}`;
+              const scriptResult = await this.executeSingleBatch(
+                worker,
+                code,
+                batchData,
+                batchId,
+                DEFAULT_TIMEOUT,
+              );
 
-        // 解析结果：标量值包装为等长数组，null 填充全 null 数组
-        if (scriptResult.values) {
-          for (let ci = 0; ci < batchCodes.length; ci++) {
-            const stockCode = batchCodes[ci];
-            const rawVal = scriptResult.values[ci];
-            if (rawVal === undefined || rawVal === null) {
-              allValues.set(stockCode, new Array(daysCount).fill(null));
-            } else if (rawVal && typeof rawVal === 'object' && 'length' in rawVal && typeof rawVal[Symbol.iterator] === 'function') {
-              // TypedArray 或类似数组的对象，转换为普通 Array
-              const converted = Array.from(rawVal) as (number | null)[];
-              // 兼容处理：如果脚本返回长度为1的数组，视为仅最后一天的信号，前面补0
-              if (converted.length === 1 && daysCount > 1) {
-                allValues.set(stockCode, new Array(daysCount - 1).fill(0).concat(converted));
-              } else {
-                allValues.set(stockCode, converted);
+              // 解析结果：每只股票按其「自身」K 线长度对齐（不再统一补齐）
+              if (scriptResult.values) {
+                for (let ci = 0; ci < batchCodes.length; ci++) {
+                  const stockCode = batchCodes[ci];
+                  const daysCount = batchData.close[ci]?.length ?? 0;
+                  const rawVal = scriptResult.values[ci];
+                  if (rawVal === undefined || rawVal === null) {
+                    allValues.set(stockCode, new Array(daysCount).fill(null));
+                  } else if (rawVal && typeof rawVal === 'object' && 'length' in rawVal && typeof rawVal[Symbol.iterator] === 'function') {
+                    // TypedArray 或类似数组的对象，转换为普通 Array
+                    const converted = Array.from(rawVal) as (number | null)[];
+                    // 兼容处理：如果脚本返回长度为1的数组，视为仅最后一天的信号，前面补0
+                    if (converted.length === 1 && daysCount > 1) {
+                      allValues.set(stockCode, new Array(daysCount - 1).fill(0).concat(converted));
+                    } else {
+                      allValues.set(stockCode, converted);
+                    }
+                  } else if (Array.isArray(rawVal)) {
+                    // 兼容处理：如果脚本返回长度为1的数组，视为仅最后一天的信号，前面补0
+                    if (rawVal.length === 1 && daysCount > 1) {
+                      allValues.set(stockCode, new Array(daysCount - 1).fill(0).concat(rawVal));
+                    } else {
+                      allValues.set(stockCode, rawVal as (number | null)[]);
+                    }
+                  } else {
+                    allValues.set(stockCode, new Array(daysCount).fill(rawVal as number));
+                  }
+                }
               }
-            } else if (Array.isArray(rawVal)) {
-              // 兼容处理：如果脚本返回长度为1的数组，视为仅最后一天的信号，前面补0
-              if (rawVal.length === 1 && daysCount > 1) {
-                allValues.set(stockCode, new Array(daysCount - 1).fill(0).concat(rawVal));
-              } else {
-                allValues.set(stockCode, rawVal as (number | null)[]);
+              if (scriptResult.error) {
+                errors.push(scriptResult.error);
               }
-            } else {
-              allValues.set(stockCode, new Array(daysCount).fill(rawVal as number));
+
+              completedBatches++;
+              onProgress?.({
+                total: totalScripts,
+                done: si,
+                status: 'computing',
+                message: `[${name}] 已计算 ${completedBatches}/${stockBatches.length} 批（${allValues.size}/${stockCodes.length} 只）`,
+              });
             }
-          }
-        }
-        if (scriptResult.error) {
-          errors.push(`批次 ${bi + 1}: ${scriptResult.error}`);
-        }
-
-        onProgress?.({
-          total: totalScripts,
-          done: si,
-          status: 'computing',
-          message: `[${name}] 正在计算 ${allValues.size}/${stockCodes.length} 只...`,
-        });
-      }
+          })(),
+        ),
+      );
 
       // 存储结果
-      const result: ScriptResult = {
-        id,
-        name,
-        values: allValues,
-        errors,
-      };
-      results.set(id, result);
+      results.set(id, { id, name, values: allValues, errors });
     }
 
     onProgress?.({
@@ -335,13 +421,14 @@ export class CustomIndicatorRunner {
 
   /**
    * 准备发送给 Worker 的批次数据
-   * 将 OHLCV 转换为行优先的二维数组，新股前面补 null
-   * @param maxDaysOverride 可选的全局最大天数，确保跨批次填充长度一致
+   * 将 OHLCV 转换为行优先的二维数组，每只股票保持「自身」真实长度（不做补齐）。
+   *
+   * 注：worker 会逐只调用 calculate，因此无需按批次最大长度对齐；前导 null 补齐
+   * 会让按位置从 0 起算的公式（如 ADX 预热 tr[:14] 含 NaN）静默失效、分数偏移。
    */
   private prepareBatchData(
     stockCodes: string[],
     allOhlcv: Map<string, number[][]>,
-    maxDaysOverride?: number,
   ): {
     close: (number | null)[][];
     high: (number | null)[][];
@@ -349,17 +436,6 @@ export class CustomIndicatorRunner {
     open: (number | null)[][];
     volume: (number | null)[][];
   } {
-    // 找到该批次中最长的天数（优先使用全局 maxDays）
-    let maxDays = maxDaysOverride ?? 0;
-    if (maxDays === 0) {
-      for (const code of stockCodes) {
-        const bars = allOhlcv.get(code);
-        if (bars && bars.length > maxDays) {
-          maxDays = bars.length;
-        }
-      }
-    }
-
     const OHLCV_OPEN = 1;
     const OHLCV_HIGH = 2;
     const OHLCV_LOW = 3;
@@ -375,28 +451,27 @@ export class CustomIndicatorRunner {
     for (const code of stockCodes) {
       const bars = allOhlcv.get(code);
       if (!bars || bars.length === 0) {
-        close.push(new Array(maxDays).fill(null));
-        high.push(new Array(maxDays).fill(null));
-        low.push(new Array(maxDays).fill(null));
-        open.push(new Array(maxDays).fill(null));
-        volume.push(new Array(maxDays).fill(null));
+        close.push([]);
+        high.push([]);
+        low.push([]);
+        open.push([]);
+        volume.push([]);
         continue;
       }
 
-      const padLen = maxDays - bars.length;
-      const cArr = new Array(maxDays).fill(null);
-      const hArr = new Array(maxDays).fill(null);
-      const lArr = new Array(maxDays).fill(null);
-      const oArr = new Array(maxDays).fill(null);
-      const vArr = new Array(maxDays).fill(null);
+      const cArr: (number | null)[] = new Array(bars.length);
+      const hArr: (number | null)[] = new Array(bars.length);
+      const lArr: (number | null)[] = new Array(bars.length);
+      const oArr: (number | null)[] = new Array(bars.length);
+      const vArr: (number | null)[] = new Array(bars.length);
 
       for (let di = 0; di < bars.length; di++) {
         const bar = bars[di];
-        cArr[padLen + di] = bar[OHLCV_CLOSE] ?? null;
-        oArr[padLen + di] = bar[OHLCV_OPEN] ?? null;
-        hArr[padLen + di] = bar[OHLCV_HIGH] ?? null;
-        lArr[padLen + di] = bar[OHLCV_LOW] ?? null;
-        vArr[padLen + di] = (bar[OHLCV_VOLUME] ?? null) as number | null;
+        cArr[di] = bar[OHLCV_CLOSE] ?? null;
+        oArr[di] = bar[OHLCV_OPEN] ?? null;
+        hArr[di] = bar[OHLCV_HIGH] ?? null;
+        lArr[di] = bar[OHLCV_LOW] ?? null;
+        vArr[di] = (bar[OHLCV_VOLUME] ?? null) as number | null;
       }
 
       close.push(cArr);
@@ -414,6 +489,7 @@ export class CustomIndicatorRunner {
    * 返回 Promise，超时自动 reject
    */
   private executeSingleBatch(
+    worker: Worker,
     code: string,
     stockData: {
       close: (number | null)[][];
@@ -425,49 +501,22 @@ export class CustomIndicatorRunner {
     },
     batchId: string,
     timeoutMs: number,
-  ): Promise<{ values?: ((number | null)[] | number | null)[]; error?: string }> {
-    return new Promise((resolve, reject) => {
-      if (!this.worker) {
-        reject(new Error('Worker 已终止'));
-        return;
-      }
-
-      const timeout = setTimeout(() => {
-        // 超时 → 终止当前 Worker，创建新 Worker
+  ): Promise<BatchResponse> {
+    return new Promise<BatchResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        // 超时 → 终止并重建整个 Worker 池，本轮选股以错误收尾（避免静默丢股票）
+        const entry = this.pending.get(batchId);
+        if (entry) {
+          this.pending.delete(batchId);
+          entry.reject(new Error(`脚本执行超时（${timeoutMs}ms），Worker 已重建`));
+        }
         this.cleanup();
-        // 自动重建（异步，不阻塞当前流程）
         this.init().catch(() => {});
-        reject(new Error(`脚本执行超时（${timeoutMs}ms），Worker 已重建`));
       }, timeoutMs);
 
-      this.worker.onmessage = (event) => {
-        const msg = event.data;
-        if (msg.type === 'result' && msg.batchId === batchId) {
-          clearTimeout(timeout);
-          // 解析结果
-          const result = msg.results?.[0];
-          if (result?.error) {
-            resolve({ error: result.error });
-          } else if (result?.values) {
-            // S2: 校验输出规模（全批次元素总数），防止恶意脚本产出巨量数据撑爆内存
-            const totalElements = result.values.reduce((sum: number, arr: unknown) => sum + (Array.isArray(arr) ? arr.length : 1), 0);
-            if (totalElements > MAX_OUTPUT_ELEMENTS) {
-              this.cleanup();
-              this.init().catch(() => {});
-              resolve({ error: `脚本输出超出上限（${totalElements} > ${MAX_OUTPUT_ELEMENTS}），Worker 已重建` });
-              return;
-            }
-            resolve({ values: result.values });
-          } else {
-            resolve({ error: '脚本未返回有效结果' });
-          }
-        } else if (msg.type === 'error' && msg.batchId === batchId) {
-          clearTimeout(timeout);
-          resolve({ error: msg.error });
-        }
-      };
+      this.pending.set(batchId, { resolve, reject, timer });
 
-      this.worker.postMessage({
+      worker.postMessage({
         type: 'execute',
         batchId,
         scripts: [{ id: 'single', code, stockData }],
@@ -476,17 +525,25 @@ export class CustomIndicatorRunner {
     });
   }
 
-  /** 释放 Worker 资源 */
+  /** 释放 Worker 池资源（未完成的批次以错误收尾） */
   cleanup(): void {
-    if (this.worker) {
+    this.pending.forEach((entry) => {
+      clearTimeout(entry.timer);
+      entry.reject(new Error('Worker 已重建'));
+    });
+    this.pending.clear();
+
+    this.workers.forEach((w) => {
       try {
-        this.worker.postMessage({ type: 'terminate' });
+        w.postMessage({ type: 'terminate' });
       } catch {
         console.warn('[CustomIndicatorRunner] Worker terminate 消息发送失败');
       }
-      this.worker.terminate();
-      this.worker = null;
-    }
+      try {
+        w.terminate();
+      } catch { /* ignore */ }
+    });
+    this.workers = [];
     this.ready = false;
     this.initPromise = null;
   }

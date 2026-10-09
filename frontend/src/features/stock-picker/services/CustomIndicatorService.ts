@@ -50,6 +50,8 @@ interface ConditionLike {
 // ==================== 配置常量 ====================
 
 const OHLCV_BATCH_SIZE = 200;
+/** OHLCV 分批拉取的并发度（网络为瓶颈，并发可显著缩短全市场加载时间） */
+const OHLCV_FETCH_CONCURRENCY = 4;
 /** 单批 OHLCV 请求最大重试次数 */
 const OHLCV_MAX_RETRIES = 2;
 /** 首次重试延迟（毫秒），后续指数退避 */
@@ -84,6 +86,34 @@ export function extractCustomConditions(
     });
   }
   return result;
+}
+
+/**
+ * 计算单个自编指标「自身」所需的 OHLCV 窗口长度（交易日数）。
+ *
+ * 从公式中提取 1~500 的数字取最大值，再加 5 天安全余量（指标公式往往需要
+ * 「最大周期 + 1」根数据才能产生首个非零值，如 MA5 需 range(5, n) 至少 n=6）。
+ * 无可用数字时回退 30 + 5。
+ *
+ * ⚠️ 关键：窗口必须按「每个指标各自」计算，不能取所选指标的全局最大值。
+ * 否则某指标的输入窗口会随「同时勾选了哪些指标」而变化——对窗口敏感型公式
+ * （突破窗口内前高/新低、全窗极值/均值、依赖 len(close) 等）会导致单独选与
+ * 组合选时结果不一致，组合结果不再是各指标单独结果的交集（K 2026-10-09）。
+ */
+export function computeConditionLookback(cond: { formula?: string }): number {
+  let maxNum = 0;
+  if (cond.formula) {
+    const matches = cond.formula.match(/\b(\d{1,3})\b/g);
+    if (matches) {
+      for (const m of matches) {
+        const n = parseInt(m, 10);
+        if (!Number.isNaN(n) && n >= 1 && n <= 500 && n > maxNum) {
+          maxNum = n;
+        }
+      }
+    }
+  }
+  return (maxNum > 0 ? maxNum : 30) + 5;
 }
 
 /**
@@ -189,17 +219,25 @@ export class CustomIndicatorService {
 
     if (needFetch.length === 0) return result;
 
+    // 分批并发拉取（网络为瓶颈）：全市场 5000+ 只原本串行需数十秒，并发后显著缩短
+    const batches: string[][] = [];
     for (let i = 0; i < needFetch.length; i += OHLCV_BATCH_SIZE) {
+      batches.push(needFetch.slice(i, i + OHLCV_BATCH_SIZE));
+    }
+
+    for (let i = 0; i < batches.length; i += OHLCV_FETCH_CONCURRENCY) {
       if (signal?.aborted) {
         throw new Error('已取消');
       }
 
-      const batch = needFetch.slice(i, i + OHLCV_BATCH_SIZE);
-      const batchMap = await this.fetchOhlcvBatch(batch, signal);
+      const group = batches.slice(i, i + OHLCV_FETCH_CONCURRENCY);
+      const batchMaps = await Promise.all(group.map((batch) => this.fetchOhlcvBatch(batch, signal)));
 
-      for (const [code, ohlcv] of batchMap) {
-        result.set(code, ohlcv);
-        this.ohlcvCache.set(code, ohlcv);
+      for (const batchMap of batchMaps) {
+        for (const [code, ohlcv] of batchMap) {
+          result.set(code, ohlcv);
+          this.ohlcvCache.set(code, ohlcv);
+        }
       }
 
       done = result.size;
@@ -311,9 +349,13 @@ export class CustomIndicatorService {
    *
    * 对每个自编指标，仅在上一步通过的股票上计算，逐步缩小候选集。
    *
+   * 每个指标都按「自身」公式所需的窗口（computeConditionLookback）切片，
+   * 因此同一指标在「单独选」与「和其他指标一起选」时输入数据一致，结果一致，
+   * 组合结果恒等于各指标单独结果的交集。
+   *
    * @param conditions 自编指标条件列表
    * @param stockCodes 初始候选股票代码列表
-   * @param ohlcvMap OHLCV 数据
+   * @param ohlcvMap 完整（未切片）的 OHLCV 数据，切片在方法内部按指标各自进行
    * @param signal 取消信号
    * @param onProgress 进度回调
    * @returns 通过筛选的股票代码集合及每只股票的最后有效评分
@@ -368,15 +410,27 @@ export class CustomIndicatorService {
         message: `正在计算「${cond.name}」（${currentCodes.length} 只股票）...`,
       });
 
+      // 按「本指标自身」的窗口切片，避免其他指标的选取改变本指标的输入窗口
+      const condOhlcv = this.sliceOhlcv(ohlcvMap, computeConditionLookback(cond));
+
       const scriptDef = {
         id: cond.scriptId,
         name: cond.name,
         code: cond.formula,
         stockCodes: currentCodes,
-        allOhlcv: ohlcvMap,
+        allOhlcv: condOhlcv,
       };
 
-      const resultMap = await runner.execute([scriptDef]);
+      // 把 runner 的「按批」进度透传给 UI：单指标在全市场计算需较久，
+      // 否则进度条文案长时间停在初始值，用户会误以为卡死/超时。
+      const resultMap = await runner.execute([scriptDef], (bp) => {
+        onProgress?.({
+          phase: 'computing',
+          done: idx,
+          total: validScripts.length,
+          message: bp.message,
+        });
+      });
       const scriptResult = resultMap.get(cond.scriptId);
 
       if (!scriptResult) {

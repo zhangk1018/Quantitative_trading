@@ -56,8 +56,11 @@ function sleep(ms: number): Promise<void> {
  * 生成影响候选集范围的缓存键（不含排序）
  * 排序变化不影响数据集合，仅影响展示顺序，不需要重新拉取
  */
-function getRangeConditionHash(state: ScreenerFilterPayload & { filterGroup?: FilterGroup | null }): string {
+export function getRangeConditionHash(state: ScreenerFilterPayload & { filterGroup?: FilterGroup | null }): string {
   return JSON.stringify({
+    // 市场必须参与缓存键：切换市场会改变候选集（后端 market 参数 + 板块规则），
+    // 漏掉它会导致 hk→us 时命中旧缓存，仍旧返回上一市场的股票（K 2026-10-06）。
+    selectedMarket: state.selectedMarket,
     selectedBoards: state.selectedBoards,
     stockRange: state.stockRange,
     marketIndicatorRanges: state.marketIndicatorRanges,
@@ -114,55 +117,6 @@ function sortItems(items: StockItem[], sortBy: string, sortAsc: boolean): StockI
     return sortAsc ? as.localeCompare(bs) : bs.localeCompare(as);
   });
   return sorted;
-}
-
-interface LookbackCondition {
-  lookbackDays?: number | string;
-  formula?: string;
-}
-
-/**
- * 从条件中解析最大回溯天数
- *
- * 优先级：
- *   1. 显式 `lookbackDays` 字段（数字类型，且在 1~1000 之间）
- *   2. 从 `formula` 中正则提取数字（1~3 位的独立数字，排除大数字如成交量单位）
- *   3. 默认 30 天
- */
-function computeMaxLookback(
-  _allConditions: (FilterCondition | FilterGroup)[],
-  customConditions: LookbackCondition[],
-): number {
-  const values: number[] = [];
-
-  for (const cond of customConditions) {
-    if (cond.lookbackDays != null) {
-      const n = typeof cond.lookbackDays === 'number'
-        ? cond.lookbackDays
-        : parseInt(String(cond.lookbackDays), 10);
-      if (!Number.isNaN(n) && n >= 1 && n <= 1000) {
-        values.push(n);
-        continue;
-      }
-    }
-
-    if (cond.formula) {
-      const matches = cond.formula.match(/\b(\d{1,3})\b/g);
-      if (matches) {
-        const nums = matches
-          .map((m) => parseInt(m, 10))
-          .filter((n) => !Number.isNaN(n) && n >= 1 && n <= 500);
-        if (nums.length > 0) {
-          values.push(Math.max(...nums));
-        }
-      }
-    }
-  }
-
-  // 加安全余量（+5）：指标公式往往需要「最大周期+1」根数据才能产生首个非零值
-  // （如 MA5 需 range(5, n) 至少 n=6），仅按公式最大数字切片会导致全部算出 0
-  // 被过滤（K 2026-09-19：港股自编指标「港股核心量比/close>ma5」选股 0 只）。
-  return (values.length > 0 ? Math.max(...values) : 30) + 5;
 }
 
 /** 分批拉取最大轮次保护（200只/批 × 50批 = 10000只上限） */
@@ -503,11 +457,6 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
           state.customIndicators,
         );
 
-        const maxLookback = computeMaxLookback(
-          state.filterGroup?.conditions || [],
-          customConditions,
-        );
-
         const ohlcvMap = await service.loadOhlcv(codes, signal, (done, totalCount) => {
           const pct = Math.round(
             baseProgress + (done / Math.max(totalCount, 1)) * CONFIG.OHLCV_LOAD_WEIGHT * 100,
@@ -516,17 +465,17 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
           setProgressText(`正在加载K线数据 ${done.toLocaleString()}/${totalCount.toLocaleString()} 只`);
         });
 
-        const slicedOhlcv = service.sliceOhlcv(ohlcvMap, maxLookback);
-
         setPhase('computing-custom');
         const computeBaseProgress = (CONFIG.CANDIDATE_FETCH_WEIGHT + CONFIG.OHLCV_LOAD_WEIGHT) * 100;
         setProgress(Math.round(computeBaseProgress));
         setProgressText('正在计算自编指标...');
 
+        // 各指标在 computeAndFilter 内部按「自身」窗口切片（不再全局统一切片），
+        // 保证单指标结果与组合选时一致，组合结果 = 各指标单独结果的交集。
         const { passedCodes, scores } = await service.computeAndFilter(
           customConditions,
           codes,
-          slicedOhlcv,
+          ohlcvMap,
           signal,
           (p) => {
             const ratio = customConditions.length > 0 ? p.done / customConditions.length : 1;
