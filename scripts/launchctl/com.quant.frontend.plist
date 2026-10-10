@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quant.frontend</string>
+
+    <!-- 与后端 com.quant.backend 一致：用户域 launchd 托管，登录后自动拉起，KeepAlive 常驻 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd /Volumes/MyData/Quantitative_trading/frontend &amp;&amp; exec /usr/local/bin/npm run dev -- --host 0.0.0.0 --port 5173</string>
+    </array>
+
+    <!-- launchd 默认 PATH 极简，须显式包含 npm/node 所在目录 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Volumes/MyData/Quantitative_trading/logs/frontend/quant_frontend.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Volumes/MyData/Quantitative_trading/logs/frontend/quant_frontend.err.log</string>
+</dict>
+</plist>

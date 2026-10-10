@@ -51,7 +51,7 @@ interface ConditionLike {
 
 const OHLCV_BATCH_SIZE = 200;
 /** OHLCV 分批拉取的并发度（网络为瓶颈，并发可显著缩短全市场加载时间） */
-const OHLCV_FETCH_CONCURRENCY = 4;
+const OHLCV_FETCH_CONCURRENCY = 6;
 /** 单批 OHLCV 请求最大重试次数 */
 const OHLCV_MAX_RETRIES = 2;
 /** 首次重试延迟（毫秒），后续指数退避 */
@@ -291,30 +291,41 @@ export class CustomIndicatorService {
       }
 
       try {
-        // 按候选 codes 推断市场（.HK→hk / 字母→us / 否则 cn）并显式传 market：
-        // /api/snapshot/all 缺省按 cn 过滤，港股/美股候选不传会全部被后端剔除（K 2026-09-19 港股自编指标筛 0 只）
-        const mk = codes.length > 0 ? inferMarketKey(codes[0]) : undefined;
-        const marketParam = mk && mk !== 'cn' ? `&market=${mk}` : '';
-        const resp = await fetch(`/api/snapshot/all?codes=${codes.join(',')}${marketParam}`, { signal });
-        // 数据刷新/加载中：等待后端就绪后重置重试计数，重新发起本轮请求
-        if (resp.status === 503) {
-          const ready = await this.waitReady(OHLCV_READY_WAIT_MS, signal);
-          if (!ready) {
-            throw new Error(`数据服务仍在后台刷新（已等待 ${OHLCV_READY_WAIT_MS / 1000}s），请稍后重试或换个时间再选股`);
-          }
-          lastError = new Error(`HTTP ${resp.status}`);
-          attempt = -1; // 就绪后重置计数，重新走一次完整请求
-          continue;
+        // 按「每只代码自身」推断市场并分组（.HK→hk / 字母→us / 否则 cn），逐组显式传 market：
+        // /api/snapshot/all 缺省按 cn 过滤，港股/美股代码不传会被后端剔除。
+        // 历史缺陷：原实现只按 codes[0] 推断整批市场，混合市场候选（如跨市场自选股）
+        // 会导致其中一整个市场的代码拿不到 K 线而被静默剔除（K 2026-10-10）。
+        const groups = new Map<string, string[]>();
+        for (const code of codes) {
+          const mk = inferMarketKey(code) ?? 'cn';
+          const list = groups.get(mk);
+          if (list) list.push(code);
+          else groups.set(mk, [code]);
         }
-        if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status}`);
-        }
-        const json = await resp.json();
-        const stocks = json.data?.stocks ?? [];
+
         const result = new Map<string, number[][]>();
-        for (const s of stocks) {
-          if (s.ohlcv && Array.isArray(s.ohlcv) && s.ohlcv.length > 0) {
-            result.set(s.code, s.ohlcv);
+        for (const [mk, group] of groups) {
+          const marketParam = mk !== 'cn' ? `&market=${mk}` : '';
+          const resp = await fetch(`/api/snapshot/all?codes=${group.join(',')}${marketParam}`, { signal });
+          // 数据刷新/加载中：等待后端就绪后重置重试计数，重新发起本轮请求
+          if (resp.status === 503) {
+            const ready = await this.waitReady(OHLCV_READY_WAIT_MS, signal);
+            if (!ready) {
+              throw new Error(`数据服务仍在后台刷新（已等待 ${OHLCV_READY_WAIT_MS / 1000}s），请稍后重试或换个时间再选股`);
+            }
+            lastError = new Error(`HTTP ${resp.status}`);
+            attempt = -1; // 就绪后重置计数，重新走一次完整请求
+            continue;
+          }
+          if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+          }
+          const json = await resp.json();
+          const stocks = json.data?.stocks ?? [];
+          for (const s of stocks) {
+            if (s.ohlcv && Array.isArray(s.ohlcv) && s.ohlcv.length > 0) {
+              result.set(s.code, s.ohlcv);
+            }
           }
         }
         return result;
@@ -368,15 +379,19 @@ export class CustomIndicatorService {
     onProgress?: (progress: ComputeProgress) => void,
   ): Promise<{ passedCodes: Set<string>; scores: Map<string, number> }> {
     const emptyResult = { passedCodes: new Set<string>(), scores: new Map<string, number>() };
-    if (conditions.length === 0 || stockCodes.length === 0) {
-      emptyResult.passedCodes = new Set(stockCodes);
+    if (stockCodes.length === 0) {
       return emptyResult;
+    }
+    // conditions 为空（调用方声明了自编条件但一条都没解析出来）时若直接「全部通过」，
+    // 会表现为「自编指标没起作用、100% 通过」的静默错误。此处显式抛错，强制调用方
+    // 先修正条件（K 2026-10-10 港股/美股）。
+    if (conditions.length === 0) {
+      throw new Error('自编指标条件为空（可能引用的指标已被删除或未加载），请重新选择后再选股');
     }
 
     const validScripts = conditions.filter((c) => c.formula && c.formula.trim());
     if (validScripts.length === 0) {
-      emptyResult.passedCodes = new Set(stockCodes);
-      return emptyResult;
+      throw new Error('自编指标公式为空，无法计算，请检查指标配置');
     }
 
     // 候选股全部无 K 线时（后端 /api/snapshot/all 未覆盖该市场，如快照缓存按单一最新交易日加载

@@ -72,9 +72,9 @@ export function useStockPickerActions(
   const handleStartScreening = useCallback(async () => {
     const result = await fetchFirstPage();
     if (result && result.items.length > 0) {
-      // 滚动到顶部，确保展示完整列表
+      // 立即回到顶部（不要用 smooth：容器 DOM 会被复用，动画易被新内容夹断而停在中间位置）
       if (tableContainerRef.current) {
-        tableContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+        tableContainerRef.current.scrollTop = 0;
       }
       message.success(`选股成功，共 ${result.total} 只`);
     }

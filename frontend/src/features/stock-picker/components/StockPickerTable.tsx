@@ -1,4 +1,4 @@
-import React, { memo, useRef, useCallback } from 'react';
+import React, { memo, useRef, useCallback, useEffect } from 'react';
 import { Typography, Spin, Checkbox, Button } from 'antd';
 import { LoadingOutlined, CaretUpOutlined, CaretDownOutlined } from '@ant-design/icons';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -127,6 +127,8 @@ interface StockPickerTableProps {
   items: StockItem[];
   total: number;
   loading: boolean;
+  /** 结果整批替换的计数器：变化时把滚动位置复位到顶部（见组件内注释） */
+  resetToken?: number;
   loadingMore: boolean;
   pageSize: number;
   selectedCodes: Set<string>;
@@ -154,7 +156,7 @@ interface StockPickerTableProps {
  * 加载中 / 错误 / 空数据 / 加载更多错误 四种状态均在表格区域展示。
  */
 export const StockPickerTable: React.FC<StockPickerTableProps> = React.memo(({
-  items, total, loading, loadingMore, pageSize,
+  items, total, loading, resetToken, loadingMore, pageSize,
   selectedCodes, indeterminate, allSelected,
   sortBy, sortAsc, error, loadMoreError,
   onToggleAll, onToggleOne, onSort, onDoubleClick, onLoadMore, onRetry, onRetryLoadMore,
@@ -196,6 +198,18 @@ export const StockPickerTable: React.FC<StockPickerTableProps> = React.memo(({
   // 通过 ref 访问 virtualizer（避免 onChange 循环依赖）
   const virtualizerRef = useRef(virtualizer);
   virtualizerRef.current = virtualizer;
+
+  // 结果「整批替换」后把滚动位置复位到顶部：
+  // 滚动容器 DOM 节点会被 React 复用，上一轮筛选残留的 scrollTop 会让新结果的前几行被跳过
+  // （K 2026-10-09：11 只结果只从第 6 只开始显示）。加载更多为追加，不触发本复位。
+  useEffect(() => {
+    if (typeof scrollContainerRef === 'function') return;
+    const el = scrollContainerRef?.current;
+    if (el) el.scrollTop = 0;
+    // 兼容测试环境（useVirtualizer 被 mock，可能不含 scrollToOffset）
+    virtualizer.scrollToOffset?.(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetToken]);
 
   // 重置自动触发标记（当 items 变化时说明加载完成）
   const prevItemsLenRef = useRef(items.length);

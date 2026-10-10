@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -43,6 +44,7 @@ from collector.datasource.yahoo import (  # noqa: E402
     MarketConfig,
     normalize_code,
 )
+from collector.utils.adj_adjust import estimate_share_factor  # noqa: E402
 from utils.logger import setup_logger  # noqa: E402
 
 logger = setup_logger('akshare_datasource')
@@ -129,6 +131,7 @@ def _to_ak_symbol(code: str, market: str) -> str:
 def _fill_lagging_adj(
     raw_close: pd.Series,
     adj_close: Optional[pd.Series],
+    share: Optional[float] = None,
 ) -> Tuple[pd.Series, int]:
     """复权序列缺失日，用最近可得复权倍率填补（防止整行被丢弃）。
 
@@ -152,6 +155,9 @@ def _fill_lagging_adj(
     Args:
         raw_close: 不复权收盘价（index 为交易日）
         adj_close: 复权收盘价（可能缺尾/缺中/缺头/为空）；None 表示数据源无复权序列
+        share: 股本因子 a（仿射口径 `adj = a*raw + b`）。传入时按仿射式填补
+            （b 取重叠日中位数）——新浪港股 hfq 即此口径；缺省则按最近可得倍率
+            填补（乘性口径，如美股 qfq×锚点）
 
     Returns:
         (填补后的复权收盘价, 填补行数)；填补行数 0 表示无缺失或无需填补
@@ -164,6 +170,11 @@ def _fill_lagging_adj(
     n_miss = int(miss.sum())
     if n_miss == 0:
         return adj, 0
+    if share is not None and np.isfinite(share) and share > 0:
+        # 仿射口径：adj = a*raw + b（b = 重叠日 adj_close − a*raw_close 的中位数）
+        b_series = (adj - share * raw).dropna()
+        b = float(b_series.median()) if len(b_series) else 0.0
+        return adj.where(~miss, share * raw + b), n_miss
     ratio = adj.div(raw.where(raw > 0))
     # 过滤非正/异常倍率（除零、脏数据），其余缺失位置由前后最近倍率补齐
     ratio = ratio.where((ratio > 0) & (ratio < 1e6))
@@ -487,34 +498,85 @@ class AkShareDataSource(BaseDataSource):
             return None
 
     def _fetch_hk(self, sym: str, ticker: str, start: Optional[str], end: Optional[str]) -> Optional[pd.DataFrame]:
-        """港股：新浪不复权 + 后复权→组装原始 OHLC 与后复权 Adj Close。"""
+        """港股：新浪不复权 + 后复权（hfq）+ **前复权（qfq）** → 组装三类价格。
+
+        协作单 45.0 订正：库内主价格列改存**前复权**（qfq）——新浪 qfq 是乘性口径，
+        无法由仿射后复权精确换算，故直接抓取落库；raw_* 存不复权、adj_* 存后复权 hfq。
+        另：
+        1. **直接透传数据源的 hfq O/H/L/C**（而非只取 close 再按当日倍率折算 O/H/L，
+           后者会把日内波幅按 `(a + b/close)/a` 放大，碧桂园约 30 倍）；
+        2. 透传本标的**当前复权区间**的股本因子 `Adj Share`（取最近 200 个有效相邻对
+           稳健估计），供 `split_raw_adj` 缺失日填补与增量快照路径仿射换算复用，
+           并供 `detect_factor_dates` 在增量短窗口下识别除权日。
+        """
         with network_deadline(_NETWORK_TIMEOUT_SECONDS):
             raw = ak.stock_hk_daily(symbol=sym, adjust='')
         with network_deadline(_NETWORK_TIMEOUT_SECONDS):
             hfq = ak.stock_hk_daily(symbol=sym, adjust='hfq')
+        with network_deadline(_NETWORK_TIMEOUT_SECONDS):
+            qfq = ak.stock_hk_daily(symbol=sym, adjust='qfq')
         if raw is None or raw.empty:
             return None
         raw = raw.set_index(pd.to_datetime(raw['date']))
         raw = raw[~raw.index.duplicated(keep='last')]
-        close_hfq = None
+        price_cols = ['open', 'high', 'low', 'close']
+        hfq_close = None
+        hfq_ohlc: Optional[pd.DataFrame] = None
         if hfq is not None and not hfq.empty:
             hfq = hfq.set_index(pd.to_datetime(hfq['date']))
             hfq = hfq[~hfq.index.duplicated(keep='last')]
-            close_hfq = hfq['close'].reindex(raw.index)
-        # 复权序列缺失日按最近倍率填补，避免整行被下游 dropna 丢弃
-        close_hfq, n_filled = _fill_lagging_adj(raw['close'], close_hfq)
+            hfq_close = hfq['close'].reindex(raw.index)
+            hfq_ohlc = hfq[price_cols].reindex(raw.index)
+
+        # 股本因子：仅在重叠日上估计（缺失日不影响），取最近 200 个有效相邻对
+        adj_for_share = hfq_close if hfq_close is not None else pd.Series(np.nan, index=raw.index)
+        share = estimate_share_factor(raw['close'].tail(200), adj_for_share.tail(200))
+        # 复权序列缺失日按该标的复权口径填补（仿射/乘性），避免整行被下游 dropna 丢弃
+        hfq_close, n_filled = _fill_lagging_adj(raw['close'], hfq_close, share=share)
         if n_filled > 0:
             logger.warning(
                 f"⚠️ {ticker} 后复权序列缺失 {n_filled} 个交易日（滞后/间断），"
-                f"已按最近可得复权倍率填补（否则这些行会被丢弃）"
+                f"已按该股复权口径（仿射/乘性自适应）填补（否则这些行会被丢弃）"
             )
+
+        if hfq_ohlc is None:
+            # 无复权序列 → 退化为原始价（与旧行为一致，下游按乘性倍率 1.0 处理）
+            hfq_ohlc = raw[price_cols].copy()
+
+        # 前复权（qfq）：库内主价格列来源；缺失日退化为原始价，close 用填补后的序列
+        qfq_close = None
+        qfq_ohlc: Optional[pd.DataFrame] = None
+        if qfq is not None and not qfq.empty:
+            qfq = qfq.set_index(pd.to_datetime(qfq['date']))
+            qfq = qfq[~qfq.index.duplicated(keep='last')]
+            qfq_close = qfq['close'].reindex(raw.index)
+            qfq_ohlc = qfq[price_cols].reindex(raw.index)
+        qfq_close, n_qfq_filled = _fill_lagging_adj(raw['close'], qfq_close, share=share)
+        if n_qfq_filled > 0:
+            logger.warning(
+                f"⚠️ {ticker} 前复权序列缺失 {n_qfq_filled} 个交易日（滞后/间断），"
+                f"已按该股复权口径填补（否则这些行会被丢弃）"
+            )
+        if qfq_ohlc is None:
+            qfq_ohlc = raw[price_cols].copy()
+        for c in price_cols:
+            qfq_ohlc[c] = qfq_ohlc[c].fillna(raw[c])
+        qfq_ohlc['close'] = qfq_close
 
         out = pd.DataFrame({
             'Open': raw['open'],
             'High': raw['high'],
             'Low': raw['low'],
             'Close': raw['close'],
-            'Adj Close': close_hfq,
+            'Adj Open': hfq_ohlc['open'],
+            'Adj High': hfq_ohlc['high'],
+            'Adj Low': hfq_ohlc['low'],
+            'Adj Close': hfq_close,
+            'Qfq Open': qfq_ohlc['open'],
+            'Qfq High': qfq_ohlc['high'],
+            'Qfq Low': qfq_ohlc['low'],
+            'Qfq Close': qfq_ohlc['close'],
+            'Adj Share': share if share is not None else np.nan,
             'Volume': raw['volume'],
             'Timezone': self.cfg.timezone,
         })

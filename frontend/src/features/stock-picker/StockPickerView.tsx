@@ -74,7 +74,7 @@ const StockPickerContent: React.FC = () => {
     sortBy, sortAsc, PAGE_SIZE,
     phase, progress, progressText,
     fetchFirstPage, fetchNextPage, clearResults, retry, retryLoadMore,
-    cancelScreening, applyLocalSort,
+    cancelScreening, applyLocalSort, resultsResetToken,
   } = useScreenerData(message);
 
   const showProgressBar = phase !== 'idle' && phase !== 'ready' && phase !== ('' as any);
@@ -131,6 +131,7 @@ const StockPickerContent: React.FC = () => {
             items={items}
             total={total}
             loading={loading}
+            resetToken={resultsResetToken}
             loadingMore={loadingMore}
             pageSize={PAGE_SIZE}
             selectedCodes={actions.selectedCodes}

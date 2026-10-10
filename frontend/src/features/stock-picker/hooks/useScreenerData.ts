@@ -121,6 +121,8 @@ function sortItems(items: StockItem[], sortBy: string, sortAsc: boolean): StockI
 
 /** 分批拉取最大轮次保护（200只/批 × 50批 = 10000只上限） */
 const MAX_BATCH_LOOPS = 50;
+/** 候选股分页并发度（港股/美股候选集大，并发可显著缩短加载时间） */
+const CANDIDATE_FETCH_CONCURRENCY = 5;
 /** 单批请求最大重试次数 */
 const BATCH_MAX_RETRIES = 2;
 /** 首次重试延迟（毫秒），后续指数退避 */
@@ -177,6 +179,13 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
   const [phase, setPhase] = useState<ScreeningPhase>('idle');
   const [progress, setProgress] = useState(0);
   const [progressText, setProgressText] = useState('');
+  /**
+   * 结果集「整批替换」计数器（fetchFirstPage 每次成功返回 +1）。
+   * 用于让表格在结果替换后把滚动位置复位到顶部——滚动容器 DOM 节点会被 React
+   * 复用，旧滚动位置会残留，导致新结果的前几行被跳过（K 2026-10-09）。
+   * 「加载更多」(fetchNextPage) 为追加，不在此列。
+   */
+  const [resultsResetToken, setResultsResetToken] = useState(0);
 
   const cacheRef = useRef(createEmptyCache());
 
@@ -316,9 +325,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
       const watchlistCodes = state.stockRange === 'watchlist' ? getWatchlistCodes() : undefined;
       const BATCH = CONFIG.CANDIDATE_BATCH_SIZE;
       const all: StockItem[] = [];
-      let curOffset = 0;
       let totalCount = Infinity;
-      let batchCount = 0;
 
       const isCancelled = (): boolean => {
         if (cancelledRef.current) return true;
@@ -326,16 +333,11 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
         return false;
       };
 
-      while (curOffset < totalCount) {
-        if (isCancelled()) throw new Error('已取消');
-        batchCount++;
-        if (batchCount > MAX_BATCH_LOOPS) {
-          throw new Error(`候选股数量超过上限（${BATCH * MAX_BATCH_LOOPS}只），请缩小筛选范围`);
-        }
-
+      /** 拉取单页（带重试与取消），返回该页 items/total */
+      const fetchPage = async (
+        offset: number,
+      ): Promise<{ items: StockItem[]; total: number }> => {
         let lastErr: Error | null = null;
-        let result: FetchStocksResponse | null = null;
-
         for (let attempt = 0; attempt <= BATCH_MAX_RETRIES; attempt++) {
           if (isCancelled()) throw new Error('已取消');
           if (attempt > 0) {
@@ -344,34 +346,58 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
           }
           try {
             const requestParams = buildScreeningParams(
-              state, sortByParam, sortAscParam, BATCH, curOffset, watchlistCodes,
+              state, sortByParam, sortAscParam, BATCH, offset, watchlistCodes,
             );
-            result = (await fetchStocks(requestParams, signal)) as FetchStocksResponse;
-            lastErr = null;
-            break;
+            const result = (await fetchStocks(requestParams, signal)) as FetchStocksResponse;
+            return { items: (result.items as StockItem[]) || [], total: result.total || 0 };
           } catch (err) {
             if (isCancelled()) throw new Error('已取消');
             if (isApiErrorLike(err) && (err.name === 'CanceledError' || err.code === 'ERR_CANCELED')) {
               throw new Error('已取消');
             }
             lastErr = err instanceof Error ? err : new Error(String(err));
-            console.warn(`[loadAllCandidates] 第${attempt + 1}次拉取失败: ${lastErr.message}`);
+            console.warn(`[loadAllCandidates] offset=${offset} 第${attempt + 1}次拉取失败: ${lastErr.message}`);
           }
         }
+        throw new Error(`候选股拉取失败: ${lastErr?.message || '未知错误'}`);
+      };
 
-        if (lastErr || !result) {
-          throw new Error(`候选股拉取失败: ${lastErr?.message || '未知错误'}`);
-        }
-
-        if (totalCount === Infinity) {
-          totalCount = result.total || 0;
-        }
-        all.push(...(result.items as StockItem[]));
-        curOffset += BATCH;
-
-        const pct = Math.min(100, Math.round((all.length / Math.max(totalCount, 1)) * 100 * CONFIG.CANDIDATE_FETCH_WEIGHT));
+      // 第一页拿 total，再对其余分页并发拉取（顺序按 offset 复原）。
+      // 港股/美股候选集大（港股约 2.7k 只 ≈ 14 页），串行拉取约需 80s，
+      // 并发后显著缩短（K 2026-10-10）。
+      const first = await fetchPage(0);
+      totalCount = first.total;
+      const pages: StockItem[][] = [first.items];
+      let loaded = first.items.length;
+      const report = () => {
+        const pct = Math.min(100, Math.round((loaded / Math.max(totalCount, 1)) * 100 * CONFIG.CANDIDATE_FETCH_WEIGHT));
         setProgress(pct);
-        setProgressText(`正在拉取候选股 ${all.length.toLocaleString()}/${totalCount.toLocaleString()} 只`);
+        setProgressText(`正在拉取候选股 ${loaded.toLocaleString()}/${totalCount.toLocaleString()} 只`);
+      };
+      report();
+
+      const maxPages = Math.min(Math.ceil(totalCount / BATCH), MAX_BATCH_LOOPS);
+      if (maxPages > MAX_BATCH_LOOPS) {
+        throw new Error(`候选股数量超过上限（${BATCH * MAX_BATCH_LOOPS}只），请缩小筛选范围`);
+      }
+
+      const offsets: number[] = [];
+      for (let p = 1; p < maxPages; p++) offsets.push(p * BATCH);
+
+      for (let i = 0; i < offsets.length; i += CANDIDATE_FETCH_CONCURRENCY) {
+        if (isCancelled()) throw new Error('已取消');
+        const group = offsets.slice(i, i + CANDIDATE_FETCH_CONCURRENCY);
+        const results = await Promise.all(group.map((off) => fetchPage(off)));
+        results.forEach((r, gi) => {
+          const pageIndex = (i + gi) + 1;
+          pages[pageIndex] = r.items;
+          loaded += r.items.length;
+        });
+        report();
+      }
+
+      for (const page of pages) {
+        if (page) all.push(...page);
       }
 
       cacheRef.current.candidateTotal = totalCount;
@@ -392,6 +418,23 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
     async (sortByParam: string, sortAscParam: boolean): Promise<{ items: StockItem[]; total: number } | null> => {
       const state = stateRef.current;
       const cache = cacheRef.current;
+
+      // 【P0 修复】声明的自编条件必须都能解析出「可运行」的指标，否则不允许静默放行。
+      // 历史缺陷：filterGroup 里存在自定义条件（hasCustomIndicator=true → 走全量管道），
+      // 但引用的指标已被删除/未加载/公式为空时 extractCustomConditions 返回 []，
+      // computeAndFilter 走 "conditions 为空 → 全部通过" 的 fail-open 分支，
+      // 结果 = 候选股全量（K 2026-10-10：港股/美股「自编指标没起作用，100% 通过」）。
+      const declaredCustom = (state.filterGroup?.conditions || []).filter(
+        (c: FilterCondition) => c.source === 'custom' && c.sourceId,
+      );
+      if (declaredCustom.length > 0) {
+        const resolved = extractCustomConditions(state.filterGroup?.conditions || [], state.customIndicators);
+        const runnable = resolved.filter((c) => c.formula && c.formula.trim());
+        if (runnable.length === 0) {
+          throw new Error('所选自编指标不可用（指标可能已被删除，或公式为空），请重新选择后再选股');
+        }
+      }
+
       const rangeHash = getRangeConditionHash(state);
       const customHash = getCustomConditionHash(state.filterGroup, state.customIndicators);
 
@@ -410,7 +453,8 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
           setPhase('fetching-candidates');
           setProgress(0);
           setProgressText('正在拉取候选股...');
-          service.clearCache();
+          // 注意：不在此处 clearCache()。OHLCV 只与股票代码有关、与筛选范围无关，
+          // 每次范围变化都清空会导致重复下载全市场 K 线（港股全量约 136s）。
           const [loadedCandidates] = await loadAllCandidates(sortByParam, sortAscParam, signal);
           candidates = loadedCandidates.filter((c) => !isExcludedStockName(c.stock_name));
           cache.candidates = candidates;
@@ -464,6 +508,13 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
           setProgress(pct);
           setProgressText(`正在加载K线数据 ${done.toLocaleString()}/${totalCount.toLocaleString()} 只`);
         });
+
+        // 覆盖度可见化：无 K 线的候选股会被 computeAndFilter 静默剔除，
+        // 若占比可观必须提示，否则用户会误判为「指标没起作用」（K 2026-10-10）。
+        const missingBars = codes.filter((c) => (ohlcvMap.get(c)?.length ?? 0) === 0).length;
+        if (missingBars > 0) {
+          messageApi.warning(`${missingBars.toLocaleString()} 只候选股缺少K线数据，已从结果中剔除`);
+        }
 
         setPhase('computing-custom');
         const computeBaseProgress = (CONFIG.CANDIDATE_FETCH_WEIGHT + CONFIG.OHLCV_LOAD_WEIGHT) * 100;
@@ -544,12 +595,14 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
         getCustomIndicatorService().clearCache();
         setPhase('idle');
         setProgress(0);
-        return fetchScreeningData({
+        const page = await fetchScreeningData({
           sortBy: sortByParam,
           sortAsc: sortAscParam,
           offset: 0,
           append: false,
         });
+        setResultsResetToken((t) => t + 1);
+        return page;
       }
 
       cancelledRef.current = false;
@@ -560,6 +613,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
       setLoading(false);
 
       if (result) {
+        setResultsResetToken((t) => t + 1);
         return result as FetchStocksResponse;
       }
       return null;
@@ -661,6 +715,7 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
     fetchFirstPage, fetchNextPage, clearResults, retry, retryLoadMore,
     cancelScreening,
     applyLocalSort,
+    resultsResetToken,
     candidateTotal: cacheRef.current?.candidateTotal ?? 0,
   };
 }

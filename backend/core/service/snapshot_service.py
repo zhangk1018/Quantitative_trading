@@ -45,8 +45,14 @@ logger = logging.getLogger(__name__)
 # ================================================================
 # 常量配置（集中管理）
 # ================================================================
-HISTORY_DAYS = 300
+HISTORY_DAYS = 300                  # /api/snapshot/all 范围模式缺省回看自然天（协作单 40.0，口径不变）
 RANGE_MAX_DAYS = 1500               # /api/snapshot/all 范围模式（start_date/end_date）自然日上限（协作单 40.0）
+# 缺省路径 OHLCV 缓存窗口（协作单 44.0）：原 300 自然日只覆盖 196~205 个交易日，
+# 导致含 `ema(close,200)` / `if n >= 200:` 的长周期自编指标在沪深永不生效
+# （cn 196 根 < 200），而港股/美股生效 → 同一指标跨市场结果不可比。
+# 450 自然日实测覆盖 cn 299 / hk 307 / us 312 个交易日，各市场均稳定 ≥250。
+# 窗口下界基准另见 `_ohlcv_window_bounds`（按各市场各自最新日，滞后市场不被截短）。
+OHLCV_HISTORY_DAYS = 450
 FETCH_BATCH_SIZE = 10000
 CACHE_CHECK_INTERVAL = 10 * 60          # 缓存检查防抖：10分钟
 RELOAD_RETRY_COUNT = 3                  # 数据库重试次数
@@ -57,7 +63,7 @@ CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "cache")
 OHLCV_CACHE_FILE = os.path.join(CACHE_DIR, "ohlcv.pkl")
 SNAPSHOT_CACHE_FILE = os.path.join(CACHE_DIR, "snapshot.pkl")
 CACHE_META_FILE = os.path.join(CACHE_DIR, "cache_meta.json")
-CACHE_VERSION = 7                       # v7: 快照按各市场各自最新交易日加载（协作单 43.0，旧缓存不兼容需重建）
+CACHE_VERSION = 11                      # v11: 港股主价格列改前复权（45.0 订正），旧缓存需重建
 
 # HMAC 密钥（生产环境应通过环境变量注入）
 HMAC_KEY = os.environ.get("CACHE_HMAC_KEY", "change_me_in_production").encode()
@@ -201,6 +207,22 @@ class SnapshotService:
                 result[market] = d
         return result
 
+    @staticmethod
+    def _ohlcv_window_bounds(latest: str,
+                             market_latest: Optional[Dict[str, str]]) -> Tuple[str, str]:
+        """返回缺省路径 OHLCV 查询窗口的 (下界基准日, 上界日)（协作单 44.0）。
+
+        上界 = 各市场最新日的最大值（= `latest`，与快照口径对齐）；
+        下界基准 = 各市场最新日的**最小值**，SQL 中再减去 `OHLCV_HISTORY_DAYS`。
+
+        旧实现统一用全局 latest 倒推窗口，于是滞后市场（美股 T+1 08:30 才落库、
+        A 股节假日休市）在窗口内的实际跨度比领先市场更短。改用最小 latest 作基准后，
+        每个市场（含滞后市场）在同一窗口内都能拿到完整的窗口跨度。
+        """
+        bases = sorted(str(d)[:10] for d in (market_latest or {}).values() if d)
+        lower_base = bases[0] if bases else latest
+        return lower_base, latest
+
     # ================================================================
     # 元数据查询（轻量级，仅查询最新交易日和行数哈希）
     # ================================================================
@@ -239,6 +261,8 @@ class SnapshotService:
                     raise RuntimeError("stock_daily_snapshot 表无数据")
                 market_latest: Dict[str, str] = {str(m): str(d) for m, d, _ in meta_rows}
                 latest = max(market_latest.values())
+                # 窗口下界按各市场各自最新日取（协作单 44.0），滞后市场不被领先市场截短
+                lower_base, _ = self._ohlcv_window_bounds(latest, market_latest)
                 # 与 _snapshot_cache（按 code 去重的 dict）口径对齐，避免重复行导致
                 # 「哈希恒定不匹配 → 无限重建」
                 snap_count = sum(int(c or 0) for _, _, c in meta_rows)
@@ -248,7 +272,7 @@ class SnapshotService:
                     WHERE cycle = '1d'
                       AND trade_date >= CAST(%s AS DATE) - CAST(%s AS INTERVAL)
                       AND trade_date <= %s
-                """, (latest, f'{HISTORY_DAYS} days', latest))
+                """, (lower_base, f'{OHLCV_HISTORY_DAYS} days', latest))
                 count = cur.fetchone()[0]
 
                 row_hash = self._compute_row_hash(count, snap_count, market_latest)
@@ -390,6 +414,9 @@ class SnapshotService:
         def _execute_load():
             conn = self._pool.getconn()
             try:
+                # 窗口下界按各市场各自最新日取（协作单 44.0）
+                lower_base, _ = self._ohlcv_window_bounds(
+                    self._latest_trade_date or '', self._market_latest)
                 # 使用服务端游标流式读取（需要事务上下文）
                 with conn.cursor(name="ohlcv_cursor") as cur:
                     query = """
@@ -402,7 +429,7 @@ class SnapshotService:
                           AND trade_date <= %s
                         ORDER BY code, trade_date
                     """
-                    params = (self._latest_trade_date, f'{HISTORY_DAYS} days', self._latest_trade_date)
+                    params = (lower_base, f'{OHLCV_HISTORY_DAYS} days', self._latest_trade_date)
                     # 使用服务端游标 + chunksize 分批读取，直接建 dict 避免中间列表
                     cur.execute(query, params)
                     ohlcv_dict: Dict[str, List[List[float]]] = {}
@@ -632,6 +659,7 @@ class SnapshotService:
             with self._state_lock:
                 latest = self._latest_trade_date
                 row_hash = self._cached_row_hash
+                meta_market_latest = dict(self._market_latest)
 
             # 临时存储新数据
             new_ohlcv: Dict[str, List[List[float]]] = {}
@@ -645,7 +673,7 @@ class SnapshotService:
                 # 但为了清晰，我们重新实现一段加载代码（略重复，但保持独立）
                 # 实际可抽取公共加载函数，但这里为了简洁，直接内联
                 # 为避免重复，我们调用一个私有方法 _load_raw_data()
-                new_ohlcv, new_snapshot, market_latest = self._load_raw_data(latest)
+                new_ohlcv, new_snapshot, market_latest = self._load_raw_data(latest, meta_market_latest)
             finally:
                 self._pool.putconn(conn)
 
@@ -687,10 +715,13 @@ class SnapshotService:
                 # 保持旧缓存继续服务（_ready 保持不变）
             logger.error("刷新失败: %s", e, exc_info=True)
 
-    def _load_raw_data(self, latest_trade_date: str) -> Tuple[Dict[str, List[List[float]]], Dict[str, dict], Dict[str, str]]:
+    def _load_raw_data(self, latest_trade_date: str, market_latest: Optional[Dict[str, str]] = None
+                       ) -> Tuple[Dict[str, List[List[float]]], Dict[str, dict], Dict[str, str]]:
         """加载原始数据，返回 (ohlcv_dict, snapshot_dict, market_latest)"""
         conn = self._pool.getconn()
         try:
+            # 窗口下界按各市场各自最新日取（协作单 44.0）
+            lower_base, _ = self._ohlcv_window_bounds(latest_trade_date, market_latest)
             # 使用服务端游标流式读取（需要事务上下文）
             with conn.cursor(name="ohlcv_cursor") as cur:
                 query = """
@@ -703,7 +734,7 @@ class SnapshotService:
                       AND trade_date <= %s
                     ORDER BY code, trade_date
                 """
-                params = (latest_trade_date, f'{HISTORY_DAYS} days', latest_trade_date)
+                params = (lower_base, f'{OHLCV_HISTORY_DAYS} days', latest_trade_date)
                 cur.execute(query, params)
                 ohlcv_dict = {}
                 while True:

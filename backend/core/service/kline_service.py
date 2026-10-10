@@ -19,6 +19,20 @@ from core.api.models.schemas import (
 )
 from shared.schemas import PatternMarker
 
+
+class _AdjustNotSupported(Exception):
+    """请求的复权口径无法由库内序列换算（协作单 45.0）。
+
+    由 `get_kline_data` 捕获 → 把响应 `adj_method` 置为**实际返回数据的口径**
+    （`eff_method`，缺省 none）并写入可见 `warning`，避免「声称已复权、实为其他口径」
+    的静默错误契约。
+    """
+
+    def __init__(self, message: str, eff_method: str = 'none'):
+        super().__init__(message)
+        self.eff_method = eff_method
+
+
 class KlineService:
     """K线数据服务"""
     # 缓存配置
@@ -169,23 +183,30 @@ class KlineService:
         # 转换为K线项列表
         kline_items = self._convert_to_kline_items(kline_df)
 
-        # 应用复权
+        # 复权（协作单 45.0 订正）
+        # 库内主价格列口径已统一为**前复权**：cn=qfq(Baostock adjustflag=2)、
+        # hk=由 raw_*/adj_*(hfq)/adj_share 精确重建的 qfq、us=新浪 qfq。
+        # 历史坑：原实现 `from backend.imputer import Adjuster` 引用的模块已于 1978bcf 删除
+        # → ImportError 被下方 except 吞掉 → **数据未换算却回显 adj_method=forward**（静默错误契约）；
+        # 45.0 首版又对港股用「乘性重标定」把仿射序列压平。现统一按库内前复权原样返回，
+        # none/backward 分别改用 raw_*/adj_*；无法换算时按**实际口径**回填并给出可见 warning。
         warning_msg = None
         latest_factor = None
-        if adj_method != 'none' and kline_df is not None and not kline_df.empty:
+        eff_method = 'none'
+        if kline_df is not None and not kline_df.empty:
             try:
-                from backend.imputer import Adjuster
-                from shared.constants import AdjMethod
-                adjuster = Adjuster()
-                kline_df, latest_factor = adjuster.adjust(
-                    kline_df,
-                    stock_code=stock_code,
-                    method=AdjMethod(adj_method),
+                kline_df, eff_method, latest_factor = self._apply_adjust(
+                    kline_df, stock_code, adj_method, period,
                 )
                 kline_items = self._convert_to_kline_items(kline_df)
+            except _AdjustNotSupported as e:
+                eff_method = getattr(e, 'eff_method', 'none')
+                warning_msg = str(e)
+                logger.warning(f'⚠️ {stock_code} 复权口径不可得（实际返回 {eff_method}）：{warning_msg}')
             except Exception as e:
-                warning_msg = f'复权处理失败: {e}，返回原始价格'
-                logger.warning(f'⚠️ {warning_msg}')
+                eff_method = 'forward'
+                warning_msg = f'复权处理失败，已按库内前复权序列返回（{type(e).__name__}: {e}）'
+                logger.warning(f'⚠️ {stock_code} {warning_msg}')
 
         # 查询 pattern_markers（K 2026-07-06 需求：前端直接渲染 TA-Lib 结果）
         pattern_dicts = self._query_pattern_markers(stock_code, kline_df)
@@ -202,7 +223,7 @@ class KlineService:
             stock_code=stock_code,
             data=kline_items,
             count=len(kline_items),
-            adj_method=adj_method,
+            adj_method=eff_method,
             latest_factor=latest_factor,
             warning=warning_msg,
             pattern_markers=pattern_markers,
@@ -328,6 +349,93 @@ class KlineService:
             logger.warning(f"pattern_markers 查询失败 ({stock_code}): {e}")
             return []
 
+    # ================================================================
+    # 复权换算（协作单 45.0 / 订正）
+    # ================================================================
+    PRICE_COLS = ('open', 'high', 'low', 'close')
+
+    def _apply_adjust(self, df: pd.DataFrame, stock_code: str, method: str, cycle: str):
+        """把库内主价格序列换算到请求的复权口径（协作单 45.0 订正）。
+
+        库内主价格列（open/high/low/close）口径 —— 订正后**统一为前复权**：
+        - **cn**：前复权(qfq) —— `baostock.py::_ADJUST_FLAG = '2'`；
+        - **hk**：前复权(qfq) —— 由 `raw_*`/`adj_*(后复权)`/`adj_share` 精确重建
+          （见 `collector.utils.adj_adjust.compute_qfq_prices`）；
+        - **us**：前复权(qfq) —— 新浪 `adjust='qfq'`。
+
+        请求口径换算（hk/us 另存 `raw_close` 原始价、hk 另存 `adj_close` 后复权价）：
+        - `forward`：库内已满足 → 原样返回（三市场一致，**不再做任何重标定**）；
+        - `none`：hk/us 改用 `raw_close`（原始成交价 = 不复权）；cn 库内无原始价 → 抛错降级；
+        - `backward`：hk 改用 `adj_close`（后复权 hfq）；cn/us 库内无后复权序列 → 抛错降级。
+
+        订正背景：港股主价格列原存**后复权**，`forward` 用「乘性重标定
+        `k = raw_now/hfq_now`」换算，对**仿射**口径（`hfq = a·raw + b`）会把历史压平
+        （碧桂园 2025-12 真实 0.415 显示成 0.19）。现改为库内落库即前复权。
+
+        Args:
+            df: 库内 K 线（含 open/high/low/close，可选 raw_*/adj_*）
+            stock_code: 股票代码（各市场写法）
+            method: none / forward / backward
+            cycle: 周期（1d/1w/1m）
+
+        Returns:
+            (换算后的 df, 实际生效口径, latest_factor)
+
+        Raises:
+            _AdjustNotSupported: 该口径无法由库内序列换算（携带实际返回口径 eff_method）
+        """
+        from utils.stock_code_utils import infer_market
+
+        # 与主查询一致地归一化代码（前端可能传 sh.600000 / sz.000001）
+        norm = stock_code
+        for prefix in ('sh.', 'sz.', 'SH.', 'SZ.'):
+            if norm.startswith(prefix):
+                norm = norm.replace(prefix, '').lower()
+        market = infer_market(norm)
+
+        if method == 'forward':
+            # 库内主价格列已是前复权（cn/hk/us 统一）→ 原样返回
+            return df, 'forward', None
+
+        if method == 'none':
+            if market in ('hk', 'us') and self._has_price_col(df, 'raw_'):
+                return self._price_from(df, 'raw_'), 'none', None
+            raise _AdjustNotSupported(
+                '库内该市场未存原始成交价（raw_close），无法返回不复权，'
+                '已按库内前复权序列返回',
+                eff_method='forward',
+            )
+
+        if method == 'backward':
+            if market == 'hk' and self._has_price_col(df, 'adj_'):
+                return self._price_from(df, 'adj_'), 'backward', None
+            raise _AdjustNotSupported(
+                '库内该市场无后复权序列，无法返回后复权，已按库内前复权序列返回',
+                eff_method='forward',
+            )
+
+        raise _AdjustNotSupported(
+            f'未知复权方式 {method}，已按库内前复权序列返回', eff_method='forward',
+        )
+
+    @classmethod
+    def _has_price_col(cls, df: pd.DataFrame, prefix: str) -> bool:
+        """df 是否含可用的 <prefix>close（原始价/后复权价）列。"""
+        col = f'{prefix}close'
+        return col in df.columns and bool(pd.to_numeric(df[col], errors='coerce').notna().any())
+
+    @classmethod
+    def _price_from(cls, df: pd.DataFrame, prefix: str) -> pd.DataFrame:
+        """用 <prefix>open/high/low/close 覆盖主价格列（缺失单元格回退库内主价格列）。"""
+        out = df.copy()
+        for c in cls.PRICE_COLS:
+            src = f'{prefix}{c}'
+            if src in df.columns:
+                out[c] = pd.to_numeric(df[src], errors='coerce').fillna(
+                    pd.to_numeric(df[c], errors='coerce')
+                )
+        return out
+
     def _query_ex_dates(self, stock_code: str, kline_df: pd.DataFrame) -> List[date]:
         """查询 stock_adj_factor 表，返回时间范围内的除权除息日（factor_date）。
 
@@ -408,17 +516,19 @@ class KlineService:
 
             kline_item = KLineItem(
                 trade_date=row.get("trade_date", ""),
-                open=safe_dec(row.get("open")),
-                high=safe_dec(row.get("high")),
-                low=safe_dec(row.get("low")),
-                close=safe_dec(row.get("close")),
+                # 价格列保留 4 位小数（协作单 45.0）：库内 hk/us 成交量级可达 1e-4
+                # （如碧桂园前复权 0.183），按 2 位会退化为 0.18 而丢失全部日内信息
+                open=safe_dec(row.get("open"), 4),
+                high=safe_dec(row.get("high"), 4),
+                low=safe_dec(row.get("low"), 4),
+                close=safe_dec(row.get("close"), 4),
                 volume=int(row.get("volume", 0)),
                 amount=safe_dec(row.get("amount")),
                 
-                # 均线
-                ma5=safe_dec(row.get("ma5")),
-                ma10=safe_dec(row.get("ma10")),
-                ma20=safe_dec(row.get("ma20")),
+                # 均线（价格量纲，同 4 位）
+                ma5=safe_dec(row.get("ma5"), 4),
+                ma10=safe_dec(row.get("ma10"), 4),
+                ma20=safe_dec(row.get("ma20"), 4),
                 
                 # MACD
                 macd=safe_dec(row.get("macd"), 4),

@@ -28,7 +28,7 @@ BACKEND_PORT=8000
 FRONTEND_PORT=5173
 BACKEND_START_TIMEOUT=30
 BACKEND_HEALTH_TIMEOUT=60
-FRONTEND_START_TIMEOUT=8
+FRONTEND_START_TIMEOUT=30
 BACKEND_LOG="$SCRIPT_DIR/logs/backend/quant_backend.log"
 FRONTEND_LOG="$SCRIPT_DIR/logs/frontend/quant_frontend.log"
 mkdir -p "$SCRIPT_DIR/logs"
@@ -264,52 +264,33 @@ dev_stop_backend() {
     echo "  launchctl unload $BACKEND_PLIST"
 }
 
-# ---- 前端启动 ----
+# ---- 前端启动（launchd com.quant.frontend 管理，KeepAlive 常驻）----
+FRONTEND_PLIST="$HOME/Library/LaunchAgents/com.quant.frontend.plist"
+
 dev_start_frontend() {
-    log_info "启动前端服务..."
-    if check_pid "$FRONTEND_PID_FILE" "$FRONTEND_PORT" >/dev/null; then
-        log_ok "前端服务已在运行 (端口: $FRONTEND_PORT)"
+    log_info "启动前端服务（launchd com.quant.frontend 管理，KeepAlive 常驻）..."
+
+    # 前端由 launchd 管理：端口已监听则视为就绪
+    if is_port_in_use "$FRONTEND_PORT"; then
+        log_ok "前端已在运行（launchd com.quant.frontend 管理）"
         return 0
     fi
-    clean_port "$FRONTEND_PORT" "$FRONTEND_PID_FILE" || return 1
-    rm -f "$FRONTEND_PID_FILE"
 
-    if ! command -v npm &>/dev/null; then log_err "npm 未安装"; return 1; fi
-    if [ ! -d "$FRONTEND_DIR" ]; then log_err "前端目录不存在"; return 1; fi
-    if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
-        log_info "安装前端依赖..."
-        cd "$FRONTEND_DIR" && npm install -q || { log_err "依赖安装失败"; return 1; }
-    fi
-
-    cd "$FRONTEND_DIR"
-    nohup npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" < /dev/null > "$FRONTEND_LOG" 2>&1 &
-    local new_pid=$!
-    echo "$new_pid" > "$FRONTEND_PID_FILE"
-
+    # 端口未监听：等待 launchd KeepAlive 拉起
     if wait_for_port "$FRONTEND_PORT" "$FRONTEND_START_TIMEOUT" "前端"; then
-        log_ok "前端服务启动成功"
+        log_ok "前端服务已就绪（launchd KeepAlive 监督中）"
         return 0
-    else
-        log_err "前端启动失败"; tail -n 20 "$FRONTEND_LOG"; rm -f "$FRONTEND_PID_FILE"; return 1
     fi
+
+    log_err "前端未运行。请先加载 launchd 服务:"
+    log_err "  launchctl load -w $FRONTEND_PLIST"
+    return 1
 }
 
 dev_stop_frontend() {
-    log_info "停止前端服务..."
-    local stopped=0
-    if [ -f "$FRONTEND_PID_FILE" ]; then
-        local pid=$(cat "$FRONTEND_PID_FILE")
-        if kill -0 "$pid" 2>/dev/null; then
-            if kill_safely "$pid" "$FRONTEND_PID_FILE"; then
-                stopped=1
-            fi
-        fi
-        rm -f "$FRONTEND_PID_FILE"
-    fi
-    if is_port_in_use "$FRONTEND_PORT"; then
-        clean_port "$FRONTEND_PORT" "$FRONTEND_PID_FILE" && stopped=1
-    fi
-    [ $stopped -eq 1 ] && log_ok "前端服务已停止" || log_warn "前端服务未运行"
+    log_info "前端由 launchd com.quant.frontend 管理（KeepAlive），kill 无法停止。"
+    log_info "如需停止前端，请执行:"
+    echo "  launchctl unload $FRONTEND_PLIST"
 }
 
 # ---- 状态与组合命令 ----
@@ -329,8 +310,9 @@ dev_status() {
     echo -n "前端服务: "
     if [ -n "$fp" ]; then
         echo -e "${GREEN}✅ 运行中 (PID: $fp, 端口: $FRONTEND_PORT)${NC}"
+        echo -e "       ${BLUE}ℹ️  由 launchd com.quant.frontend 监督（KeepAlive 常驻）${NC}"
     else
-        echo -e "${RED}❌ 未运行${NC}"
+        echo -e "${RED}❌ 未运行（请先加载: launchctl load -w $FRONTEND_PLIST）${NC}"
     fi
     echo -e "\n访问地址:\n  前端页面: http://localhost:$FRONTEND_PORT\n  后端API:  http://localhost:$BACKEND_PORT/api\n  API文档:  http://localhost:$BACKEND_PORT/docs\n  系统看板: http://localhost:$BACKEND_PORT/admin"
     echo "============================================"
@@ -347,16 +329,20 @@ dev_stop() {
 }
 # restart 命令：重启前后台（数据库保持运行）
 dev_restart() {
-    # 后端由 launchd（用户域）管理，通过 kickstart 重启
+    # 前后端均由 launchd（用户域）管理，通过 kickstart 重启
     if launchctl kickstart -k "gui/$(id -u)/com.quant.backend" 2>/dev/null; then
         log_ok "已重启后端（launchd kickstart）"
     else
         log_info "后端由 launchd 管理，重启请执行:"
         echo "  launchctl kickstart -k gui/$(id -u)/com.quant.backend"
     fi
+    if launchctl kickstart -k "gui/$(id -u)/com.quant.frontend" 2>/dev/null; then
+        log_ok "已重启前端（launchd kickstart）"
+    else
+        log_info "前端由 launchd 管理，重启请执行:"
+        echo "  launchctl kickstart -k gui/$(id -u)/com.quant.frontend"
+    fi
     sleep 1
-    dev_stop_frontend
-    dev_start_frontend
     echo ""
     dev_status
 }
@@ -394,6 +380,9 @@ dev_start_backend_fg() {
 
 dev_start_frontend_fg() {
     log_info "前台启动前端服务（调试模式）..."
+    log_warn "⚠️ 前端由 launchd com.quant.frontend 管理，请先卸载服务避免端口冲突:"
+    echo "  launchctl unload $FRONTEND_PLIST"
+
     if is_port_in_use "$FRONTEND_PORT"; then
         clean_port "$FRONTEND_PORT" "$FRONTEND_PID_FILE" || return 1
     fi

@@ -1752,6 +1752,7 @@ class PostgreSQLStorage(BaseStorage):
         cycle_val = self._normalize_cycle(cycle)
         query = """
             SELECT q.trade_date, q.open, q.high, q.low, q.close, q.volume, q.amount,
+                   q.raw_close, q.adj_close,
                    b.pe_ttm, b.pb, b.circ_mv, b.turnover_rate,
                    i.ma5, i.ma10, i.ma20, i.ma60, i.dif, i.dea, i.macd,
                    i.rsi6, i.rsi12, i.rsi24, i.boll_upper, i.boll_mid, i.boll_lower

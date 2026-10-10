@@ -39,6 +39,10 @@ echo "=== 后端服务（用户域 launchd，KeepAlive 常驻）==="
 echo "⚠️ 已停用 backend_watchdog.sh 与 backend.healthcheck（避免多套拉起抢端口）"
 launchctl load -w "$LAUNCH_AGENTS/com.quant.backend.plist" && echo "✅ backend loaded"
 
+echo "=== 前端服务（用户域 launchd，KeepAlive 常驻，Vite 端口 5173）==="
+launchctl unload "$LAUNCH_AGENTS/com.quant.frontend.plist" 2>/dev/null && sleep 1
+launchctl load -w "$LAUNCH_AGENTS/com.quant.frontend.plist" && echo "✅ frontend loaded"
+
 echo "=== 阶段1（15:30 健康检查+股票列表）==="
 launchctl load -w "$LAUNCH_AGENTS/com.quant.daily_job_runner.stage1.plist" && echo "✅ stage1 loaded"
 

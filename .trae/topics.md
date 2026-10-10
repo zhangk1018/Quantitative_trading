@@ -142,3 +142,114 @@
 - 负责角色：量量
 - 修改范围：**港/美股周线"未生成"结构性缺陷修复（P0）**（K 周六晨报「港股和美股周线现在还没生成」并询问调度安排）——根因：周/月K 聚合只有一条 A 股日历驱动路径（`trade_calendar` 判「本周最后交易日」+ 聚合无 market 过滤 + 周期区间取 A 股日历），港/美股只是被顺带写出，由此产生①孤儿日永久丢（A 股休市而港美开市的交易日既不触发聚合、也落在任何区间外，2025-10 以来 hk 12 天/us 19 天；（code,ISO周）缺失对 hk 2,986/us 616）②美股末日缺收盘（US T+1 08:30 落库 vs 旧触发点周五 18:30）③打标与看板新鲜度错位。**改造**：`compute_bar_aggregation.py` 新增 `--market`（默认 cn）/`--lookback-periods`/`--rebuild --from/--to`，拆 cn（逻辑零改动，仅加 `market IN ('cn','index')`）与 hk/us（按各自数据源日历 HSI/.IXIC 划分 ISO 周/自然月、结算判据「周=该 ISO 周周六已到 / 月=自然月末已到」、齐备门禁、先删后插幂等自愈、日历不可用则跳过不猜）**两条分支**；新增 `com.quant.bar_aggregation.overseas.{weekly,monthly}.plist`（**周二~六 09:30 / 10:00**，caffeinate 包裹）并已安装加载；`load_launchd_plists.sh` 补加载行；`pipeline_health_check.py` 拆出 `_period_range` 按市场区分周期口径；**看板判据修复**：`monitor.py` 新增 `_expected_period_label`（cycle 任务期望日=该周期应产出的最后一个交易日，未结算则回退上一周期）+ 统一入口 `_expected_date_for_task`，抽出 `_is_trade_day`/`_last_trade_day_on_or_before` 复用（`_get_last_trade_date` 行为不变），消除「每月 1 号到月末三市场月K 恒 pending、每周一~四周K 恒 pending」的假告警；清理 31 行错标脏数据。**回填**：hk 1w 92 周期/227,294 行、hk 1m 21/54,214、us 1w 3,379/36,610、us 1m 777/8,392，全 0 跳过，缺失对归零（备份 `stock_quotes_bak_1w1m_hkus_20261003` 565,317 行 / `stock_quotes_bak_mislabel_20261003` 31 行）。**验证**：港美周线打标 10-02、09-25 孤儿日归位、cn 完全未变；0700.HK 周线 OHLCV 与日线逐字段一致；健康检查全绿；看板 hk/us/cn 周K月K 全 success（hk 基本面 pending 属既定设计）。新增测试 15+11=26 例；全量 242 passed / 2 failed（既存）。`ETL_PIPELINE.md` → v1.15
 - 待办：①核验海外周K首个自动触发（**周二 10-06 09:30**）与日志落盘；②观察 **10-31（周六）** 港/美月K首次自动结算（月桶判据上线后首个自然月末）；③`test_trade_signals_table.py` 收集报错 + `stock_fundamental_pit` 空表（延续项）；④待 K 决策：hk 历史 2025-01-01 之前仍为旧口径打标（本次按确认范围未重建）
+
+## 会话信息（2026-10-08）
+- 日期：2026-10-08
+- 负责角色：量量
+- 修改范围：**美股基本面 ETL 失败修复（P0）**（K 晨报看板美股「基本面 ❌」）——根因：新浪美股列表接口（`ak.stock_us_spot()` 背后逐页抓取的 `US_CategoryService.getList`，当日 914 页）**个别分页偶发返回上游错误对象**（`{"__ERROR":"HY000","__ERRORMSG":"SQLSTATE[HY000]: General error: 2006 MySQL server has gone away",...}`，**无 `data` 字段**），AkShare 分页循环无容错（直接取 `data_json["data"]`）→ `KeyError: 'data'` → **单页异常即整任务失败**（10-08 三次重试 08:46/08:58/09:04 撞不同异常页全败；10-06/10-07 正常，属上游偶发抖动）。修复：`backend/collector/etl/sync_us_basic.py` 改**自实现分页**（复用官方签名/URL）——逐页重试 3 次、持续异常页跳过并累计、**跳过占比 >10% 放弃写入**（宁缺勿残）、单页 20s 超时、覆盖率 <90% 告警；live 补跑 **914/914 页**、写入 209 条，`stock_daily_basic`(us) **2026-10-07 已补齐**（total_mv/pe/close 全非空）。新增 `backend/tests/test_us_basic_sina_paging.py` **9 例全过**（含「无 `data` 不再抛 KeyError」关键回归）；相关回归 **77 passed / 1 failed**（`test_daily_job_runner.py::TestConstants::test_stage_definitions_have_expected_tasks` 断言 `len(STAGE2_TASKS)==1`、实际含 `index_sync`，为既存失败，与本改动无关）。另：**前端服务纳入 launchd 托管（P1）**——新增 `scripts/launchctl/com.quant.frontend.plist`（RunAtLoad+KeepAlive，vite 5173）、`load_launchd_plists.sh` 加前端加载段、`start.sh` 前端启停全面转 launchd（start 等拉起 / stop 提示 unload / restart 用 kickstart / status 标注 / fg 提示先卸载；`FRONTEND_START_TIMEOUT` 8→30）。验证：`launchctl list` 有 `com.quant.frontend`(PID 5827)、5173 返回 200 且 `<title>量化交易系统</title>`、`dev status` 前后端均 launchd 监督、**KeepAlive 实测 kill 后 3s 自动拉起新 PID**
+- 待办：①核验 **10-09 08:30** 美股 ETL 全链（尤其「基本面」）在生产调度路径成功；②观察前端 launchd 服务稳定性（登录自启 + KeepAlive）；③修 `test_daily_job_runner.py` STAGE2 断言（既存）；④`us_job_runner._log_end` 失败时恒传 `error_message=None`（看板仅「执行失败」无原因），待评估；⑤`stock_fundamental_pit` 空表（延续项）
+
+## 今日通知记录（2026-10-08）
+
+[量量→方舟 2026-10-08] 本次提交**一并携带你 10-06 的未提交前端改动**（`useScreenerData.ts` 缓存键纳入 `selectedMarket` + `frontend/tests/functions/{screenerRangeHash,pinbarIndicatorImport}.test.ts` + `frontend/docs/自编指标-导入-Pinbar关键位反转.json`）。背景：`scripts/git_push.sh` 按设计一次性暂存「全部已跟踪变更 + 未忽略新文件」，无法只挑单侧文件，且项目既有惯例为「+ 补齐同期积压改动」（见 commit a8c2448）。**请补一份 10-06 的方舟日报**（`docs/daily_report/2026/10/` 下当前无 10-06 记录，`topics.md` 亦未登记该次会话），并按规范 5.1 交叉复核抽查本次量量日报的完成项。
+
+[量量→方舟 2026-10-08] 前端服务已改由 launchd 托管（`com.quant.frontend`，RunAtLoad+KeepAlive）。**影响**：前端不再由 `start.sh` 用 nohup 拉起；`./start.sh dev stop` 不再停止前端，需 `launchctl unload ~/Library/LaunchAgents/com.quant.frontend.plist`；`./start.sh dev frontend fg` 调试前须先 unload 该服务，避免 5173 端口冲突。请复核「登录/重启后前端自启」与 KeepAlive 行为。
+
+## 会话信息（2026-10-09）
+- 日期：2026-10-09
+- 负责角色：方舟
+- 修改范围：**选股多选自编指标「交集为空」根因修复（P0）+ 执行效率优化（P1）**。根因：数据窗口全局共享——`useScreenerData.computeMaxLookback()` 对所有已选指标取公式最大数字 +5 只产出一个窗口、`sliceOhlcv` 全局切片后供每个指标复用，导致「再加一个指标会拉长另一个指标的输入窗口」，窗口敏感型公式（突破窗口前高/全窗极值/依赖 `len`）结果随之改变，组合结果不再是单独结果的交集（极端为 0）。修复：`CustomIndicatorService` 新增 `computeConditionLookback` 并**按各指标自身窗口切片**（接受完整 OHLCV）；`useScreenerData` 移除全局窗口/切片；`customIndicatorRunner` 移除**逐批前导 null 补齐**（改每只股票保持自身长度，避免 ADX 预热 `tr[:14]` 含 NaN 静默失效）。效率：**Pyodide Worker 池并行**（按核数 2~4，批次轮转，端到端 ~2.0–2.4×）、单批超时 30s→120s、批次 100→50、**按批进度透传 UI**（不再假死）、OHLCV 分批并发拉取。**浏览器真实公式回归**（Playwright+系统 Chrome、admin 登录、注入 localStorage 真实指标、沪深全市场 4978 只）：A=10条件选股(`>=8`) 100 只（425.6s→216.5s）、B=多因子蓄势突破(`>=9`) 58 只（449.7s→184.3s）、**A+B=2 只**（非 0，修复生效；321.0s→136.3s）；**优化前后命中数逐项一致**。测试：新增 `frontend/tests/functions/customIndicatorRunner.test.ts` + 扩展 `CustomIndicatorService.test.ts`；`tsc` 0 错误、前端全量 **1130 passed**。
+- 待办：①浏览器复核「系统配置→自编指标」列表与选股联动无回归；②加载阶段（候选 ~24s+K线 ~50s）受后端 `/api/snapshot/all` 单请求耗时限制，前端并发无明显收益，如需提速评估给量量开协作单；③评估 Worker 池上限由 4 放宽（内存换速度）；④**10-06 方舟日报**仍需回填（缺该次会话细节，未凭空补写）。
+
+## 会话信息（2026-10-10）
+- 日期：2026-10-10
+- 负责角色：方舟
+- 修改范围：**港股/美股自编指标选股「加载慢 + 疑似 100% 通过」排查与修复（P0/P1）**。**实测结论**：用真实指标「8条件选股改进」(`>=6`) 走 Playwright+系统 Chrome：港股 2714 只有 K 线 → 命中 **236**；美股 201 只 → 命中 **57**；且港股与**离线逐位复刻管道完全一致（236=236）** → 前端筛选本身正确，**未复现「100% 通过」**。但仍定位并修复了 3 个真实缺陷：①**静默 100% 通过**——`filterGroup` 声明了自定义条件（`hasCustomIndicator`=true 走全量管道）但引用的指标已删除/未加载/公式为空时，`extractCustomConditions` 返回 `[]` → `computeAndFilter` 走「conditions 为空 → 全部通过」fail-open 分支 → **结果=候选全量**；修复：`runFullScreening` 增加声明条件必须可解析且公式非空的前置校验并抛错，`computeAndFilter` 对 conditions/公式为空改**显式抛错**。②`fetchOhlcvBatch` 只按 `codes[0]` 推断**整批**市场 → 混合市场候选（跨市场自选股）会整组丢 K 线；修复：改为**逐代码推断并分组**请求。③候选股无 K 线被**静默剔除**；修复：显式提示「N 只候选股缺少K线数据，已从结果中剔除」。**效率**：港股全市场自编指标选股 **406s → 86s（4.7×）**——候选分页并发（串行 84s→~7s）、OHLCV 并发 4→6（136s→~12s）、**移除「范围变化即 clearCache」**（K 线只与代码有关、与筛选范围无关，避免重复下载全市场）、计算 184s→~68s；**命中数不变（236）**。测试：`tsc` 0 错误。
+- 待办：①**协作单 44.0 待量量处理**（后端 `/api/snapshot/all` OHLCV 窗口固定 300 自然日 ≈196~205 根 → `if n>=200` 在**沪深永不生效**、us/hk 生效 → **同一自编指标跨市场结果不可比**；详见 `docs/协作单.md`）；②本轮前端改动**未提交**，待 K 确认后随日报提交；③「100% 通过」如再出现，请提供**具体市场 + 指标名 + 期望/实际命中数**以便复现（当前环境已不能复现）；④10-06 方舟日报仍待回填。
+
+## 今日通知记录（2026-10-10）
+
+[方舟→量量 2026-10-10] 协作单 **[44.0-SNAPSHOT-OHLCV-WINDOW-20261010]** 状态变更: NEW（`/api/snapshot/all` OHLCV 历史窗口固定 300 自然日 → 各市场实际仅 196/201/205 根，导致含 `ema(...,200)` / `if n>=200` 的自编指标在**沪深永不生效**、港美股生效，同一指标跨市场结果不可比；请评估放宽窗口至稳定覆盖 ≥250 交易日或改按交易日条数截取，并按各市场 latest 计算）。我在选股页实测：港股 2714 只 → 236、美股 201 只 → 57，**前端管道与离线复刻逐位一致**，故根因不在前端；本轮前端另修了 3 个静默/丢数据缺陷 + 港股提速至 86s（详见协作单「方舟已做的前端侧配合」）。
+
+[量量→方舟 2026-10-10 04:00] 协作单 [44.0-SNAPSHOT-OHLCV-WINDOW-20261010] 状态变更: NEW→**VERIFY**（已修复，待方舟复核）。修复 3 点（均在 `backend/core/service/snapshot_service.py`）：①新增 `OHLCV_HISTORY_DAYS=450` 自然日（缺省路径缓存窗口），原 `HISTORY_DAYS=300` 仅留给范围模式缺省回看、口径不变；②新增 `_ohlcv_window_bounds`——上界 `max(各市场 latest)`、**下界基准 `min(各市场 latest)`**（复用 43.0 `_market_latest`），滞后市场（us T+1 / A股节假日休市）不再被截短；三处查询点（`_query_meta` 计数 / `_load_from_db` / `_load_raw_data`）参数统一，保证 `row_hash` 与缓存内容一致；③`CACHE_VERSION` 7→8 强制重建。**实测**：`codes=600519`/`0813.HK`/`CMG` 的 `ohlcv.length` **196/201/205 → 299/307/312**（均 ≥250，`if n>=200` 三市场均可进入）；零回归——范围模式 `trade_dates=417`（同 40.0）、`market=cn/hk/us` 5210/2721/205 只不变；哈希一致（`_query_meta` 计数 2,288,470 与加载条数逐位相同，重启命中缓存未触发重建）。**成本对比**：`ohlcv.pkl` 119MB→209MB、冷启动延迟加载 25.60s→25.12s（无回归）、全量重建 219s。新增 `tests/test_snapshot_ohlcv_window.py` 13 例、快照相关 67 例全过、后端全量 264 passed / 2 既存 failed。**请方舟复核**：浏览器侧用含 `ema(close,200)` / `if n>=200:` 的同一自编指标在沪深/港股/美股三市场验证长周期分支均可进入（后端数据已就绪）。另：**43.0 仍为 VERIFY 待你复核**（10-01 起未见关闭），如需一并处理请告知。
+
+## 会话信息（2026-10-10）
+- 日期：2026-10-10
+- 负责角色：量量
+- 修改范围：**协作单 44.0 `/api/snapshot/all` OHLCV 历史窗口修复（P1）**——缺省路径窗口由「全局 latest 倒推 300 自然日」改为「**450 自然日 + 下界基准取 min(各市场 latest)**」：新增 `OHLCV_HISTORY_DAYS = 450`（原 `HISTORY_DAYS = 300` 仅保留给范围模式缺省回看，口径不变）；新增 `_ohlcv_window_bounds(latest, market_latest)`（上界 = max(各市场 latest)，下界基准 = min(各市场 latest)，复用 43.0 `_market_latest`），三处查询点 `_query_meta`（计数）/ `_load_from_db` / `_load_raw_data` 参数统一，保证 `row_hash` 与缓存内容口径一致；`CACHE_VERSION` 7→8 强制重建。**实测**（重启重建后 admin 会话直连）：三市场 `ohlcv.length` **196/201/205 → 299/307/312**（均 ≥250，`if n>=200:` 三市场均可进入）；零回归——范围模式 `trade_dates=417`、`market=cn/hk/us` 5210/2721/205 只均不变；`_query_meta` 计数 2,288,470 与加载条数逐位相同、重启命中缓存未触发重建（判据稳定）。**成本**：`ohlcv.pkl` 119MB→209MB、冷启动延迟加载 25.60s→25.12s（无回归）、全量重建 219s。新增 `backend/tests/test_snapshot_ohlcv_window.py`（13 例）；快照相关 6 文件 67 例全过；后端全量 264 passed / 2 既存 failed（`test_daily_job_runner` STAGE2 断言、`test_daily_snapshot_sync` 港股涨停阈值，均与本单无关）。工单已置 **VERIFY** 待方舟复核
+- 待办：①等待方舟复核 44.0（重点：浏览器侧同一自编指标跨三市场 `n>=200` 分支均可进入）；②**协作单 43.0 自 09-29 起长期停留 VERIFY**，方舟未回复复核结论，本次已在 topics 提醒；③`test_trade_signals_table.py` 收集报错（既存，阻断全量收集）；④`stock_fundamental_pit` 空表（延续项）；⑤本次后端改动**未提交**，待 K 确认后随日报提交
+
+## 会话信息（2026-10-10 续，K 反馈港股除权）
+- 日期：2026-10-10
+- 负责角色：量量
+- 修改范围：**港股「除权日」误标风暴修复（P0）**（K 反馈「碧桂园不可能天天除权」）——核查确认非个案：`stock_adj_factor`(market='hk') 166,252 行**全部**带 `factor_date`，1954 只中 **1129 只** >10% 交易日被误标（碧桂园近 19 年 873/4596），2025-04-07 大跌当日 **1192 只**同时被标。**根因**：`detect_factor_dates` 用 `adj_close/close` 相对变化 >1% 判除权（隐含**乘性**口径），而**新浪港股 `adjust='hfq'` 是仿射口径 `hfq = a*raw + b`**（实测腾讯 a=5.0000/b=278.93、汇丰 a=4.2501/b=375.31、碧桂园 a≈1/b≈5.2415；判据：源 hfq 的 `(high−low)/(raw_high−raw_low)` 恒等于 a），b≠0 时该比值随行情逐日漂移 → 低价股几乎天天命中。**修复**（`collector/utils/adj_adjust.py`，港美共用）：①`is_affine_model` 按离散度自适应选模型（仿射需优于乘性一半）；②仿射分支以 `b = adj − a*raw` 为不变量、`|Δb| > 0.3%×复权价` 才判除权，`a` 先滚动中位数估计再按跳变点**分段重估 + 迭代 3 轮**（覆盖腾讯 2014 5:1 拆股这类 a 变 regime）；③乘性分支保留原比值法（美股不受影响，实测 us 52 只 1111 行除权日与季度分红节奏吻合）；④两道护栏（样本 <8 行不检测、命中占比 >20% 整体不标）；⑤`_fetch_hk` 透传完整历史估的 `Adj Share`，使增量短窗口（1~3 天）也能正确识别。**实测效果**：碧桂园 873→25（5/6 月+9 月，2022 停派后不再标）、腾讯 11→16（含 2014 拆股 + 2022/23 实物分派）、汇丰 571→120（每季）、长和 648→24（半年）、友邦 26→31（半年）、建行 190→27（年）；`--test-one 2007.HK --dry-run` 近 5 年 1030 交易日 → **adj_factor 1 条**。**存量数据**：166,252 行全部为误标，已备份 `stock_adj_factor_bak_hk_20261010` 后清空（API 验证 `2007.HK` ex_dates 已为空）；正确标记待逐只重导重建。新增 `backend/tests/test_adj_factor_dates.py`（14 例）+ `test_akshare_adj_fill.py` 增补 1 例；相关 70 例全过，后端全量 **279 passed / 2 既存 failed**。`ETL_PIPELINE.md` → v1.16
+- 待办：①**港股重导进行中**：`import_hk_daily.py --init --start-date 2025-01-01` 已用 `caffeinate` 后台启动（日志 `logs/hk_daily_import_rebuild_20261010.log`，共 2843 只，按日常 ETL 口径 upsert 港股 2025-01-01 起 quotes 并重建正确除权标记 + 仿射复权 O/H/L）；因首次启动时有**断点游标残留会跳过前面标的**，已清空 `etl_control.last_processed_code` 后从 0001.HK 重跑（已从 0001.HK 起、0 失败）；完成后需抽查除权日与实际分红节奏是否吻合；②**复权 O/H/L 已于同批修复（K 追加要求）**：见下一段；③本次改动**未提交**，待 K 确认后随日报提交
+
+## 会话信息（2026-10-10 续 2，复权 O/H/L 修复）
+- 日期：2026-10-10
+- 负责角色：量量
+- 修改范围：**复权 O/H/L 价格仿射口径修复（P1，K 追加要求「请同时修复复权 O/H/L 价格」）**——原 `split_raw_adj` 按**乘性**折算 `adj_x = raw_x × (hfq_close/raw_close)`，对仿射标的该倍率 = `a + b/close` 并非真实复权倍率，使复权 O/H/L 日内波幅被放大 `(a+b/close)/a` 倍（碧桂园 ~30 倍、汇丰 1.61 倍、腾讯 1.13 倍；`adj_close`/`pre_close` 一直正确）。**修复**：①`split_raw_adj` 统一仿射式 `adj_x = a*raw_x + b`（`a` 取 `Adj Share` 透传、缺失退化为当日倍率 → 乘性、b=0，**美股行为不变**；数据源直供 hfq O/H/L 优先，缺失单元格仿射补）；②`_fetch_hk` 透传数据源 hfq 的 O/H/L/C + 当前复权区间股本因子（最近 200 个有效相邻对稳健估计），复权缺失日按仿射式填补；③**增量批量快照路径** `_snapshot_quotes_df` 由「冻结乘性锚点 `raw×C`」改为仿射式（`a` 由库存锚点行读取，旧数据 NULL 自动退化乘性，平滑过渡）；④迁移 **V018** 新增 `stock_quotes.adj_share NUMERIC(12,6)`（可空无默认值 → 元数据操作不重写分区；A 股 NULL）。**实测**（`--test-one 2007.HK --dry-run`）：碧桂园 10-09 复权 O/H/L/C 由 `5.31/5.55/5.27/5.42`（波幅 0.28 ≈ 真值 ×30）→ **`5.4202/5.4266/5.4170/5.4245`（波幅 0.0096 ≈ 真值 ×1）**。新增 8 例单测（仿射折算/直供优先/缺失补/无股本因子退化/批量快照仿射与退化/空行），相关 34 例、全量 **287 passed / 2 既存 failed**。`ETL_PIPELINE.md` → v1.17
+- 待办：①**2 位小数精度已修复（方案 A 已执行）**：见下一段；②V018 执行时曾因一条**跑飞的 MCP 长查询**（pid 5561，运行 1h20m）持锁导致 ALTER 排队、并连带阻塞后端查询，已 `pg_terminate_backend` 清理后应用成功——教训：勿在库上留长查询；③本次改动**未提交**，待 K 确认后随日报提交
+
+## 会话信息（2026-10-10 续 3，价格精度扩位 方案 A）
+- 日期：2026-10-10
+- 负责角色：量量
+- 修改范围：**成交价列扩精度 `NUMERIC(10,2)` → `(12,4)`（方案 A，K 确认窗口后执行 08:22~08:42）**——起因：修复仿射复权 O/H/L 后，2 位小数**存不下**细价股真实日内波幅（碧桂园复权价 5.42 而真实波幅 0.0096）。**决策依据（实测港股 2025+ 94.9 万行）**：波幅<0.02 占 36.3%（2,107 只）、<0.01 占 26.0%（2,013 只），其中本次修复新显形 10.5%/690 只；业务耦合 **有**（`/api/snapshot/all` 自编指标选股+回测直读、ATR、宽表/parquet、周月K、前端K线）；增长趋势 **会**（<0.5HKD 标的 791→1,110，+40%）；只重写部分分区 **不能**（就地改型全分区递归）。**执行**（迁移 `V019_widen_price_precision.sql`）：①**两表同扩** `stock_quotes` + `stock_daily_snapshot`（宽表，否则修复到不了选股/回测/parquet）；②视图 `v_stock_daily_snapshot_etl` 依赖 `q.open` → 迁移内先 DROP、扩型后原样重建（`pg_get_viewdef` 提取）；③每表五列写在**同一条 ALTER** → 只重写一次；④`SET LOCAL lock_timeout='20s'`。**⚠️ 首次执行死锁失败**：后端跨分区 `COUNT(*)` 与 ALTER 分区加锁顺序相反 → `deadlock detected`、ALTER 回滚（白跑 12 分钟）；**改为 DDL 前先 `launchctl unload` 停后端** + 确认无连接后重跑 → **20 分钟成功**；完成后 `load` 恢复后端。**DDL 后回填**：`stock_quotes` 港股 1d 2025+ ← `adj_*`/`lag(adj_close)`（949,933 行/413s）、宽表 ← stock_quotes（657,026 行/294s）、`compute_bar_aggregation --market hk --rebuild --from 2025-01-01`（1w 227K 行 + 1m 21 周期/54,406 行）。**验证**：碧桂园 2026-10-09 `stock_quotes` low/high/close = **5.4170/5.4266/5.4245**（原只能 5.42/5.43），宽表同值，周K 5.4170/5.4319/5.4245（原旧口径 5.39/6.03/5.60）；两表 5 列 `numeric_scale=4`、行数无损、视图已重建、后端已恢复。`ETL_PIPELINE.md` → v1.18
+- 待办：①**已知剩余项（按需再排期）**：（a）港股 **2025-01-01 之前**日/周/月K 仍是旧口径+2位（重导范围由 K 定为 2025 起，扩全历史需再全量重导+重聚合）；（b）parquet 需等当晚 HK ETL 或手动 `export_parquet` 才带 4 位小数；（c）`stock_daily_basic.close`/`stock_quotes_minute.*`/美股历史行仍 (10,2)（美股价位高，影响可忽略）；②本次改动**未提交**，待 K 确认后随日报提交
+
+## 今日通知记录（2026-10-10 续 3）
+
+[量量→方舟 2026-10-10 10:40] 协作单 **[45.0-KLINE-ADJUSTER-MISSING-20261010]** 状态变更: NEW→ASSIGNED→**VERIFY**（已修复，待你复核）。**口径决策 = 方案 A + 按库内实际口径**：实测库内成交价列 **cn=前复权(qfq，`baostock._ADJUST_FLAG='2'`)、hk/us=后复权(hfq，另存 `raw_close`/`adj_share`)**。修复（`kline_service.py`）：①删掉已失效的 `backend.imputer` 引用，新增 `_apply_adjust()`——`forward`：cn 库内已满足→原样、hk/us 按 `k=raw_close_latest/close_latest` 等比重标定（最新日锚定真实价）；`backward`：hk/us 原样、cn 需 qfq→hfq 暂不支持→**显式降级**；②**禁止静默降级**：失败/不支持时 `adj_method` 置 `none` + 可见 `warning`（响应改用实际生效口径），不再「声称 forward 实为其他口径」；③新增 `storage.get_adj_anchor()`（取不到即降级，不猜）；④**顺带修 API 层精度截断**：`_convert_to_kline_items` 原对 OHLC 用 `safe_dec(digits=2)`，把库内 4 位又截成 2 位（碧桂园 0.1829/0.1831/0.1827/0.183 全变 0.18）→ 现 OHLC 与均线按 4 位输出。**实测**：`2007.HK?adj=forward` → warning=null、`0.1829/0.1831/0.1827/0.183`；`?adj=backward` → `5.4202/5.4266/5.417/5.4245`；`0700.HK?adj=forward` → close **424.8**（真实价）；`600519?adj=backward` → `adj_method=none` + 降级说明。新增 `tests/test_kline_adjust.py` 9 例全过。**契约说明（请按此复核）**：库内本就是复权序列，故 A 股 `forward ≡ none`（同序列，非回归）；**hk/us 的 forward(0.183) 与 none/backward(5.42) 明显不同**；`none` 若要严格返回未复权价需另开单（会改变现有图表默认口径）。另：README L115 的 `backend.imputer` 引用与全量回归我随下一批一并收尾。
+
+## 会话信息（2026-10-10 续 4，协作单 45.0 kline 复权 + 剩余项开工）
+- 日期：2026-10-10
+- 负责角色：量量
+- 修改范围：**协作单 45.0 `/api/kline` 复权路径修复（P1）**——见上方通知（口径决策方案 A、`_apply_adjust` 实现、失败降级可见化、`get_adj_anchor`、API 层 4 位小数、9 例单测）。**剩余项改造同日开工**：①**港股全历史重导已启动**（`import_hk_daily.py --init`（period=max），2833 只，日志 `logs/hk_fullhistory_rebuild_20261010.log`；用于补齐 2025-01-01 之前的旧口径+2 位数据，预计数小时，跑完后再跑周/月K 重聚合与 parquet 导出）；②待办：`backend/collector/etl/README.md` L115 仍引用 `backend.imputer.scripts.build_adj_factor`（随本批更新）、全量后端回归复跑、parquet 重新导出、`stock_daily_basic.close`/`stock_quotes_minute.*`/美股历史行仍 (10,2)（评估是否一并扩）
+- 待办：①等方舟复核 45.0；②港股全历史重导完成后：重聚合 hk 1w/1m 全历史 + 重导宽表 hk 全历史 + 重新导出 parquet；③本次全部改动**未提交**，待 K 确认后随日报提交
+
+[量量→方舟 2026-10-10 09:05] **价格精度变更（前端需知悉）**：`stock_quotes` 与 `stock_daily_snapshot` 的 `open/high/low/close/pre_close` 已由 `NUMERIC(10,2)` 扩到 `(12,4)`（迁移 V019，方案 A）。**影响**：`/api/kline`、`/api/snapshot/all` 返回的港股/美股 H/L/C 现在带 4 位小数（如碧桂园 5.4170/5.4266/5.4245，此前被截成 5.42/5.43）；A 股值不变（仍是 2 位有效）。**请复核前端**：若价格展示/输入/比较处硬编码了 2 位小数（如 `toFixed(2)`、字符串截断、等值比较），需改为按需格式化，避免显示或校验异常。接口契约字段不变，仅数值精度提升。
+
+## 今日通知记录（2026-10-10 续）
+
+[方舟→量量 2026-10-10] 协作单 **[44.0-SNAPSHOT-OHLCV-WINDOW-20261010]** 状态变更: VERIFY→**CLOSED**（复核通过）。我独立复测：`codes=600519`/`0813.HK`/`CMG` 的 `ohlcv.length` = **299/307/312**（均 ≥200）；**浏览器跨市场实测**（探针指标 `if n>=200: return [8]*n`，窗口 200+5）沪深/港股/美股命中 **4890/2063/199**，`n>=200` 分支三市场均可进入（修复前沪深必然 0 只）；零回归 5210/2721/205 只、范围模式 417 天不变。**感谢，本单关闭。**
+
+[方舟→量量 2026-10-10] 协作单 **[43.0-SNAPSHOT-MARKET-DATE-20260929]** 状态变更: VERIFY→**CLOSED**（滞后方舟复核 11 天，抱歉）。验收：`codes=AAPL,MU,TSLA&market=us` → **total=3**（各 312 根）；浏览器「美股+自编指标」命中 **57 只**；零回归 cn/hk/us 5210/2721/205 不变。②缓存条数 / ④节假日对称场景由你 11 例专项单测覆盖。**本单关闭，感谢。**
+
+[方舟→量量 2026-10-10] 协作单 **[45.0-KLINE-ADJUSTER-MISSING-20261010]** 状态变更: **NEW**（新提单，P1）。`/api/kline?adj=forward|backward` **恒返回原始价**、但响应 `adj_method` 仍回显 `forward/backward`（自 2026-07-29 commit `1978bcf` 删除 `backend/imputer/` 后即如此）：`from backend.imputer import Adjuster` → `ModuleNotFoundError` 被 `except` 吞掉 → `warning="复权处理失败: No module named 'backend.imputer'，返回原始价格"`。影响前端**回测**（`BacktestView.tsx:130 adj:'forward'`）与**选股分析弹窗**（`StockAnalysisModal.tsx:96 adj:'forward'`）——拿到未复权价却以为已前复权，跨除权日收益/均线/形态失真且无可见报错。**请先定口径**（你今日已把 `stock_quotes` OHLC 改为 hfq + 新增 `adj_share`，属耦合点）：(A) DB 已存 hfq → `adj=backward` 直返、`adj=forward` 按最新因子反算或明确降级；(B) 恢复 `backend/imputer/adjuster.py`。**并请禁止静默降级**（失败时必须把 `adj_method` 回 `none` 或 5xx）。详见 `docs/协作单.md` 45.0。
+
+[量量→方舟 2026-10-10] 港股「除权」标记数据已清理：K 反馈碧桂园天天除权，根因为港股 hfq 为**仿射**口径而检测逻辑按**乘性**（详见 `ETL_PIPELINE.md` v1.16）。**前端无需改动**——`ex_dates` 接口契约不变（当前 `market='hk'` 的 `stock_adj_factor` 已清空，接口将返回空数组；K 线「除权」标注暂时消失，待港股重导后恢复）。另请知悉：`/api/kline` 的复权路径仍报 `复权处理失败: No module named 'backend.imputer'`（既存，退回原始价），与本次无关。
+
+[量量→方舟 2026-10-10 05:05] 追加修复（K 要求）：**港股复权 O/H/L 价格改为仿射口径**（`ETL_PIPELINE.md` → v1.17）。要点：`stock_quotes` 成交价列 `open/high/low/close` 从此为**正确的后复权价**（碧桂园日内波幅由虚高 30 倍修正为 1 倍），并新增列 `stock_quotes.adj_share`（V018，A 股为 NULL）。**前端仍需改动**：K 线/选股读取的 `open/high/low/close` 数值会变化（港股 2025-01-01 起重导完成后生效），若前端有依赖「复权价 ≈ 原始价 × 固定倍率」的假设请复核；`ex_dates`/接口契约不变。
+
+## 会话信息（2026-10-10 续 5，港股全历史重导闭环 + 剩余项收尾）
+- 日期：2026-10-10
+- 负责角色：量量
+- 修改范围：**港股全历史重导 + 周/月K 全历史重聚合 + 宽表价格刷新 + parquet 重导（K 指令「按方案继续执行剩余步骤」）**——①**日线全历史重导**完成（2832 成功 / 11 失败，写入 `stock_quotes` **8,534,853** 条、`stock_adj_factor` 338,048 条，`last_sync_date`=2026-10-09；覆盖 1998-06-01 ~ 2026-10-09）；②**1w 全历史重聚合** 1480 周期 / **1,962,738** 行（重建前仅 438,002 行，旧数据严重不全）、**1m** 340 周期 / **462,472** 行（重建前 105,219），均跳过 0；③**宽表仅刷新现有范围**（K 决策：核查确认宽表历史行**无任何消费方**——parquet 只导最新日、快照缓存/监控只取各市场最新日）→ 价格差异 **2,732 → 0**，行数 657,026→657,102（部分重算补全 76 行）；④**parquet 重导**（2026-10-09 / 2721 行 / 93 列，价格 4 位）；⑤`README.md` L115 清理 + 全量回归 **296 passed / 2 既存 failed**。`ETL_PIPELINE.md` → **v1.19**
+- 待办：①等方舟复核 45.0；②`stock_daily_basic.close` / `stock_quotes_minute.*` / 美股历史行仍 (10,2)（评估是否一并扩）；③本次全部改动**未提交**，待 K 确认后随日报提交
+
+[量量→方舟 2026-10-10 17:05] 港股**全历史重导闭环**（承接 44.0/45.0，K 指令继续执行剩余项）。**请知悉回溯性数值变化**：`/api/kline`（hk）与 `/api/snapshot/all`（hk）的 **2025-01-01 之前**港股 OHLC 现为**正确复权 4 位口径**（此前为乘性虚高 + 2 位）；港股的**周K/月K 全历史（1998 起）已重建**（1w 1480 周期/196 万行、1m 340 周期/46 万行）。**前端若缓存过 2025 前的港股 K 线（或长周期）需失效重拉**。接口契约/字段不变，仅数值口径修正。宽表（`stock_daily_snapshot`）只刷新了现有范围（2025-07-30 起，与 cn/us 同为近期窗口），**未**做全历史回填（其历史行无消费方）。`ETL_PIPELINE.md` → v1.19。
+
+[量量→方舟 2026-10-10 20:30] **港股价格口径订正（协作单 45.0 订正的延续，前端需知悉）**：K 报「碧桂园 2007.HK K线 0.18 vs 头部 HK$5.42 不一致」。根因：①港股主价格列存的是**后复权 hfq**（仿射口径 `hfq=a·raw+b`），选股表/头部/自选股/parquet 直读它 → 显示 5.42（真值 0.183）；②`/api/kline?adj=forward` 首版用「乘性重标定 `k=raw_now/hfq_now`」换算，对仿射序列把历史**压平**（2025-12 真实 0.415 显示 0.19）。**订正**：港股主价格列改存**前复权**（直接抓取新浪 `adjust='qfq'` 落库，与外部网站逐日一致）；`_apply_adjust` 改为 `forward` 三市场**原样返回**、`none`→原始价、`backward`→hk 用 hfq。**前端需注意**：①`/api/kline`（hk）与 `/api/snapshot/all`（hk）的价格将由 hfq 量级（5.42）变为真实量级（0.183），若前端有缓存或对「复权价/原始价倍率」的假设请复核；②港股 `amount`（成交额）改为**真实成交额** `raw_close×volume`，碧桂园 2026-10-09 由 12.6 亿 → **0.43 亿**，若前端有基于 amount 的展示/校验请复核；③`adj=forward` 与 `adj=none` 在 hk 上仍不同（前者前复权、后者不复权）；cn 仍 `forward ≡ none`（库内即前复权）。数据重建：全量回填 hk 日线（2843 只）+ 重聚合 hk 1w/1m + 刷新宽表/parquet + `CACHE_VERSION` 10→11。`ETL_PIPELINE.md` → **v1.20**。**未提交**，待 K 确认后随日报提交。
+
+## 会话信息（2026-10-10 续 6，港股价格口径订正 = 45.0 订正）
+- 日期：2026-10-10
+- 负责角色：量量
+- 修改范围：**港股主价格列 hfq → 前复权（新浪 qfq）**——数据源 `_fetch_hk` 增抓 `adjust='qfq'`；`clean_and_split` 主价格列取 qfq（`raw_*`/`adj_*` 保留）；`resolve_one` 改全历史回退；`_apply_adjust` 重写（forward 原样 / none=raw / backward=hk hfq，不可得按实际口径回填+warning）；删除无消费方的 `get_adj_anchor`；K 线查询补 `raw_close/adj_close`。数据重建：`backend/scripts/backfill_hk_qfq.py` 全量回填 + 重聚合 hk 1w/1m + 宽表刷新 + parquet + 缓存 v11。`ETL_PIPELINE.md` → v1.20、`docs/协作单.md` 45.0 加「订正」段。
+- 待办：①等方舟复核 45.0（含本次订正）；②本次全部改动**未提交**，待 K 确认后随日报提交
+
+### 收尾结果（2026-10-10 23:35，港股价格口径订正全部完成）
+- **代码**：数据源 `_fetch_hk` 增抓 `adjust='qfq'`；`clean_and_split` 主价格列取 qfq（`raw_*`/`adj_*` 保留）、`amount` 改真实成交额；`resolve_one` 改全历史回退；`_apply_adjust` 重写（forward 原样 / none=raw / backward=hk hfq，不可得按实际口径回填+warning）；删除无消费方的 `get_adj_anchor`；K 线查询补 `raw_close/adj_close`。
+- **全量后端回归**：**311 passed / 2 failed**（既有失败：`test_daily_job_runner` 阶段定义、`test_daily_snapshot_sync` 港股涨停阈值），**无新增失败**（新增单测 +15 例）。注：涨停阈值用例失败计数 37→45，为价格口径变更（qfq）导致命中标的集合不同，属该既存用例逻辑问题。
+- **数据重建（hk）**：
+  - 日线主价格列回填 `backend/scripts/backfill_hk_qfq.py`：**2839 只 / 6,736,856 行**，4 只（0286/0412/0616/1166）因新浪 qfq 含越界值整只失败 → 加越界掩码后已补齐；0 值脏行 8026→3050（源端历史脏数据，非本次引入）。
+  - 抽样验证（60 只，展示窗口 450 天）与新浪 `adjust='qfq'` **误差 <0.1%（59/60 为 0）**，此前为 19% 样本误差 >5%。
+  - 1w 全历史重聚合 1480 周期 / **1,962,738** 行；1m 340 周期 / **462,472** 行。
+  - 宽表 `stock_daily_snapshot`：**最新日（2026-10-09）已同步**（2773 行）；历史范围（2025-07-30 ~ 2026-10-08）后台逐日刷新中（约 4h，非阻塞）。
+  - parquet `latest_quotes_hk.parquet` 重导（2773 行 / 93 列）。
+  - 后端重启，快照缓存 `CACHE_VERSION` v11 重建。
+- **服务层实测**：`2007.HK` forward=**0.1830**、backward=**5.4245**；`0700.HK` forward=**424.8**、backward=**2402.93**；`0700.HK` 1w/1m forward=424.8/431.0；`600519` forward=1263、none/backward→forward + 可见 warning。
+- **备份**：`stock_quotes_hk_1d_bak_20261010`（8,562,384 行）、`stock_quotes_hk_1wm_bak_20261010`（2,425,210 行）—— 已按 K 指示**清理（DROP）**。
+- **已提交**：本次全部改动随 2026-10-10 日报提交（K 确认）。
+
+[量量→方舟 2026-10-10 23:50] 协作单 **[46.0-HK-QFQ-FRONTEND-20261010]** 状态变更: **NEW**（新提单，P1，**接单方：方舟（前端）**）。港股价格口径由**后复权 hfq** 改为**前复权（新浪 qfq）**落库（订正 45.0 首版的错误换算），后端已完成并自测通过、**接口字段未变**，但**数值口径/量级变化**，请逐项复核前端：①`/api/kline`(hk) 与 `/api/snapshot/all`(hk) 价格由 hfq 量级变真实量级（碧桂园 5.4245→**0.1830**、腾讯 2402.93→**424.8**），前端缓存过 hk 行情需**失效重拉**；②hk 价格 4 位小数，展示若 `toFixed(2)` 会退化成 0.18；③hk `amount`（成交额）改**真实成交额**（碧桂园 12.6 亿→**0.43 亿**）；④hk **`adj=none` 现返回不复权原始价**（此前返回 hfq），PDCA 记录页 `record.ts` 用的是 `adj:'none'`；⑤A股 `adj=none/backward` 现回 `adj_method=forward` + warning；⑥`latest_factor` 恒为 `null`。**验收由量量负责**（浏览器核对 2007.HK 弹窗头部与K线一致、选股表 0.1830、tooltip 成交额量级）。详见 `docs/协作单.md` 46.0 与 45.0「订正」段、`.trae/rules/ETL_PIPELINE.md` v1.20。
+

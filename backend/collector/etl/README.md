@@ -112,5 +112,5 @@ python backend/collector/etl/pipeline_health_check.py
 |------|------|------|
 | 16:30 后 stock_quotes 还没更新 | 16:05 任务没跑 | 手动跑 `import_daily_data.py --incremental` |
 | 宽表技术指标全空 | 旧 `daily_snapshot_sync.py` 依赖 `stock_indicators` 表 | 改用 `sync_quotes_to_snapshot.py` |
-| 复权后 close 价格跳空 | 复权因子表缺失 | 跑 `python -m backend.imputer.scripts.build_adj_factor` 补齐 |
+| 复权后 close 价格跳空 | 复权因子表缺失 | 跑 `./venv/bin/python backend/collector/etl/sync_adj_factor.py` 补齐 |
 | health_monitor 一直报"空闲" | 任务进程没启动 / 被杀 | 查 `pgrep -f import_daily_data` |

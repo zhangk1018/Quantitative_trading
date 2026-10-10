@@ -148,7 +148,13 @@ def set_last_sync_date(conn: psycopg2.extensions.connection, sync_date: str) -> 
 
 # ==================== 数据清洗与拆分 ====================
 def _normalize_yahoo_cols(df: pd.DataFrame) -> pd.DataFrame:
-    """统一 Yahoo 原生列为小写，并把索引 Date 提为 trade_date 列。"""
+    """统一数据源原生列为小写，并把索引 Date 提为 trade_date 列。
+
+    含数据源直供的复权列（协作单 45.0）：`Adj Open/Adj High/Adj Low/Adj Close`
+    → `adj_open/adj_high/adj_low/adj_close`（港股 hfq 为仿射口径，O/H/L 必须直供
+    而非按当日倍率折算）；`Adj Share`（股本因子）→ `adj_share`；
+    `Qfq Open/Qfq High/Qfq Low/Qfq Close` → `qfq_*`（前复权，库内主价格列来源）。
+    """
     out = df.copy()
     if out.index.name == 'Date' or isinstance(out.index, pd.DatetimeIndex):
         out = out.reset_index()
@@ -157,8 +163,9 @@ def _normalize_yahoo_cols(df: pd.DataFrame) -> pd.DataFrame:
         low = str(c).lower()
         if low == 'date':
             ren[c] = 'trade_date'
-        elif low == 'adj close':
-            ren[c] = 'adj_close'
+        elif low in ('adj open', 'adj high', 'adj low', 'adj close', 'adj share',
+                     'qfq open', 'qfq high', 'qfq low', 'qfq close'):
+            ren[c] = low.replace(' ', '_')
         elif low == 'volume':
             ren[c] = 'volume'
         elif low in ('open', 'high', 'low', 'close'):
@@ -262,6 +269,7 @@ def clean_and_split(df_raw: pd.DataFrame, code: str) -> Tuple[Optional[pd.DataFr
         for col in ('open', 'high', 'low', 'close'):
             splitted.loc[neg_mask, f'adj_{col}'] = splitted.loc[neg_mask, f'raw_{col}']
         splitted.loc[neg_mask, 'adj_factor'] = 1.0
+        splitted.loc[neg_mask, 'adj_share'] = 1.0
     # 孤立未复权错价拦截（协作单 32.0）：剔除 Adj Close≈Close 导致相对相邻因子孤立断崖的行
     _splitted, _n_notch = _guard_unadjusted_notches(splitted)
     if _n_notch > 0:
@@ -276,19 +284,34 @@ def clean_and_split(df_raw: pd.DataFrame, code: str) -> Tuple[Optional[pd.DataFr
     raw_cols = ['raw_open', 'raw_high', 'raw_low', 'raw_close']
     adj_cols = ['adj_open', 'adj_high', 'adj_low', 'adj_close']
 
-    # ===== 组装 stock_quotes 行（成交价列 = 后复权价）=====
+    # ===== 前复权列为库内主价格列（协作单 45.0 订正）=====
+    # 港股主价格列（open/high/low/close）存**前复权**：直接采用新浪 `adjust='qfq'`
+    # 直供序列（乘性口径，无法由仿射后复权精确换算）。数据源未提供该列时回退原始价
+    # （最新一日前复权 == 原始价；缺失单日亦按原始价补齐）。
+    def _qfq(col: str, raw_col: str) -> pd.Series:
+        if col in splitted.columns:
+            return splitted[col].fillna(splitted[raw_col])
+        return splitted[raw_col]
+
+    qfq_open = _qfq('qfq_open', 'raw_open')
+    qfq_high = _qfq('qfq_high', 'raw_high')
+    qfq_low = _qfq('qfq_low', 'raw_low')
+    qfq_close = _qfq('qfq_close', 'raw_close')
+
+    # ===== 组装 stock_quotes 行（成交价列 = 前复权价）=====
     quotes = pd.DataFrame({
         'code': code,
         'cycle': CYCLE,
         'trade_date': pd.to_datetime(splitted['trade_date']).dt.date,
-        # 成交价列统一存后复权价（指标/回测/前端用 adj_close 口径）
-        'open': splitted['adj_open'],
-        'high': splitted['adj_high'],
-        'low': splitted['adj_low'],
-        'close': splitted['adj_close'],
-        'pre_close': splitted['adj_close'].shift(1),
+        # 成交价列统一存前复权价（指标/回测/前端展示用 qfq 口径）
+        'open': qfq_open,
+        'high': qfq_high,
+        'low': qfq_low,
+        'close': qfq_close,
+        'pre_close': qfq_close.shift(1),
         'volume': pd.to_numeric(splitted['volume'], errors='coerce').fillna(0).astype(int),
-        'amount': (splitted['adj_close'] * pd.to_numeric(splitted['volume'], errors='coerce').fillna(0)).round(2),
+        # 成交额用**真实成交额**（原始价 × 成交量）；旧口径 adj_close×volume 被复权倍率高估
+        'amount': (splitted['raw_close'] * pd.to_numeric(splitted['volume'], errors='coerce').fillna(0)).round(2),
         'adjust_type': ADJUST_TYPE,
         'trade_datetime': (
             # 先转纯日期，再拼收盘时间并本地化为港股时区（规避 Yahoo 索引自带时区导致 tz_localize 报错）
@@ -301,6 +324,8 @@ def clean_and_split(df_raw: pd.DataFrame, code: str) -> Tuple[Optional[pd.DataFr
         quotes[c] = splitted[c]
     for c in adj_cols:
         quotes[c] = splitted[c]
+    # 本行采用的股本因子 a（供增量快照路径按仿射式换算，协作单 45.0）
+    quotes['adj_share'] = splitted['adj_share']
     # 首日无前收：用当日 open（adj）兜底
     quotes.loc[pd.isna(quotes['pre_close']), 'pre_close'] = quotes['open']
     quotes = quotes.dropna(subset=['open', 'close']).reset_index(drop=True)
@@ -327,7 +352,7 @@ def write_quotes_cols() -> List[str]:
     return ['code', 'cycle', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close',
             'volume', 'amount', 'adjust_type', 'trade_datetime', 'market',
             'raw_open', 'raw_high', 'raw_low', 'raw_close',
-            'adj_open', 'adj_high', 'adj_low', 'adj_close']
+            'adj_open', 'adj_high', 'adj_low', 'adj_close', 'adj_share']
 
 
 def _is_missing(v: Any) -> bool:
@@ -364,7 +389,7 @@ def write_quotes(conn: psycopg2.extensions.connection, df: pd.DataFrame, code: s
                     code, cycle, trade_date, open, high, low, close, pre_close,
                     volume, amount, adjust_type, trade_datetime, market,
                     raw_open, raw_high, raw_low, raw_close,
-                    adj_open, adj_high, adj_low, adj_close
+                    adj_open, adj_high, adj_low, adj_close, adj_share
                 ) VALUES %s
                 ON CONFLICT (code, cycle, trade_date) DO UPDATE SET
                     open = EXCLUDED.open,
@@ -384,7 +409,8 @@ def write_quotes(conn: psycopg2.extensions.connection, df: pd.DataFrame, code: s
                     adj_open = EXCLUDED.adj_open,
                     adj_high = EXCLUDED.adj_high,
                     adj_low = EXCLUDED.adj_low,
-                    adj_close = EXCLUDED.adj_close
+                    adj_close = EXCLUDED.adj_close,
+                    adj_share = EXCLUDED.adj_share
             """, values, page_size=2000)
         conn.commit()
         logger.info(f"  {code}: 写入 stock_quotes {len(values)} 条")
@@ -479,10 +505,12 @@ def import_one(
 
 def resolve_one(conn: psycopg2.extensions.connection, src: AkShareDataSource,
                 code: str, dry_run: bool = False) -> Tuple[int, int, Optional[str]]:
-    """按「当日单日」窗口回退拉取并写入单只港股（供批量快照对除权/新股回退）。
+    """按「**全历史**」回退拉取并写入单只港股（供批量快照对除权/新股回退）。
 
-    等价于 import_one 的当日窗口版本：拉取该股当日不复权+后复权日线，经 clean_and_split
-    拆分后写入 stock_quotes / stock_adj_factor（含除权检测），与逐只路径口径完全一致。
+    协作单 45.0 订正：主价格列存**前复权**（新浪 `adjust='qfq'`），而前复权**锚定最新日**
+    ——除权后更早的历史整体前移，旧行也必须改写。故此处必须拉取**全历史**（而非仅当日），
+    经 clean_and_split 后整段重写 stock_quotes / stock_adj_factor（含除权检测），
+    与逐只路径口径完全一致。
 
     Args:
         conn: 数据库连接（dry_run 时可为 None）
@@ -493,10 +521,7 @@ def resolve_one(conn: psycopg2.extensions.connection, src: AkShareDataSource,
     Returns:
         (quotes 条数, adj_factor 条数, 实际覆盖的最后交易日 ISO 字符串)
     """
-    today = date.today()
-    start = today.isoformat()
-    end_excl = (today + timedelta(days=1)).isoformat()
-    df_raw = src.download_single(code, market=MARKET, start=start, end=end_excl)
+    df_raw = src.download_single(code, market=MARKET)
     if df_raw is None or df_raw.empty:
         logger.info(f"  {code}: 快照回退拉取为空（可能退市/停牌/限流）")
         return 0, 0, None
@@ -517,11 +542,12 @@ def resolve_one(conn: psycopg2.extensions.connection, src: AkShareDataSource,
 
 
 def _hk_snapshot_latest(conn: psycopg2.extensions.connection, code: str,
-                        before_date: Optional[date] = None) -> Optional[Tuple[float, float]]:
-    """读取港股该股最近一笔（默认）或某交易日**之前**最近一笔已入库 (adj_close, raw_close)。
+                        before_date: Optional[date] = None) -> Optional[Tuple[float, float, Optional[float]]]:
+    """读取港股该股最近一笔（默认）或某交易日**之前**最近一笔已入库 (adj_close, raw_close, adj_share)。
 
-    用于批量快照：`adj_close/raw_close` 为后复权倍率 C（把无复权快照换算为后复权价），
-    raw_close 用于除权疑似检测（与新浪快照「昨收」比较）。
+    用于批量快照：以最近一笔库存行还原当前复权区间的仿射参数
+    `adj_x = a*raw_x + b`（`a` 取 `adj_share`，`b` 由该行 adj_close/raw_close 反推），
+    再把无复权快照换算为后复权价；raw_close 另用于除权疑似检测（与新浪快照「昨收」比较）。
     库中无有效锚点（新上市/缺 raw_close）时返回 None，由调用方回退逐只下载。
 
     Args:
@@ -532,7 +558,8 @@ def _hk_snapshot_latest(conn: psycopg2.extensions.connection, code: str,
             否则（库中恰为 T）会把 T 自身当锚点、昨收对 T 误判为除权。
 
     Returns:
-        (最近 adj_close, 最近 raw_close)；无有效锚点返回 None
+        (最近 adj_close, 最近 raw_close, 最近 adj_share)；adj_share 旧数据可能为 NULL；
+        无有效锚点返回 None
     """
     before_clause = "AND trade_date < %s" if before_date is not None else ""
     params: List[Any] = [code]
@@ -541,7 +568,7 @@ def _hk_snapshot_latest(conn: psycopg2.extensions.connection, code: str,
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT adj_close, raw_close FROM stock_quotes "
+                "SELECT adj_close, raw_close, adj_share FROM stock_quotes "
                 "WHERE market='hk' AND code=%s AND cycle='1d' "
                 "AND adj_close IS NOT NULL AND raw_close IS NOT NULL AND raw_close > 0 "
                 f"AND adj_close > 0 {before_clause} ORDER BY trade_date DESC LIMIT 1",
@@ -549,7 +576,8 @@ def _hk_snapshot_latest(conn: psycopg2.extensions.connection, code: str,
             )
             row = cur.fetchone()
         if row and row[0] and row[1]:
-            return float(row[0]), float(row[1])
+            share = float(row[2]) if row[2] is not None else None
+            return float(row[0]), float(row[1]), share
     except psycopg2.DatabaseError as e:
         logger.warning(f"⚠️ 读取港股 {code} 复权锚点失败: {e}")
     return None
@@ -643,16 +671,28 @@ def _hk_exright_codes(trade_date: date) -> Optional[set]:
         return None
 
 
-def _snapshot_quotes_df(code: str, r: pd.Series, anchor: float, trade_date: date) -> pd.DataFrame:
-    """把批量快照单行（原始价）+ 复权锚点 C 构造为入库的 stock_quotes 单日 DataFrame。
+def _snapshot_quotes_df(code: str, r: pd.Series, anchor_adj_close: float, anchor_raw_close: float,
+                        share: Optional[float], trade_date: date) -> pd.DataFrame:
+    """把批量快照单行（原始价）+ 库存锚点构造为入库的 stock_quotes 单日 DataFrame。
 
-    成交价列统一存后复权价 = 原始价 × C（与逐只路径 clean_and_split 口径一致）；同时存
-    raw_*/adj_*。pre_close=库中最近后复权价（= raw_close×C），保证序列连续。
+    主价格列（open/high/low/close）存**前复权**价：快照为「最新一日」，而前复权
+    锚定最新日 → 当日前复权价 == 原始价，故直接写原始价（协作单 45.0 订正）。
+    `adj_*` 仍存**后复权**价 = 仿射式 `a*raw + b`（与逐只路径一致，供后复权消费方）：
+    - `a` = 库存最近一笔的**股本因子** `adj_share`（缺失时退化为乘性倍率
+      `adj_close/raw_close`，与旧行为一致）；
+    - `b` = 锚点行的 `adj_close − a*raw_close`（当前复权区间内恒定）。
+    pre_close = 快照昨收（原始价，同为前复权口径）。
+
+    协作单 45.0：旧实现用「乘性冻结锚点 `C = adj_close/raw_close`」换算后复权 O/H/L，
+    对仿射标的（hfq 含加性偏移，如碧桂园 02007）会把日内波幅放大 `C/a` 倍（≈30 倍），
+    与逐只路径修正后的口径不一致，故改为仿射式。
 
     Args:
         code: 规范化港股代码
         r: 快照行（Column Open/High/Low/Close/prev_close/Volume/Amount）
-        anchor: 复权倍率 C = 最近 adj_close/raw_close
+        anchor_adj_close: 库存最近一笔后复权收盘
+        anchor_raw_close: 库存最近一笔原始收盘
+        share: 库存最近一笔的股本因子 a；None/无效时退化为乘性
         trade_date: 当日交易日期
 
     Returns:
@@ -667,22 +707,31 @@ def _snapshot_quotes_df(code: str, r: pd.Series, anchor: float, trade_date: date
         # 无有效成交价（如停牌快照全空）→ 返回空 df，调用方跳过
         return pd.DataFrame(columns=write_quotes_cols())
     vol = _to_nonneg_int(r.get('Volume'))
-    C = anchor
-    adj_open = raw_open * C if not _is_missing(raw_open) else None
-    adj_high = raw_high * C if not _is_missing(raw_high) else None
-    adj_low = raw_low * C if not _is_missing(raw_low) else None
-    adj_close = raw_close * C
-    # pre_close：库中最近后复权价（≈ raw_prev×C）
-    prev = raw_prev * C if raw_prev is not None and not _is_missing(raw_prev) else adj_open
-    amount = (adj_close * vol) if vol is not None else None
+    valid_share = share if (share is not None and float(share) > 0) else None
+    if valid_share is None:
+        # 旧数据无 adj_share → 退化为乘性倍率（b=0），与修复前行为一致
+        a = anchor_adj_close / anchor_raw_close
+        b = 0.0
+    else:
+        a = float(valid_share)
+        b = anchor_adj_close - a * anchor_raw_close
+    adj_open = a * raw_open + b if not _is_missing(raw_open) else None
+    adj_high = a * raw_high + b if not _is_missing(raw_high) else None
+    adj_low = a * raw_low + b if not _is_missing(raw_low) else None
+    adj_close = a * raw_close + b
+    # 主价格列（前复权）：最新一日前复权 == 原始价
+    pre_close = raw_prev if (raw_prev is not None and not _is_missing(raw_prev)) else raw_open
+    # 真实成交额（原始价 × 成交量）
+    amount = (raw_close * vol) if vol is not None else None
     trade_datetime = (pd.Timestamp(trade_date) + pd.Timedelta(MARKET_CLOSE_HHMM)).tz_localize(HOT)
     row = {
         'code': code, 'cycle': CYCLE, 'trade_date': trade_date,
-        'open': adj_open, 'high': adj_high, 'low': adj_low, 'close': adj_close,
-        'pre_close': prev, 'volume': vol, 'amount': amount, 'adjust_type': ADJUST_TYPE,
+        'open': raw_open, 'high': raw_high, 'low': raw_low, 'close': raw_close,
+        'pre_close': pre_close, 'volume': vol, 'amount': amount, 'adjust_type': ADJUST_TYPE,
         'trade_datetime': trade_datetime, 'market': MARKET,
         'raw_open': raw_open, 'raw_high': raw_high, 'raw_low': raw_low, 'raw_close': raw_close,
         'adj_open': adj_open, 'adj_high': adj_high, 'adj_low': adj_low, 'adj_close': adj_close,
+        'adj_share': a,
     }
     return pd.DataFrame([row], columns=write_quotes_cols())
 
@@ -743,15 +792,14 @@ def import_hk_snapshot_daily(conn: psycopg2.extensions.connection, src: AkShareD
                 fallback += 1
                 resolve_one(conn, src, code, dry_run=False)
                 continue
-            adj_close, raw_close = latest
-            anchor = adj_close / raw_close
+            adj_close, raw_close, adj_share = latest
             # 除权疑似检测：快照昨收 与 库中最近 raw_close 比较
             if _hk_rate_diverges(r.get('prev_close'), raw_close):
                 logger.info(f"  {code}: 快照昨收 {r.get('prev_close')} vs 库最近 raw_close {raw_close} 偏离，疑似除权 → 回退逐只")
                 fallback += 1
                 resolve_one(conn, src, code, dry_run=False)
                 continue
-            quotes = _snapshot_quotes_df(code, r, anchor, snap_date)
+            quotes = _snapshot_quotes_df(code, r, adj_close, raw_close, adj_share, snap_date)
             if quotes is None or quotes.empty:
                 fallback += 1  # 无有效价（停牌）→ 回退逐只尝试
                 resolve_one(conn, src, code, dry_run=False)
