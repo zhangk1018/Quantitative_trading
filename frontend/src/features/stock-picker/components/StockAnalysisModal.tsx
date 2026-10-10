@@ -6,7 +6,7 @@ import { Modal, Typography, Spin, Alert, Segmented, Tooltip } from 'antd';
 import { fetchKLineData, toFriendlyMessage, type PatternMarker } from '@/features/stock-detail/api';
 import { buildChartData, type ChartDataResult } from '@/lib/indicators/chart-adapter';
 import { sanitizeNumber, sanitizePct } from '@/lib/indicators/indicators';
-import { formatPriceWithCurrency } from '@/shared/utils/currency';
+import { formatPriceWithCurrency, formatMarketCapWan } from '@/shared/utils/currency';
 import { CHART_THEME, CUSTOM_INDICATOR_COLORS } from '@/lib/indicators/chart-config';
 import KLineChart, { type MainType, type OscType } from './KLineChart';
 import { detectConditions, type ConditionEvent, type ConditionConfig } from '@/lib/indicators/condition-detector';
@@ -301,16 +301,18 @@ const StockAnalysisModal: React.FC<StockAnalysisModalProps> = ({ open, stock, on
             <Text className="text-xs" style={{ color: changeColor }}>
               {stock?.change_pct != null ? sanitizePct(stock.change_pct) : '--'}
             </Text>
-            <Text className="text-[#848E9C] text-xs">PE {sanitizeNumber(stock?.pe, 2)}</Text>
-            <Text className="text-[#848E9C] text-xs">PB {sanitizeNumber(stock?.pb, 2)}</Text>
+            {/* 空值显式显示 `--`：sanitizeNumber(null) 会回落到 0.00，港股 `pb`/`turnover_rate`
+                常为 NULL（协作单 46.0 验收③）。换手率 0 亦视为无数据（港美股未提供）。 */}
+            <Text className="text-[#848E9C] text-xs">PE {stock?.pe != null ? sanitizeNumber(stock.pe, 2) : '--'}</Text>
+            <Text className="text-[#848E9C] text-xs">PB {stock?.pb != null ? sanitizeNumber(stock.pb, 2) : '--'}</Text>
             {stock?.market_cap != null && (
               <Text className="text-[#848E9C] text-xs">
-                市值 {sanitizeNumber(stock.market_cap / 10000, 2)}亿
+                市值 {formatMarketCapWan(stock.market_cap)}
               </Text>
             )}
-            {stock?.turnover_rate != null && (
-              <Text className="text-[#848E9C] text-xs">换手 {sanitizeNumber(stock.turnover_rate, 2)}%</Text>
-            )}
+            <Text className="text-[#848E9C] text-xs">
+              换手 {stock?.turnover_rate ? `${sanitizeNumber(stock.turnover_rate, 2)}%` : '--'}
+            </Text>
             {stock?.listed_board && <Text className="text-[#848E9C] text-xs">{stock.listed_board}</Text>}
             {/* 条件图例 + 不可标注提示 */}
             {markers.length > 0 && (

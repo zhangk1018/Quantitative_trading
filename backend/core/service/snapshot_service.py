@@ -63,7 +63,7 @@ CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "cache")
 OHLCV_CACHE_FILE = os.path.join(CACHE_DIR, "ohlcv.pkl")
 SNAPSHOT_CACHE_FILE = os.path.join(CACHE_DIR, "snapshot.pkl")
 CACHE_META_FILE = os.path.join(CACHE_DIR, "cache_meta.json")
-CACHE_VERSION = 11                      # v11: 港股主价格列改前复权（45.0 订正），旧缓存需重建
+CACHE_VERSION = 12                      # v12: V020 改值（hk/us market_cap 元→万元、change 精度 4 位），旧缓存需重建
 
 # HMAC 密钥（生产环境应通过环境变量注入）
 HMAC_KEY = os.environ.get("CACHE_HMAC_KEY", "change_me_in_production").encode()

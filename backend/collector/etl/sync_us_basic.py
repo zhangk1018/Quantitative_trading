@@ -374,9 +374,11 @@ def _build_rows(spot: pd.DataFrame, codes: List[str]) -> List[Dict[str, object]]
         return []
 
     unit = _unit_of_mktcap(spot)
-    factor = 1e8 if unit == 'yi' else 1.0
-    if factor != 1.0:
-        logger.info(f"  ℹ️ 新浪 mktcap 判定为亿元单位，×1e8 转为元")
+    # 契约：total_mv 统一为**万元**（与 A 股一致，前端 `÷1e4 → 亿` 全局成立）。
+    # 新浪 mktcap 判定为「亿元」→ ×1e4；判定为「元」→ ×1e-4。此前分别用 1e8 / 1.0（存元），
+    # 导致美股在选股表/详情弹窗市值被放大 1e4 倍 —— 协作单 46.0 验收订正。
+    factor = 1e4 if unit == 'yi' else 1e-4
+    logger.info(f"  ℹ️ 新浪 mktcap 判定为{'亿元' if unit == 'yi' else '元'}单位，×{factor:g} 转为万元")
 
     df = spot[['symbol', 'mktcap', 'pe', 'price']].copy()
     df.columns = ['code', 'total_mv', 'pe', 'close']

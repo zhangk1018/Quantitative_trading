@@ -11,7 +11,7 @@
 单只约 0.5s/次、全市场 2000+ 只需较长耗时，适合一次性补库或低频调度，不宜每日串行。
 
 字段映射：
-  indicator='总市值'   → total_mv（百度返回单位为「亿元 HKD」，×1e8 转元）
+  indicator='总市值'   → total_mv（百度返回单位为「亿元 HKD」，×1e4 转**万元**，与其他市场统一）
   indicator='市盈率(TTM)' → pe
   currency='HKD'，exchange 缺省兜底 'SEHK'。
   close 取 stock_quotes 该交易日后复权收盘价（adj_close）。
@@ -42,8 +42,11 @@ CYCLE = '1d'
 CURRENCY = 'HKD'
 DEFAULT_EXCHANGE = 'SEHK'
 
-# 百度估值：单位「亿港币」→ 元港币 系数
-_MV_YI_FACTOR = 1e8
+# 百度估值：单位「亿港币」→ **万元港币** 系数
+# （契约：stock_daily_basic.total_mv / stock_daily_snapshot.market_cap 统一为**万元**，
+#  与 A 股 tushare 一致；前端 `÷1e4 → 亿` 全局成立。此前用 1e8 存「元」，
+#  导致港股在选股表/详情弹窗市值被放大 1e4 倍 —— 协作单 46.0 验收订正）
+_MV_YI_FACTOR = 1e4
 # 逐只请求间最小休眠（秒），避免触发百度限流
 _REQUEST_SLEEP = 0.20
 

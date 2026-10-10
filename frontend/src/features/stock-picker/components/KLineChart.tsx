@@ -92,10 +92,11 @@ interface SeriesRefs {
 }
 
 // ---- 工具函数（不变） ----
+/** 成交量：`volume` 列单位为**股**（非「手」）——协作单 46.0 验收④ */
 function formatVolume(v: number): string {
-  if (v >= 1e8) return `${(v / 1e8).toFixed(3)}亿手`;
-  if (v >= 1e4) return `${(v / 1e4).toFixed(3)}万手`;
-  return `${v.toFixed(0)}手`;
+  if (v >= 1e8) return `${(v / 1e8).toFixed(3)}亿股`;
+  if (v >= 1e4) return `${(v / 1e4).toFixed(3)}万股`;
+  return `${v.toFixed(0)}股`;
 }
 function formatAmount(v: number): string {
   if (v >= 1e8) return `${(v / 1e8).toFixed(3)}亿`;

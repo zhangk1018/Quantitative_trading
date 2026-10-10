@@ -4,7 +4,7 @@
  * 所有格式化函数统一处理 null / NaN / Infinity，返回安全的显示字符串。
  */
 
-import { priceDecimals } from '@/shared/utils/currency';
+import { priceDecimals, formatMarketCapWan } from '@/shared/utils/currency';
 
 /** 格式化普通数值，精度 2 位 */
 export function formatNumber(value: number | null | undefined): string {
@@ -49,11 +49,7 @@ export function calcChangeAmount(
   return close - prevClose;
 }
 
-/** 格式化市值 */
+/** 格式化市值（入参单位=**万元**，统一真源见 currency.formatMarketCapWan；协作单 47.0） */
 export function formatMarketCap(value: number | null | undefined): string {
-  if (value == null || !isFinite(value) || value <= 0) return '--';
-  if (value >= 1e12) return `${(value / 1e12).toFixed(2)}万亿`;
-  if (value >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
-  if (value >= 1e4) return `${(value / 1e4).toFixed(2)}万`;
-  return `${value.toFixed(2)}元`;
+  return formatMarketCapWan(value);
 }

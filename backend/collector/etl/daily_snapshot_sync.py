@@ -227,7 +227,7 @@ def sync_daily_snapshot(session: Session, target_date: str, market: str = 'cn') 
                 COALESCE(b.area, '') AS area,
                 q.trade_date,
                 q.open, q.high, q.low, q.close, q.pre_close, q.volume, q.amount, q.adjust_type,
-                ROUND(q.close - q.pre_close, 2) AS change,
+                ROUND(q.close - q.pre_close, 4) AS change,
                 ROUND((q.close - q.pre_close) / NULLIF(q.pre_close, 0) * 100, 2) AS change_pct,
                 db.pe, db.pe_ttm, db.pb,
                 db.total_mv AS market_cap,

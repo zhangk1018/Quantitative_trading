@@ -28,14 +28,19 @@ describe('formatPriceWithCurrency', () => {
 });
 
 describe('formatMarketCapWithCurrency', () => {
-  it('港元市值带币种（亿）', () => {
-    expect(formatMarketCapWithCurrency(2.19e12, 'HKD')).toBe('HK$ 2.19万亿');
+  // 入参单位=**万元**（协作单 47.0 统一口径：cn/hk/us 一律万元，与后端契约一致）
+  it('港元市值带币种（万元 → 万亿）', () => {
+    expect(formatMarketCapWithCurrency(3.86e8, 'HKD')).toBe('HK$ 3.86万亿');
   });
   it('A股 CNY 无币种前缀', () => {
-    expect(formatMarketCapWithCurrency(5e11, 'CNY')).toBe('5000.00亿');
+    expect(formatMarketCapWithCurrency(5e7, 'CNY')).toBe('5000.00亿');
+  });
+  it('仙股市值（万元 → 亿）', () => {
+    expect(formatMarketCapWithCurrency(857400, 'HKD')).toBe('HK$ 85.74亿');
   });
   it('空值返回 --', () => {
     expect(formatMarketCapWithCurrency(null, 'USD')).toBe('--');
+    expect(formatMarketCapWithCurrency(0, 'USD')).toBe('--');
   });
 });
 

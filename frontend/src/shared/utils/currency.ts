@@ -44,20 +44,37 @@ export function formatPriceWithCurrency(
 }
 
 /**
- * 格式化市值并带币种标识（返回原始货币，不换算）
- * @param value 市值
+ * 格式化市值 —— **单一真源**（协作单 47.0）。
+ *
+ * ⚠️ 入参单位统一为**万元**：后端契约 `market_cap`/`circ_mv`（`stock_daily_snapshot.market_cap`、
+ * `/api/stocks/` 列表与详情、筛选参数 `market_cap_min/max`）cn/hk/us **一律万元**（V020 已把
+ * hk/us 由「元」折算为「万元」；`models.py`/`schemas.py`/`screener_service` unit 均声明万元）。
+ *
+ * 此前前端三分：弹窗/详情按万元（÷1e4→亿）✅、选股表/自选股按「元」阈值 ❌（cn 少 1e4、
+ * 折算后 hk/us 亦少 1e4）——本函数统一两者，禁止再写各处分档。
+ *
+ * @param value 市值（**万元**）
+ * @returns 形如 `2.93万亿` / `85.74亿` / `1234.00万` / `3200.00元`；无效返回 `--`
+ */
+export function formatMarketCapWan(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value <= 0) return '--';
+  if (value >= 1e8) return `${(value / 1e8).toFixed(2)}万亿`;   // 万元 → 万亿元
+  if (value >= 1e4) return `${(value / 1e4).toFixed(2)}亿`;     // 万元 → 亿元
+  if (value >= 1) return `${value.toFixed(2)}万`;
+  return `${(value * 1e4).toFixed(2)}元`;
+}
+
+/**
+ * 格式化市值并带币种标识（返回原始货币，不换算）。入参单位同 `formatMarketCapWan`（**万元**）。
+ * @param value 市值（万元）
  * @param currency 币种代码
  */
 export function formatMarketCapWithCurrency(
   value: number | null | undefined,
   currency?: string,
 ): string {
-  if (value == null || !Number.isFinite(value) || value <= 0) return '--';
+  const body = formatMarketCapWan(value);
+  if (body === '--') return '--';
   const symbol = currency && currency !== 'CNY' ? (CURRENCY_SYMBOL[currency] ?? `${currency} `) : '';
-  let body: string;
-  if (value >= 1e12) body = `${(value / 1e12).toFixed(2)}万亿`;
-  else if (value >= 1e8) body = `${(value / 1e8).toFixed(2)}亿`;
-  else if (value >= 1e4) body = `${(value / 1e4).toFixed(2)}万`;
-  else body = value.toFixed(2);
   return symbol ? `${symbol} ${body}` : body;
 }

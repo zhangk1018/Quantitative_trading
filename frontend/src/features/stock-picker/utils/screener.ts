@@ -1,6 +1,6 @@
 // utils/screener.ts
 
-import { priceDecimals } from '@/shared/utils/currency';
+import { priceDecimals, formatMarketCapWan } from '@/shared/utils/currency';
 
 // ==================== 枚举常量 ====================
 export enum RequestParamKeys {
@@ -191,9 +191,9 @@ export function buildScreeningParams(
 }
 
 // ==================== 格式化工具 ====================
+/** 格式化市值（入参单位=**万元**，统一真源见 currency.formatMarketCapWan；协作单 47.0） */
 export function formatMarketCap(value: number | null | undefined): string {
-  if (value == null || !isFinite(value)) return '-';
-  return `${(value / 10000).toFixed(2)}亿`;
+  return formatMarketCapWan(value);
 }
 
 export function formatAmount(value: number | null | undefined): string {
