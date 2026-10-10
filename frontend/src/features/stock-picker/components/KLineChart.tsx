@@ -31,6 +31,7 @@ import {
 } from '@/lib/indicators/chart-config';
 import type { ConditionEvent } from '@/lib/indicators/condition-detector';
 import { sanitizeNumber, sanitizePct } from '@/lib/indicators/indicators';
+import { priceDecimals } from '@/shared/utils/currency';
 
 // ---- 类型（不变） ----
 export type MainType = 'ma' | 'boll';
@@ -132,6 +133,7 @@ function mkLineSeriesOptions(opts: {
   priceLineVisible?: boolean;
   title?: string;
   visible?: boolean;
+  priceFormat?: LineSeriesOptions['priceFormat'];
 }): DeepPartial<LineSeriesOptions> {
   return {
     color: opts.color,
@@ -142,6 +144,7 @@ function mkLineSeriesOptions(opts: {
     priceLineVisible: opts.priceLineVisible ?? false,
     title: opts.title,
     visible: opts.visible ?? true,
+    priceFormat: opts.priceFormat,
   };
 }
 function mkHistSeriesOptions(opts: {
@@ -185,12 +188,15 @@ const CrosshairOverlay: React.FC<{
   const candleColors = getCandleColors();
   const changeColor = isUp ? candleColors.up : candleColors.down;
   const isRsi = oscType === 'rsi';
+  // 价格类字段（OHLC/涨跌额）按量级自适应小数位：港股/仙股 4 位（协作单 46.0），
+  // 否则碧桂园 0.1830 的浮窗读数会显示成 0.18（K 2026-10-11 反馈）。
+  const pxDecimals = priceDecimals(close);
   const rows: { label: string; value: string; color?: string }[] = [
-    { label: '开盘', value: sanitizeNumber(open) },
-    { label: '最高', value: sanitizeNumber(high), color: candleColors.up },
-    { label: '最低', value: sanitizeNumber(low), color: candleColors.down },
-    { label: '收盘', value: sanitizeNumber(close), color: changeColor },
-    { label: '涨跌额', value: `${isUp ? '+' : ''}${change.toFixed(2)}`, color: changeColor },
+    { label: '开盘', value: sanitizeNumber(open, pxDecimals) },
+    { label: '最高', value: sanitizeNumber(high, pxDecimals), color: candleColors.up },
+    { label: '最低', value: sanitizeNumber(low, pxDecimals), color: candleColors.down },
+    { label: '收盘', value: sanitizeNumber(close, pxDecimals), color: changeColor },
+    { label: '涨跌额', value: `${isUp ? '+' : ''}${change.toFixed(pxDecimals)}`, color: changeColor },
     { label: '涨跌幅', value: sanitizePct(changePct), color: changeColor },
     { label: '成交量', value: formatVolume(info.volume) },
     { label: '成交额', value: formatAmount(info.amount) },
@@ -355,6 +361,19 @@ const KLineChart: React.FC<KLineChartProps> = ({
 
     rawBarsRef.current = chartData.rawBars || [];
 
+    // 价格精度按量级自适应：港股/仙股为 4 位小数（协作单 46.0）。
+    // 此前价格系列未设 priceFormat → lightweight-charts 默认 2 位，
+    // 碧桂园 0.1830 的左侧价格轴会显示成 0.18（K 2026-10-11 反馈）。
+    const minPrice = chartData.candles.length
+      ? Math.min(...chartData.candles.map((c) => (c.low > 0 ? c.low : c.close)))
+      : undefined;
+    const pricePrecision = priceDecimals(minPrice);
+    const priceFormat = {
+      type: 'price' as const,
+      precision: pricePrecision,
+      minMove: pricePrecision === 4 ? 0.0001 : 0.01,
+    };
+
     const chart = createChart(containerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: CHART_THEME.bg },
@@ -402,15 +421,16 @@ const KLineChart: React.FC<KLineChartProps> = ({
       borderDownColor: candleColors.down,
       wickUpColor: candleColors.up,
       wickDownColor: candleColors.down,
+      priceFormat,
     } as DeepPartial<CandlestickSeriesOptions>);
 
-    const ma5 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma5, priceScaleId: 'left', title: 'MA5' }));
-    const ma10 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma10, priceScaleId: 'left', title: 'MA10' }));
-    const ma20 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma20, priceScaleId: 'left', title: 'MA20' }));
-    const ma60 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma60, priceScaleId: 'left', title: 'MA60' }));
-    const bollUpper = chart.addLineSeries(mkLineSeriesOptions({ color: BOLL_COLORS.upper, priceScaleId: 'left', lineStyle: LineStyle.Dashed, title: 'BOLL_U' }));
-    const bollMid = chart.addLineSeries(mkLineSeriesOptions({ color: BOLL_COLORS.mid, priceScaleId: 'left', title: 'BOLL' }));
-    const bollLower = chart.addLineSeries(mkLineSeriesOptions({ color: BOLL_COLORS.lower, priceScaleId: 'left', lineStyle: LineStyle.Dashed, title: 'BOLL_L' }));
+    const ma5 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma5, priceScaleId: 'left', title: 'MA5', priceFormat }));
+    const ma10 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma10, priceScaleId: 'left', title: 'MA10', priceFormat }));
+    const ma20 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma20, priceScaleId: 'left', title: 'MA20', priceFormat }));
+    const ma60 = chart.addLineSeries(mkLineSeriesOptions({ color: MA_COLORS.ma60, priceScaleId: 'left', title: 'MA60', priceFormat }));
+    const bollUpper = chart.addLineSeries(mkLineSeriesOptions({ color: BOLL_COLORS.upper, priceScaleId: 'left', lineStyle: LineStyle.Dashed, title: 'BOLL_U', priceFormat }));
+    const bollMid = chart.addLineSeries(mkLineSeriesOptions({ color: BOLL_COLORS.mid, priceScaleId: 'left', title: 'BOLL', priceFormat }));
+    const bollLower = chart.addLineSeries(mkLineSeriesOptions({ color: BOLL_COLORS.lower, priceScaleId: 'left', lineStyle: LineStyle.Dashed, title: 'BOLL_L', priceFormat }));
 
     const volume = chart.addHistogramSeries(mkHistSeriesOptions({ priceScaleId: 'volume', priceFormat: { type: 'volume', precision: 0, minMove: 1 } }));
 
