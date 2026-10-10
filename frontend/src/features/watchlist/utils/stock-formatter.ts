@@ -4,10 +4,23 @@
  * 所有格式化函数统一处理 null / NaN / Infinity，返回安全的显示字符串。
  */
 
+import { priceDecimals } from '@/shared/utils/currency';
+
 /** 格式化普通数值，精度 2 位 */
 export function formatNumber(value: number | null | undefined): string {
   if (value == null || !isFinite(value)) return '--';
   return value.toFixed(2);
+}
+
+/**
+ * 格式化价格（按量级自适应小数位）。
+ *
+ * 港股/仙股价格为 4 位小数，统一 2 位会把碧桂园 0.1830 截成 0.18、丢失日内信息（协作单 46.0）。
+ * 比值类字段（PE/PB/换手率）仍用 formatNumber，不要改用本函数。
+ */
+export function formatPrice(value: number | null | undefined): string {
+  if (value == null || !isFinite(value)) return '--';
+  return value.toFixed(priceDecimals(value));
 }
 
 /** 格式化涨跌幅，带正负号 */

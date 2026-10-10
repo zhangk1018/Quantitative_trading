@@ -1,5 +1,7 @@
 // utils/screener.ts
 
+import { priceDecimals } from '@/shared/utils/currency';
+
 // ==================== 枚举常量 ====================
 export enum RequestParamKeys {
   Market = 'market',
@@ -202,6 +204,16 @@ export function formatAmount(value: number | null | undefined): string {
 export function formatNumber(value: number | null | undefined, decimals = 2): string {
   if (value == null || !isFinite(value)) return '-';
   return Number(value).toFixed(decimals);
+}
+
+/**
+ * 格式化价格（按量级自适应小数位）。
+ *
+ * 港股/仙股价格为 4 位小数，统一 2 位会把碧桂园 0.1830 截成 0.18、丢失日内信息（协作单 46.0）。
+ */
+export function formatPrice(value: number | null | undefined): string {
+  if (value == null || !isFinite(value)) return '-';
+  return Number(value).toFixed(priceDecimals(value));
 }
 
 // ==================== CSV 导出（修复资源泄漏） ====================

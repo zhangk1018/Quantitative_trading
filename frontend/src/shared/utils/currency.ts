@@ -16,18 +16,29 @@ export const CURRENCY_SYMBOL: Record<string, string> = {
 };
 
 /**
- * 格式化带币种的价格：`HK$ 400.00`、`$ 180.00`、`¥ 10.00`
+ * 按量级自适应价格小数位。
+ *
+ * 港股（含仙股）价格为 4 位小数（如碧桂园 0.1830 / 0.1829 / 0.1831），若统一 `toFixed(2)`
+ * 会退化成 `0.18`、丢失日内信息（协作单 46.0）。≥1 的价位 2 位已足够，<1 的价位给 4 位。
+ */
+export function priceDecimals(value: number | null | undefined): number {
+  if (value == null || !Number.isFinite(value)) return 2;
+  return Math.abs(value) < 1 ? 4 : 2;
+}
+
+/**
+ * 格式化带币种的价格：`HK$ 400.00`、`$ 180.00`、`¥ 10.00`、`HK$ 0.1830`
  * @param value 价格
  * @param currency 币种代码（CNY/HKD/USD）；缺省不前缀
- * @param precision 小数位，默认 2
+ * @param precision 小数位；**缺省按量级自适应**（见 priceDecimals）
  */
 export function formatPriceWithCurrency(
   value: number | null | undefined,
   currency?: string,
-  precision = 2,
+  precision?: number,
 ): string {
   if (value == null || !Number.isFinite(value)) return '--';
-  const num = value.toFixed(precision);
+  const num = value.toFixed(precision ?? priceDecimals(value));
   if (!currency || currency === 'CNY') return `${num}`;
   return `${CURRENCY_SYMBOL[currency] ?? `${currency} `} ${num}`;
 }

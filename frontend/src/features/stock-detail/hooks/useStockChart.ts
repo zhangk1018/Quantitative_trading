@@ -11,6 +11,7 @@ import {
 import type { KLineItem, SignalItem } from '../api';
 import { validateKLineData, validateSignals } from './chartUtils';
 import { getUpDownColors } from '@/shared/contexts/SettingsContext';
+import { priceDecimals } from '@/shared/utils/currency';
 
 interface StockChartIndicators {
   ma5: boolean;
@@ -155,6 +156,17 @@ export function useStockChart({
     });
 
     const { up, down } = getUpDownColors();
+    // 价格精度按量级自适应：港股/仙股为 4 位小数（协作单 46.0），
+    // 默认 2 位会把碧桂园 0.1830 的坐标轴/十字光标读数显示成 0.18。
+    const minPrice = klineData.length > 0
+      ? Math.min(...klineData.map((d) => (d.low > 0 ? d.low : d.close)))
+      : undefined;
+    const pricePrecision = priceDecimals(minPrice);
+    const priceFormat = {
+      type: 'price' as const,
+      precision: pricePrecision,
+      minMove: pricePrecision === 4 ? 0.0001 : 0.01,
+    };
     const candleSeries = chart.addCandlestickSeries({
       upColor: up,
       downColor: down,
@@ -162,6 +174,7 @@ export function useStockChart({
       borderDownColor: down,
       wickUpColor: up,
       wickDownColor: down,
+      priceFormat,
     });
 
     candleSeries.setData(
@@ -205,6 +218,7 @@ export function useStockChart({
         color: ma.color,
         lineWidth: 1,
         title: ma.title,
+        priceFormat,
       });
       series.setData(buildMovingAverage(klineData, ma.period));
     });
