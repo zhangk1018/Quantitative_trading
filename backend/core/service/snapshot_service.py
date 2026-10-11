@@ -144,6 +144,8 @@ class SnapshotService:
         self._load_error: Optional[Exception] = None
         # 状态锁（保护所有共享状态）
         self._state_lock = threading.Lock()
+        # OHLCV 单飞加载锁（协作单 51.0：并发请求只允许一个线程真正 unpickle，其余等待复用）
+        self._ohlcv_load_lock = threading.Lock()
         # 后台刷新互斥锁（防止并发刷新）
         self._reload_mutex = threading.Lock()
         # 防抖时间戳
@@ -353,30 +355,61 @@ class SnapshotService:
         logger.info("✅ 缓存加载完成：%d 条快照，耗时 %.2fs",
                     len(snapshot), elapsed)
 
+        # 启动后台预热 OHLCV（协作单 51.0）：
+        # 单飞守卫解决了「并发各自解包」的惊群，但**冷启动单次**解包 231MB 仍需数十秒
+        # （实测 63s），一旦落在用户请求上仍会触发前端 20s 超时。故在快照加载完成后
+        # **延迟 10s** 于后台单飞预热：既错开与快照加载的内存峰值（原注释担心的 Jetsam），
+        # 又让首次业务请求直接命中缓存。失败不影响请求路径（仍会按需单飞加载）。
+        if not getattr(self, '_ohlcv_preheat_started', False) and not os.environ.get('PYTEST_CURRENT_TEST'):
+            self._ohlcv_preheat_started = True
+            threading.Thread(target=self._preheat_ohlcv, daemon=True).start()
+
+    def _preheat_ohlcv(self) -> None:
+        """延迟后台预热 OHLCV 缓存（协作单 51.0）。"""
+        time.sleep(10)
+        try:
+            self._ensure_ohlcv_loaded()
+        except Exception as e:
+            logger.warning("OHLCV 预热失败（首次请求将按需单飞加载）：%s", e)
+
     # ================================================================
     # OHLCV 延迟加载（首次 API 请求时按需加载，避免启动内存峰值）
     # ================================================================
     def _ensure_ohlcv_loaded(self) -> None:
-        """确保 OHLCV 数据已加载，未加载时从缓存文件按需加载"""
+        """确保 OHLCV 数据已加载，未加载时从缓存文件按需加载（**单飞**，协作单 51.0）。
+
+        修复背景：原实现只在 `_state_lock` 内判 `if self._ohlcv_cache: return`，随后
+        **立即释放锁**再 `pd.read_pickle(OHLCV_CACHE_FILE)`。缓存被刷新清空后，并发请求
+        （2026-10-11 实测 6 路同时）会各自把 231MB 的 `ohlcv.pkl` 完整 unpickle 一遍，
+        叠加外部卷冷读与 GIL 争抢，导致**整个后端**（含 `/api/stocks/`、`/api/meta`、
+        `/api/auth`）被拖到分钟级，前端 20s AbortController 超时报「请求超时，请重试」。
+        现改为单飞：加载期间其他调用在锁上阻塞等待，加载完成后直接复用，不再重复解包。
+        """
         with self._state_lock:
             if self._ohlcv_cache:
                 return  # 已加载
-        # 检查缓存文件是否存在
-        if not os.path.exists(OHLCV_CACHE_FILE):
-            logger.warning("OHLCV 缓存文件不存在，跳过延迟加载")
-            return
-        if not self._verify_signature(OHLCV_CACHE_FILE):
-            logger.warning("OHLCV 缓存文件签名无效，跳过延迟加载")
-            return
-        t0 = time.time()
-        logger.info("📊 延迟加载 OHLCV 数据...")
-        with open(OHLCV_CACHE_FILE, "rb") as f:
-            ohlcv = pd.read_pickle(f)
-        with self._state_lock:
-            self._ohlcv_cache = ohlcv
-        elapsed = time.time() - t0
-        logger.info("✅ OHLCV 延迟加载完成：%d 只股票，耗时 %.2fs",
-                    len(ohlcv), elapsed)
+        # 单飞：只允许一个线程真正加载，其余等待其完成后复用
+        with self._ohlcv_load_lock:
+            # 双检：等待期间可能已被其他线程加载完成
+            with self._state_lock:
+                if self._ohlcv_cache:
+                    return
+            # 检查缓存文件是否存在
+            if not os.path.exists(OHLCV_CACHE_FILE):
+                logger.warning("OHLCV 缓存文件不存在，跳过延迟加载")
+                return
+            if not self._verify_signature(OHLCV_CACHE_FILE):
+                logger.warning("OHLCV 缓存文件签名无效，跳过延迟加载")
+                return
+            t0 = time.time()
+            logger.info("📊 延迟加载 OHLCV 数据（单飞，其余并发请求等待复用）...")
+            with open(OHLCV_CACHE_FILE, "rb") as f:
+                ohlcv = pd.read_pickle(f)
+            with self._state_lock:
+                self._ohlcv_cache = ohlcv
+            elapsed = time.time() - t0
+            logger.info("✅ OHLCV 延迟加载完成：%d 只股票，耗时 %.2fs",
+                        len(ohlcv), elapsed)
 
     def _save_cache(self, count: int) -> None:
         os.makedirs(CACHE_DIR, exist_ok=True)
