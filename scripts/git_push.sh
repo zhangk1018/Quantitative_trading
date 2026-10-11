@@ -18,6 +18,8 @@ set -eo pipefail
 # 协议: SSH（需 K 提前撤销暴露的 PAT + 切换 git remote 为 git@github.com:...）
 #
 # 变更历史:
+#   V1.3.0 chore(git): 新增 GIT_OPTIONAL_LOCKS=0（禁止 status 机会性写 index）+ 陈旧 index.lock 自愈
+#                      （>60s 且无 git 进程才移除，防并发误删）
 #   V1.2.0 chore(git): 上传排除目录增加 tests/ docs/（IGNORE_DIRS + git add -u pathspec 双路），
 #                      且忽略目录由子串匹配改为**锚定项目根**（修复误伤 backend/tests、frontend/src/data 等嵌套目录）
 #   V1.1.6 fix(git): 修复 R/D 状态解析失败（用 git add -u 替代 substr + git add）
@@ -44,6 +46,26 @@ IGNORE_FILE_SUFFIXES=(".bak" ".backup" ".old" ".tmp" ".swp" "~")
 
 # 切换到项目根目录
 cd "$(dirname "$0")/.." || exit 1
+
+# 0. 防并发与陈旧锁自愈（2026-10-11 排查结论）
+#    - GIT_OPTIONAL_LOCKS=0：禁止 `git status/diff/log` 等命令"机会性写 index"（刷新 stat 缓存）而短暂加锁
+#      —— 实测本仓库 .git/index mtime 与残留 index.lock 时间高度相关，这是锁来源之一（VSCode 亦如此设置）
+#    - 陈旧锁自愈：命令在**持有 index.lock 期间被中断**（终端复用/超时被杀）会残留 0 字节锁。
+#      仅当「锁存在 >60s 未变动」**且**「无任何 git 进程」时判定陈旧并移除；否则提示并退出，绝不误删并发中的锁。
+export GIT_OPTIONAL_LOCKS=0
+LOCK_FILE=".git/index.lock"
+if [ -e "$LOCK_FILE" ]; then
+    LOCK_MTIME=$(stat -f %m "$LOCK_FILE" 2>/dev/null || echo 0)
+    LOCK_AGE=$(( $(date +%s) - LOCK_MTIME ))
+    if [ "$LOCK_AGE" -gt 60 ] && ! pgrep -x git >/dev/null 2>&1; then
+        echo "⚠️  检测到陈旧 $LOCK_FILE（${LOCK_AGE}s 未变动、无 git 进程在跑）→ 自动清理后继续"
+        rm -f "$LOCK_FILE" || { echo "❌ 清理失败，请手工删除 $LOCK_FILE 后重试"; exit 1; }
+    else
+        echo "❌ $LOCK_FILE 存在（${LOCK_AGE}s；当前 git 进程：$(pgrep -x git | tr '\n' ' '))"
+        echo "   疑似有并发的 git 操作（IDE 的 Git 面板/另一个终端）正在提交，请稍后重试。"
+        exit 1
+    fi
+fi
 
 # 1. HTTPS+PAT 安全风险告警（保留原有逻辑，待切换SSH后自动消失）
 # 微调3: REMOTE_URL 读出后立即脱敏，仅展示协议+用户名+仓库路径
