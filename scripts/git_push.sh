@@ -18,6 +18,8 @@ set -eo pipefail
 # 协议: SSH（需 K 提前撤销暴露的 PAT + 切换 git remote 为 git@github.com:...）
 #
 # 变更历史:
+#   V1.2.0 chore(git): 上传排除目录增加 tests/ docs/（IGNORE_DIRS + git add -u pathspec 双路），
+#                      且忽略目录由子串匹配改为**锚定项目根**（修复误伤 backend/tests、frontend/src/data 等嵌套目录）
 #   V1.1.6 fix(git): 修复 R/D 状态解析失败（用 git add -u 替代 substr + git add）
 #   V1.1.4 fix(git): 修复中文文件名八进制转义（printf '%b' 解码）
 #   V1.1.3 chore(git): 敏感文件名 word boundary + 备份后缀过滤 + read 输入加固
@@ -26,8 +28,10 @@ set -eo pipefail
 # ============================================
 
 # ===================== 可配置项 =====================
-# 需自动排除的目录，后续可直接在此数组扩展
-IGNORE_DIRS=("temp/" "logs/" "data/" "postgresql_data/")
+# 需自动排除的目录（**锚定项目根**，不再子串匹配），后续可直接在此数组扩展
+#   tests/ : 正式测试用例（K 2026-10-11 要求不上传）
+#   docs/  : 文档 / 日报 / 协作单（K 2026-10-11 要求不上传）
+IGNORE_DIRS=("tests/" "temp/" "docs/" "logs/" "data/" "postgresql_data/")
 # 允许直接推送的主分支，其他分支需二次确认
 ALLOW_PUSH_BRANCH=("main" "master")
 # 敏感文件名完整匹配（word boundary 正则，精确匹配敏感文件而非子串）
@@ -70,9 +74,11 @@ ALL_UNTRACKED=$(git -c core.quotepath=false status --porcelain | grep "^??" || t
 IGNORED_UNTRACKED=""
 NON_IGNORED_UNTRACKED="$ALL_UNTRACKED"
 for dir in "${IGNORE_DIRS[@]}"; do
-    TMP_IGNORE=$(echo "$NON_IGNORED_UNTRACKED" | grep "$dir" || true)
+    # 锚定匹配：porcelain 行形如 "?? tests/xx"，故用 ^.{3}<dir> 只匹配**项目根**下的该目录
+    # （原实现为子串 grep，会把 backend/tests/、frontend/src/data/ 等嵌套目录一并误排除）
+    TMP_IGNORE=$(echo "$NON_IGNORED_UNTRACKED" | grep -E "^.{3}${dir}" || true)
     IGNORED_UNTRACKED+="$TMP_IGNORE"$'\n'
-    NON_IGNORED_UNTRACKED=$(echo "$NON_IGNORED_UNTRACKED" | grep -v "$dir" || true)
+    NON_IGNORED_UNTRACKED=$(echo "$NON_IGNORED_UNTRACKED" | grep -vE "^.{3}${dir}" || true)
 done
 
 # 过滤备份/临时后缀文件（问题2修复）
@@ -221,7 +227,8 @@ add_files_from_list() {
 # 已跟踪变更（修改/删除/重命名）由 git add -u 一次性处理（V1.1.6 修复 R/D bug）
 # 排除 data/ 目录：其下文件（parquet 快照、数据库dump等）即使曾被追踪，删除/修改也不入库
 if [ "$HAVE_COMMIT_CHANGES" = true ]; then
-    git add -u -- . ':(exclude)data/'
+    git add -u -- . ':(exclude)data/' ':(exclude)postgresql_data/' \
+        ':(exclude)tests/' ':(exclude)temp/' ':(exclude)docs/' ':(exclude)logs/'
     # 未跟踪文件（新文件）由 add_files_from_list 处理
     add_files_from_list "$NON_IGNORED_UNTRACKED"
 
