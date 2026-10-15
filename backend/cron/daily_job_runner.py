@@ -38,6 +38,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))  # 显式加载
 sys.path.insert(0, os.path.join(BASE_DIR, "backend"))
 from utils.logger import IsoFormatter, LOG_FORMAT  # noqa: E402
 from utils.log_retention import cleanup_cron_logs  # noqa: E402
+from utils.alerting import append_alerts  # noqa: E402
 
 def _get_db_engine():
     """构建 SQLAlchemy Engine"""
@@ -149,6 +150,94 @@ def is_retryable_error(exit_code: int, stderr: str) -> bool:
     for keyword in fatal_keywords:
         if keyword in stderr: return False
     return True
+
+
+# ===================== 阶段门禁 + 行数骤降告警（协作单 56.0） =====================
+# 背景：2026-10-15 阶段 2（daily_import）**静默死亡**（当日日线 0 落库、台账卡 running、stdout
+# 因全缓冲随进程被杀而丢失），阶段 3 仍照跑并全部报成功 → 对近乎空的数据算指标/宽表并回写
+# 成功状态，形成「假成功静默丢一天 A 股数据」（当日 cn 仅 26 行 vs 近 20 日中位数 ~5211）。
+GATE_MARKET = 'cn'
+GATE_MIN_RATIO = 0.90          # 当日覆盖数 / 近 N 日中位数
+GATE_LOOKBACK = 20
+ROWS_COLLAPSE_MIN_RATIO = 0.50  # 任务行数 / 近 N 次中位数（仅告警，不阻断）
+# 覆盖量稳定、可用于「骤降」判定的任务白名单（排除 signal_precompute 等天然波动大的任务）
+ROWS_COLLAPSE_TASKS = {'daily_import', 'daily_sync', 'fill_missing_data',
+                       'indicators_compute', 'parquet_export'}
+
+
+def _market_daily_median(engine, before_date: str, lookback: int = GATE_LOOKBACK) -> float:
+    """近 `lookback` 个交易日的 cn 日线覆盖数中位数（不含 `before_date` 当天）；无基线返回 0。"""
+    sql = """
+        SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY n)
+        FROM (
+            SELECT trade_date, COUNT(DISTINCT code) AS n
+            FROM stock_quotes
+            WHERE market = :m AND cycle = '1d' AND trade_date < :d
+            GROUP BY trade_date
+            ORDER BY trade_date DESC
+            LIMIT :k
+        ) t
+    """
+    with engine.connect() as conn:
+        v = conn.execute(text(sql), {"m": GATE_MARKET, "d": before_date, "k": lookback}).scalar()
+    return float(v) if v is not None else 0.0
+
+
+def check_coverage_gate(engine, data_date: str = None) -> tuple:
+    """阶段 3 前置门禁：消费上游产物前校验「当日该市场入库覆盖」是否达近 20 日中位数的 90%。
+
+    数据不足即**拒绝执行**（非零退出）并 CRITICAL 告警，避免「上游没产出、下游照跑报成功」。
+    应急开关：环境变量 `CN_STAGE3_GATE=0` 可临时关闭；查询/基线不可用时按**不阻断**处理。
+
+    Returns:
+        (passed: bool, message: str)
+    """
+    if os.environ.get('CN_STAGE3_GATE', '1') == '0':
+        return True, '门禁已通过环境变量 CN_STAGE3_GATE=0 关闭'
+    d = data_date or get_latest_trade_date(engine)
+    try:
+        with engine.connect() as conn:
+            n = conn.execute(text(
+                "SELECT COUNT(DISTINCT code) FROM stock_quotes "
+                "WHERE market = :m AND cycle = '1d' AND trade_date = :d"
+            ), {"m": GATE_MARKET, "d": d}).scalar()
+        n = int(n or 0)
+        baseline = _market_daily_median(engine, str(d)[:10])
+    except Exception as e:  # 查询异常时不阻断（下游任务本身也需要 DB，会自行失败）
+        return True, f'门禁查询异常（{type(e).__name__}: {e}），按不阻断处理'
+    if baseline <= 0:
+        return True, f'无近 {GATE_LOOKBACK} 日基线（可能为新库），跳过门禁'
+    ratio = n / baseline
+    msg = (f'A股 {str(d)[:10]} 入库 {n} 只 / 近 {GATE_LOOKBACK} 日中位数 {baseline:.0f} '
+           f'= {ratio:.1%}（阈值 {GATE_MIN_RATIO:.0%}）')
+    return ratio >= GATE_MIN_RATIO, msg
+
+
+def check_task_rows_collapse(engine, task_name: str, stage: int) -> str:
+    """任务行数骤降**告警**（不阻断）：本次 `rows_affected` < 近 N 次中位数一半时返回告警文案。
+
+    用于「阶段 2 跑完但只写入极少量行」这类**假成功**场景（本次 26 行即属此列）。
+    """
+    sql = """
+        SELECT rows_affected FROM task_run_log
+        WHERE task_name = :t AND stage = :s AND status = 'success'
+          AND rows_affected IS NOT NULL AND rows_affected > 0
+        ORDER BY id DESC LIMIT :k
+    """
+    try:
+        with engine.connect() as conn:
+            rows = [int(r[0]) for r in conn.execute(
+                text(sql), {"t": task_name, "s": stage, "k": GATE_LOOKBACK}).fetchall()]
+    except Exception:
+        return None
+    if len(rows) < 3:            # 样本不足不判（避免新任务误报）
+        return None
+    cur, history = rows[0], sorted(rows[1:])
+    median = history[len(history) // 2]
+    if median <= 0 or cur >= median * ROWS_COLLAPSE_MIN_RATIO:
+        return None
+    return (f'[{task_name}] 行数骤降：本次 {cur} 行 / 近 {len(history)} 次中位数 {median} 行'
+            f' = {cur / median:.1%}（阈值 {ROWS_COLLAPSE_MIN_RATIO:.0%}），疑似上游未产出')
 
 # ===================== 跨平台文件锁 =====================
 class FileLock:
@@ -449,6 +538,12 @@ def run_task_chain(task_logger: TaskLogger, engine, tasks: list, stage: int) -> 
         success = run_task(task, task_logger, stage=stage, engine=engine)
         if success:
             completed += 1
+            # 行数骤降告警（协作单 56.0，仅告警不阻断）：覆盖量稳定任务的行数跌破近 N 次中位数一半
+            if task_name in ROWS_COLLAPSE_TASKS:
+                _collapse = check_task_rows_collapse(engine, task_name, stage)
+                if _collapse:
+                    print(f"  ⚠️ {_collapse}")
+                    append_alerts([{'level': 'CRITICAL', 'market': GATE_MARKET, 'message': _collapse}])
         else:
             failed_task = task_name
             print(f"\n!!! 任务链中断：{failed_task} 失败 !!!")
@@ -538,6 +633,17 @@ def main():
                     icon = "▶️"
                 print(f"  [{i}/{len(tasks)}] {icon} {task['name']} (当前状态: {status})")
             sys.exit(0)
+
+        # 阶段 3 前置门禁（协作单 56.0）：上游未产出当日数据时拒绝执行，避免「对空数据算下游并报成功」
+        if current_stage == STAGE_DAILY_COMPUTE:
+            _gate_ok, _gate_msg = check_coverage_gate(engine, task_logger.data_date)
+            if _gate_ok:
+                print(f"[INFO] 阶段3 前置门禁通过：{_gate_msg}")
+            else:
+                _alert = f"[阶段3 门禁] A股当日数据未产出，已拒绝执行下游任务（防假成功）：{_gate_msg}"
+                print(f"[ERROR] {_alert}")
+                append_alerts([{'level': 'CRITICAL', 'market': GATE_MARKET, 'message': _alert}])
+                sys.exit(2)
 
         # 检查是否该阶段全部任务已完成（忽略批次）
         success_cnt, total, has_bad = get_last_batch_status(engine, task_logger.data_date, tasks, current_stage)
