@@ -737,24 +737,30 @@ def _snapshot_quotes_df(code: str, r: pd.Series, anchor_adj_close: float, anchor
 
 
 def import_hk_snapshot_daily(conn: psycopg2.extensions.connection, src: AkShareDataSource,
-                             dry_run: bool = False) -> int:
+                             dry_run: bool = False,
+                             snapshot: Optional[pd.DataFrame] = None) -> Dict[str, int]:
     """「当日增量」批量快照导入：一次拉取全市场当日 OHLCV，锚定库中后复权序列换算写入。
 
-    仅在增量窗口只含最新单日时调用（见 run_incremental）。对无复权锚点（新股）或疑似除权
-    （昨收与库中最近 raw_close 偏离）的股票，静默回退 `resolve_one` 逐只拉取，保证复权口径不被破坏。
+    由 run_incremental 在「窗口内无港股交易日缺口」或「跨日窗口的最新交易日」时调用。
+    对无复权锚点（新股）或疑似除权（昨收与库中最近 raw_close 偏离）的股票，静默回退
+    `resolve_one` 逐只拉取，保证复权口径不被破坏。
 
     Args:
         conn: 数据库连接（dry_run 时可为 None；批量换算需穿库取锚点）
         src: AkShare 数据源适配器
         dry_run: 试运行模式（拉取打印、不落库）
+        snapshot: **已拉取**的全市场快照（协作单 53.0）；为 None 时自行拉取。
+            run_incremental 单次拉取后全程复用，避免同一端点一次运行内被连发 3 次
+            （2026-10-15 事故：连发 3 次快照请求，其中一次瞬时失败即静默回退逐只空转 3 小时）。
 
     Returns:
         dict：{snap_ok: 快照是否成功拉取, direct: 直写数, fallback: 回退数, failed: 失败数}
-        snap_ok=False（快照接口失败/空）时 run_incremental 应沿用逐只路径。
+        snap_ok=False（快照接口失败/空）时调用方须**快速失败**（非零退出，交 runner 重试），
+        不得回退逐只路径——逐只源对当日窗口无数据，回退只会空转数小时且 exit=0。
     """
-    snap = src.download_hk_snapshot_all()
+    snap = snapshot if snapshot is not None else src.download_hk_snapshot_all()
     if snap is None or snap.empty:
-        logger.warning('⚠️ 批量快照拉取为空/失败，跳过（将回落原逐只增量路径）')
+        logger.warning('⚠️ 批量快照拉取为空/失败（当日数据无法落库，将由调用方快速失败待重试）')
         return {'snap_ok': False, 'direct': 0, 'fallback': 0, 'failed': 0}
 
     direct, fallback, failed, exright = 0, 0, 0, 0
@@ -905,7 +911,33 @@ def run_init(src: AkShareDataSource, conn: psycopg2.extensions.connection,
     return stats
 
 
-def _probe_src_latest(src: AkShareDataSource, end: str) -> str:
+def _snapshot_latest_date(snap: Optional[pd.DataFrame]) -> Optional[str]:
+    """取全市场快照的最新交易日（ISO 字符串）；快照缺失/为空/索引无效返回 None。
+
+    供 `_probe_src_latest` 与 run_incremental 的「快照源是否可用」判定共用（协作单 53.0）。
+    """
+    if snap is None or getattr(snap, 'empty', True):
+        return None
+    latest = snap.index.max()
+    if latest is None or pd.isna(latest):
+        return None
+    return pd.to_datetime(latest).date().isoformat()
+
+
+def _fail_step(message: str) -> None:
+    """当日增量无法完成时**快速失败**：落汇总日志并以非零退出码中止（协作单 53.0 ②）。
+
+    旧行为在快照不可用/为空时静默回退逐只路径，而逐只源对当日窗口基本无数据 → 空转
+    数小时且 `exit=0`（不触发 hk_job_runner 的 3 次重试与 alerts 告警），表现为静默丢
+    一天数据。改为非零退出后由 runner 5 分钟后重试，数据源恢复即可自动补齐。
+    """
+    logger.error(f"❌ {message}")
+    summary_logger.error(f"❌ incremental 中止: {message}")
+    raise SystemExit(3)
+
+
+def _probe_src_latest(src: AkShareDataSource, end: str,
+                      snapshot: Optional[pd.DataFrame] = None) -> str:
     """探测数据源实际最新交易日，作为增量窗口终点（不超过 end）。
 
     生产港股**当日增量**的数据路径为批量快照源 `download_hk_snapshot_all`
@@ -919,17 +951,19 @@ def _probe_src_latest(src: AkShareDataSource, end: str) -> str:
     Args:
         src: AkShare 数据源适配器
         end: 期望窗口终点（通常是今天）
+        snapshot: **已拉取**的全市场快照（协作单 53.0）；为 None 时自行拉取。
+            run_incremental 单次拉取后传入复用，避免同一端点一次运行内被连发 3 次
+            （2026-10-15 事故根因）。
 
     Returns:
         实际窗口终点（min(end, 数据源最新交易日)）；探针失败时保守沿用 end。
     """
-    snap = src.download_hk_snapshot_all()
-    if snap is None or getattr(snap, 'empty', True) \
-            or snap.index.max() is None or pd.isna(snap.index.max()):
+    snap = snapshot if snapshot is not None else src.download_hk_snapshot_all()
+    latest_str = _snapshot_latest_date(snap)
+    if latest_str is None:
         logger.warning("⚠️ 批量快照探针不可用，无法探测最新日期，沿用窗口终点 "
                        f"{end}")
         return end
-    latest_str = pd.to_datetime(snap.index.max()).date().isoformat()
     if latest_str < end:
         logger.warning(f"⚠️ 数据源最新日期 {latest_str}（批量快照）早于今天 {end}，"
                        f"增量窗口终点调整为 {latest_str}；数据源更新后重跑可补回缺口")
@@ -1009,54 +1043,68 @@ def _window_coverage_ok(conn: psycopg2.extensions.connection, days: Optional[Set
     return True
 
 
-def _window_is_single_day(src: AkShareDataSource, start: str, end: str) -> bool:
-    """批量快照可用性判定：增量窗口是否仅覆盖最新单交易日 `end`。
+def _loop_per_stock(conn: psycopg2.extensions.connection, src: AkShareDataSource,
+                    codes: List[str], start: str, end_excl: str, window_key: str,
+                    stats: Dict[str, Any], dry_run: bool = False) -> None:
+    """逐只拉取 [start, end_excl) 区间日线并写库（统计累加进 `stats`，末尾清空断点游标）。
 
-    ak.stock_hk_spot() 只返回最新一天快照，故仅当窗口内除最新交易日外没有任何其他
-    交易日（即 last_sync 到数据源最新之间无待补缺口）时才启用批量路径；若期间跨了
-    交易日但未同步（存在缺口），必须回退逐只拉取，避免静默跳过中间交易日造成数据缺口。
-
-    统一以批量快照源 + **港股交易日历**判定（逐只日线源滞后一天不可用）：
-    - 快照最新交易日 == end，且 [start, end) 内不含港股交易日（仅周末/港股假日可跳过）→ 启用批量
-    - 快照不可用 / 最新日 ≠ end / 窗口内存在港股交易日缺口 / 日历探测失败 → 保守逐只
-
-    Args:
-        src: AkShare 数据源适配器
-        start: 增量起点（YYYY-MM-DD，上轮 last_sync_date+1 或回溯兜底）
-        end: 数据源最新交易日（YYYY-MM-DD）
-
-    Returns:
-        是否可在本窗口启用批量快照快速对齐
+    仅用于两类场景（协作单 53.0）：
+    ① 跨日窗口的**缺口交易日**补齐（`end_excl` = 窗口终点 `end`，即不含最新交易日）；
+    ② dry-run / `--limit` 调试路径（`end_excl` = end+1，含最新交易日）。
+    生产路径的**最新交易日**不再走此路径：新浪逐只日线对当日窗口基本无数据（滞后一天），
+    旧实现整窗回退逐只会空转数小时且 0 入库（2026-10-15 事故）。
     """
-    snap = src.download_hk_snapshot_all()
-    if snap is None or getattr(snap, 'empty', True) \
-            or snap.index.max() is None or pd.isna(snap.index.max()):
-        logger.warning("⚠️ 批量窗口判定探针不可用，保守沿用逐只增量路径")
-        return False
-    latest = pd.to_datetime(snap.index.max()).date().strftime('%Y-%m-%d')
-    if latest != end:
-        logger.warning(f"⚠️ 批量快照最新交易日 {latest} ≠ 窗口终点 {end}，"
-                       f"需要补历史缺口，沿用逐只增量路径")
-        return False
-    gap_days = _hk_trading_days_in_window(src, start, end)
-    if gap_days is None:
-        logger.warning("⚠️ 港股交易日历探针不可用，无法判定窗口缺口，保守沿用逐只增量路径")
-        return False
-    if gap_days:
-        logger.warning(f"⚠️ 增量窗口 {start}~{end} 内存在港股交易日 "
-                       f"{sorted(str(d) for d in gap_days)}（需补历史缺口），沿用逐只增量路径")
-        return False
-    logger.info(f"⚡ 批量快照已覆盖最新交易日 {latest} 且窗口内无待补缺口，可启用批量快照")
-    return True
+    for i, code in enumerate(codes, 1):
+        try:
+            q, a, max_date = import_one(src, conn if not dry_run else None, code,
+                                        start=start, end=end_excl, dry_run=dry_run)
+            if q or a:
+                stats['success'] += 1
+                stats['quotes'] += q
+                stats['adj_factor'] += a
+                if max_date and (stats['max_trade_date'] is None or max_date > stats['max_trade_date']):
+                    stats['max_trade_date'] = max_date
+            else:
+                stats['fail'] += 1
+        except Exception as e:
+            stats['fail'] += 1
+            logger.error(f"  {code}: 导入失败: {e}")
+        # 限流：每个标处理后随机休眠，降低数据源请求频率（防「拉取为空」限流）
+        rate_limit_sleep(src.cfg)
+        # 断点续传：回写当前已处理游标（中断后可从其之后继续；窗口随游标一并落库）
+        if not dry_run:
+            set_market_last_processed_code(conn, MARKET, code, window=window_key)
+        if i % 50 == 0:
+            logger.info(f"  进度 {i}/{len(codes)}")
+    if not dry_run:
+        # 整批遍历完，清空游标（本轮目标已处理完，下次运行重新从窗口起点续日期窗口）
+        set_market_last_processed_code(conn, MARKET, None, window=window_key)
 
 
 def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection,
                     limit: Optional[int] = None, dry_run: bool = False) -> Dict[str, int]:
-    """增量导入（从 etl_control.last_sync_date+1 到今天）。Returns: 统计 dict。"""
+    """增量导入（从 etl_control.last_sync_date+1 到今天）。Returns: 统计 dict。
+
+    窗口取数方案（协作单 53.0）：
+    - **单次拉取**全市场快照并全程复用（窗口终点探测 + 缺口判定 + 落库），消除旧实现
+      同一端点连发 3 次导致的瞬时失败（2026-10-15 事故根因）。
+    - 窗口内**无**港股交易日缺口 → 仅用快照对齐最新交易日（快速路径）。
+    - 窗口内**存在**缺口交易日（上轮失败/跨周末补数）→ **缺口日走逐只 + 最新日走快照拼接**，
+      不再整窗逐只（逐只源对当日窗口基本无数据，会空转数小时）。
+    - 快照源不可用 / 交易日历不可用 / 快照零落库 → **快速失败（非零退出）**，交
+      hk_job_runner 5 分钟后重试（旧行为静默回退逐只、空转数小时且 `exit=0`）。
+    """
     today = date.today().isoformat()
+    use_snapshot_path = (not dry_run) and limit is None
+    # 全市场快照单次拉取，贯穿「窗口终点探测 → 缺口判定 → 落库」全程复用：旧实现同一
+    # 端点在一个运行内连发 3 次（_probe_src_latest / _window_is_single_day /
+    # import_hk_snapshot_daily），任一次瞬时失败即静默回退逐只（2026-10-15 事故）。
+    snapshot = src.download_hk_snapshot_all() if use_snapshot_path else None
+    if use_snapshot_path and _snapshot_latest_date(snapshot) is None:
+        _fail_step('批量快照源不可用（拉取为空/超时）：当日增量无可用数据源')
     # 探测数据源实际最新交易日：新浪港股日线收盘后延迟更新，仍以 date.today() 为终点
     # 会整批「拉取为空」空跑，故降级为数据源最新日期（探针失败时保守沿用 today）。
-    end = _probe_src_latest(src, today)
+    end = _probe_src_latest(src, today, snapshot=snapshot)
     last_str = get_last_sync_date(conn) if not dry_run else None
     if last_str:
         start = (datetime.strptime(last_str, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -1078,7 +1126,6 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
     if limit:
         codes = codes[:limit]
 
-    cfg = src.cfg
     # 断点续传：加载游标，跳过已处理的标的（仅当游标属同一日期窗口）
     if not dry_run:
         last_proc = get_market_last_processed_code(conn, MARKET, window=window_key)
@@ -1091,63 +1138,45 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
     stats = {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0, 'max_trade_date': None}
     logger.info(f"🚀 [incremental] 增量导入 {len(codes)} 只港股，区间 {start} ~ {end}")
 
-    # ===== 批量快照加速（当日单日快速对齐）=====
-    # ak.stock_hk_spot() 一次返回全市场当日快照，可把逐只 2802 次请求压缩为 1 次；
-    # 但快照仅覆盖最新交易单日，故仅当增量窗口只含最新交易日（无待补缺口）时启用，
-    # 否则必须沿用逐只路径，避免静默跳过中间交易日造成数据缺口。
-    if not dry_run and limit is None and _window_is_single_day(src, start, end):
-        batch = import_hk_snapshot_daily(conn, src, dry_run=False)
-        if batch['snap_ok']:
-            # 快照已拉取：direct 为快照直写、fallback 为其内部已用 resolve_one 回退落库，
-            # 二者都已覆盖最新单日 → 整批对齐完成，无需再走逐只循环。
-            covered = batch['direct'] + batch['fallback']
-            logger.info(f"✅ 批量快照对齐完成: 直写 {batch['direct']}, "
-                        f"内部回退 {batch['fallback']}, 覆盖 {covered} 只")
-            if batch['direct'] > 0:
-                stats['success'] += batch['direct'] + batch['fallback']
-                stats['quotes'] += batch['direct']
-            stats['max_trade_date'] = end
-            # 整批处理完，清断点游标并回写增量进度至数据源最新交易日
-            set_market_last_processed_code(conn, MARKET, None, window=window_key)
-            if stats['quotes'] > 0:
-                # 覆盖度校验：快照仅覆盖 end 单日，仍须确认当日接近全市场（防部分缺失被当作已同步）
-                if _window_coverage_ok(conn, {datetime.strptime(end, '%Y-%m-%d').date()}):
-                    set_last_sync_date(conn, end)
-                    logger.info(f"📝 批量快照对齐后 last_sync_date 回写至 {end}")
-                else:
-                    logger.warning(f"⚠️ 批量快照当日覆盖度不达标，不推进 last_sync_date"
-                                   f"（保持 {last_str}），下次增量将重跑窗口补缺口")
-            else:
-                logger.warning('⚠️ 批量快照直写为空（全部回退亦无价），保留原 last_sync_date')
-            logger.info(f"✅ incremental(批量) 完成: 直写 {batch['direct']}")
-            summary_logger.info(f"✅ incremental(批量) 完成: 直写 {batch['direct']}")
-            return stats
-        logger.warning('⚡ 批量快照接口未返回数据，回退逐只增量路径')
-
-    for i, code in enumerate(codes, 1):
-        try:
-            q, a, max_date = import_one(src, conn if not dry_run else None, code, start=start, end=end_excl, dry_run=dry_run)
-            if q or a:
-                stats['success'] += 1
-                stats['quotes'] += q
-                stats['adj_factor'] += a
-                if max_date and (stats['max_trade_date'] is None or max_date > stats['max_trade_date']):
-                    stats['max_trade_date'] = max_date
-            else:
-                stats['fail'] += 1
-        except Exception as e:
-            stats['fail'] += 1
-            logger.error(f"  {code}: 导入失败: {e}")
-        # 限流：每个标处理后随机休眠，降低数据源请求频率（防「拉取为空」限流）
-        rate_limit_sleep(cfg)
-        # 断点续传：回写当前已处理游标（中断后可从其之后继续；窗口随游标一并落库）
-        if not dry_run:
-            set_market_last_processed_code(conn, MARKET, code, window=window_key)
-        if i % 50 == 0:
-            logger.info(f"  进度 {i}/{len(codes)}")
-    if not dry_run:
-        # 整批遍历完，清空游标（本轮目标已处理完，下次运行重新从 batch 起点续日期窗口）
+    # ===== 快照（+ 缺口拼接）路径：协作单 53.0 =====
+    # 全市场快照已在函数开头单次拉取并复用，因此此处不再触发新的同端点请求。
+    if use_snapshot_path:
+        gap_days = _hk_trading_days_in_window(src, start, end)
+        if gap_days is None:
+            _fail_step('港股交易日历不可用，无法判定窗口缺口（防误判为无缺口而静默跳过交易日）')
+        if gap_days:
+            logger.warning(f"⚠️ 窗口 {start}~{end} 内存在港股交易日缺口 "
+                           f"{sorted(str(d) for d in gap_days)}："
+                           f"缺口日走逐只、最新交易日 {end} 走快照拼接")
+            _loop_per_stock(conn, src, codes, start, end, window_key, stats, dry_run=False)
+        batch = import_hk_snapshot_daily(conn, src, dry_run=False, snapshot=snapshot)
+        if not batch['snap_ok']:
+            _fail_step('批量快照为空/不可用：最新交易日数据无法落库')
+        covered = batch['direct'] + batch['fallback']
+        if covered == 0:
+            _fail_step('批量快照零落库（直写 0 / 内部回退 0）：最新交易日数据未入库')
+        logger.info(f"✅ 批量快照对齐完成: 直写 {batch['direct']}, "
+                    f"内部回退 {batch['fallback']}, 覆盖 {covered} 只")
+        stats['success'] += covered
+        stats['quotes'] += batch['direct']
+        stats['max_trade_date'] = end
+        # 整批处理完，清断点游标（下次运行重新从窗口起点续日期窗口）
         set_market_last_processed_code(conn, MARKET, None, window=window_key)
+        # 覆盖度校验：缺口日 ∪ 最新交易日逐日校验（防游标跳过的标的造成静默缺口）
+        days_to_check = set(gap_days) | {datetime.strptime(end, '%Y-%m-%d').date()}
+        if _window_coverage_ok(conn, days_to_check):
+            set_last_sync_date(conn, end)
+            logger.info(f"📝 窗口覆盖度达标，last_sync_date 回写至 {end}")
+        else:
+            logger.warning(f"⚠️ 窗口 {start}~{end} 覆盖度不达标，不推进 last_sync_date"
+                           f"（保持 {last_str}），下次增量将重跑窗口补缺口")
+        logger.info(f"✅ incremental(批量) 完成: 直写 {batch['direct']}")
+        summary_logger.info(f"✅ incremental(批量) 完成: 直写 {batch['direct']}")
+        return stats
+
+    # ===== 逐只路径（dry-run / --limit 调试；生产的最新交易日已由上面的快照路径覆盖）=====
+    _loop_per_stock(conn, src, codes, start, end_excl, window_key, stats, dry_run=dry_run)
+    if not dry_run:
         # 仅在成功写入时才回写，且回写【实际覆盖的最后交易日】而非 date.today()：
         # 1) 失败轮次不回写，保留旧进度，下次增量可重试补缺口；
         # 2) 盘中/盘前未收盘时拉到的是前一交易日数据，回写实际覆盖日，避免把未来日期推进为已同步。

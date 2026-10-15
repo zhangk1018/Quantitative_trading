@@ -215,46 +215,64 @@ class TestImportSnapshotDaily(unittest.TestCase):
         self.assertFalse(result['snap_ok'])
 
 
-class TestWindowIsSingleDay(unittest.TestCase):
-    """增量窗口判定：仅最新单日才启用批量快照"""
+class TestWindowProbeAndGaps(unittest.TestCase):
+    """协作单 53.0：走快照的判据 = 快照源可用 + 窗口 [start,end) 内无港股交易日缺口。
 
-    def _frame_days(self, days):
-        return pd.DataFrame({'Close': [1.0] * len(days)}, index=pd.to_datetime(days))
+    （旧 `_window_is_single_day` 已移除：它把「快照不可用」与「窗口有缺口」都判为 False，
+    导致快照不可用时静默回退逐只、空转数小时且 exit=0。）
+    """
 
-    def test_single_day_true(self):
+    HK_DAYS = {date(2026, 9, 3), date(2026, 9, 4)}
+
+    def _src_with(self, latest_days, calendar):
         src = _fake_src()
-        src.download_single.return_value = self._frame_days(['2026-09-03', '2026-09-04'])
-        # 窗口 [09-04, 09-04] 内仅 09-04 一个交易日
-        self.assertTrue(m._window_is_single_day(src, '2026-09-04', '2026-09-04'))
+        src.download_hk_snapshot_all.return_value = (
+            None if latest_days is None
+            else pd.DataFrame({'Close': [1.0] * len(latest_days)},
+                              index=pd.to_datetime(latest_days))
+        )
+        src.download_hk_trade_dates.return_value = calendar
+        return src
 
-    def test_multi_day_false(self):
-        src = _fake_src()
-        src.download_single.return_value = self._frame_days(['2026-09-03', '2026-09-04'])
-        # 窗口 [09-03, 09-04) 内含 09-03 交易日 → 存在缺口，回退逐只
-        self.assertFalse(m._window_is_single_day(src, '2026-09-03', '2026-09-04'))
+    def test_single_day_window_has_no_gap(self):
+        """窗口 [09-04, 09-04) 内无交易日 → 无缺口（可走快照单路径）。"""
+        src = self._src_with(['2026-09-04'], self.HK_DAYS)
+        self.assertEqual(m._hk_trading_days_in_window(src, '2026-09-04', '2026-09-04'), set())
 
-    def test_probe_fail_false(self):
-        src = _fake_src()
-        src.download_single.return_value = None
-        self.assertFalse(m._window_is_single_day(src, '2026-09-04', '2026-09-04'))
+    def test_multi_day_window_has_gap(self):
+        """窗口 [09-03, 09-04) 内含 09-03 交易日 → 存在缺口（走「缺口逐只+快照」拼接）。"""
+        src = self._src_with(['2026-09-04'], self.HK_DAYS)
+        self.assertEqual(m._hk_trading_days_in_window(src, '2026-09-03', '2026-09-04'),
+                         {date(2026, 9, 3)})
+
+    def test_snapshot_latest_date_none_when_probe_fails(self):
+        """快照探针失败 → `_snapshot_latest_date` 返回 None（run_incremental 据此快失败）。"""
+        src = self._src_with(None, self.HK_DAYS)
+        self.assertIsNone(m._snapshot_latest_date(src.download_hk_snapshot_all()))
 
 
 class TestRunIncrementalBatch(unittest.TestCase):
-    """run_incremental 批量快照路径接入"""
+    """run_incremental 快照路径接入（协作单 53.0：快照单次拉取 + 不可用即快失败）"""
+
+    def _src(self):
+        src = _fake_src()
+        src.download_hk_snapshot_all.return_value = pd.DataFrame(
+            {'Close': [1.0, 1.0]}, index=pd.to_datetime(['2026-09-03', '2026-09-04']))
+        src.download_hk_trade_dates.return_value = {date(2026, 9, 3), date(2026, 9, 4)}
+        return src
 
     @patch.object(m, '_list_hk_codes', return_value=['0700.HK'])
-    @patch.object(m, '_probe_src_latest', return_value='2026-09-04')
     @patch.object(m, 'get_last_sync_date', return_value='2026-09-03')
     @patch.object(m, 'set_last_sync_date')
     @patch.object(m, 'set_market_last_processed_code')
-    @patch.object(m, '_window_is_single_day', return_value=True)
+    @patch.object(m, '_window_coverage_ok', return_value=True)
     @patch.object(m, 'import_hk_snapshot_daily',
                   return_value={'snap_ok': True, 'direct': 5, 'fallback': 1, 'failed': 0})
     @patch.object(m, 'import_one')
-    def test_batch_path_writes_and_returns(self, mock_import_one, mock_batch, mock_window,
-                                           mock_setproc, mock_set, mock_get, mock_probe, mock_list):
-        """仅最新单日 + 快照成功：整批对齐，回写 last_sync_date，不再走逐只循环。"""
-        stats = m.run_incremental(_fake_src(), _fake_conn())
+    def test_batch_path_writes_and_returns(self, mock_import_one, mock_batch, mock_cov,
+                                           mock_setproc, mock_set, mock_get, mock_list):
+        """无缺口窗口 + 快照成功：整批对齐，回写 last_sync_date，不再走逐只循环。"""
+        stats = m.run_incremental(self._src(), _fake_conn())
         self.assertEqual(stats['success'], 6)   # direct 5 + fallback 1
         self.assertEqual(stats['quotes'], 5)
         self.assertEqual(stats['max_trade_date'], '2026-09-04')
@@ -262,20 +280,19 @@ class TestRunIncrementalBatch(unittest.TestCase):
         mock_import_one.assert_not_called()
 
     @patch.object(m, '_list_hk_codes', return_value=['0700.HK'])
-    @patch.object(m, '_probe_src_latest', return_value='2026-09-04')
     @patch.object(m, 'get_last_sync_date', return_value='2026-09-03')
     @patch.object(m, 'set_last_sync_date')
     @patch.object(m, 'set_market_last_processed_code')
-    @patch.object(m, '_window_is_single_day', return_value=True)
     @patch.object(m, 'import_hk_snapshot_daily',
                   return_value={'snap_ok': False, 'direct': 0, 'fallback': 0, 'failed': 0})
-    @patch.object(m, 'import_one', return_value=(3, 0, '2026-09-04'))
-    def test_batch_snap_fail_falls_back(self, mock_import_one, mock_batch, mock_window,
-                                        mock_setproc, mock_set, mock_get, mock_probe, mock_list):
-        """快照接口失败（snap_ok=False）→ 回退逐只增量路径。"""
-        stats = m.run_incremental(_fake_src(), _fake_conn())
-        mock_import_one.assert_called()
-        self.assertEqual(stats['quotes'], 3)
+    @patch.object(m, 'import_one')
+    def test_batch_snap_fail_fails_fast(self, mock_import_one, mock_batch, mock_setproc,
+                                        mock_set, mock_get, mock_list):
+        """快照接口失败（snap_ok=False）→ 非零退出快失败（旧行为：静默回退逐只）。"""
+        with self.assertRaises(SystemExit) as ctx:
+            m.run_incremental(self._src(), _fake_conn())
+        self.assertNotEqual(ctx.exception.code, 0)
+        mock_import_one.assert_not_called()
 
 
 # 港交所 eent.htm 表格结构样例（6 列：名称为索引1、Ex-Date 为索引4）
