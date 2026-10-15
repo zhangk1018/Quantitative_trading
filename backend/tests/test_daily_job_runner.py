@@ -86,7 +86,9 @@ class TestConstants:
         assert len(stage1_names) == 3
 
         assert "daily_import" in stage2_names
-        assert len(stage2_names) == 1
+        # 协作单 55.0：阶段 2 已含 index_sync（协作单 37.0 新增，指数日线随沪深日线一起更新）
+        assert "index_sync" in stage2_names
+        assert len(stage2_names) == 2
 
         assert "fill_missing_data" in stage3_names
         assert "daily_basic_sync" in stage3_names

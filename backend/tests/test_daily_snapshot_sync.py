@@ -56,8 +56,9 @@ class TestDailySnapshotSync:
         """
         with self.conn.cursor() as cur:
             cur.execute("""
-                SELECT MAX(trade_date) AS trade_date 
+                SELECT MAX(trade_date) AS trade_date
                 FROM stock_daily_snapshot
+                WHERE market = 'cn'   -- 协作单 54.0：cn 口径校验只取 A 股最新日
             """)
             result = cur.fetchone()
             return result['trade_date'].strftime('%Y-%m-%d') if result['trade_date'] else None
@@ -79,6 +80,7 @@ class TestDailySnapshotSync:
             cur.execute("""
                 WITH latest_date AS (
                     SELECT MAX(trade_date) AS trade_date FROM stock_daily_snapshot
+                    WHERE market = 'cn'   -- 协作单 54.0：cn 口径校验只取 A 股最新日
                 )
                 SELECT s.code, s.close, s.pre_close,
                        ROUND((s.close - s.pre_close) / NULLIF(s.pre_close, 0) * 100, 1) AS pct_change,
@@ -87,6 +89,7 @@ class TestDailySnapshotSync:
                 FROM stock_daily_snapshot s
                 LEFT JOIN stock_basic b ON s.code = b.code
                 WHERE s.trade_date = (SELECT trade_date FROM latest_date)
+                  AND s.market = 'cn'   -- 协作单 54.0：样本限定 A 股（防命中港/美股行）
                   AND s.code LIKE '300%'
                   AND s.pre_close IS NOT NULL AND s.pre_close > 0
                   AND (s.close - s.pre_close) / s.pre_close * 100 >= 19.95
@@ -122,6 +125,7 @@ class TestDailySnapshotSync:
             cur.execute("""
                 WITH latest_date AS (
                     SELECT MAX(trade_date) AS trade_date FROM stock_daily_snapshot
+                    WHERE market = 'cn'   -- 协作单 54.0：cn 口径校验只取 A 股最新日
                 )
                 SELECT s.code, s.close, s.pre_close,
                        ROUND((s.close - s.pre_close) / NULLIF(s.pre_close, 0) * 100, 1) AS pct_change,
@@ -129,6 +133,7 @@ class TestDailySnapshotSync:
                 FROM stock_daily_snapshot s
                 LEFT JOIN stock_basic b ON s.code = b.code
                 WHERE s.trade_date = (SELECT trade_date FROM latest_date)
+                  AND s.market = 'cn'   -- 协作单 54.0：样本限定 A 股（防命中港/美股行）
                   AND s.code LIKE '300%'
                   AND s.pre_close IS NOT NULL AND s.pre_close > 0
                   AND (s.close - s.pre_close) / s.pre_close * 100 BETWEEN 5 AND 19.5
@@ -165,6 +170,7 @@ class TestDailySnapshotSync:
             cur.execute("""
                 WITH latest_date AS (
                     SELECT MAX(trade_date) AS trade_date FROM stock_daily_snapshot
+                    WHERE market = 'cn'   -- 协作单 54.0：cn 口径校验只取 A 股最新日
                 )
                 SELECT s.code, s.close, s.pre_close,
                        ROUND((s.close - s.pre_close) / NULLIF(s.pre_close, 0) * 100, 1) AS pct_change,
@@ -172,6 +178,7 @@ class TestDailySnapshotSync:
                 FROM stock_daily_snapshot s
                 LEFT JOIN stock_basic b ON s.code = b.code
                 WHERE s.trade_date = (SELECT trade_date FROM latest_date)
+                  AND s.market = 'cn'   -- 协作单 54.0：样本限定 A 股（防命中港/美股行）
                   AND s.code LIKE '300%'
                   AND s.pre_close IS NOT NULL AND s.pre_close > 0
                   AND (s.close - s.pre_close) / s.pre_close * 100 <= -19.95
@@ -202,6 +209,7 @@ class TestDailySnapshotSync:
             cur.execute("""
                 WITH latest_date AS (
                     SELECT MAX(trade_date) AS trade_date FROM stock_daily_snapshot
+                    WHERE market = 'cn'   -- 协作单 54.0：cn 口径校验只取 A 股最新日
                 )
                 SELECT s.code, s.close, s.pre_close,
                        ROUND((s.close - s.pre_close) / NULLIF(s.pre_close, 0) * 100, 1) AS pct_change,
@@ -209,6 +217,7 @@ class TestDailySnapshotSync:
                 FROM stock_daily_snapshot s
                 LEFT JOIN stock_basic b ON s.code = b.code
                 WHERE s.trade_date = (SELECT trade_date FROM latest_date)
+                  AND s.market = 'cn'   -- 协作单 54.0：样本限定 A 股（防命中港/美股行）
                   AND s.code NOT LIKE '300%'  -- 排除创业板
                   AND s.code NOT LIKE '301%'
                   AND s.code NOT LIKE '302%'
@@ -249,7 +258,8 @@ class TestDailySnapshotSync:
                     SUM(CASE WHEN rsi_low_golden_cross IS NULL THEN 1 ELSE 0 END) AS rsi_null,
                     SUM(CASE WHEN boll_break_upper IS NULL THEN 1 ELSE 0 END) AS boll_null
                 FROM stock_daily_snapshot
-                WHERE trade_date = (SELECT MAX(trade_date) FROM stock_daily_snapshot)
+                WHERE market = 'cn'   -- 协作单 54.0：cn 口径校验只取 A 股
+                  AND trade_date = (SELECT MAX(trade_date) FROM stock_daily_snapshot WHERE market = 'cn')
             """)
             result = cur.fetchone()
 
@@ -280,6 +290,7 @@ class TestDailySnapshotSync:
             cur.execute("""
                 WITH latest_date AS (
                     SELECT MAX(trade_date) AS trade_date FROM stock_daily_snapshot
+                    WHERE market = 'cn'   -- 协作单 54.0：cn 口径校验只取 A 股最新日
                 )
                 SELECT s.code, s.trade_date, s.macd_bottom_divergence,
                        q_prev.trade_date AS prev_date,
@@ -289,6 +300,7 @@ class TestDailySnapshotSync:
                     AND q_prev.cycle = '1d' 
                     AND q_prev.trade_date < s.trade_date
                 WHERE s.trade_date = (SELECT trade_date FROM latest_date)
+                  AND s.market = 'cn'   -- 协作单 54.0：样本限定 A 股（防命中港/美股行）
                   AND s.macd_bottom_divergence = true
                 LIMIT 10
             """)
@@ -315,12 +327,14 @@ class TestDailySnapshotSync:
             cur.execute("""
                 WITH latest_date AS (
                     SELECT MAX(trade_date) AS trade_date FROM stock_daily_snapshot
+                    WHERE market = 'cn'   -- 协作单 54.0：cn 口径校验只取 A 股最新日
                 )
                 SELECT s.code, s.is_new, b.list_date,
                        CAST((SELECT trade_date FROM latest_date) AS DATE) - b.list_date AS days_listed
                 FROM stock_daily_snapshot s
                 LEFT JOIN stock_basic b ON s.code = b.code
                 WHERE s.trade_date = (SELECT trade_date FROM latest_date)
+                  AND s.market = 'cn'   -- 协作单 54.0：样本限定 A 股（防命中港/美股行）
                   AND b.list_date IS NOT NULL
                   AND CAST((SELECT trade_date FROM latest_date) AS DATE) - b.list_date <= 365
                 ORDER BY days_listed
@@ -350,10 +364,12 @@ class TestDailySnapshotSync:
             cur.execute("""
                 WITH latest_date AS (
                     SELECT MAX(trade_date) AS trade_date FROM stock_daily_snapshot
+                    WHERE market = 'cn'   -- 协作单 54.0：cn 口径校验只取 A 股最新日
                 )
                 SELECT s.code, s.trade_date, s.consec_up_days, s.close, s.pre_close
                 FROM stock_daily_snapshot s
                 WHERE s.trade_date = (SELECT trade_date FROM latest_date)
+                  AND s.market = 'cn'   -- 协作单 54.0：样本限定 A 股（防命中港/美股行）
                   AND s.consec_up_days > 0
                   AND s.close > s.pre_close  -- 当日应上涨
                 ORDER BY s.consec_up_days DESC
@@ -385,7 +401,8 @@ class TestDailySnapshotSync:
                 SELECT trade_date, COUNT(*) AS total,
                        SUM(CASE WHEN ma_long_align IS NOT NULL THEN 1 ELSE 0 END) AS ma_count
                 FROM stock_daily_snapshot
-                WHERE trade_date >= %(start_date)s
+                WHERE market = 'cn'   -- 协作单 54.0：cn 口径校验只取 A 股
+                  AND trade_date >= %(start_date)s
                 GROUP BY trade_date
                 ORDER BY trade_date DESC
             """, {'start_date': (latest_dt - timedelta(days=5)).strftime('%Y-%m-%d')})
