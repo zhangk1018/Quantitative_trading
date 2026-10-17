@@ -74,7 +74,7 @@ STAGE1_TASKS = [
 ]
 
 STAGE2_TASKS = [
-    {"name": "daily_import", "script": os.path.join("backend", "collector", "etl", "import_daily_data.py"), "args": ["--incremental"]},
+    {"name": "daily_import", "script": os.path.join("backend", "collector", "etl", "import_daily_data.py"), "args": ["--incremental"], "timeout": TASK_TIMEOUT_SEC},
     # 协作单 37.0：指数（沪深300/上证）日线随沪深日线一起更新，供指数 MA20 择时 & 基准收益对比
     {"name": "index_sync", "script": os.path.join("backend", "collector", "etl", "sync_index_daily.py"), "args": ["--incremental"]},
 ]
@@ -707,6 +707,10 @@ def main():
         task_logger.log_end(_pid, 'etl_pipeline', PIPELINE_STAGE, False, 1,
                             f"重试{MAX_RETRIES}次后未全部成功，在 [{failed_task}] 中断", None,
                             {"elapsed_seconds": round(elapsed, 1), "total_tasks": len(tasks), "failed_task": failed_task})
+        # 告警落盘（协作单 57.0）：重试耗尽后此前只退出码 1、无 alerts.log 记录，
+        # 与「失败即响铃」口径不符 → 补一条 CRITICAL，供看板汇总与人工晨检
+        append_alerts([{'level': 'CRITICAL', 'market': GATE_MARKET,
+                        'message': f"{failed_task} 重试{MAX_RETRIES}次后仍失败，任务链中断"}])
         sys.exit(1)
 
     finally:

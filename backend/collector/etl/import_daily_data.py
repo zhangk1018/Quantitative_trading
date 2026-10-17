@@ -29,6 +29,7 @@ from collector.datasource.tushare import TushareDataSource
 from clean.processor.base_importer import BaseDataImporter
 from utils.logger import setup_detail_and_summary_loggers
 from utils.stock_code_utils import normalize_code
+from utils.error_classifier import ErrorClassifier
 
 logger, summary_logger = setup_detail_and_summary_loggers('daily_import')
 
@@ -48,6 +49,10 @@ class DailyDataImporter(BaseDataImporter):
     FALLBACK_LOOKBACK_DAYS = 30              # fallback 回溯天数
     FUTURE_DELIST_DATE = "2900-01-01"        # 占位退市日期阈值
     DB_CHECK_INTERVAL = 100                  # 数据库连接检查间隔
+    # 批量接口有界重试 + 失败响铃（协作单 57.0）
+    BATCH_MAX_RETRIES = 2                    # 批量接口最大尝试次数（含首次）
+    BATCH_RETRY_BACKOFF = (2.0, 8.0)         # 各次重试前的退避（秒）
+    BATCH_FAIL_STREAK_MAX = 2                # 批量接口连续硬失败 → 提前中止逐日循环（交由 fallback 逐只补全）
 
     def __init__(self):
         super().__init__()
@@ -388,47 +393,79 @@ class DailyDataImporter(BaseDataImporter):
 
         return total_deleted
 
-    def import_by_trade_date(self, trade_date: str) -> Tuple[int, int]:
-        """使用 Tushare 批量接口导入指定日期数据（自动转换为前复权）"""
+    def import_by_trade_date(self, trade_date: str) -> Tuple[int, bool]:
+        """使用 Tushare 批量接口导入指定日期数据（自动转换为前复权）
+
+        下载层已设硬超时（协作单 57.0，见 TushareDataSource._call_with_hard_timeout）；
+        此处再加**有界重试**，仅对超时/网络类错误重试，数据/参数类错误立即放弃。
+
+        Returns:
+            (rows, failed)：rows=落库条数；failed=「重试耗尽后的硬失败」。
+            空返回（接口未发布/非交易日）视为正常无数据 → failed=False，
+            是否算失败交由完整度校验（_check_data_completeness）判定。
+        """
         if self._dry_run:
             logger.info(f"[DRY-RUN] 将导入 {trade_date} 的日线数据")
-            return 0, 0
+            return 0, False
 
         logger.info(f"🚀 使用批量模式导入 {trade_date} 的日线数据（Tushare 不复权 → 自动转换前复权）")
-        try:
-            tushare_source = None
-            for src_info in self.datasource_manager.sources:
-                if isinstance(src_info['source'], TushareDataSource):
-                    tushare_source = src_info['source']
+
+        tushare_source = None
+        for src_info in self.datasource_manager.sources:
+            if isinstance(src_info['source'], TushareDataSource):
+                tushare_source = src_info['source']
+                break
+        if not tushare_source:
+            logger.error("❌ 未找到 Tushare 数据源")
+            return 0, True
+        if not tushare_source.connected:
+            tushare_source.connect()
+
+        # 有界重试：超时/网络类可重试，数据/参数类立即放弃
+        df = None
+        last_error = None
+        for attempt in range(1, self.BATCH_MAX_RETRIES + 1):
+            try:
+                df = tushare_source.batch_get_daily(trade_date)
+                last_error = None
+                break
+            except Exception as e:
+                last_error = e
+                retryable = isinstance(e, (TimeoutError, ConnectionError, OSError)) \
+                    or ErrorClassifier.is_retryable(e)
+                logger.warning(f"  {trade_date}: 批量获取第 {attempt}/{self.BATCH_MAX_RETRIES} 次失败: {e}")
+                if not retryable:
+                    logger.warning(f"  {trade_date}: 非可重试错误，放弃重试")
                     break
+                if attempt < self.BATCH_MAX_RETRIES:
+                    delay = self.BATCH_RETRY_BACKOFF[min(attempt - 1, len(self.BATCH_RETRY_BACKOFF) - 1)]
+                    logger.info(f"  {trade_date}: {delay:.0f}s 后重试...")
+                    time.sleep(delay)
 
-            if not tushare_source:
-                raise RuntimeError("未找到 Tushare 数据源")
+        if last_error is not None:
+            logger.error(f"❌ {trade_date} 批量导入失败（重试耗尽）: {last_error}")
+            return 0, True
 
-            if not tushare_source.connected:
-                tushare_source.connect()
+        if df is None or df.empty:
+            logger.warning(f"⚠️  {trade_date} 没有数据（接口未发布/非交易日）")
+            return 0, False
 
-            df = tushare_source.batch_get_daily(trade_date)
-            if df is None or df.empty:
-                logger.warning(f"⚠️  {trade_date} 没有数据")
-                return 0, 1
-
+        try:
             logger.info(f"✅ 获取到 {len(df)} 条原始数据")
             df = self._process_batch_kline_data(df)
             if df is None or df.empty:
                 logger.warning(f"⚠️  {trade_date} 数据处理后为空")
-                return 0, 1
+                return 0, False
 
             # Tushare 返回不复权数据，转换为前复权
             df = self._apply_qfq_to_batch(df, trade_date)
 
             count = self.storage.save_quotes(df)
             logger.info(f"✅ 成功导入 {count} 条记录（已转换为前复权）")
-            return count, 0
-
+            return count, False
         except Exception as e:
-            logger.error(f"❌ 批量导入失败: {e}")
-            return 0, 1
+            logger.error(f"❌ {trade_date} 批量写入失败: {e}")
+            return 0, True
 
     def _normalize_kline_df(self, df: pd.DataFrame, is_batch: bool = False) -> pd.DataFrame:
         """公共K线数据清洗逻辑"""
@@ -832,6 +869,8 @@ class DailyDataImporter(BaseDataImporter):
         stats = {"mode": "parallel" if parallel else "single", "rows_affected": 0,
                  "batch_days": 0, "fallback_success": 0, "fallback_fail": 0,
                  "fallback_records": 0, "cleaned": 0}
+        # 是否确实尝试过某个交易日导入（周末/节假日/已完整早退均为 False → 不响铃）
+        attempted_trade_day = False
 
         if parallel:
             logger.info("🚀 使用 Tushare 批量接口增量导入（不复权→自动转换前复权）")
@@ -864,7 +903,7 @@ class DailyDataImporter(BaseDataImporter):
                     logger.info(f"📅 清理后最新数据日期回退至: {latest_date or '无数据'}")
 
             batch_success = False
-            attempted_trade_day = False
+            fail_streak = 0
             if latest_date:
                 logger.info(f"📤 从 {latest_date} 之后开始批量导入...")
                 cursor_date = latest_date
@@ -881,14 +920,24 @@ class DailyDataImporter(BaseDataImporter):
 
                     attempted_trade_day = True
                     logger.info(f"📥 批量导入 {next_date}...")
-                    success, fail = self.import_by_trade_date(next_date)
+                    success, failed = self.import_by_trade_date(next_date)
                     if success > 0:
                         batch_success = True
+                        fail_streak = 0
                         stats["rows_affected"] += success
                         stats["batch_days"] += 1
                         logger.info(f"✅ {next_date} 导入 {success} 条")
+                    elif failed:
+                        # 硬失败（重试耗尽）：连续达到阈值即中止逐日循环，交 fallback 逐只补全
+                        fail_streak += 1
+                        stats["batch_failed"] = True
+                        logger.error(f"❌ {next_date} 批量导入硬失败（连续 {fail_streak} 次）")
+                        if fail_streak >= self.BATCH_FAIL_STREAK_MAX:
+                            stats["batch_aborted"] = True
+                            logger.error(f"❌ 批量接口连续 {fail_streak} 次硬失败，中止逐日导入（改走 fallback 逐只补全）")
+                            break
                     else:
-                        logger.info(f"⏭️  {next_date} 无数据（接口未返回）")
+                        logger.info(f"⏭️  {next_date} 无数据（接口未发布/非交易日）")
 
                     cursor_date = next_date
             else:
@@ -897,11 +946,13 @@ class DailyDataImporter(BaseDataImporter):
                     logger.info(f"⏭️  {today} 非交易日（周末/节假日），跳过导入")
                 else:
                     attempted_trade_day = True
-                    success, fail = self.import_by_trade_date(today)
+                    success, failed = self.import_by_trade_date(today)
                     if success > 0:
                         batch_success = True
                         stats["rows_affected"] += success
                         stats["batch_days"] += 1
+                    elif failed:
+                        stats["batch_failed"] = True
 
             # 批量导入后校验最近交易日数据完整度：Tushare 批量接口可能只返回部分股票
             # （如仅新股），完整度不足时自动触发 fallback 单线程补全。
@@ -938,9 +989,45 @@ class DailyDataImporter(BaseDataImporter):
             stats["fallback_records"] = tr
             stats["rows_affected"] += tr
 
+        # 失败响铃判定（协作单 57.0）：以既有完整度口径（0.90）为准，
+        # 不以 fallback_fail 计（停牌/退市空数据在逐只路径也计入 fail_count，会误伤）。
+        final_check_date = self._get_last_trade_day(today)
+        final_completeness = self._check_data_completeness(final_check_date) if attempted_trade_day else None
+        verdict_ok, verdict_reason = self._incremental_verdict(
+            stats, attempted_trade_day, final_check_date, final_completeness)
+        stats["verdict_ok"] = verdict_ok
+        stats["verdict_reason"] = verdict_reason
+        stats["check_date"] = final_check_date
+        if final_completeness:
+            stats["completeness"] = round(final_completeness.get("completeness", 0.0), 4)
+        if not verdict_ok:
+            logger.error(f"❌ 增量导入未达标：{verdict_reason}")
+
         print(f'TASK_RESULT:{json.dumps({"rows_affected": stats["rows_affected"], "extra_metrics": stats})}')
         sys.stdout.flush()
         return stats
+
+    def _incremental_verdict(self, stats: dict, attempted_trade_day: bool,
+                             check_date: str, completeness: Optional[dict]) -> Tuple[bool, str]:
+        """增量导入「是否响铃」判定（纯函数，可脱离 DB 单测；协作单 57.0）。
+
+        Returns:
+            (ok, reason)：ok=False 表示当日 A 股数据未达标，调用方应 exit 1。
+        """
+        if not attempted_trade_day:
+            return True, "非交易日/无待导入交易日，正常退出"
+        # 完整度基线不可用（查询失败/无基准）时按「不阻断」处理，仅批量硬失败时降级响铃
+        if not completeness or completeness.get("total_stocks", 0) <= 0:
+            if stats.get("batch_failed"):
+                return False, f"{check_date} 批量接口硬失败且完整度基线不可用"
+            return True, "完整度基线不可用，按不阻断处理"
+        if completeness.get("existing_count", 0) <= 0:
+            return False, f"{check_date} A股当日无数据（入库 0 只）"
+        ratio = completeness.get("completeness", 0.0)
+        if ratio < self.MIN_COMPLETENESS_THRESHOLD:
+            return False, (f"{check_date} A股完整度 {ratio:.1%} "
+                           f"低于阈值 {self.MIN_COMPLETENESS_THRESHOLD:.0%}，当日数据未产出")
+        return True, f"{check_date} A股完整度 {ratio:.1%} 达标"
 
     def _get_latest_trade_date(self) -> Optional[str]:
         """查询 stock_quotes 表中最新交易日"""
@@ -1094,17 +1181,25 @@ def main():
         if args.date:
             task_name = f"日线数据导入_批量_{args.date}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             importer.create_task(task_name, {'mode': 'batch', 'date': args.date})
-            success, fail = importer.import_by_trade_date(args.date)
+            success, failed = importer.import_by_trade_date(args.date)
             importer.update_task_progress('completed', 100, f"批量导入完成: 成功 {success} 条记录")
-            print(f'TASK_RESULT:{json.dumps({"rows_affected": success, "extra_metrics": {"failed": fail}})}')
+            print(f'TASK_RESULT:{json.dumps({"rows_affected": success, "extra_metrics": {"failed": failed}})}')
+            if failed:
+                # 失败响铃（协作单 57.0）：批量硬失败 → 退出码 1，交 runner 重试并最终告警
+                logger.error(f"❌ {args.date} 批量导入硬失败，退出码 1")
+                sys.exit(1)
             return
 
         if args.incremental:
             task_name = f"日线数据导入_增量_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             importer.create_task(task_name, {'mode': 'incremental'})
-            importer.incremental_import(parallel=not args.no_parallel)
+            stats = importer.incremental_import(parallel=not args.no_parallel)
             sys.stdout.flush()
             sys.stderr.flush()
+            if not stats.get("verdict_ok", True):
+                # 失败响铃（协作单 57.0）：当日 A 股数据未达标 → 退出码 1，交 runner 重试并最终告警
+                logger.error(f"❌ 增量导入未达标，退出码 1：{stats.get('verdict_reason')}")
+                sys.exit(1)
         else:
             if args.code:
                 task_name = f"日线数据导入_单股_{args.code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -1126,11 +1221,14 @@ def main():
                 logger.info(f"开始全量导入: {len(codes)} 只股票")
                 importer.full_import(codes, start_date, args.end)
 
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         if importer:
             importer._interrupted = True
             importer.update_task_progress('interrupted', 0, "任务被用户中断")
             logger.info("⚠️ 下载任务已被中断，已下载数据已保存")
+    except SystemExit:
+        # 失败响铃（协作单 57.0）依赖非零退出码，必须原样透传（勿按「用户中断」吞掉 → 否则 exit 0）
+        raise
     except Exception as e:
         logger.error(f"程序异常: {e}")
         raise

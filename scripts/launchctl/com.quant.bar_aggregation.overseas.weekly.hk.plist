@@ -3,11 +3,14 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.quant.bar-aggregation.overseas.weekly</string>
+    <string>com.quant.bar-aggregation.overseas.weekly.hk</string>
 
-    <!-- 港/美股周线聚合：按各自数据源交易日历（HSI / .IXIC）划分 ISO 周并聚合，不再依赖 A 股日历。
-         触发时点：周二~六 09:30 —— 港股 T 日数据 T 日 18:30 落库、美股 T 日数据 T+1 08:30 落库，
-         故 09:30 时上一交易日数据对两个市场均已齐备；周六 09:30 覆盖港股/美股周五收盘。
+    <!-- 港股周线聚合（协作单 58.0，自 2026-10-17 拆出为独立任务）：按 HSI 日历划分 ISO 周。
+         触发时点：周五 19:30（港股 T 日数据 T 日 18:30 落库，留约 35min 余量）
+                   + 周六 09:30（兜底补跑：若周五链晚到/失败，次日补）。
+         结算判据（compute_bar_aggregation._bucket_settleable，market=hk）：该 ISO 周**周五已到**
+         （港股周末休市，周五即本周最后一个交易日）→ hk 周K 与 A 股周K 同为「周五盘后」产出，
+         消除此前「看板周六 00:00 即期望本周、但任务周六 09:30 才产出」的 ~9.5h 假 pending。
          caffeinate 包裹：任务运行期间阻止系统休眠（2026-10-01 美股事故约定）。 -->
     <key>ProgramArguments</key>
     <array>
@@ -20,7 +23,7 @@
         <string>--cycle</string>
         <string>1w</string>
         <string>--market</string>
-        <string>hk,us</string>
+        <string>hk</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -37,31 +40,16 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Volumes/MyData/Quantitative_trading/logs/cron/overseas_weekly_aggregation.stdout.log</string>
+    <string>/Volumes/MyData/Quantitative_trading/logs/cron/overseas_weekly_aggregation_hk.stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Volumes/MyData/Quantitative_trading/logs/cron/overseas_weekly_aggregation.stderr.log</string>
+    <string>/Volumes/MyData/Quantitative_trading/logs/cron/overseas_weekly_aggregation_hk.stderr.log</string>
 
-    <!-- Weekday: 2=周二 ... 6=周六 -->
+    <!-- Weekday: 5=周五 19:30（主）；6=周六 09:30（兜底补跑） -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>
-            <key>Weekday</key><integer>2</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>30</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>3</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>30</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>4</integer>
-            <key>Hour</key><integer>9</integer>
-            <key>Minute</key><integer>30</integer>
-        </dict>
-        <dict>
             <key>Weekday</key><integer>5</integer>
-            <key>Hour</key><integer>9</integer>
+            <key>Hour</key><integer>19</integer>
             <key>Minute</key><integer>30</integer>
         </dict>
         <dict>

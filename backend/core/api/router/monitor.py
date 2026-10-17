@@ -248,8 +248,11 @@ def _expected_period_label(cycle: str, market: str, ref_dt: datetime) -> str:
     月K 在当月月末才结算，周K（港/美股）要到该周周六才结算。若沿用最近交易日作期望日，
     则每月 1 号到月末三市场的月K、每周一~四的周K 都会恒报「数据未更新」的假 pending。
 
-    故当前周期未到结算时点（周 = 该 ISO 周的周六已到；月 = 自然月末已到）时，期望回退上一周期。
-    （结算判据与 compute_bar_aggregation.py 的 `_bucket_settleable` 保持一致。）
+    故当前周期未到结算时点（周 = 该 ISO 周最后一个交易日所在时点；月 = 自然月末已到）时，
+    期望回退上一周期。（结算判据与 compute_bar_aggregation.py 的 `_bucket_settleable` 保持一致；
+    协作单 58.0：hk 周K 任务改为周五 19:30 产出 → hk 结算点同步改为「周五 19:30」，
+    消除周六 00:00~09:30「看板已期望本周、任务却尚未产出」的假 pending。
+    海外月K 同理：任务「每日 10:00」产出 → 结算点 = 「月末次日 10:30」（见 1m 分支）。）
 
     Args:
         cycle: '1w' / '1m'
@@ -264,13 +267,39 @@ def _expected_period_label(cycle: str, market: str, ref_dt: datetime) -> str:
 
     if cycle == "1w":
         monday = today - timedelta(days=today.weekday())
-        if monday + timedelta(days=5) <= today:      # 该 ISO 周的周六已到 → 本周可结算
+        if market == "hk":
+            # hk 与北京同时区（tz_hours=0）：周K 任务周五 19:30 产出 → 结算点 = 周五 19:30（本地）
+            # （此前为「周六已到」，导致周六 00:00~09:30 假 pending —— 任务尚未跑、看板已期望本周）
+            settle_date = monday + timedelta(days=4)          # 周五
+            settled = (ref_dt.date() > settle_date
+                       or (ref_dt.date() == settle_date
+                           and (ref_dt.hour, ref_dt.minute) >= (19, 30)))
+        else:
+            # cn：cn 链周五盘后（~18:50）已产出，沿用「周六已到」；
+            # us：周五数据 T+1 周六 08:30 落库、任务周六 09:30 产出 → 沿用「美东周六 00:00」（= 北京周六 12:00，
+            #     晚于任务，无假 pending）。
+            settled = monday + timedelta(days=5) <= today
+        if settled:
             return _last_trade_day_on_or_before(market, monday + timedelta(days=6))
         return _last_trade_day_on_or_before(market, monday - timedelta(days=1))
 
     first_day = today.replace(day=1)
     month_end = (first_day + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-    if month_end <= today:                            # 自然月末已到 → 本月可结算
+
+    if market in ("hk", "us"):
+        # 海外月K（协作单 58.0 遗留）：由「每日 10:00」的 overseas monthly 任务产出；
+        # 该月数据到「月末次日 10:00」才齐备（hk 末日 T 日 18:30 落库、us 末日 T+1 08:30 落库），
+        # 故结算点 = **月末次日 10:30**（北京时，留 30min 余量）。消除旧口径「月末 00:00 即期望新周期、
+        # 任务却要等到下一个周二~六 10:00」的 1.4~3.4 天假 pending（月末次日常落在周日/周一等旧调度不含的日子，更久）。
+        period_end = month_end if month_end <= today else (first_day - timedelta(days=1))
+        _nxt = period_end + timedelta(days=1)
+        settle_dt = datetime(_nxt.year, _nxt.month, _nxt.day, 10, 30, tzinfo=ref_dt.tzinfo)
+        if ref_dt >= settle_dt:
+            return _last_trade_day_on_or_before(market, period_end)
+        # 该周期尚未产出 → 期望回退到上一周期（避免「结算点未到、看板已期望新周期」的假 pending）
+        return _last_trade_day_on_or_before(market, period_end.replace(day=1) - timedelta(days=1))
+
+    if month_end <= today:                            # 自然月末已到 → 本月可结算（cn 等）
         return _last_trade_day_on_or_before(market, month_end)
     return _last_trade_day_on_or_before(market, first_day - timedelta(days=1))
 

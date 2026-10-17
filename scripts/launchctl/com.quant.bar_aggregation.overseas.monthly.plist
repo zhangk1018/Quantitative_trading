@@ -6,8 +6,10 @@
     <string>com.quant.bar-aggregation.overseas.monthly</string>
 
     <!-- 港/美股月线聚合：按各自数据源交易日历（HSI / .IXIC）划分自然月并聚合。
-         触发时点：周二~六 10:00 —— 月桶在「自然月末已到」且当月全部交易日齐备时才结算，
-         美股月末最后 1~2 天的数据 T+1 08:30 才落库，故必须等次日（10:00 在美股导入之后）。
+         触发时点：**每日 10:00**（协作单 58.0 由「周二~六」扩为每日）—— 月桶在「自然月末已到」
+         且当月全部交易日齐备时才结算；自然月末可落在任意星期（含周日/周一，旧调度不含），
+         且美股月末最后 1~2 天数据 T+1 08:30 才落库 → 需每日触发才能保证「月末次日」即产出，
+         消除看板旧口径「月末 00:00 即期望新周期、任务却要等到下一个周二~六 10:00」的 1.4~3.4 天假 pending。
          每次运行回看重算最近 3 个月，迟到/修正数据会被自动吸收。
          caffeinate 包裹：任务运行期间阻止系统休眠（2026-10-01 美股事故约定）。 -->
     <key>ProgramArguments</key>
@@ -42,31 +44,10 @@
     <key>StandardErrorPath</key>
     <string>/Volumes/MyData/Quantitative_trading/logs/cron/overseas_monthly_aggregation.stderr.log</string>
 
-    <!-- Weekday: 2=周二 ... 6=周六 -->
+    <!-- 每日 10:00（StartCalendarInterval 省略 Weekday 即「每天」） -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>
-            <key>Weekday</key><integer>2</integer>
-            <key>Hour</key><integer>10</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>3</integer>
-            <key>Hour</key><integer>10</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>4</integer>
-            <key>Hour</key><integer>10</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>5</integer>
-            <key>Hour</key><integer>10</integer>
-            <key>Minute</key><integer>0</integer>
-        </dict>
-        <dict>
-            <key>Weekday</key><integer>6</integer>
             <key>Hour</key><integer>10</integer>
             <key>Minute</key><integer>0</integer>
         </dict>

@@ -26,6 +26,7 @@ for label in com.quant.backend com.quant.backend.healthcheck com.quant.postgresq
              com.quant.log-cleanup.monthly \
              com.quant.daily_job.stage1 com.quant.daily_job.stage2 \
              com.quant.bar-aggregation.weekly com.quant.bar-aggregation.monthly \
+             com.quant.bar-aggregation.overseas.weekly \
              com.quant.weekly_kline com.quant.monthly_kline com.quant.bar_aggregation \
              com.quant.hk-basic-sync.saturday com.quant.us-basic-sync.saturday; do
     launchctl remove "$label" 2>/dev/null || true
@@ -59,9 +60,15 @@ launchctl load -w "$LAUNCH_AGENTS/com.quant.bar_aggregation.weekly.plist" && ech
 echo "=== 月线聚合（18:45 交易日执行，脚本自动判断月最后交易日）==="
 launchctl load -w "$LAUNCH_AGENTS/com.quant.bar_aggregation.monthly.plist" && echo "✅ monthly loaded"
 
-echo "=== 港/美股 周线聚合（周二~六 09:30，按各自数据源日历 HSI/.IXIC 划分 ISO 周）==="
-launchctl unload "$LAUNCH_AGENTS/com.quant.bar_aggregation.overseas.weekly.plist" 2>/dev/null && sleep 1
-launchctl load -w "$LAUNCH_AGENTS/com.quant.bar_aggregation.overseas.weekly.plist" && echo "✅ overseas weekly loaded"
+echo "=== 港/美股 周线聚合（hk：周五 19:30 主 + 周六 09:30 兜底；us：周六 09:30）==="
+# 协作单 58.0：旧「hk,us 合并 / 周二~六 09:30」已拆为 hk/us 两个独立任务；
+# 清理旧 label 并删除残留 plist，避免登录时被 launchd 重新加载旧调度。
+launchctl remove com.quant.bar-aggregation.overseas.weekly 2>/dev/null || true
+rm -f "$LAUNCH_AGENTS/com.quant.bar_aggregation.overseas.weekly.plist"
+launchctl unload "$LAUNCH_AGENTS/com.quant.bar_aggregation.overseas.weekly.hk.plist" 2>/dev/null && sleep 1
+launchctl load -w "$LAUNCH_AGENTS/com.quant.bar_aggregation.overseas.weekly.hk.plist" && echo "✅ overseas weekly hk loaded"
+launchctl unload "$LAUNCH_AGENTS/com.quant.bar_aggregation.overseas.weekly.us.plist" 2>/dev/null && sleep 1
+launchctl load -w "$LAUNCH_AGENTS/com.quant.bar_aggregation.overseas.weekly.us.plist" && echo "✅ overseas weekly us loaded"
 
 echo "=== 港/美股 月线聚合（周二~六 10:00，按各自数据源日历划分自然月）==="
 launchctl unload "$LAUNCH_AGENTS/com.quant.bar_aggregation.overseas.monthly.plist" 2>/dev/null && sleep 1

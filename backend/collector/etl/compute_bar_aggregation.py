@@ -351,15 +351,27 @@ def _bucket_span(cycle: str, key: date) -> Tuple[date, date]:
     return key, (key + timedelta(days=32)).replace(day=1) - timedelta(days=1)
 
 
-def _bucket_settleable(cycle: str, key: date, as_of: date) -> bool:
+# 海外周K「可结算日」相对 ISO 周周一的天偏移（协作单 58.0）：
+#   hk：港股一周最后交易日为周五（周末休市）→ 周五（+4）即本周最后一个交易日
+#   us：周五数据 T+1 周六 08:30 才落库 → 仍以周六（+5）为结算点
+# 未显式指定 market（如单测/历史调用）沿用 +5，保持既有行为不变。
+_WEEKLY_SETTLE_OFFSET = {'hk': 4, 'us': 5}
+
+
+def _bucket_settleable(cycle: str, key: date, as_of: date, market: str = None) -> bool:
     """该周期桶是否已可结算。
 
     港/美股周六、周日休市（真实交易日判定仍完全取自数据源日历，此判据只决定「何时可结算」）：
-    - 1w：该 ISO 周的周六已到 → 本周不可能再产生交易日
+    - 1w：hk 该 ISO 周的**周五**已到（港股周五即本周最后交易日，且日线 T 日 18:30 落库）；
+          us 该 ISO 周的**周六**已到（美股周五数据 T+1 周六 08:30 才落库）
     - 1m：自然月末已到
+
+    注：即便结算点已到，`run_overseas` 仍以 `_load_market_daily_dates` 做「交易日齐备」门禁，
+    数据未落库时跳过、不猜测。
     """
     if cycle == '1w':
-        return key + timedelta(days=5) <= as_of
+        offset = _WEEKLY_SETTLE_OFFSET.get(market, 5)
+        return key + timedelta(days=offset) <= as_of
     return _bucket_span(cycle, key)[1] <= as_of
 
 
@@ -455,7 +467,7 @@ def run_overseas(conn, market: str, cycle: str, args) -> Dict[str, int]:
     written = 0
     skipped = 0
     for key in keys:
-        if not _bucket_settleable(cycle, key, as_of):
+        if not _bucket_settleable(cycle, key, as_of, market):
             continue
         cal_days = cal_by_bucket.get(key, set())
         have_days = have_by_bucket.get(key, set())

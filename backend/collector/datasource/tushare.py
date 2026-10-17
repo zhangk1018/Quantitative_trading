@@ -10,6 +10,7 @@ Tushare Pro 数据源实现 — 仅支持日线数据下载
 """
 import os
 import time
+import threading
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, Dict
@@ -25,6 +26,77 @@ TUSHARE_RATE_LIMIT = {
     'max_requests_per_minute': 45,
     'burst_size': 3,
 }
+
+# ===================== 下载层硬超时（协作单 57.0） =====================
+# 背景：2026-10-15 阶段 2（daily_import）静默死亡 —— Tushare 批量接口长时间无响应
+# （socket 空闲、CPU≈0），进程被杀、台账卡 running、stdout 缓冲丢失。tushare 库内虽
+# 已有 requests timeout=30，但仅为主 30s 且非我方显式声明；半死连接实测可永久阻塞在
+# SSL_read。故采用「守护线程 + join(timeout)」拿回控制权：卡死线程置 daemon，不阻止
+# 进程退出；泄漏线程（仍 alive）累计超过上限即 fast-fail，避免线程无限堆积。
+TUSHARE_QUERY_TIMEOUT = int(os.getenv('TUSHARE_QUERY_TIMEOUT', '60'))      # 单只 get_kline
+TUSHARE_BATCH_TIMEOUT = int(os.getenv('TUSHARE_BATCH_TIMEOUT', '120'))    # batch_get_daily
+TUSHARE_HTTP_TIMEOUT = int(os.getenv('TUSHARE_HTTP_TIMEOUT', '30'))       # requests 层
+_MAX_HUNG_THREADS = int(os.getenv('TUSHARE_MAX_HUNG_THREADS', '3'))
+
+
+class TushareTimeoutError(TimeoutError):
+    """Tushare 网络调用超时（半死连接 / 接口无响应兜底）。"""
+
+
+# 仍卡死（join 超时后 thread 仍 alive）的下载线程列表；入口先剔除已自愈的线程，
+# 若在存线程数达到上限则不再新增线程、直接快速失败。
+_hung_threads: list = []
+_hung_lock = threading.Lock()
+
+
+def _call_with_hard_timeout(func, args=(), kwargs=None, timeout=TUSHARE_QUERY_TIMEOUT, name='tushare'):
+    """在守护线程中执行 func 并设硬超时，超时抛 TushareTimeoutError。
+
+    线程置 daemon：即便底层阻塞在 SSL_read 无法被信号打断，也不会拖住进程退出；
+    入口先清理已结束的泄漏线程（requests timeout=30 通常 ≤30s 自愈），
+    在存卡死线程数达 _MAX_HUNG_THREADS 时直接 fast-fail。
+
+    Args:
+        func: 待执行的网络调用（如 self._pro.daily）
+        args/kwargs: 传给 func 的参数
+        timeout: 硬超时秒数；<=0 表示不设限（同步执行）
+        name: 日志/异常标识（如 'tushare.daily'）
+    """
+    kwargs = kwargs or {}
+    if timeout and timeout > 0:
+        with _hung_lock:
+            _hung_threads[:] = [t for t in _hung_threads if t.is_alive()]
+            if len(_hung_threads) >= _MAX_HUNG_THREADS:
+                raise TushareTimeoutError(
+                    f"{name} 已有 {len(_hung_threads)} 个下载线程疑似卡死，快速失败（不再新增线程）")
+
+    result = {}
+    error = {}
+
+    def _runner():
+        try:
+            result['value'] = func(*args, **kwargs)
+        except BaseException as exc:  # noqa: BLE001 - 需把任意异常透传给调用方
+            error['value'] = exc
+
+    if not timeout or timeout <= 0:
+        _runner()
+        if 'value' in error:
+            raise error['value']
+        return result.get('value')
+
+    thread = threading.Thread(target=_runner, name=f'{name}_dl', daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        # 超时：线程仍在后台运行 → 记入泄漏列表（后续入口会清理自愈线程）
+        with _hung_lock:
+            _hung_threads.append(thread)
+        logger.warning(f"⚠️ {name} 下载超过 {timeout}s 未返回（疑似连接半死），已放弃等待")
+        raise TushareTimeoutError(f"{name} 网络请求超过 {timeout}s 未返回（疑似连接半死）")
+    if 'value' in error:
+        raise error['value']
+    return result.get('value')
 
 
 class TushareDataSource(BaseDataSource):
@@ -77,7 +149,8 @@ class TushareDataSource(BaseDataSource):
         try:
             import tushare as ts
             token = self._get_token()
-            self._pro = ts.pro_api(token=token)
+            # 显式固化 requests 层超时（tushare 库默认 30s，防止版本漂移失效）
+            self._pro = ts.pro_api(token=token, timeout=TUSHARE_HTTP_TIMEOUT)
             self.connected = True
             logger.info("✅ Tushare Pro 连接成功（仅日线模式）")
             return True
@@ -147,11 +220,16 @@ class TushareDataSource(BaseDataSource):
         try:
             self._wait_for_rate_limit()
 
-            df = self._pro.daily(
-                ts_code=ts_code,
-                start_date=start,
-                end_date=end,
-                fields='ts_code,trade_date,open,high,low,close,pre_close,vol,amount'
+            df = _call_with_hard_timeout(
+                self._pro.daily,
+                kwargs={
+                    'ts_code': ts_code,
+                    'start_date': start,
+                    'end_date': end,
+                    'fields': 'ts_code,trade_date,open,high,low,close,pre_close,vol,amount',
+                },
+                timeout=TUSHARE_QUERY_TIMEOUT,
+                name=f'tushare.daily[{ts_code}]',
             )
 
             if df is None or df.empty:
@@ -173,6 +251,9 @@ class TushareDataSource(BaseDataSource):
 
             return result.sort_values('trade_date').reset_index(drop=True)
 
+        except TushareTimeoutError:
+            # 硬超时语义需透传，不能被下面的 RuntimeError 吞掉（否则上游重试判定失效）
+            raise
         except Exception as e:
             raise RuntimeError(f"获取日线数据异常: {e}")
 
@@ -191,9 +272,14 @@ class TushareDataSource(BaseDataSource):
         try:
             self._wait_for_rate_limit()
             ts_date = trade_date.replace('-', '')
-            df = self._pro.daily(
-                trade_date=ts_date,
-                fields='ts_code,trade_date,open,high,low,close,pre_close,vol,amount,ah_vol,ah_amount'
+            df = _call_with_hard_timeout(
+                self._pro.daily,
+                kwargs={
+                    'trade_date': ts_date,
+                    'fields': 'ts_code,trade_date,open,high,low,close,pre_close,vol,amount,ah_vol,ah_amount',
+                },
+                timeout=TUSHARE_BATCH_TIMEOUT,
+                name=f'tushare.daily_batch[{trade_date}]',
             )
             if df is not None and not df.empty:
                 # 统一单位：vol(手→股), amount(千元→元)
@@ -204,6 +290,8 @@ class TushareDataSource(BaseDataSource):
                 if 'ah_amount' in df.columns:
                     df['ah_amount'] = df['ah_amount'] * 1000
             return df
+        except TushareTimeoutError:
+            raise
         except Exception as e:
             raise RuntimeError(f"批量获取日线数据失败: {e}")
 
@@ -262,20 +350,30 @@ class TushareDataSource(BaseDataSource):
             if trade_date:
                 # 全市场单日（trade_date 格式 YYYYMMDD）
                 tushare_date = trade_date.replace('-', '')
-                df = self._pro.daily_basic(
-                    trade_date=tushare_date,
-                    fields='ts_code,trade_date,close,turnover_rate,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,total_mv,circ_mv'
+                df = _call_with_hard_timeout(
+                    self._pro.daily_basic,
+                    kwargs={
+                        'trade_date': tushare_date,
+                        'fields': 'ts_code,trade_date,close,turnover_rate,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,total_mv,circ_mv',
+                    },
+                    timeout=TUSHARE_BATCH_TIMEOUT,
+                    name='tushare.daily_basic',
                 )
             elif ts_code:
                 # 单只股票历史
                 code = ts_code if '.' in ts_code else self._code_to_ts(ts_code)
                 start = start_date.replace('-', '') if start_date else '20000101'
                 end = end_date.replace('-', '') if end_date else datetime.now().strftime('%Y%m%d')
-                df = self._pro.daily_basic(
-                    ts_code=code,
-                    start_date=start,
-                    end_date=end,
-                    fields='ts_code,trade_date,close,turnover_rate,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,total_mv,circ_mv'
+                df = _call_with_hard_timeout(
+                    self._pro.daily_basic,
+                    kwargs={
+                        'ts_code': code,
+                        'start_date': start,
+                        'end_date': end,
+                        'fields': 'ts_code,trade_date,close,turnover_rate,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,total_mv,circ_mv',
+                    },
+                    timeout=TUSHARE_QUERY_TIMEOUT,
+                    name=f'tushare.daily_basic[{code}]',
                 )
             else:
                 raise ValueError("trade_date 和 ts_code 至少需要提供一个")

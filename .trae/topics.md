@@ -13,6 +13,40 @@
 - 修改范围：协作单 39.0 快照服务 503 治本修复——`snapshot_service.py` ①双缓存热切换（刷新期保 `_ready=True` 旧缓存持续服务）②`_periodic_refresh_loop` 定时刷新线程（600s）替代每请求触发，四请求路径移除 `_refresh_if_needed` ③codes 哈希索引 O(K)；新增 `tests/test_snapshot_refresh.py` 10 单测全过，`test_snapshot_history.py` 14 例回归过；服务已重启生效，方舟复核 CLOSED
 - 待办：观察 39.0 生产稳定性；跟进 `stock_fundamental_pit` 空表（评估 Tushare income/fina_indicator）
 
+## 今日通知记录（2026-10-17）
+
+[量量→K 2026-10-17 09:50] 58.0 ⑥ 遗留**海外月K 时间窗**已一并处理（你要求）。根因同 hk 周K：旧口径「自然月末 00:00 起看板即期望新周期」，而 `...overseas.monthly` 任务原为**周二~六 10:00** → **1.4~3.4 天假 pending**（月末次日落在周日/周一等旧调度不含的日子更久）。修法：① plist 改 **每日 10:00**（`StartCalendarInterval` 省略 Weekday），保证「月末次日」即产出；② [`monitor._expected_period_label`](file:///Volumes/MyData/Quantitative_trading/backend/core/api/router/monitor.py#L288-L299) 对 hk/us 月K 结算点改「**月末次日 10:30**」（未到回退上一周期；cn 口径不变，已单测锁定）。`pytest backend/tests` **354 passed / 0 failed**、`plutil -lint` OK；`ETL_PIPELINE.md` → **v1.23**。**⚠️ 待 K 在非沙箱终端执行**：重载 overseas monthly（下）+ 重启后端（同前）。命令：
+```
+LA="$HOME/Library/LaunchAgents"; cd /Volumes/MyData/Quantitative_trading
+cp scripts/launchctl/com.quant.bar_aggregation.overseas.monthly.plist "$LA"/
+launchctl unload "$LA"/com.quant.bar_aggregation.overseas.monthly.plist 2>/dev/null
+launchctl load -w "$LA"/com.quant.bar_aggregation.overseas.monthly.plist
+launchctl list | grep -i overseas
+launchctl kickstart -k gui/$(id -u)/com.quant.backend
+```
+**下次核验点**：2026-11-01（11 月首个调度日）看板月K 是否不再假 pending（真正结算窗口 = 10-31~11-01 10:30）。
+
+[量量→K 2026-10-17 09:30] 协作单 **[58.0-HK-WEEKLY-FALSE-PENDING-20261017]** 立项并修复（K 决策：**看板口径对齐产出时点 + 拆调度让 hk 与 cn 同步**）。**结论：非数据故障** —— 港股周K 原由「hk,us 合并 / 周二~六 09:30」单任务产出，而看板 hk（tz=0）在**周六 00:00** 就期望本周 → 周六 00:00~09:30 的 **~9.5h 假 pending**（us 因 tz=-12、结算点等价北京周六 12:00，无此问题）；数据侧 hk 日线 10-16（2787 只）与 10-12~10-16 全齐备。改动：① [`compute_bar_aggregation._bucket_settleable`](file:///Volumes/MyData/Quantitative_trading/backend/collector/etl/compute_bar_aggregation.py#L361-L375) 增 `market` 参数，**hk 结算提前至周五**(`key+4`)、us 保持周六；② hk/us 周K **拆为两个独立 plist**：`...overseas.weekly.hk`（**周五 19:30 主 + 周六 09:30 兜底**）/ `...weekly.us`（**周六 09:30**），删旧合并 plist + loader 清旧 label/残留；③ [`monitor._expected_period_label`](file:///Volumes/MyData/Quantitative_trading/backend/core/api/router/monitor.py#L267-L283) hk 结算点同步改「周五 19:30」。`pytest backend/tests` **352 passed / 0 failed**、`plutil -lint` OK；`ETL_PIPELINE.md` → **v1.22**。**⚠️ 待 K 在非沙箱终端执行两步**（工具沙箱禁写 `~/Library/LaunchAgents`、禁执行 `launchctl`）：① 重载海外周K 调度；② 重启后端（无 `--reload`，monitor.py 改动需重启生效）。**注**：今天(10-17) 旧 label 的 09:30 调度仍会照常产出 hk/us 10-16 周K（数据无碍），故 ① **建议在 09:35 后**再执行。**命令**：
+```
+LA="$HOME/Library/LaunchAgents"; cd /Volumes/MyData/Quantitative_trading
+cp scripts/launchctl/com.quant.bar_aggregation.overseas.weekly.{hk,us}.plist "$LA"/
+launchctl remove com.quant.bar-aggregation.overseas.weekly 2>/dev/null
+rm -f "$LA"/com.quant.bar_aggregation.overseas.weekly.plist
+launchctl unload "$LA"/com.quant.bar_aggregation.overseas.weekly.hk.plist 2>/dev/null; launchctl load -w "$LA"/com.quant.bar_aggregation.overseas.weekly.hk.plist
+launchctl unload "$LA"/com.quant.bar_aggregation.overseas.weekly.us.plist 2>/dev/null; launchctl load -w "$LA"/com.quant.bar_aggregation.overseas.weekly.us.plist
+launchctl list | grep -i overseas
+launchctl kickstart -k gui/$(id -u)/com.quant.backend   # 重启后端使看板口径生效
+```
+**遗留观察**：海外**月K** 有同类时间窗（月末 00:00 起期望新周期，任务周二~六 10:00 才产出），本次未处理。
+
+[量量→K 2026-10-17 09:35] 58.0 **验收实测通过** ✅ —— K 在非沙箱终端执行「重载 + 重启」后：`launchctl list` 仅剩 `...overseas.weekly.hk` / `...overseas.weekly.us`（旧 `...overseas.weekly` 消失、残留 plist 已删）、8000 端口**唯一 PID** + `openapi=200`。**新 plist 首跑即生效**：`overseas_weekly_aggregation_hk.stdout.log` 09:30 写入 `hk 1w 2026-10-12 ~ 2026-10-16 → 打标 10-16（2807 条）`、`..._us` 写 us 10-16（205 条）；看板判据实测 `周K[hk] success 共 2807 条`、`周K[cn] success 5218`、`月K[hk] success`，**港股面板除「基本面」外全 success**（基本面 pending 属既定设计：周六 12:00 独立任务才跑）。你截图里的「周K 未更新」**已转绿**。**下次核验点 = 2026-10-23（周五）19:30** —— hk 周K 首次按新调度「周五盘后」产出。本轮改动（56 台账 + 57 Tushare 硬超时 + 58 周K 拆分）**未提交**，待你确认后随日报提交。
+
+## 今日通知记录（2026-10-16）
+
+[量量→量量(自记) 2026-10-16 08:00] K 晨检发现沪深看板「增量导入行情 ❌ 失败（步骤静默死亡…协作单 56.0 人工补跑前收尾）」——**系台账残留假失败**：56.0 的人工回填走 `temp/cn_batch_*.py` 临时脚本、**未写 `task_run_log`**，故 `daily_import`(stage2) 最新记录仍是 id=1527 `failed`（其 `error_message` 即看板文案）；而 cn 10-15 数据早已补齐（quotes/snapshot **5215**、indicators **5175**）。对照港股同源（53.0）由 runner 补写 id=1571 success 已转绿。**已修复**：补写 superseding 成功台账 **id=1578**（daily_import/stage2/success/data_date=2026-10-15/rows_affected=5215，`extra_metrics.note` 注明人工补跑、原失败见 id=1527），保留 1527 审计；实测 `_check_task_from_db('daily_import','cn')` → **执行成功，共 5215 条**，cn 全链 A→K **全 success**。**预防**：人工补跑/回填须同步写台账（或走标准 runner）。看板 `task_chain` 缓存 300s，5 分钟内刷新。**注**：该 ❌ 本会于今晚 10-16 正常调度写入新记录后自然被覆盖；但 56.0 ⑥ 根因（Tushare 下载层**无硬超时**）**仍未立项**，今晚 stage2 仍有再次静默死亡风险。
+
+[量量→量量(自记) 2026-10-16 09:00] 协作单 **[57.0-TUSHARE-DOWNLOAD-TIMEOUT-20261016]** 立项并当轮修复（K 拍板：**守护线程硬超时 + 失败即响铃**）。改动 3 文件：① [`tushare.py`](file:///Volumes/MyData/Quantitative_trading/backend/collector/datasource/tushare.py) 新增 `TushareTimeoutError` + `_call_with_hard_timeout`（**daemon 线程 + join(timeout)**，泄漏线程达 3 即 fast-fail；**不复制 baostock 全局线程池**——其非 daemon 线程会在解释器退出时 join 卡死 worker，正是本次事故形态）→ `connect()` 显式 `pro_api(timeout=30)`，`get_kline`/`batch_get_daily`/`get_daily_basic` 全走硬超时且超时先于 `RuntimeError` 捕获；② [`import_daily_data.py`](file:///Volumes/MyData/Quantitative_trading/backend/collector/etl/import_daily_data.py) `import_by_trade_date` 有界重试（2 次、退避 2/8s、仅超时/网络类）+ 连续 2 次硬失败中止逐日循环→既有 fallback 逐只；新增纯函数 `_incremental_verdict`（**完整度 0.90 口径，非 fallback_fail**），`main()` 未达标 `sys.exit(1)` 且 `SystemExit` 原样透传；③ [`daily_job_runner.py`](file:///Volumes/MyData/Quantitative_trading/backend/cron/daily_job_runner.py) 阶段2 显式 `timeout=3600` + **重试耗尽路径补 CRITICAL `append_alerts`**（此前只退出码 1、无告警落盘）。**无数据库迁移**。测试：`test_tushare_network_timeout.py`(6)+`test_import_daily_data_timeout.py`(12)；`pytest backend/tests` → **349 passed / 0 failed**；`ETL_PIPELINE.md` → **v1.21**。**待 K 验收**。**影响**：阶段2 失败现在 exit 1 → runner 重试 3×15min 后落 alerts.log（周末/非交易日/已完整早退/仅空返回仍 exit 0，不误伤）。
+
 ## 今日通知记录（2026-10-15）
 
 [量量→量量(自记) 2026-10-15 22:10] 协作单 [53.0-HK-INCREMENTAL-FALLBACK-20261015] 提单并置 **OPS-FIXED**（同步 K）：港股当日增量「批量快照」判定链连续发起 **3 次**全市场快照请求（`_probe_src_latest` → `_window_is_single_day` → `import_hk_snapshot_daily`，每次 20~25s），18:33 其中一次生效失败 → **静默回退逐只路径**；而逐只源对「当日单日窗口」基本拿不到数据（新浪逐只日线当日滞后）→ 2853 只请求空转 **3h05m、2026-10-15 入库 0 行**，该路径 `exit=0` 不触发 runner 重试/告警，下游 指标/形态/信号/宽表/Parquet 5 步全部被堵（且 `capture_output=True` 缓冲 → 长跑期间外部零日志）。处置：`kill -9` 逐只进程 + 清 `etl_control` 游标（**保留** `last_sync_date=2026-10-14`）+ `launchctl kickstart` 重启 → 命中批量路径，**18 分钟**完成：10-15 直写 **2777**、覆盖 **2792** 只（97.9% ≥ 90%）、`last_sync_date` 推进 **2026-10-15**，下游 5 步 **22:46:29 全部 success**（指标 2684 只 / 形态 1852 成功 / 信号 / 宽表 2792 行 / Parquet 已刷新），全链路 7/7 成功（21:39→22:46）。代码侧 5 项预防（快照单次复用 / 快照不可用快速失败非零退出 / 跨日窗口改「缺口日逐只 + 最新日快照」拼接 / 回退循环限流+总时长上限 / runner 日志流式化）已写入工单⑥，待 K 决定是否立项。**遗留观察**：明晚增量窗口为 [10-15, 10-16]（跨交易日），若快照判定再失败仍会整窗逐只 → 建议优先立项修复项 3。
