@@ -13,6 +13,10 @@
 - 修改范围：协作单 39.0 快照服务 503 治本修复——`snapshot_service.py` ①双缓存热切换（刷新期保 `_ready=True` 旧缓存持续服务）②`_periodic_refresh_loop` 定时刷新线程（600s）替代每请求触发，四请求路径移除 `_refresh_if_needed` ③codes 哈希索引 O(K)；新增 `tests/test_snapshot_refresh.py` 10 单测全过，`test_snapshot_history.py` 14 例回归过；服务已重启生效，方舟复核 CLOSED
 - 待办：观察 39.0 生产稳定性；跟进 `stock_fundamental_pit` 空表（评估 Tushare income/fina_indicator）
 
+## 今日通知记录（2026-10-19）
+
+[量量→K 2026-10-19 19:50] 晨检 + 沪深看板「Parquet 导出 ○ 待执行｜数据未更新（最新 2026-10-16，期望 >= 2026-10-19）」定位与修复（协作单 **59.0**）。**结论：沪深导出本身成功** —— [`latest_quotes.parquet`](file:///Volumes/MyData/Quantitative_trading/data/price/daily/latest_quotes.parquet) 17:59 生成、**5213 条**、`trade_date=20261019`；看板 pending 系**台账行被港股导出覆盖**所致：`export_parquet.py::_write_task_run_log` 按 `task_name='parquet_export' AND start_time>=CURRENT_DATE` 找「当日已有记录」且**不分市场**，18:30 港股 `--market hk` 命中 17:59 沪深建的那行（id=1632）并覆盖为 `hk/2026-10-16/2787` → 沪深读到 10-16 < 期望 10-19 → 报「数据未更新」。平时两市最新日相同故无症状；今日港股休市（10-16，重阳节翌日）、A股 10-19 才暴露。修复：① [export_parquet.py](file:///Volumes/MyData/Quantitative_trading/backend/clean/enrich/export_parquet.py#L59-L71) 增 `market` 参数、**仅 cn 写该台账行**（港/美股 Parquet 看板复用 `snapshot_sync` 新鲜度、另有 `hk:Parquet`/`us:Parquet` 独立行）；② 订正 `task_run_log.id=1632` 为 `cn/2026-10-19/5213`。`pytest backend/tests/test_export_parquet_exit_code.py` **4 passed**。**看板 task_chain 有 300s 缓存**，刷新需稍等。**待 K 终验**（无需重载/重启：改动在 cron 脚本，下次调度自然生效）。
+
 ## 今日通知记录（2026-10-17）
 
 [量量→K 2026-10-17 09:50] 58.0 ⑥ 遗留**海外月K 时间窗**已一并处理（你要求）。根因同 hk 周K：旧口径「自然月末 00:00 起看板即期望新周期」，而 `...overseas.monthly` 任务原为**周二~六 10:00** → **1.4~3.4 天假 pending**（月末次日落在周日/周一等旧调度不含的日子更久）。修法：① plist 改 **每日 10:00**（`StartCalendarInterval` 省略 Weekday），保证「月末次日」即产出；② [`monitor._expected_period_label`](file:///Volumes/MyData/Quantitative_trading/backend/core/api/router/monitor.py#L288-L299) 对 hk/us 月K 结算点改「**月末次日 10:30**」（未到回退上一周期；cn 口径不变，已单测锁定）。`pytest backend/tests` **354 passed / 0 failed**、`plutil -lint` OK；`ETL_PIPELINE.md` → **v1.23**。**⚠️ 待 K 在非沙箱终端执行**：重载 overseas monthly（下）+ 重启后端（同前）。命令：
@@ -333,4 +337,12 @@ launchctl kickstart -k gui/$(id -u)/com.quant.backend   # 重启后端使看板�
 - 待办：①等量量回复 **47.0** 统一口径后改前端两处市值为同一 helper；②等量量验收 **46.0**；③关注港股 qfq 重导完成后选股/回测结果回归；④**10-06 方舟日报**仍待回填（历史遗留）。
 
 [方舟→量量 2026-10-11 04:10] 协作单 **[46.0-HK-QFQ-FRONTEND-20261010]** 补充整改（仍 VERIFY，同属 ②「4 位小数」）：K 复验发现「碧桂园表头 `HK$ 0.1830`，但 **K 线浮窗显示 0.18**」。根因是**选股分析弹窗用的是另一套图表** `frontend/src/features/stock-picker/components/KLineChart.tsx`（我首轮只改了 `stock-detail/hooks/useStockChart.ts`），该组件：①浮窗 OHLC/涨跌额走 `sanitizeNumber(v)`(默认 2 位)/`toFixed(2)`；②candle 与 MA/BOLL 系列**未设 `priceFormat`** → 价格轴默认 2 位。**已修**：浮窗改自适应 `sanitizeNumber(v, priceDecimals(close))`；系列统一补 `priceFormat{type:'price',precision,minMove}`（`mkLineSeriesOptions` 增参）。**实测 8446.HK**：浮窗 开盘 **0.4700**/最高 **0.4700**/最低 **0.3850**/收盘 **0.3900**/涨跌额 **-0.0550**；左侧价格轴刻度 **3.0000/2.5000/…/0.0000**（4 位）✅。两套图表现已一致。**请按原验收方式复核**（此项不改变 47.0 的 market_cap 单位问题）。
+
+## 会话信息（2026-10-19）
+- 日期：2026-10-19
+- 负责角色：量量（全栈）
+- 修改范围：① 数据管道晨检（`daily_check.py` OK=15/WARN=2/ERROR=0；A股 10-19 正常 5213；港股今日「重阳节翌日」休市，最新 10-16）；② 协作单 **59.0** 修复 —— 沪深看板「Parquet 导出」假 pending（根因：`export_parquet.py::_write_task_run_log` 台账写入不分市场，港股 `--market hk` 覆盖沪深 `parquet_export` 行）→ [`export_parquet.py`](file:///Volumes/MyData/Quantitative_trading/backend/clean/enrich/export_parquet.py#L59-L71) 增 `market` 参数限 cn 写入 + 订正 `task_run_log.id=1632` 为 cn/2026-10-19/5213。
+- 验证：`pytest backend/tests` **354 passed / 0 failed**；`test_export_parquet_exit_code.py` 4 passed。
+- 日报：`docs/daily_report/2026/10/report_20261019_量量.md`
+- 待办：① 待 K 刷新沪深监控终验 59.0（300s 缓存）；② 58.0 ⑥ 海外月K 待 K 重载 `overseas.monthly` + 重启后端；③ 52.0 OHLCV parquet 待实施。
 

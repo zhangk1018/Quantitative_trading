@@ -113,6 +113,15 @@ def test_weekly_settleable_only_from_saturday():
     assert mod._bucket_settleable('1w', key, date(2026, 10, 3))
 
 
+def test_weekly_settleable_hk_from_friday_us_still_saturday():
+    """协作单 58.0：hk 周K 任务改周五产出 → hk 周桶周五即可结算；us 仍以周六为结算点（周五数据 T+1 才落库）。"""
+    key = date(2026, 9, 28)   # 该 ISO 周（09-28 ~ 10-04）的周一
+    assert not mod._bucket_settleable('1w', key, date(2026, 10, 1), 'hk')   # 周四不可
+    assert mod._bucket_settleable('1w', key, date(2026, 10, 2), 'hk')       # 周五可
+    assert not mod._bucket_settleable('1w', key, date(2026, 10, 2), 'us')   # us 周五仍不可
+    assert mod._bucket_settleable('1w', key, date(2026, 10, 3), 'us')       # us 周六可
+
+
 def test_monthly_settleable_only_after_month_end():
     """月桶须等自然月末才可结算 —— 否则美股月末最后 1~2 天（T+1 才落库）会被漏掉。"""
     assert not mod._bucket_settleable('1m', date(2026, 10, 1), date(2026, 10, 3))

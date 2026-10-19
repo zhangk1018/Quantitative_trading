@@ -81,6 +81,31 @@ def test_monthly_expected_settles_after_month_end(monkeypatch):
     assert mod._expected_period_label("1m", "cn", _bj(2026, 11, 2)) == "2026-10-30"
 
 
+def test_monthly_hk_us_settles_after_next_day_production(monkeypatch):
+    """协作单 58.0 遗留：海外月K 任务「每日 10:00」产出 → 结算点 = 月末次日 10:30（北京时）。
+
+    旧口径月末 00:00 即期望新周期，而任务要到次日 10:00 才产出 → 1.4~3.4 天假 pending；本改后消除。
+    """
+    _patch_cal(monkeypatch, SSE_DAYS)
+    # hk（与北京同时区）：10-31 与 11-01 上午仍未到结算点 → 期望回退上一周期 09-30（而非 10-30）
+    assert mod._expected_period_label("1m", "hk", _bj(2026, 10, 31, 9)) == "2026-09-30"
+    assert mod._expected_period_label("1m", "hk", _bj(2026, 11, 1, 9)) == "2026-09-30"
+    # 11-01 10:30 后 → 期望本月（10 月）最后交易日 10-30（任务已于 11-01 10:00 产出）
+    assert mod._expected_period_label("1m", "hk", _bj(2026, 11, 1, 12)) == "2026-10-30"
+    # 月中照常期望上一月末 10-30
+    assert mod._expected_period_label("1m", "hk", _bj(2026, 11, 15)) == "2026-10-30"
+    # us（北京 -12h）：北京 11-01 09:00 时美东仍为 10-31 → 同样回退上一周期；12:00 后结算
+    assert mod._expected_period_label("1m", "us", _bj(2026, 11, 1, 9)) == "2026-09-30"
+    assert mod._expected_period_label("1m", "us", _bj(2026, 11, 1, 12)) == "2026-10-30"
+
+
+def test_monthly_cn_unchanged(monkeypatch):
+    """回归：cn 月K 结算点保持「自然月末已到」（cn 链在月末最后交易日 18:45 已产出），本次未改。"""
+    _patch_cal(monkeypatch, SSE_DAYS)
+    assert mod._expected_period_label("1m", "cn", _bj(2026, 10, 31, 9)) == "2026-10-30"
+    assert mod._expected_period_label("1m", "cn", _bj(2026, 11, 1, 9)) == "2026-10-30"
+
+
 # ===================== 周K 期望日 =====================
 
 def test_weekly_expected_falls_back_before_week_settlement(monkeypatch):
@@ -93,6 +118,26 @@ def test_weekly_expected_settles_from_saturday(monkeypatch):
     """周六（该 ISO 周已过结算时点）：期望变为本周最后交易日（<= 10-04 → 09-30）。"""
     _patch_cal(monkeypatch, SSE_DAYS)
     assert mod._expected_period_label("1w", "cn", _bj(2026, 10, 3)) == "2026-09-30"
+
+
+def test_weekly_hk_settles_at_friday_evening(monkeypatch):
+    """协作单 58.0：hk 周K 任务周五 19:30 产出 → hk 结算点同步改「周五 19:30」。
+
+    周五 19:30 前仍回退上一周（任务未跑，不应期望本周）；19:30 后期望变本周最后交易日。
+    这消除了旧实现「周六 00:00 即期望本周、任务却周六 09:30 才产出」的 ~9.5h 假 pending。
+    """
+    _patch_cal(monkeypatch, SSE_DAYS)
+    assert mod._expected_period_label("1w", "hk", _bj(2026, 10, 16, 9)) == "2026-10-09"    # 周五 09:00
+    assert mod._expected_period_label("1w", "hk", _bj(2026, 10, 16, 19)) == "2026-10-09"   # 周五 19:00（未到 19:30）
+    assert mod._expected_period_label("1w", "hk", _bj(2026, 10, 16, 20)) == "2026-10-16"   # 周五 20:00（已产出）
+    assert mod._expected_period_label("1w", "hk", _bj(2026, 10, 17, 8)) == "2026-10-16"    # 周六上午（无假 pending）
+
+
+def test_weekly_cn_still_settles_from_saturday(monkeypatch):
+    """回归：cn 周K 结算点保持「周六已到」（cn 链周五盘后 ~18:50 已产出），本次未改。"""
+    _patch_cal(monkeypatch, SSE_DAYS)
+    assert mod._expected_period_label("1w", "cn", _bj(2026, 10, 16, 18)) == "2026-10-09"   # 周五
+    assert mod._expected_period_label("1w", "cn", _bj(2026, 10, 17, 0)) == "2026-10-16"    # 周六
 
 
 def test_weekly_expected_no_false_pending_monday_to_thursday(monkeypatch):

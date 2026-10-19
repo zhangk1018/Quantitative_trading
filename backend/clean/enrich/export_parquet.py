@@ -57,8 +57,18 @@ def _output_path_for_market(market: str) -> str:
 
 
 def _write_task_run_log(engine, status: str, data_date: str, rows_affected: int,
-                        error_message: str = None, extra_metrics: dict = None):
-    """写入 task_run_log 表，确保监控看板能检测到导出状态"""
+                        error_message: str = None, extra_metrics: dict = None,
+                        market: str = 'cn'):
+    """写入 task_run_log 表，确保监控看板能检测到导出状态。
+
+    ⚠️ 仅 A 股（cn）写该台账行：沪深监控的「Parquet 导出」按 task_name='parquet_export'
+    读取本行（见 monitor._check_task_from_db）。港/美股 Parquet 监控复用宽表快照
+    (snapshot_sync) 新鲜度，且各有 hk:Parquet / us:Parquet 独立台账行，故**不得**再写
+    task_name='parquet_export' —— 否则会按「当日已有记录」命中并覆盖沪深那一行，把沪深
+    台账的 data_date / rows_affected 改成港股数据（2026-10-19 沪深监控假 pending 的根因）。
+    """
+    if market != 'cn':
+        return
     try:
         with engine.connect() as conn:
             # 先检查是否已有今日记录（避免重复写入）
@@ -142,7 +152,8 @@ def export_to_parquet(market: str = 'cn') -> bool:
             if latest_date is None:
                 logger.error(f"stock_daily_snapshot 表为空（market={market}）")
                 _write_task_run_log(engine, "failed", "unknown", 0,
-                                    f"stock_daily_snapshot 表为空（market={market}）")
+                                    f"stock_daily_snapshot 表为空（market={market}）",
+                                    market=market)
                 print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": {"error": "empty_table", "market": market}})}')
                 return False
 
@@ -158,7 +169,8 @@ def export_to_parquet(market: str = 'cn') -> bool:
             if df.empty:
                 logger.warning(f"{latest_date} 无数据（market={market}）")
                 _write_task_run_log(engine, "failed", str(latest_date), 0,
-                                    f"{latest_date} 无数据（market={market}）")
+                                    f"{latest_date} 无数据（market={market}）",
+                                    market=market)
                 print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": {"error": "no_data", "date": str(latest_date)}})}')
                 return False
 
@@ -180,13 +192,15 @@ def export_to_parquet(market: str = 'cn') -> bool:
             data_date = str(latest_date)
         except NameError:
             data_date = "unknown"
-        _write_task_run_log(engine, "failed", data_date, 0, f"{type(e).__name__}: {e}")
+        _write_task_run_log(engine, "failed", data_date, 0, f"{type(e).__name__}: {e}",
+                            market=market)
         print(f'TASK_RESULT:{json.dumps({"rows_affected": 0, "extra_metrics": {"error": "export_failed", "detail": str(e)}})}')
         return False
 
     # 导出成功：写入 task_run_log
     extra = {"columns": len(df.columns), "date": str(latest_date), "market": market}
-    _write_task_run_log(engine, "success", str(latest_date), len(df), extra_metrics=extra)
+    _write_task_run_log(engine, "success", str(latest_date), len(df), extra_metrics=extra,
+                        market=market)
 
     print(f"✅ 导出完成: {output_path}")
     print(f"📊 导出记录数: {len(df)}")
