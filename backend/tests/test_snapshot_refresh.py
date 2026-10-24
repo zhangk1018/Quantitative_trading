@@ -64,7 +64,6 @@ class TestRefreshHotSwitch:
     def test_refresh_keeps_ready_true(self, monkeypatch):
         svc = _make_service()
         svc._last_check_time = 0  # 强制进入检查
-        monkeypatch.setattr(svc, '_is_etl_window', lambda: False)
         monkeypatch.setattr(svc, '_query_meta',
                             lambda: ('2026-09-12', 'new_hash', 100, {'cn': '2026-09-12'}))
         # 打桩异步刷新入口（不真正加载数据），验证线程被调度
@@ -82,7 +81,6 @@ class TestRefreshHotSwitch:
     def test_no_change_keeps_state(self, monkeypatch):
         svc = _make_service()
         svc._last_check_time = 0
-        monkeypatch.setattr(svc, '_is_etl_window', lambda: False)
         monkeypatch.setattr(
             svc, '_query_meta',
             lambda: (svc._latest_trade_date, svc._cached_row_hash, 100, svc._market_latest),
@@ -91,21 +89,29 @@ class TestRefreshHotSwitch:
         assert svc._ready is True
         assert svc._loading is False
 
-    def test_etl_window_skips_check(self, monkeypatch):
-        """ETL 窗口避让：不检查不刷新"""
+    def test_refresh_during_etl_window(self, monkeypatch):
+        """数据变更在 ETL 时段（15:00-20:00）同样必须触发刷新
+
+        K 2026-10-23：ETL 写入新数据后点「开始选股」仍返回旧数据，
+        根因是刷新检查在 ETL 窗口内被整体跳过，快照缓存最长滞留 5 小时。
+        """
         svc = _make_service()
         svc._last_check_time = 0
-        monkeypatch.setattr(svc, '_is_etl_window', lambda: True)
         monkeypatch.setattr(svc, '_query_meta',
                             lambda: ('2026-09-12', 'new_hash', 100, {'cn': '2026-09-12'}))
+        reloaded = []
+        monkeypatch.setattr(svc, '_reload_async', lambda: reloaded.append(1))
+
         svc._refresh_if_needed()
-        assert svc._loading is False
+
+        time.sleep(0.2)
+        assert reloaded == [1]
+        assert svc._loading is True
 
     def test_market_date_change_triggers_refresh(self, monkeypatch):
         """协作单 43.0：latest 与 row_hash 均变化时触发刷新（美股滞后被剔除的修复入口）"""
         svc = _make_service()
         svc._last_check_time = 0
-        monkeypatch.setattr(svc, '_is_etl_window', lambda: False)
         monkeypatch.setattr(svc, '_query_meta',
                             lambda: ('2026-09-12', 'new_hash', 100,
                                      {'cn': '2026-09-12', 'us': '2026-09-12'}))

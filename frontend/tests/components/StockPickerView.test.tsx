@@ -117,6 +117,9 @@ const mockRefresh = vi.fn(async () => undefined);
 const mockClearBatchSummary = vi.fn(() => undefined);
 const mockWatchlistState = {
   items: [],
+  // useScreenerData 读取 stocks['全部'] 作为「仅看自选」候选集
+  stocks: {},
+  customGroups: [],
   loading: false,
   lastError: null,
   lastBatchSummary: null,

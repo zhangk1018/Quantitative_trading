@@ -40,4 +40,23 @@ describe('getRangeConditionHash', () => {
     const hk = getRangeConditionHash(baseState());
     expect(cn).not.toBe(hk);
   });
+
+  it('「仅看自选」下自选股变化时缓存键必须变化', () => {
+    const state = { ...baseState(), stockRange: 'watchlist' };
+    const before = getRangeConditionHash(state, ['000001']);
+    const after = getRangeConditionHash(state, ['000001', '600036']);
+    expect(after).not.toBe(before);
+  });
+
+  it('「仅看自选」下自选股顺序不同但集合相同 → 缓存键稳定', () => {
+    const state = { ...baseState(), stockRange: 'watchlist' };
+    expect(getRangeConditionHash(state, ['600036', '000001']))
+      .toBe(getRangeConditionHash(state, ['000001', '600036']));
+  });
+
+  it('非「仅看自选」时忽略自选股代码', () => {
+    const state = { ...baseState(), stockRange: 'all' };
+    expect(getRangeConditionHash(state, ['000001']))
+      .toBe(getRangeConditionHash(state, []));
+  });
 });

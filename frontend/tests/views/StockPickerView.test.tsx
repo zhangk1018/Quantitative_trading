@@ -40,11 +40,21 @@ vi.mock('@/features/stock-detail/api', async (importOriginal) => {
 });
 
 // 模拟 useWatchlist，避免 WatchlistProvider 的异步初始化在测试环境挂起
+// state 用 hoisted 引用暴露给用例，便于注入「仅看自选」的自选股代码
+const { mockWatchlist } = vi.hoisted(() => ({
+  mockWatchlist: {
+    state: {
+      customGroups: [] as string[],
+      stocks: {} as Record<string, string[]>,
+      loading: false,
+      migrated: true,
+    },
+  },
+}));
 vi.mock('@/features/watchlist/store', () => {
-  const mockState = { customGroups: [], stocks: {}, loading: false, migrated: true };
   return {
     useWatchlist: () => ({
-      state: mockState,
+      state: mockWatchlist.state,
       allGroups: [],
       addOne: vi.fn(),
       addMany: vi.fn(() => ({ added: 0, skipped: 0, failed: 0, errors: [] })),
@@ -84,6 +94,7 @@ let requestLog: Array<{ url: string; at: number }> = [];
 beforeEach(() => {
   lastRequestUrl = null;
   requestLog = [];
+  mockWatchlist.state.stocks = {};
 
   // 拦截 /api/stocks/，记录 URL 并返回 mock 数据
   server.use(
@@ -187,6 +198,40 @@ describe('StockPickerView 集成测试（行情指标 + runScreening）', () => 
       const allKeys = Array.from(url.searchParams.keys());
       expect(allKeys.some((k) => k.endsWith('_min'))).toBe(false);
       expect(allKeys.some((k) => k.endsWith('_max'))).toBe(false);
+    });
+
+    it('只选「仅看自选」时，请求只带自选股的 stock_codes（不选全市场）', async () => {
+      mockWatchlist.state.stocks = { '全部': ['000001', '600036'] };
+      const user = userEvent.setup();
+      renderView();
+
+      // 展开「范围」面板并勾选「仅看自选」
+      const rangeHeader = screen.getByText('范围').closest('.ant-collapse-header');
+      if (rangeHeader) await user.click(rangeHeader);
+      await user.click(screen.getByText('仅看自选'));
+
+      await user.click(screen.getByTestId('start-screener'));
+
+      await waitFor(() => expect(lastRequestUrl).not.toBeNull());
+      const url = new URL(lastRequestUrl!);
+      expect(url.searchParams.get('stock_codes')).toBe('000001,600036');
+    });
+
+    it('「仅看自选」但自选股为空时，不发请求且结果为空（不回退成全市场）', async () => {
+      mockWatchlist.state.stocks = {};
+      const user = userEvent.setup();
+      renderView();
+
+      const rangeHeader = screen.getByText('范围').closest('.ant-collapse-header');
+      if (rangeHeader) await user.click(rangeHeader);
+      await user.click(screen.getByText('仅看自选'));
+
+      await user.click(screen.getByTestId('start-screener'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/自选股为空/)).toBeInTheDocument();
+      });
+      expect(requestLog).toHaveLength(0);
     });
 
     it('单选一个行情指标 + 设置范围后，URL 包含 *_min 和 *_max', async () => {

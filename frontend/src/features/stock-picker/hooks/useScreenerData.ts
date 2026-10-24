@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { App } from 'antd';
 import { useScreenerSelector } from '../context/ScreenerContext';
+import { useWatchlist } from '../../watchlist/store';
 import { fetchStocks } from '../../stock-detail/api';
 import { buildScreeningParams, CONFIG, ScreenerFilterPayload } from '../utils/screener';
 import { applyCustomIndicatorFilter, extractCustomConditions, getCustomIndicatorService } from '../utils/applyCustomIndicatorFilter';
@@ -15,17 +16,15 @@ type ScreeningPhase =
   | 'computing-custom'
   | 'ready';
 
-function getWatchlistCodes(): string[] {
-  try {
-    const raw = localStorage.getItem('watchlist');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return parsed.stocks?.['全部'] || [];
-    }
-  } catch {
-    console.warn('[Screener] localStorage 读取自选股数据失败');
-  }
-  return [];
+/**
+ * 「仅看自选」但自选股为空时，候选集必须为空。
+ * 历史缺陷：watchlistCodes 为空会跳过 stock_codes 参数，后端回退成全市场选股（K 2026-10-22）。
+ */
+function hasEmptyWatchlistScope(
+  stockRange: string | undefined,
+  watchlistCodes: string[] | undefined,
+): boolean {
+  return stockRange === 'watchlist' && (watchlistCodes?.length ?? 0) === 0;
 }
 
 interface ApiErrorLike {
@@ -56,13 +55,19 @@ function sleep(ms: number): Promise<void> {
  * 生成影响候选集范围的缓存键（不含排序）
  * 排序变化不影响数据集合，仅影响展示顺序，不需要重新拉取
  */
-export function getRangeConditionHash(state: ScreenerFilterPayload & { filterGroup?: FilterGroup | null }): string {
+export function getRangeConditionHash(
+  state: ScreenerFilterPayload & { filterGroup?: FilterGroup | null },
+  watchlistCodes?: string[],
+): string {
   return JSON.stringify({
     // 市场必须参与缓存键：切换市场会改变候选集（后端 market 参数 + 板块规则），
     // 漏掉它会导致 hk→us 时命中旧缓存，仍旧返回上一市场的股票（K 2026-10-06）。
     selectedMarket: state.selectedMarket,
     selectedBoards: state.selectedBoards,
     stockRange: state.stockRange,
+    // 「仅看自选」的候选集由自选股代码决定，自选变动后必须失效缓存（K 2026-10-22）
+    watchlistCodes:
+      state.stockRange === 'watchlist' ? [...(watchlistCodes ?? [])].sort() : null,
     marketIndicatorRanges: state.marketIndicatorRanges,
     financialIndicatorRanges: state.financialIndicatorRanges,
     selectedTechnicalIndicators: state.selectedTechnicalIndicators,
@@ -148,6 +153,14 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
   const selectedTechnicalIndicators = useScreenerSelector((s) => s.technical.selected);
   const filterGroup = useScreenerSelector((s) => s.condition.filterGroup);
   const customIndicators = useScreenerSelector((s) => s.custom.indicators);
+  // 自选股以 Watchlist store 为准：存储键按账号隔离（`watchlist:<username>`），
+  // 直接读 localStorage 旧键会拿到空列表，导致「仅看自选」失效（K 2026-10-22）。
+  const { state: watchlistState } = useWatchlist();
+  const watchlistCodes = watchlistState.stocks['全部'] ?? [];
+  const watchlistCodesRef = useRef<string[]>(watchlistCodes);
+  useEffect(() => {
+    watchlistCodesRef.current = watchlistCodes;
+  }, [watchlistCodes]);
 
   const stateRef = useRef<ScreenerFilterPayload & {
     filterGroup?: FilterGroup | null;
@@ -229,7 +242,19 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
 
       try {
         const state = stateRef.current;
-        const watchlistCodes = state.stockRange === 'watchlist' ? getWatchlistCodes() : undefined;
+        const watchlistCodes = state.stockRange === 'watchlist' ? watchlistCodesRef.current : undefined;
+        // 自选为空时不能跳过 stock_codes（跳过会变成全市场选股），直接返回空结果
+        if (hasEmptyWatchlistScope(state.stockRange, watchlistCodes)) {
+          if (!append) {
+            setItems([]);
+            setTotal(0);
+            setOffset(0);
+            setSortBy(sortByParam);
+            setSortAsc(sortAscParam);
+            messageApi.warning('自选股为空，请先添加自选股后再按「仅看自选」选股');
+          }
+          return { items: [], total: 0 };
+        }
         const requestParams = buildScreeningParams(state, sortByParam, sortAscParam, PAGE_SIZE, offsetParam, watchlistCodes);
         const result = (await fetchStocks(requestParams, finalSignal)) as FetchStocksResponse;
 
@@ -322,7 +347,11 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
   const loadAllCandidates = useCallback(
     async (sortByParam: string, sortAscParam: boolean, signal?: AbortSignal): Promise<[StockItem[], number]> => {
       const state = stateRef.current;
-      const watchlistCodes = state.stockRange === 'watchlist' ? getWatchlistCodes() : undefined;
+      const watchlistCodes = state.stockRange === 'watchlist' ? watchlistCodesRef.current : undefined;
+      if (hasEmptyWatchlistScope(state.stockRange, watchlistCodes)) {
+        cacheRef.current.candidateTotal = 0;
+        return [[], 0];
+      }
       const BATCH = CONFIG.CANDIDATE_BATCH_SIZE;
       const all: StockItem[] = [];
       let totalCount = Infinity;
@@ -435,7 +464,10 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
         }
       }
 
-      const rangeHash = getRangeConditionHash(state);
+      const rangeHash = getRangeConditionHash(
+        state,
+        state.stockRange === 'watchlist' ? watchlistCodesRef.current : undefined,
+      );
       const customHash = getCustomConditionHash(state.filterGroup, state.customIndicators);
 
       const rangeChanged = cache.rangeHash !== rangeHash;
@@ -590,9 +622,13 @@ export function useScreenerData(messageApi: ReturnType<typeof App.useApp>['messa
       const state = stateRef.current;
       const useFullScreening = hasCustomIndicator(state.filterGroup);
 
+      // 「开始选股」是显式拉取最新数据的动作：无论是否含自编指标，都清空候选股与
+      // OHLCV 客户端缓存。历史缺陷：仅非自编路径清理缓存，含自编指标时重复点击
+      // 会命中旧候选集/旧K线，数据更新后仍返回老结果（K 2026-10-23）。
+      cacheRef.current = createEmptyCache();
+      getCustomIndicatorService().clearCache();
+
       if (!useFullScreening) {
-        cacheRef.current = createEmptyCache();
-        getCustomIndicatorService().clearCache();
         setPhase('idle');
         setProgress(0);
         const page = await fetchScreeningData({

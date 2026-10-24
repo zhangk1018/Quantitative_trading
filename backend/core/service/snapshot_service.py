@@ -116,10 +116,11 @@ HISTORY_MAX_CODES = 2000            # codes 数量上限
 HISTORY_MAX_ROWS = 60000            # 返回行数上限（内存保护，超出提示缩小范围）
 HISTORY_FETCH_BATCH = 5000          # 流式读取批大小
 
-# ETL 窗口避让（工作日 15:00-20:00 为 ETL 管道执行时段）
-# 在此期间避免触发后台刷新，减少内存争抢
-ETL_AVOID_START_HOUR = 15
-ETL_AVOID_END_HOUR = 20
+# 刷新检查节流（CACHE_CHECK_INTERVAL，见上）
+# 历史实现曾在工作日 15:00-20:00 ETL 窗口内整体跳过刷新检查，导致 ETL 写入新数据后
+# 最长 5 小时仍对外提供旧快照（K 2026-10-23「更新数据后开始选股仍是老数据」）。
+# 现任何时段都执行检查：元数据查询很轻，全量重建由「行哈希变化 + 互斥锁 +
+# 10 分钟防抖」三重节流，仅在数据真正变化时触发一次。
 
 
 class ServiceNotReadyError(RuntimeError):
@@ -609,26 +610,14 @@ class SnapshotService:
             raise
 
     # ================================================================
-    # 智能刷新检查（防抖 + 锁定 + ETL 窗口避让）
+    # 智能刷新检查（防抖 + 锁定）
     # ================================================================
-    @staticmethod
-    def _is_etl_window() -> bool:
-        """检查是否处于 ETL 管道执行窗口（工作日 15:00-20:00）
-
-        ETL 期间避免触发后台刷新，减少内存争抢，降低被 Jetsam 杀死的风险。
-        """
-        now = datetime.now()
-        # 周一=0, 周日=6 → 0-4 为工作日
-        if now.weekday() >= 5:
-            return False  # 周末无 ETL
-        return ETL_AVOID_START_HOUR <= now.hour < ETL_AVOID_END_HOUR
-
     def _refresh_if_needed(self) -> None:
-        """检查是否需要刷新，使用防抖和互斥锁防止并发刷新"""
-        # ETL 窗口避让：不检查也不刷新，防止内存争抢
-        if self._is_etl_window():
-            return
+        """检查是否需要刷新，使用防抖和互斥锁防止并发刷新
 
+        不再按 ETL 执行时段跳过检查：否则 ETL 完成写入后（工作日 15:00-20:00），
+        快照/OHLCV 缓存要等到 20:00 之后才可能重建，期间自编指标选股一直用旧数据。
+        """
         now = time.time()
         # 防抖：检查间隔内不重复检查
         with self._state_lock:

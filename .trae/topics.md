@@ -346,3 +346,13 @@ launchctl kickstart -k gui/$(id -u)/com.quant.backend   # 重启后端使看板�
 - 日报：`docs/daily_report/2026/10/report_20261019_量量.md`
 - 待办：① 待 K 刷新沪深监控终验 59.0（300s 缓存）；② 58.0 ⑥ 海外月K 待 K 重载 `overseas.monthly` + 重启后端；③ 52.0 OHLCV parquet 待实施。
 
+## 会话信息（2026-10-23）
+- 日期：2026-10-23
+- 负责角色：量量（全栈）
+- 修改范围：
+  - **① 选股「仅看自选」作用域错误（10-22 完成）**：`useScreenerData.ts` 改从 Watchlist store 取 `stocks['全部']`（原直读 localStorage 旧键 `watchlist`，账号隔离后恒为空 → 回退全市场）；自选为空时不发请求、返回空结果；`getRangeConditionHash` 纳入自选代码使缓存失效。
+  - **② 更新数据后「开始选股」仍返回旧数据（10-23）**：后端 `snapshot_service.py` 取消工作日 15:00–20:00 整体跳过刷新（ETL 写库后快照缓存最长滞留 5 小时）；前端 `fetchFirstPage` 无条件清空候选集 + OHLCV 缓存（原仅非自编路径清理）。
+- 验证：后端 `test_snapshot_refresh.py`/`test_snapshot_history.py` **25 passed**；前端相关 **63 passed**；`tsc -b` 0 错误。实测证据：`/api/stocks/` 已为 10-23，而 `/api/snapshot/ready` 为 10-22（20:00 后自动恢复）。
+- 日报：`docs/daily_report/2026/10/report_20261023_量量.md`
+- 待办：① **后端需重启**（`launchctl kickstart -k gui/$(id -u)/com.quant.backend`）使快照刷新修复生效，当前进程仍为 10-22 10:11 启动的旧代码；② 10-24 ETL 后复测 15:00–20:00 时段含自编指标选股，应 10 分钟内取到当日数据；③ 观察取消 ETL 避让后的内存/Jetsam 风险。
+
