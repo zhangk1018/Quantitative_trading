@@ -53,6 +53,10 @@ launchctl load -w "$LAUNCH_AGENTS/com.quant.daily_job_runner.stage2.plist" && ec
 echo "=== 阶段3（17:30 复权因子→补全→基本面→指标→形态→信号→宽表→Parquet）==="
 launchctl load -w "$LAUNCH_AGENTS/com.quant.daily_job_runner.stage3.plist" && echo "✅ stage3 loaded"
 
+echo "=== 调度看护（每 30 分钟 + 登录即查：错过检测 + 自动补执行，协作单 60.0）==="
+launchctl unload "$LAUNCH_AGENTS/com.quant.scheduler_watchdog.plist" 2>/dev/null && sleep 1
+launchctl load -w "$LAUNCH_AGENTS/com.quant.scheduler_watchdog.plist" && echo "✅ scheduler_watchdog loaded"
+
 echo ""
 echo "=== 周线聚合（18:30 交易日执行，脚本自动判断周最后交易日）==="
 launchctl load -w "$LAUNCH_AGENTS/com.quant.bar_aggregation.weekly.plist" && echo "✅ weekly loaded"

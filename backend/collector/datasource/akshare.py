@@ -112,6 +112,11 @@ def _to_ak_symbol(code: str, market: str) -> str:
 
     - 港股：库存 '0700.HK'（4 位补零）→ 新浪港股 symbol 需 5 位数字 '00700'
     - 美股：库存 'AAPL'（大写）→ 新浪美股 symbol 原样大写 'AAPL'
+
+    美股**分类股**（含 '-', 如 'BRK-B'、'BF-B'）例外：新浪用**点号**分隔类别，
+    即需转换为 'BRK.B'。实测（2026-10-28）直接传 'BRK-B' 会让 akshare 的
+    `res.text.split("=")[1]` 抛 `IndexError: list index out of range`（接口返回非预期报文），
+    表现为该标的天天「拉取为空」、永久缺行；传 'BRK.B' 可正常返回完整历史。
     """
     if market == 'hk':
         digits = str(code).split('.')[0].strip()
@@ -124,7 +129,8 @@ def _to_ak_symbol(code: str, market: str) -> str:
             return str(num).zfill(5)
         return str(num)
     if market == 'us':
-        return str(code).strip().upper()
+        # yfinance 风格 'BRK-B' → 新浪风格 'BRK.B'
+        return str(code).strip().upper().replace('-', '.')
     return str(code).strip()
 
 

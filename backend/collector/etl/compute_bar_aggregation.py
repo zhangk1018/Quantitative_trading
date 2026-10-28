@@ -20,6 +20,13 @@
   每次运行重算最近 N 个周期，迟到/修正的数据会在下次运行被自动吸收。
 - 交易日历不可用（数据源返回 None）时只告警跳过，绝不猜测。
 
+**task_run_log 台账（协作单 61.0）**：每「市场 × 周期」各写一行
+（`cn:周K`/`cn:月K`/`hk:周K`/`us:周K`/`hk:月K`/`us:月K`，stage=9），
+`running` 于聚合前落库、结束时回填 `success`/`failed` 与 `rows_affected`；
+`data_date` 取实际产出的聚合打标日（无产出则取运行日）。
+用途：① 调度看护 `scheduler_watchdog.py`（协作单 60.0）据此判定「是否已执行」并自动补执行；
+② 晨检/看板可审计聚合任务的执行历史。台账写失败只告警，不影响聚合本身。
+
 用法:
     # 沪深（等价旧版行为；现有 cn 的 weekly/monthly plist 走此分支）
     ./venv/bin/python backend/collector/etl/compute_bar_aggregation.py --cycle 1w
@@ -58,6 +65,83 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 OVERSEAS_MARKETS = {'hk', 'us'}
 # 正常运行回看的周期桶数量（吸收迟到/修正数据）：周线最近 4 周、月线最近 3 个月。
 DEFAULT_LOOKBACK = {'1w': 4, '1m': 3}
+
+# ===================== task_run_log 台账（协作单 61.0） =====================
+# 背景：周/月K 聚合此前**不写 task_run_log**，故调度看护（scheduler_watchdog.py，协作单 60.0）
+# 无法判定其「是否已执行」→ 错过触发无法自动补执行（港股周K、沪深周/月K 均暴露）。
+# 现按「每市场 × 每周期一行」写入台账，任务名与港/美股 ETL 的 `{market}:{label}` 命名风格一致：
+#   cn:周K / cn:月K / hk:周K / hk:月K / us:周K / us:月K
+# stage 取 10（task_run_log_stage_check 允许 0~11；实测 0~9 已被历史/在用任务占用，
+# 10 完全空缺 → 专供周/月K 聚合，便于按 stage 过滤审计）。
+LEDGER_STAGE = 10
+_CYCLE_LABEL = {'1w': '周K', '1m': '月K'}
+
+
+def market_task_name(market: str, cycle: str) -> str:
+    """台账任务名：`{market}:{周K|月K}`（与 scheduler_watchdog 槽位声明保持一致）。"""
+    return f"{market}:{_CYCLE_LABEL[cycle]}"
+
+
+def log_ledger_start(task_name: str, data_date: date, detail: Optional[dict] = None) -> int:
+    """写入 running 台账行并立即提交，返回 id。
+
+    使用**独立短连接**：聚合主流程会随桶逐个 commit / 失败时 rollback，
+    台账若共用同一连接会被回滚抹掉，导致看护误判「已执行」或「未执行」。
+    任何异常都只告警、返回 -1，**绝不阻断聚合**。
+    """
+    conn = None
+    try:
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO task_run_log (task_name, stage, start_time, status, data_date,"
+                " extra_metrics) VALUES (%s, %s, NOW(), 'running', %s, %s::jsonb) RETURNING id",
+                (task_name, LEDGER_STAGE, data_date,
+                 json.dumps(detail, ensure_ascii=False) if detail else None),
+            )
+            log_id = int(cur.fetchone()[0])
+        conn.commit()
+        return log_id
+    except Exception as e:
+        logger.warning(f"⚠️ 台账写入失败（{task_name}）: {e}")
+        return -1
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def log_ledger_end(log_id: int, success: bool, rows: Optional[int] = None,
+                   error: Optional[str] = None, data_date: Optional[date] = None,
+                   detail: Optional[dict] = None) -> None:
+    """回填台账结束状态（独立短连接 + 立即提交）。log_id < 0 时静默跳过。"""
+    if log_id < 0:
+        return
+    conn = None
+    try:
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE task_run_log SET end_time = NOW(), status = %s, exit_code = %s,"
+                " error_message = %s, rows_affected = %s,"
+                " data_date = COALESCE(%s, data_date), extra_metrics = %s::jsonb"
+                " WHERE id = %s",
+                ('success' if success else 'failed', 0 if success else 1,
+                 error, rows, data_date,
+                 json.dumps(detail, ensure_ascii=False) if detail else None, log_id),
+            )
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"⚠️ 台账回填失败（id={log_id}）: {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 # 沪深聚合：market 过滤写死，避免再顺带把港/美股写进 A 股口径（index = 沪深300/上证）
 CN_AGG_SQL = """
@@ -457,7 +541,8 @@ def run_overseas(conn, market: str, cycle: str, args) -> Dict[str, int]:
     cal = _overseas_calendar(market, window_start, window_end)
     if cal is None:
         logger.warning(f"⚠️ {market} 数据源交易日历不可用，本轮跳过（不猜测、不写入）")
-        return {'rows_affected': 0, 'buckets_written': 0, 'buckets_skipped': len(keys)}
+        return {'rows_affected': 0, 'buckets_written': 0, 'buckets_skipped': len(keys),
+                'label': None, 'calendar_unavailable': True}
 
     have = _load_market_daily_dates(conn, market, window_start, window_end)
     cal_by_bucket = _group_by_bucket(cycle, cal)
@@ -466,6 +551,7 @@ def run_overseas(conn, market: str, cycle: str, args) -> Dict[str, int]:
     rows_total = 0
     written = 0
     skipped = 0
+    last_label: Optional[date] = None
     for key in keys:
         if not _bucket_settleable(cycle, key, as_of, market):
             continue
@@ -485,12 +571,14 @@ def run_overseas(conn, market: str, cycle: str, args) -> Dict[str, int]:
             continue
         rows_total += compute_overseas_bucket(conn, market, cycle, days[0], days[-1], days[-1])
         written += 1
+        last_label = days[-1]
 
     logger.info(
         f"✅ {market} {cycle_label}聚合完成：写入 {written} 个周期 / {rows_total} 条记录，"
         f"跳过 {skipped} 个未齐备周期"
     )
-    return {'rows_affected': rows_total, 'buckets_written': written, 'buckets_skipped': skipped}
+    return {'rows_affected': rows_total, 'buckets_written': written,
+            'buckets_skipped': skipped, 'label': last_label}
 
 
 # ===================== 日志清理（随月线聚合每月执行一次） =====================
@@ -566,15 +654,39 @@ def main():
         total_rows = 0
         results = {}
         for market in markets:
-            if market == 'cn':
-                r = run_cn(conn, args.cycle, args)
-            else:
-                r = run_overseas(conn, market, args.cycle, args)
+            # 台账：每市场 × 每周期一行，供调度看护（协作单 60.0）判定「是否已执行」
+            task_name = market_task_name(market, args.cycle)
+            ledger_id = log_ledger_start(
+                task_name, date.today(),
+                detail={'cycle': args.cycle, 'market': market, 'pid': os.getpid()},
+            )
+            try:
+                if market == 'cn':
+                    r = run_cn(conn, args.cycle, args)
+                else:
+                    r = run_overseas(conn, market, args.cycle, args)
+            except (Exception, SystemExit) as e:
+                log_ledger_end(ledger_id, False, rows=0, error=f"{type(e).__name__}: {e}",
+                               data_date=date.today(),
+                               detail={'cycle': args.cycle, 'market': market})
+                raise
+
+            # data_date 取「实际产出的聚合打标日」；无产出（未到结算点/未齐备/日历不可用）时退回运行日，
+            # 保证看护与晨检总能拿到一个可比较的日期（不依赖 SQL COALESCE 兜底）。
+            label = r.get('label') or (r.get('date') and date.fromisoformat(r['date']))
+            log_ledger_end(
+                ledger_id, True, rows=r['rows_affected'], data_date=label or date.today(),
+                detail={'cycle': args.cycle, 'market': market, 'label': str(label) if label else None,
+                        'buckets_written': r.get('buckets_written'),
+                        'buckets_skipped': r.get('buckets_skipped'),
+                        'skipped_reason': r.get('skipped_reason')},
+            )
             total_rows += r['rows_affected']
             results[market] = r
 
         extra = {'cycle': args.cycle, 'markets': results}
-        print(f"TASK_RESULT:{json.dumps({'rows_affected': total_rows, 'extra_metrics': extra}, ensure_ascii=False)}")
+        # default=str：results 含 date（聚合打标日）等非 JSON 原生类型，避免序列化抛错
+        print(f"TASK_RESULT:{json.dumps({'rows_affected': total_rows, 'extra_metrics': extra}, ensure_ascii=False, default=str)}")
 
         # 月线聚合完成后顺带清理过期日志（每月一次）
         if args.cycle == '1m':

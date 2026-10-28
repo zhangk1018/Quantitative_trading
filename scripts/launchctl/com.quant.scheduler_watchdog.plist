@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quant.scheduler-watchdog</string>
+
+    <!-- 定时任务「错过检测 + 自动补执行」守护器（协作单 60.0）
+         根因：launchd StartCalendarInterval 为一次性日历触发，若触发时刻服务未加载
+         （登录域重建 / plist 重载）或系统休眠未按时唤醒，该次触发被永久跳过且不补跑，
+         而 daily_job_runner 无自我唤醒能力 → 数据断档。
+         本任务用 StartInterval(每 30 分钟) + RunAtLoad(登录/加载即跑) 周期性检测
+         task_run_log 判定「已过点仍无成功记录」的槽位，并调用既有 runner 补执行。
+         caffeinate 包裹：补执行期间阻止系统休眠。 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
+        <string>-s</string>
+        <string>--</string>
+        <string>/Volumes/MyData/Quantitative_trading/venv/bin/python</string>
+        <string>/Volumes/MyData/Quantitative_trading/backend/cron/scheduler_watchdog.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Volumes/MyData/Quantitative_trading</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Volumes/MyData/Quantitative_trading/venv/bin</string>
+        <key>PYTHONPATH</key>
+        <string>/Volumes/MyData/Quantitative_trading</string>
+        <key>APP_ENV</key>
+        <string>dev</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Volumes/MyData/Quantitative_trading/logs/cron/scheduler_watchdog.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Volumes/MyData/Quantitative_trading/logs/cron/scheduler_watchdog.stderr.log</string>
+
+    <!-- 每 30 分钟巡检一次；上一次未结束时由脚本内文件锁保证不并发 -->
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <!-- 登录 / 服务重载后立即巡检一次：覆盖「服务恢复、系统唤醒、网络恢复」场景 -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>0</integer>
+    <key>NumberOfRetries</key>
+    <integer>0</integer>
+</dict>
+</plist>

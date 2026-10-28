@@ -72,7 +72,11 @@ def coverage_gaps(
     if not days:
         return []
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM stock_basic WHERE market = %s", (market,))
+        # 基线只计「在市」标的：已退市条目（delist_date 非空）不再产生行情，
+        # 若计入分母会让覆盖率永远差一截（协作单 63.0）。
+        cur.execute(
+            "SELECT COUNT(*) FROM stock_basic WHERE market = %s AND delist_date IS NULL",
+            (market,))
         row = cur.fetchone()
         total = int(row[0]) if row and row[0] else 0
         if total <= 0:
@@ -203,6 +207,25 @@ def rate_limit_sleep(cfg) -> None:
     try:
         lo = float(getattr(cfg, "batch_interval_min_sleep", 0.0) or 0.0)
         hi = float(getattr(cfg, "batch_interval_max_sleep", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        lo = hi = 0.0
+    if hi < lo:
+        lo, hi = hi, lo
+    if hi <= 0:
+        return
+    time.sleep(random.uniform(lo, hi))
+
+
+def retry_sleep(cfg) -> None:
+    """补拉退避休眠（「拉取为空」/异常后的重试前等待）。
+
+    复用 MarketConfig 的 `batch_retry_min_sleep` / `batch_retry_max_sleep`（默认 10~30s，
+    比批间休眠长一个量级，让数据源限流窗口有时间恢复）；配置缺失或非正值时不休眠，
+    便于单测把等待压到 0。
+    """
+    try:
+        lo = float(getattr(cfg, "batch_retry_min_sleep", 0.0) or 0.0)
+        hi = float(getattr(cfg, "batch_retry_max_sleep", 0.0) or 0.0)
     except (TypeError, ValueError):
         lo = hi = 0.0
     if hi < lo:

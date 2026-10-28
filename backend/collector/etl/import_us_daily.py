@@ -29,7 +29,7 @@ import sys
 import argparse
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 import psycopg2
@@ -50,6 +50,7 @@ from collector.etl.market_download_common import (  # noqa: E402
     set_market_last_processed_code,
     resume_codes,
     rate_limit_sleep,
+    retry_sleep,
     market_window_key,
     trading_days_between,
     coverage_gaps,
@@ -73,6 +74,18 @@ PROBE_CODE = 'AAPL'            # 增量窗口探针标的：苹果，流动性�
 # 回写增量进度前的窗口覆盖度阈值：窗口内每个美股交易日入库标的数 / 美股标的总数
 # 低于该比例即判定「本轮未真正覆盖全市场」，不推进 last_sync_date（下次增量重跑补缺口）。
 COVERAGE_MIN_RATIO = 0.90
+
+# ==================== 「拉取为空」补拉策略（协作单 62.0） ====================
+# 背景（2026-10-28 实测）：新浪源限流时 `stock_us_daily` 返回空报文，`_fetch_us` 返回 None，
+# 上游 import_one 记一条 INFO「拉取为空（可能限流或停牌）」后即计入失败、**不重试**。
+# 当日 211 只中 36 只命中（IBM/WMT/PEP/MA/C/F… 全为流动性最好的大盘股，事后立即重拉即成功），
+# 当日仅入库 175 只（82.9%）→ 看板「⚠️ 疑似残日」；下游指标/宽表/Parquet 也基于残缺数据计算。
+# 因此这里区分「瞬时空拉」与「真停牌」，用两层补拉收敛：
+#   ① 行内补拉：单只空拉后在循环内立即退避重试 INLINE_RETRY_ATTEMPTS 次；
+#   ② 补漏轮：整轮遍历完仍缺的标的，在窗口覆盖不达标时再集中补拉 BACKFILL_ROUNDS 轮
+#      （此时已过数分钟，限流窗口多已恢复），收敛后再由既有覆盖度门禁决定是否推进进度。
+INLINE_RETRY_ATTEMPTS = int(os.getenv('US_INLINE_RETRY_ATTEMPTS', '1'))
+BACKFILL_ROUNDS = int(os.getenv('US_BACKFILL_ROUNDS', '2'))
 
 
 # ==================== 数据库连接（独立 psycopg2 路径） ====================
@@ -337,10 +350,14 @@ def write_adj_factor(conn: psycopg2.extensions.connection, df: pd.DataFrame, cod
 
 def _list_us_codes(conn: Optional[psycopg2.extensions.connection],
                    src: Optional[AkShareDataSource] = None) -> List[str]:
-    """获取 market='us' 的代码列表。
+    """获取 market='us' 的**在市**代码列表。
 
     优先从 stock_basic 读已入库的美股代码；若为空（如列表尚未同步），
     降级调用 AkShareDataSource.get_stock_list() 拉取核心池清单兜底。
+
+    **已退市条目（delist_date IS NOT NULL）不参与下载**（协作单 63.0）：
+    否则每天都会为它们发起请求、必然「拉取为空」，既浪费请求又让失败清单长期噪声化，
+    掩盖真正的限流缺口。
 
     Args:
         conn: 数据库连接（可为 None）
@@ -352,11 +369,13 @@ def _list_us_codes(conn: Optional[psycopg2.extensions.connection],
     if conn is not None:
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT code FROM stock_basic WHERE market = %s ORDER BY code", (MARKET,))
+                cur.execute(
+                    "SELECT code FROM stock_basic"
+                    " WHERE market = %s AND delist_date IS NULL ORDER BY code", (MARKET,))
                 codes = [r[0] for r in cur.fetchall()]
             if codes:
                 return codes
-            logger.info("  📋 stock_basic 尚无美股代码，改从 AkShare 核心池清单兜底")
+            logger.info("  📋 stock_basic 尚无美股在市代码，改从 AkShare 核心池清单兜底")
         except psycopg2.DatabaseError as e:
             logger.warning(f"⚠️ 查询美股代码列表失败（改用 AkShare 清单兜底）: {e}")
     if src is not None:
@@ -423,6 +442,54 @@ def import_one(
     return q, a, max_date
 
 
+def pull_one_with_retry(src, conn, code: str, *, start: str, end_excl: str,
+                        dry_run: bool = False, inline_retries: Optional[int] = None,
+                        stats: Optional[Dict[str, Any]] = None
+                        ) -> Tuple[int, int, Optional[str], Optional[BaseException]]:
+    """拉取单只标的，并对「瞬时空拉/异常」做有界重试。
+
+    「拉取为空」在新浪源多为**瞬时限流**（同一标的稍后重拉即可成功），但历史上与「真停牌/
+    退市」共用同一条 INFO 日志、且完全不重试 → 单日可残留数十只大盘股缺口（2026-10-28：36/211）。
+
+    这里只做**有界**重试：空拉或异常后按 `retry_sleep` 退避再试，最多 `inline_retries` 次；
+    真的停牌标的会稳定返回空，最终仍记为失败（仅多花几次退避等待）。
+
+    Args:
+        stats: 传入时累计「需要补拉的标的数」（retried 指标），便于汇总日志量化限流强度。
+
+    Returns:
+        (quotes 条数, adj_factor 条数, 实际覆盖的最后交易日, 最后一次异常或 None)
+    """
+    retries = INLINE_RETRY_ATTEMPTS if inline_retries is None else max(0, int(inline_retries))
+    last_err: Optional[BaseException] = None
+    for attempt in range(retries + 1):
+        try:
+            q, a, max_date = import_one(src, conn, code, start=start, end=end_excl,
+                                        dry_run=dry_run)
+            last_err = None
+        except Exception as e:  # noqa: BLE001 - 单标的失败不应中断整批
+            q, a, max_date, last_err = 0, 0, None, e
+        if q or a:
+            return q, a, max_date, None
+        if attempt < retries:
+            if stats is not None:
+                stats['retried'] += 1
+            logger.info(f"  🔁 {code}: 第 {attempt + 1} 次拉取为空"
+                        f"（疑似瞬时限流{'' if last_err is None else ' / ' + type(last_err).__name__}），"
+                        f"退避后补拉 {attempt + 1}/{retries}")
+            retry_sleep(src.cfg)
+    return 0, 0, None, last_err
+
+
+def _accumulate(stats: Dict[str, Any], q: int, a: int, max_date: Optional[str]) -> None:
+    """把一次成功拉取的产出计入统计。"""
+    stats['success'] += 1
+    stats['quotes'] += q
+    stats['adj_factor'] += a
+    if max_date and (stats['max_trade_date'] is None or max_date > stats['max_trade_date']):
+        stats['max_trade_date'] = max_date
+
+
 def run_init(src: AkShareDataSource, conn: psycopg2.extensions.connection,
              limit: Optional[int] = None, dry_run: bool = False,
              start_date: Optional[str] = None) -> Dict[str, int]:
@@ -459,24 +526,24 @@ def run_init(src: AkShareDataSource, conn: psycopg2.extensions.connection,
         end = None
         logger.info(f"🚀 [init] 全量导入 {len(codes)} 只美股（period={cfg.default_period}）")
     for i, code in enumerate(codes, 1):
-        try:
-            if start_date:
-                q, a, max_date = import_one(src, conn if not dry_run else None, code,
-                                            start=start_date, end=end, dry_run=dry_run)
-            else:
+        if start_date:
+            q, a, max_date, err = pull_one_with_retry(
+                src, conn if not dry_run else None, code,
+                start=start_date, end=end or '', dry_run=dry_run)
+        else:
+            # 全量 period 模式不支持区间补拉：直接单次调用（保持既有行为）
+            try:
                 q, a, max_date = import_one(src, conn if not dry_run else None, code,
                                             period=cfg.default_period, dry_run=dry_run)
-            if q or a:
-                stats['success'] += 1
-                stats['quotes'] += q
-                stats['adj_factor'] += a
-                if max_date and (stats['max_trade_date'] is None or max_date > stats['max_trade_date']):
-                    stats['max_trade_date'] = max_date
-            else:
-                stats['fail'] += 1
-        except Exception as e:
+                err = None
+            except Exception as e:
+                q, a, max_date, err = 0, 0, None, e
+        if q or a:
+            _accumulate(stats, q, a, max_date)
+        else:
             stats['fail'] += 1
-            logger.error(f"  {code}: 导入失败: {e}")
+            if err is not None:
+                logger.error(f"  {code}: 导入失败: {err}")
         # 限流：每个标处理后随机休眠，降低数据源请求频率（防「拉取为空」限流）
         rate_limit_sleep(cfg)
         # 断点续传：回写当前已处理游标（中断后可从其之后继续）
@@ -624,22 +691,20 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
             logger.info(f"🔁 断点续传：上次处理至 {last_proc}（窗口 {window_key}），"
                         f"跳过 {before - len(codes)} 只，剩余 {len(codes)} 只")
 
-    stats = {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0, 'max_trade_date': None}
+    stats = {'quotes': 0, 'adj_factor': 0, 'success': 0, 'fail': 0, 'max_trade_date': None,
+             'retried': 0, 'backfilled': 0}
     logger.info(f"🚀 [incremental] 增量导入 {len(codes)} 只美股，区间 {start} ~ {end}")
+    pending: List[str] = []          # 本轮仍缺数据的标的（待补漏轮）
     for i, code in enumerate(codes, 1):
-        try:
-            q, a, max_date = import_one(src, conn if not dry_run else None, code, start=start, end=end_excl, dry_run=dry_run)
-            if q or a:
-                stats['success'] += 1
-                stats['quotes'] += q
-                stats['adj_factor'] += a
-                if max_date and (stats['max_trade_date'] is None or max_date > stats['max_trade_date']):
-                    stats['max_trade_date'] = max_date
-            else:
-                stats['fail'] += 1
-        except Exception as e:
-            stats['fail'] += 1
-            logger.error(f"  {code}: 导入失败: {e}")
+        q, a, max_date, err = pull_one_with_retry(
+            src, conn if not dry_run else None, code,
+            start=start, end_excl=end_excl, dry_run=dry_run, stats=stats)
+        if q or a:
+            _accumulate(stats, q, a, max_date)
+        else:
+            pending.append(code)
+            reason = f"（{type(err).__name__}: {err}）" if err is not None else ''
+            logger.warning(f"  ❌ {code}: 行内补拉后仍无数据{reason}，计入待补漏清单")
         # 限流：每个标处理后随机休眠，降低数据源请求频率（防「拉取为空」限流）
         rate_limit_sleep(cfg)
         # 断点续传：回写当前已处理游标（中断后可从其之后继续；窗口随游标一并落库）
@@ -647,9 +712,23 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
             set_market_last_processed_code(conn, MARKET, code, window=window_key)
         if i % 50 == 0:
             logger.info(f"  进度 {i}/{len(codes)}")
+
+    # ===== 补漏轮：整轮遍历完仍缺的标的集中补拉 =====
+    # 主循环耗时约 10 分钟，届时数据源限流窗口多已恢复（实测同一批标的立即重拉即成功），
+    # 故补漏轮比行内补拉更有效。仅当窗口覆盖仍不达标时才发起，避免无谓请求。
+    if pending and not dry_run and BACKFILL_ROUNDS > 0:
+        # 主遍历已完成，先清空游标：补漏轮若中途崩溃，下次运行从头重跑窗口而非跳过缺口
+        set_market_last_processed_code(conn, MARKET, None, window=window_key)
+        pending = _backfill_rounds(src, conn, pending, start=start, end=end,
+                                   end_excl=end_excl, stats=stats)
+
     if not dry_run:
         # 整批遍历完，清空游标（本轮目标已处理完，下次运行重新从 batch 起点续日期窗口）
         set_market_last_processed_code(conn, MARKET, None, window=window_key)
+        stats['fail'] = len(pending)
+        if pending:
+            logger.warning(f"⚠️ 补漏后仍缺 {len(pending)} 只标的的当日数据：{pending}"
+                           f"（请检查数据源限流/停牌；下次增量将重跑该窗口）")
         # 仅在成功写入时才回写，且回写【实际覆盖的最后交易日】而非 date.today()：
         # 1) 失败轮次不回写，保留旧进度，下次增量可重试补缺口；
         # 2) 盘中/盘前未收盘时拉到的是前一交易日数据，回写实际覆盖日，避免把未来日期推进为已同步。
@@ -666,11 +745,49 @@ def run_incremental(src: AkShareDataSource, conn: psycopg2.extensions.connection
                                f"（保持 {last_str}）；已清空游标，下次增量将重跑该窗口补齐缺口")
         else:
             logger.warning('⚠️ 本轮无成功写入，跳过回写 last_sync_date（保留旧进度，下次增量可重试补缺口）')
+    else:
+        stats['fail'] = len(pending)
     logger.info(f"✅ incremental 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
-                f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
+                f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}"
+                f"（行内补拉 {stats['retried']} 次 / 补漏轮恢复 {stats['backfilled']} 只）")
     summary_logger.info(f"✅ incremental 完成: 成功 {stats['success']}, 失败 {stats['fail']}, "
-                        f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}")
+                        f"quotes {stats['quotes']}, adj_factor {stats['adj_factor']}"
+                        f"（补漏恢复 {stats['backfilled']} 只）")
     return stats
+
+
+def _backfill_rounds(src, conn, pending: List[str], *, start: str, end: str,
+                     end_excl: str, stats: Dict[str, Any]) -> List[str]:
+    """对主循环仍缺数据的标的做若干轮集中补拉，返回最终仍缺的标的。
+
+    每轮开始先看窗口覆盖度：一旦达标即停止（省请求）；否则等待一段退避时间后重拉全部待补标的。
+    单个标的补拉成功即刻计入统计并从清单移除，失败则留到下一轮。
+    """
+    for rnd in range(1, BACKFILL_ROUNDS + 1):
+        covered = _us_trading_days_between(src, start, end)
+        if _window_coverage_ok(conn, covered):
+            logger.info(f"✅ 窗口覆盖度已达标，跳过第 {rnd} 轮补漏")
+            break
+        logger.warning(f"🔁 补漏第 {rnd}/{BACKFILL_ROUNDS} 轮：待补 {len(pending)} 只 {pending}")
+        retry_sleep(src.cfg)
+        still: List[str] = []
+        recovered = 0
+        for code in pending:
+            q, a, max_date, err = pull_one_with_retry(src, conn, code,
+                                                     start=start, end_excl=end_excl,
+                                                     inline_retries=0, stats=stats)
+            if q or a:
+                _accumulate(stats, q, a, max_date)
+                recovered += 1
+            else:
+                still.append(code)
+            rate_limit_sleep(src.cfg)
+        stats['backfilled'] += recovered
+        logger.warning(f"   补漏第 {rnd} 轮：恢复 {recovered} 只，仍缺 {len(still)} 只")
+        pending = still
+        if not pending:
+            break
+    return pending
 
 
 def main() -> None:
