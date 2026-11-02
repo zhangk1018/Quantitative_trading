@@ -82,9 +82,15 @@ CHECK_DESCRIPTIONS = {
 # - min_good_volume：应覆盖的最小股票数（OK 达标线）
 # - min_warn_volume：低于此值告警（WARN），低于 min_good 但不低于此 WARN
 # - max_missing：允许的最大缺失股票数（超过则 WARN）
+# - missing_lookback_days：缺失检查的“活跃分母”回看天数（仅配置的市场启用）。
+#   港股 stock_basic 含大量「旧代码/股权/－T/长期停牌」等陈旧条目，若直接用
+#   delist_date IS NULL 的全部行做分母，会把这些本来就不产生日线的条目标记为
+#   “最新交易日缺失”，形成长期假告警。这里只把「近 N 个日历日内有过日线」的标的
+#   计入活跃分母（2026-11-02 协作单修订）。
 MARKET_CONFIG = {
     'cn': {'min_good_volume': 5000, 'min_warn_volume': 4500, 'max_missing': 100},
-    'hk': {'min_good_volume': 2600, 'min_warn_volume': 2000, 'max_missing': 50},
+    'hk': {'min_good_volume': 2600, 'min_warn_volume': 2000, 'max_missing': 50,
+           'missing_lookback_days': 30},
     'us': {'min_good_volume': 190, 'min_warn_volume': 150, 'max_missing': 10},
 }
 
@@ -265,13 +271,34 @@ def check_missing_stocks(result, market='cn'):
                 AND code NOT LIKE '8%%'
                 AND code NOT LIKE '920%%'
             """, (latest,))
+            total_active = cur.fetchone()[0]
         else:
-            cur.execute("""
-                SELECT COUNT(*) FROM stock_basic
-                WHERE market = %s
-                AND (delist_date IS NULL OR delist_date > %s)
-            """, (market, latest))
-        total_active = cur.fetchone()[0]
+            cfg = MARKET_CONFIG.get(market, MARKET_CONFIG['cn'])
+            lookback = cfg.get('missing_lookback_days')
+            if lookback:
+                # 活跃分母只统计「近 N 日有过日线」的标的：
+                # 陈旧 stock_basic 条目（旧代码/股权/－T/长期停牌）不产生日线，
+                # 不应计为「最新交易日缺失」，否则会产生与下载无关的长期假告警。
+                cutoff = latest - timedelta(days=int(lookback))
+                cur.execute("""
+                    SELECT COUNT(*) FROM stock_basic b
+                    WHERE b.market = %s
+                    AND (b.delist_date IS NULL OR b.delist_date > %s)
+                    AND EXISTS (
+                        SELECT 1 FROM stock_quotes q
+                        WHERE q.market = b.market
+                          AND q.cycle = '1d'
+                          AND q.code = b.code
+                          AND q.trade_date >= %s
+                    )
+                """, (market, latest, cutoff))
+            else:
+                cur.execute("""
+                    SELECT COUNT(*) FROM stock_basic
+                    WHERE market = %s
+                    AND (delist_date IS NULL OR delist_date > %s)
+                """, (market, latest))
+            total_active = cur.fetchone()[0]
         cur.execute("""
             SELECT COUNT(DISTINCT code) FROM stock_quotes
             WHERE trade_date = %s AND cycle='1d'
@@ -282,10 +309,13 @@ def check_missing_stocks(result, market='cn'):
         conn.close()
         missing = total_active - have_data
         cfg = MARKET_CONFIG.get(market, MARKET_CONFIG['cn'])
+        active_label = '活跃'
+        if market != 'cn' and cfg.get('missing_lookback_days'):
+            active_label = f'活跃(近{cfg["missing_lookback_days"]}日)'
         if missing > cfg['max_missing']:
-            result.warn(_mk_name('missing_stocks', market), f'{market} 最新交易日 {latest} 缺失 {missing} 只（活跃 {total_active}，有数据 {have_data}）')
+            result.warn(_mk_name('missing_stocks', market), f'{market} 最新交易日 {latest} 缺失 {missing} 只（{active_label} {total_active}，有数据 {have_data}）')
         else:
-            result.ok(_mk_name('missing_stocks', market), f'{market} 最新交易日 {latest} 缺失 {missing} 只（活跃 {total_active}，有数据 {have_data}）')
+            result.ok(_mk_name('missing_stocks', market), f'{market} 最新交易日 {latest} 缺失 {missing} 只（{active_label} {total_active}，有数据 {have_data}）')
     except Exception as e:
         result.warn(_mk_name('missing_stocks', market), str(e))
 
@@ -417,7 +447,7 @@ def check_task_run_log(result):
             SELECT task_name, status, error_message, data_date
             FROM task_run_log
             WHERE data_date >= (CURRENT_DATE - INTERVAL '3 days')
-              AND status != 'success'
+              AND status = 'failed'
             ORDER BY data_date DESC, task_name
         """)
         failed = cur.fetchall()

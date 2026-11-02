@@ -75,9 +75,33 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .tab-btn { flex: 1; padding: 10px 16px; border: none; border-radius: 8px; background: transparent; color: var(--text-dim); font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
 .tab-btn:hover { color: var(--text); background: rgba(148,163,184,0.15); }
 .tab-btn.active { background: var(--blue); color: #fff; box-shadow: 0 2px 8px rgba(59,130,246,0.3); }
+/* 登录门禁：监控接口挂在后端认证依赖下，未登录时页面必须给出登录入口，不能停在「加载中」 */
+.auth-gate { position: fixed; inset: 0; z-index: 100; display: none; align-items: center; justify-content: center; background: rgba(15,23,42,0.88); backdrop-filter: blur(3px); }
+.auth-gate.visible { display: flex; }
+.auth-card { width: 340px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 26px; box-shadow: 0 20px 50px rgba(0,0,0,0.45); }
+.auth-card h2 { font-size: 16px; margin-bottom: 8px; }
+.auth-card .auth-hint { font-size: 12px; color: var(--text-dim); margin-bottom: 16px; line-height: 1.6; }
+.auth-card input { width: 100%; padding: 9px 12px; margin-bottom: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; }
+.auth-card input:focus { outline: none; border-color: var(--blue); }
+.auth-card .auth-submit { width: 100%; padding: 9px; background: var(--blue); border-color: var(--blue); color: #fff; font-size: 13px; font-weight: 600; }
+.auth-card .auth-submit:hover { background: #2563eb; }
+.auth-card .auth-error { min-height: 16px; margin-top: 8px; font-size: 12px; color: var(--red); }
+.load-failed { padding: 12px; border-radius: 8px; background: rgba(239,68,68,0.1); color: var(--red); font-size: 13px; }
 </style>
 </head>
 <body>
+
+<!-- ===== 登录门禁（未登录/会话失效时显示，避免看板停在「加载中」） ===== -->
+<div id="authGate" class="auth-gate">
+  <div class="auth-card">
+    <h2>🔐 监控看板登录</h2>
+    <div id="authHint" class="auth-hint">监控数据需要登录后查看，请使用系统账号登录。</div>
+    <input id="authUser" type="text" placeholder="用户名" autocomplete="username">
+    <input id="authPass" type="password" placeholder="密码" autocomplete="current-password">
+    <button id="authLoginBtn" class="auth-submit">登录</button>
+    <div id="authError" class="auth-error"></div>
+  </div>
+</div>
 
 <div class="header">
   <div><h1>📊 量化系统监控看板</h1></div>
@@ -143,13 +167,103 @@ const TASK_ENDPOINTS = {
 const TAB_LABELS = { cn: '沪深', hk: '港股', us: '美股' };
 let qualityLoaded = false;
 let autoRefreshTimer = null;
+// 监控接口已挂在后端认证依赖下：未登录时 fetch 一律 401。
+// 这里显式记录认证状态，用于门禁展示与自动刷新短路，避免无限「加载中」。
+let authRequired = false;
 
 function $(id) { return document.getElementById(id); }
+
+// ===== 登录门禁 =====
+function showAuthGate(message) {
+  authRequired = true;
+  const gate = $('authGate');
+  const wasVisible = gate?.classList.contains('visible');
+  if (gate) gate.classList.add('visible');
+  if (message) {
+    const hint = $('authHint');
+    if (hint) hint.textContent = message;
+  }
+  // 首屏占位统一改成「未登录」，不再让用户误以为是加载慢
+  ['statusBar', 'taskChain', 'marketsSummary', 'dataSummary', 'health'].forEach(id => {
+    const el = $(id);
+    if (el && el.textContent.trim() === '加载中...') el.textContent = '🔒 未登录，请先登录';
+  });
+  // 仅首次弹出时聚焦，避免自动刷新反复抢走输入焦点
+  if (!wasVisible) setTimeout(() => $('authUser')?.focus(), 0);
+}
+
+function hideAuthGate() {
+  authRequired = false;
+  $('authGate')?.classList.remove('visible');
+  const err = $('authError');
+  if (err) err.textContent = '';
+}
+
+/** 初始化/刷新前探活会话；返回是否已认证。 */
+async function checkAuth() {
+  try {
+    const resp = await fetch('/api/auth/verify', { credentials: 'same-origin' });
+    const body = await resp.json();
+    if (body.code === 200 && body.data?.authenticated) return true;
+    showAuthGate('监控数据需要登录后查看，请使用系统账号登录。');
+    return false;
+  } catch (e) {
+    // 后端不可达时不在这里下结论，交给 refreshAll 展示加载失败
+    console.error('会话探活失败:', e);
+    return true;
+  }
+}
+
+async function doLogin() {
+  const username = ($('authUser')?.value || '').trim();
+  const password = $('authPass')?.value || '';
+  const err = $('authError');
+  const btn = $('authLoginBtn');
+  if (!username || !password) {
+    if (err) err.textContent = '请输入用户名和密码';
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = '登录中...'; }
+  if (err) err.textContent = '';
+  try {
+    const resp = await fetch('/api/auth/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const body = await resp.json().catch(() => null);
+    if (!resp.ok || !body || body.code !== 200) {
+      const detail = body?.detail;
+      const msg = (detail && typeof detail === 'object' ? detail.message : detail)
+        || body?.message || `登录失败（HTTP ${resp.status}）`;
+      if (err) err.textContent = msg;
+      return;
+    }
+    if ($('authPass')) $('authPass').value = '';
+    hideAuthGate();
+    await refreshAll();
+  } catch (e) {
+    console.error('登录请求失败:', e);
+    if (err) err.textContent = '登录请求失败，请检查后端服务是否正常';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '登录'; }
+  }
+}
 
 // ===== API 调用 =====
 async function fetchAPI(endpoint) {
   try {
-    const response = await fetch(endpoint);
+    const response = await fetch(endpoint, { credentials: 'same-origin' });
+    if (response.status === 401) {
+      // 会话缺失/过期：直接弹登录门禁，而不是静默返回 null 让页面一直「加载中」
+      showAuthGate('登录状态已失效，请重新登录后查看监控数据。');
+      return null;
+    }
+    if (!response.ok) {
+      console.error(`API HTTP 错误 [${endpoint}]: ${response.status}`);
+      return null;
+    }
     const result = await response.json();
     if (result.code === 200) return result.data;
     console.error(`API 错误 [${endpoint}]:`, result.message);
@@ -495,8 +609,25 @@ function renderCurrent() {
   if (cacheData.markets) renderMarkets(cacheData.markets);
 }
 
+// ===== 加载失败的兜底展示（避免面板永远停在「加载中」） =====
+function renderLoadFailure() {
+  const msg = '<div class="load-failed">⚠️ 数据加载失败：请确认后端服务正常，然后点击右上角「🔄 手动刷新」重试。</div>';
+  ['statusBar', 'taskChain', 'marketsSummary', 'dataSummary', 'health'].forEach(id => {
+    const el = $(id);
+    if (el) el.innerHTML = msg;
+  });
+}
+
 // ===== 主刷新 =====
 async function refreshAll() {
+  // 未登录时先探活：主站登录共享同域 Cookie，登录后无需手动重载页面
+  if (authRequired) {
+    if (!(await checkAuth())) {
+      showAuthGate('请先登录后查看监控数据。');
+      return;
+    }
+    hideAuthGate();
+  }
   const btn = $('manualRefreshBtn');
   if (btn) { btn.disabled = true; btn.textContent = '🔄 刷新中...'; }
 
@@ -529,8 +660,12 @@ async function refreshAll() {
 
     renderCurrent();
 
+    // 所有端点均未返回数据（且不是认证问题）→ 明确展示失败原因
+    const noData = !sumCn && !sumHk && !sumUs && !cnChain && !hkChain && !usChain && !health && !markets;
+    if (noData && !authRequired) renderLoadFailure();
+
     // 如果曾经展开过质量深度，保持展开状态但重新加载
-    if (qualityLoaded) {
+    if (qualityLoaded && !authRequired) {
       await renderDataQualityDeep();
     }
   } catch (e) {
@@ -554,6 +689,10 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // ===== 切换质量深度展开/收起 =====
 $('toggleQualityBtn')?.addEventListener('click', async function() {
   const section = $('dataQualityDeep');
+  if (authRequired) {
+    showAuthGate('请先登录后查看数据质量详情。');
+    return;
+  }
   if (qualityLoaded) {
     // 收起
     collapseQuality();
@@ -575,9 +714,10 @@ function startAutoRefresh() {
   if (autoRefreshTimer) clearInterval(autoRefreshTimer);
   autoRefreshTimer = setInterval(async () => {
     const indicator = $('autoRefreshIndicator');
-    indicator.textContent = '刷新中...';
+    indicator.textContent = authRequired ? '待登录' : '刷新中...';
+    // 未登录时 refreshAll 内部只做会话探活，不重复打 11 个业务接口
     await refreshAll();
-    indicator.textContent = '2min 自动刷新';
+    indicator.textContent = authRequired ? '待登录' : '2min 自动刷新';
   }, AUTO_REFRESH_MS);
 }
 
@@ -590,7 +730,12 @@ $('manualRefreshBtn')?.addEventListener('click', async () => {
 
 // ===== 初始化 =====
 document.addEventListener('DOMContentLoaded', async () => {
-  await refreshAll();
+  $('authLoginBtn')?.addEventListener('click', doLogin);
+  $('authPass')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+
+  // 先探活会话：已登录直接加载，未登录立刻弹登录框（不再空转「加载中」）
+  const authenticated = await checkAuth();
+  if (authenticated) await refreshAll();
   startAutoRefresh();
 });
 </script>

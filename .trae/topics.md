@@ -379,3 +379,16 @@ launchctl kickstart -k gui/$(id -u)/com.quant.backend   # 重启后端使看板�
 - 日报：`docs/daily_report/2026/10/report_20261023_量量.md`
 - 待办：① **后端需重启**（`launchctl kickstart -k gui/$(id -u)/com.quant.backend`）使快照刷新修复生效，当前进程仍为 10-22 10:11 启动的旧代码；② 10-24 ETL 后复测 15:00–20:00 时段含自编指标选股，应 10 分钟内取到当日数据；③ 观察取消 ETL 避让后的内存/Jetsam 风险。
 
+
+## 会话信息（2026-11-02）
+- 日期：2026-11-02
+- 负责角色：量量（后台）
+- 修改范围：
+  - **看板登录门禁**：`backend/static/monitor.html` —— `/admin` 未登录时 401 被静默吞掉导致永久「加载中」；新增登录框 + `/api/auth/verify` 探活 + 401/加载失败兜底。已重启后端并 Playwright 实测 3 场景。
+  - **晨检口径**：`backend/scripts/daily_check.py` —— `task_run_log` 只统计 `status='failed'`（原 `!=success` 误把 running 当失败）；港股缺失分母改为「近 30 日有过日线」（`missing_lookback_days=30`），10-30 缺失 84→39 OK。
+  - **P1 快照代码级对账**：`import_hk_daily.py` 新增 `_reconcile_snapshot_gaps`（近 7 日基准 + 2 轮有界补拉 + 残留清单计入 fail），`run_incremental` 接线；活库只读验证 11-02 残留 27。
+  - **P2 除权当日快照落库**：`_hk_exright_events` 保留港交所事件描述；`_snapshot_quotes_df_exright` 现金分红按仿射「加回分红」写当日行与 `stock_adj_factor`；拆股/并股/供股仍回退逐只。1052.HK 10-30 除息实测 `adj_close=11.3275` 与源 hfq 完全一致；11-02 缺口 dry-run 17/21 可直接落库。
+- 验证：全量 `pytest backend/tests` **501 passed / 0 failed**；新增 28 例单测。
+- 日报：`docs/daily_report/2026/11/report_20261102_量量.md`
+- 当前晨检：OK=16 / WARN=1（`missing_stocks_hk=51`，11-02 缺口待下一轮补回） / ERROR=0。
+- 待办：① 11-03 港股增量后复核 11-02 27 只缺口应补回、missing_hk 应转 OK；② 港股陈旧 stock_basic 清理待 K 确认；③ 主机休眠/资源争抢建议（15:20 唤醒、ETL 窗口关闭大内存应用、indicators 超时 7200s）；④ 美股 FI / MMC 待 K 决策。
