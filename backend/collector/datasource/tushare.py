@@ -11,6 +11,7 @@ Tushare Pro 数据源实现 — 仅支持日线数据下载
 import os
 import time
 import threading
+import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, Dict
@@ -38,9 +39,20 @@ TUSHARE_BATCH_TIMEOUT = int(os.getenv('TUSHARE_BATCH_TIMEOUT', '120'))    # batc
 TUSHARE_HTTP_TIMEOUT = int(os.getenv('TUSHARE_HTTP_TIMEOUT', '30'))       # requests 层
 _MAX_HUNG_THREADS = int(os.getenv('TUSHARE_MAX_HUNG_THREADS', '3'))
 
+# 服务可用性探针（区分「网关 5xx」与「当日确实无数据」）：
+# tushare 官方库 DataApi.query 用 `if res:` 判断响应，502/5xx 时 Response 为假值
+# → 直接返回空 DataFrame，调用方会把「服务不可用」误判为「当日无数据」。
+# 用一个已知有数据的历史交易日发原始 HTTP 探针，按状态码/错误码判定。
+TUSHARE_API_URL = os.getenv('TUSHARE_API_URL', 'https://api.tushare.pro')
+TUSHARE_PROBE_TRADE_DATE = os.getenv('TUSHARE_PROBE_TRADE_DATE', '20240102')
+
 
 class TushareTimeoutError(TimeoutError):
     """Tushare 网络调用超时（半死连接 / 接口无响应兜底）。"""
+
+
+class TushareServiceError(ConnectionError):
+    """Tushare API 服务不可用（网关 5xx / 非 JSON / 错误码），属可重试错误。"""
 
 
 # 仍卡死（join 超时后 thread 仍 alive）的下载线程列表；入口先剔除已自愈的线程，
@@ -164,6 +176,40 @@ class TushareDataSource(BaseDataSource):
         self._pro = None
         self.connected = False
         return True
+
+    def service_alive(self) -> bool:
+        """探测 Tushare API 端是否可用（区分「网关 5xx」与「当日确实无数据」）。
+
+        tushare 官方库对非 2xx 响应 `if res:` 判假 → 静默返回空 DataFrame，
+        会把「服务不可用（如 502 Bad Gateway）」伪装成「当日无数据」。
+        这里用已知有数据的历史交易日发一次原始 HTTP 请求，按状态码/错误码判定。
+        未连接（单测/未初始化场景）时返回 True，保持调用方原有语义。
+        """
+        if not self.connected or self._pro is None:
+            return True
+        payload = {
+            'api_name': 'daily',
+            'token': self._get_token(),
+            'params': {'trade_date': TUSHARE_PROBE_TRADE_DATE},
+            'fields': '',
+        }
+        try:
+            self._wait_for_rate_limit()
+            # 注意：Tushare 网关入口是根路径（api_name 放在请求体里），不能拼 /daily
+            resp = requests.post(
+                TUSHARE_API_URL, json=payload, timeout=TUSHARE_HTTP_TIMEOUT
+            )
+            if resp.status_code != 200:
+                logger.warning(f"⚠️ Tushare API 探针返回 HTTP {resp.status_code}（服务不可用）")
+                return False
+            result = resp.json()
+            if result.get('code') != 0:
+                logger.warning(f"⚠️ Tushare API 探针返回错误码: {result.get('msg')}")
+                return False
+            return bool((result.get('data') or {}).get('items'))
+        except Exception as e:
+            logger.warning(f"⚠️ Tushare API 探针异常: {e}")
+            return False
 
     def _code_to_ts(self, code: str) -> str:
         """将内部代码格式转换为 Tushare 格式"""
@@ -289,11 +335,18 @@ class TushareDataSource(BaseDataSource):
                     df['ah_vol'] = df['ah_vol'] * 100
                 if 'ah_amount' in df.columns:
                     df['ah_amount'] = df['ah_amount'] * 1000
-            return df
         except TushareTimeoutError:
             raise
         except Exception as e:
             raise RuntimeError(f"批量获取日线数据失败: {e}")
+
+        if df is None or df.empty:
+            # 空返回必须区分「服务不可用」与「当日无数据」，否则会被误判为
+            # “接口未发布”并触发全市场逐只 fallback（速率上无法在任务超时内完成）。
+            if not self.service_alive():
+                raise TushareServiceError(
+                    'Tushare API 不可用（网关异常/非 JSON 响应），并非当日无数据')
+        return df
 
     # ── 以下方法受用户等级限制，不可使用 ──────────────────────────────
 

@@ -329,6 +329,19 @@ class DataSourceManager:
         
         for src_info in self.sources:
             source = src_info['source']
+            # 已断开的数据源无法通过 health_check 判定（默认实现直接返回 False），
+            # 若只判健康状态，一次 failover 后主源（如 Baostock）将永远无法恢复。
+            # 自动恢复开启时对主源先尝试重连，再按连通性标记状态。
+            if not getattr(source, 'connected', False):
+                if self.auto_recovery and source is self.primary_source:
+                    try:
+                        if source.connect():
+                            self.health_status[source.name] = DataSourceStatus.HEALTHY
+                            continue
+                    except Exception as e:
+                        logger.warning(f"主数据源重连失败 {source.name}: {str(e)}")
+                self.health_status[source.name] = DataSourceStatus.UNHEALTHY
+                continue
             try:
                 if source.health_check():
                     self.health_status[source.name] = DataSourceStatus.HEALTHY
@@ -350,8 +363,8 @@ class DataSourceManager:
             if self.current_source and self.current_source != source:
                 self.current_source.disconnect()
             
-            # 连接新数据源
-            if source.connect():
+            # 连接新数据源（健康检查阶段可能已重连成功，避免重复登录）
+            if getattr(source, 'connected', False) or source.connect():
                 old_source_name = self.current_source.name if self.current_source else "None"
                 self.current_source = source
                 self.current_source_index = index

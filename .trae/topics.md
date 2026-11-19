@@ -392,3 +392,14 @@ launchctl kickstart -k gui/$(id -u)/com.quant.backend   # 重启后端使看板�
 - 日报：`docs/daily_report/2026/11/report_20261102_量量.md`
 - 当前晨检：OK=16 / WARN=1（`missing_stocks_hk=51`，11-02 缺口待下一轮补回） / ERROR=0。
 - 待办：① 11-03 港股增量后复核 11-02 27 只缺口应补回、missing_hk 应转 OK；② 港股陈旧 stock_basic 清理待 K 确认；③ 主机休眠/资源争抢建议（15:20 唤醒、ETL 窗口关闭大内存应用、indicators 超时 7200s）；④ 美股 FI / MMC 待 K 决策。
+
+## 会话信息（2026-11-19）
+- 日期：2026-11-19
+- 负责角色：量量（后台）
+- 修改范围：
+  - **P0 11-18 daily_import 超时处置**：根因是 `api.tushare.pro` 网关 502 时 tushare 官方库 `if res:` 判假 → 静默返回空 DataFrame，被误判为「当日无数据」→ 触发 5249 只全市场逐只 fallback（限速下需 2~4 小时）→ 60 分钟被 runner 杀死。已终止卡住的 stage2 runner（PID 70257），11-18 数据先用 Baostock 逐只补（20:54 会话结束致进程中止 3548/5249），Tushare 恢复后改用 `--date 2026-11-18` 批量补齐 **5217 条**；stage3 七步已补跑完成（13:19→13:59）。
+  - **台账**：`task_run_log` id=2395（残留 running）置 failed（僵尸清理），新增 id=2415 success（rows_affected=5217，note 注明手工批量补跑），原 2394 超时记录保留审计。
+  - **代码修复**：① `tushare.py` 增 `TushareServiceError` + `service_alive()` 历史交易日探针（根入口，`api_name` 在 body），空返回且服务不可用时抛可重试异常；② `import_daily_data.py` 增 `_decide_fallback`（仅「批量成功但不完整」进入逐只）与 `FALLBACK_MAX_SECONDS=25min`；③ `base.py` 健康检查对断开主源先重连再判、`_switch_to_source` 已连接不重复登录。
+- 验证：相关用例 34 passed；全量 `pytest backend/tests` **516 passed / 1 failed**（既有日期依赖用例 `test_us_daily_empty_pull_retry.py::test_backfill_skipped_in_dry_run`，写死探针日期 2026-10-27，与本次改动无关）；实测 `service_alive()=True`。
+- 日报：`docs/daily_report/2026/11/report_20261119_量量.md`
+- 待办：① 观察 11-19 正常调度是否按新逻辑运行；② 修复 `test_us_daily_empty_pull_retry.py` 日期依赖使全量测试全绿；③ 评估 runner 在数据源长时间不可用时的占锁重试策略（建议快速失败短路）。

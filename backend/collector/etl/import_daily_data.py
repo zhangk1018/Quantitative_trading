@@ -47,6 +47,9 @@ class DailyDataImporter(BaseDataImporter):
     FULL_HISTORY_START = "1990-01-01"        # A股最早数据
     DEFAULT_START_DATE = "2015-01-01"        # 默认全量导入起始日期（兼容免费数据源长度限制）
     FALLBACK_LOOKBACK_DAYS = 30              # fallback 回溯天数
+    # 逐只 fallback 时间上限：数据源限速（Baostock 20 次/分、Tushare 45 次/分）下
+    # 全市场 5000+ 只需 2~4 小时，远超阶段2 的 60 分钟超时 → 必须设上限避免整轮被杀。
+    FALLBACK_MAX_SECONDS = 25 * 60
     FUTURE_DELIST_DATE = "2900-01-01"        # 占位退市日期阈值
     DB_CHECK_INTERVAL = 100                  # 数据库连接检查间隔
     # 批量接口有界重试 + 失败响铃（协作单 57.0）
@@ -959,24 +962,37 @@ class DailyDataImporter(BaseDataImporter):
             # 注意：周末时 today 非交易日，需以最近的交易日作为校验目标；
             # 且仅当确实存在待导入的交易日时才可能触发 fallback（避免周末误触发）。
             check_date = self._get_last_trade_day(today)
-            need_fallback = attempted_trade_day and not batch_success
+            completeness_ok = True
             if batch_success:
                 check_result = self._check_data_completeness(check_date)
                 logger.info(f"📊 批量导入后最近交易日 {check_date} 数据完整度: "
                            f"{check_result['existing_count']}/"
                            f"{check_result['total_stocks']} "
                            f"({check_result['completeness']:.1%})")
-                if not check_result['is_complete']:
+                completeness_ok = check_result['is_complete']
+                if not completeness_ok:
                     logger.warning(f"⚠️ 批量导入后完整度仅 {check_result['completeness']:.1%}，"
                                  f"低于阈值 {self.MIN_COMPLETENESS_THRESHOLD:.0%}，触发 fallback 补全")
-                    need_fallback = True
+
+            need_fallback, fallback_reason = self._decide_fallback(
+                attempted_trade_day, batch_success,
+                bool(stats.get("batch_failed")), completeness_ok)
+            if fallback_reason == "batch_hard_failed":
+                logger.error("❌ 批量接口硬失败（数据源不可用/超时），跳过逐只 fallback"
+                             "（全市场逐只必然超过任务超时），交由退出码与 runner 重试处理")
+            elif fallback_reason == "batch_empty":
+                logger.warning("⚠️ 批量接口正常但当日无数据（可能尚未发布），跳过逐只 fallback，"
+                               "交由完整度判定与下一轮重试处理")
 
             if need_fallback:
                 logger.warning("⚠️  Tushare 批量接口未获取到完整数据，"
-                             f"回退到单线程逐个导入 (Baostock→Tushare, 最近 {self.FALLBACK_LOOKBACK_DAYS} 天)")
+                             f"回退到单线程逐个导入 (Baostock→Tushare, 最近 {self.FALLBACK_LOOKBACK_DAYS} 天，"
+                             f"上限 {self.FALLBACK_MAX_SECONDS // 60} 分钟)")
                 fallback_start = (datetime.now() -
                                  timedelta(days=self.FALLBACK_LOOKBACK_DAYS)).strftime('%Y-%m-%d')
-                sc, fc, tr = self._single_thread_incremental(codes, today, min_start_date=fallback_start)
+                sc, fc, tr = self._single_thread_incremental(
+                    codes, today, min_start_date=fallback_start,
+                    max_seconds=self.FALLBACK_MAX_SECONDS)
                 stats["fallback_success"] = sc
                 stats["fallback_fail"] = fc
                 stats["fallback_records"] = tr
@@ -1006,6 +1022,29 @@ class DailyDataImporter(BaseDataImporter):
         print(f'TASK_RESULT:{json.dumps({"rows_affected": stats["rows_affected"], "extra_metrics": stats})}')
         sys.stdout.flush()
         return stats
+
+    @staticmethod
+    def _decide_fallback(attempted_trade_day: bool, batch_success: bool,
+                         batch_failed: bool, completeness_ok: bool) -> Tuple[bool, str]:
+        """判定是否进入全市场逐只 fallback（纯函数，便于单测）。
+
+        逐只路径受数据源限速（Baostock 20 次/分、Tushare 45 次/分）约束，全市场
+        5000+ 只需 2~4 小时，远超阶段2 的 60 分钟超时。故仅「批量成功但当日不完整」
+        时启用；数据源级故障与「当日无数据」都不应进入逐只。
+
+        Returns:
+            (need_fallback, reason)：
+              no_trade_day / batch_hard_failed / batch_empty / incomplete / complete
+        """
+        if not attempted_trade_day:
+            return False, 'no_trade_day'
+        if batch_failed:
+            return False, 'batch_hard_failed'
+        if not batch_success:
+            return False, 'batch_empty'
+        if not completeness_ok:
+            return True, 'incomplete'
+        return False, 'complete'
 
     def _incremental_verdict(self, stats: dict, attempted_trade_day: bool,
                              check_date: str, completeness: Optional[dict]) -> Tuple[bool, str]:
@@ -1081,18 +1120,31 @@ class DailyDataImporter(BaseDataImporter):
         return dt.strftime('%Y-%m-%d')
 
     def _single_thread_incremental(self, codes: List[str], today: str,
-                                    min_start_date: Optional[str] = None) -> Tuple[int, int, int]:
-        """单线程增量导入（备用），返回 (success_count, fail_count, total_records)"""
+                                    min_start_date: Optional[str] = None,
+                                    max_seconds: Optional[int] = None) -> Tuple[int, int, int]:
+        """单线程增量导入（备用），返回 (success_count, fail_count, total_records)。
+
+        Args:
+            max_seconds: 可选时间上限；达到后中止本轮（避免整条任务被 runner 超时杀死）。
+        """
         total_stocks = len(codes)
         success_count = 0
         fail_count = 0
         total_records = 0
+        started_at = time.time()
 
         logger.info("⏩ 增量模式：预批量查询所有股票的最后交易日...")
         last_date_cache = self._get_last_date_in_range(codes, None, today)
         logger.info("✅ 预查询完成")
 
         for i, code in enumerate(codes, 1):
+            if max_seconds and (time.time() - started_at) > max_seconds:
+                logger.warning(f"⏱️ 逐只导入已达时间上限 {max_seconds}s，中止本轮"
+                               f"（已处理 {i - 1}/{total_stocks}）")
+                self.update_task_progress(
+                    'running', int(((i - 1) / total_stocks) * 100),
+                    f"逐只导入超时中止（{i - 1}/{total_stocks}），已入库 {total_records} 条")
+                break
             # 退市判断
             try:
                 with self.storage.transaction() as conn:
